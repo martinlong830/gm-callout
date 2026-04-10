@@ -1,0 +1,14 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# After first deploy, set PUBLIC_BASE_URL in the dashboard to your service URL, e.g.
+#   https://gm-callout.onrender.com
+# (no trailing slash). Add all Twilio vars there — do not commit secrets.
+
+services:
+  - type: web
+    name: gm-callout
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health

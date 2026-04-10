@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Callout Coverage — GM App</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
+      <h1 class="title" id="screenTitle">Schedule Overview</h1>
+    </header>
+
+    <main class="main">
+      <!-- Screen 1: Schedule Overview -->
+      <section class="screen active" id="screen-schedule" data-screen="1">
+        <div class="calendar-table-wrap">
+          <div class="restaurant-switcher" role="group" aria-label="Restaurant location">
+            <button type="button" class="restaurant-chip active" data-restaurant-id="rp-9">
+              Red Poke 9th Ave
+            </button>
+            <button type="button" class="restaurant-chip" data-restaurant-id="rp-8">Red Poke 8th Ave</button>
+          </div>
+          <div class="calendar-legend" aria-label="Role colors">
+            <span class="legend-item"><span class="role-pill-mini role-kitchen">Kitchen</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-server">Server</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of House</span></span>
+          </div>
+          <div class="schedule-notice hidden" id="scheduleNotice">
+            <p class="schedule-notice-text" id="scheduleNoticeText">0 texts sent</p>
+          </div>
+          <div id="calendarGrid" aria-label="Schedule calendar"></div>
+        </div>
+      </section>
+
+      <!-- Screen 2: Shift Edit / Callout -->
+      <section class="screen" id="screen-eligible" data-screen="2">
+        <div class="slot-location-filter" id="slotLocationFilterWrap">
+          <span class="employee-filter-label" id="slotLocationFilterLabel">Staff filter</span>
+          <div class="employee-filter-chips" id="slotLocationFilterChips" role="group" aria-labelledby="slotLocationFilterLabel">
+            <button type="button" class="filter-chip" data-slot-loc="rp-9">Red Poke 9th Ave</button>
+            <button type="button" class="filter-chip" data-slot-loc="rp-8">Red Poke 8th Ave</button>
+            <button type="button" class="filter-chip" data-slot-loc="all">All employees</button>
+          </div>
+        </div>
+        <div class="shift-context" id="eligibleShiftContext"></div>
+
+        <nav class="mode-tabs" aria-label="Shift actions">
+          <button type="button" class="mode-tab active" id="editTabBtn" aria-current="page">
+            Edit Staffing
+          </button>
+          <button type="button" class="mode-tab" id="calloutTabBtn">
+            Callout Coverage
+          </button>
+        </nav>
+
+        <div class="mode-panel" id="editPanel">
+          <p class="panel-subtitle">Select who will be assigned to this shift</p>
+          <div class="worker-list-scroll">
+            <ul class="worker-list" id="editWorkerList"></ul>
+          </div>
+          <div class="screen-actions screen-actions-footer">
+            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn">Save Schedule</button>
+          </div>
+        </div>
+
+        <div class="mode-panel hidden" id="calloutPanel">
+          <p class="panel-subtitle">Notify eligible workers to cover this shift</p>
+          <div class="worker-list-scroll">
+            <ul class="worker-list" id="eligibleWorkerList"></ul>
+          </div>
+          <div class="screen-actions screen-actions-split screen-actions-footer">
+            <button type="button" class="btn btn-secondary" id="callCoverageBtn">Call All</button>
+            <button type="button" class="btn btn-primary" id="textCoverageBtn">Text All</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Screen 3: Shift Accepted -->
+      <section class="screen" id="screen-accepted" data-screen="3">
+        <div class="card accepted-card">
+          <p class="accepted-badge">Shift accepted</p>
+          <dl class="accepted-details">
+            <dt>Worker</dt>
+            <dd id="acceptedWorkerName">—</dd>
+            <dt>Role</dt>
+            <dd id="acceptedRole">—</dd>
+            <dt>Shift</dt>
+            <dd id="acceptedShiftTime">—</dd>
+          </dl>
+          <button type="button" class="btn btn-primary btn-block" id="confirmReplacementBtn">Confirm Replacement</button>
+        </div>
+      </section>
+
+      <!-- Screen 5: Employees -->
+      <section class="screen" id="screen-employees" data-screen="5">
+        <div class="employees-controls">
+          <label class="employee-search-wrap">
+            <span class="visually-hidden">Search by name or phone</span>
+            <input
+              type="search"
+              id="employeeSearch"
+              class="employee-search-input"
+              placeholder="Search name or phone"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </label>
+          <div class="employee-filter-block">
+            <span class="employee-filter-label" id="employeeRoleFiltersLabel">Role</span>
+            <div class="employee-filter-chips" id="employeeRoleFilters" role="group" aria-labelledby="employeeRoleFiltersLabel">
+              <button type="button" class="filter-chip active" data-role-filter="all">All</button>
+              <button type="button" class="filter-chip" data-role-filter="Kitchen">Kitchen</button>
+              <button type="button" class="filter-chip" data-role-filter="Bartender">Front of House</button>
+              <button type="button" class="filter-chip" data-role-filter="Server">Server</button>
+            </div>
+          </div>
+          <div class="employees-toolbar">
+            <button type="button" class="btn btn-primary" id="addEmployeeBtn">Add employee</button>
+          </div>
+        </div>
+        <div id="employeeList" class="employee-list" aria-label="Employee roster"></div>
+      </section>
+
+      <!-- Screen 6: Add / Edit employee -->
+      <section class="screen" id="screen-employee-form" data-screen="6">
+        <form id="employeeForm" class="employee-form">
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">First name</span>
+              <input type="text" name="firstName" id="empFirstName" required autocomplete="given-name" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">Last name</span>
+              <input type="text" name="lastName" id="empLastName" required autocomplete="family-name" />
+            </label>
+          </div>
+          <label class="form-field form-field-block">
+            <span class="form-label">Staff type</span>
+            <select name="staffType" id="empStaffType" required>
+              <option value="Kitchen">Kitchen</option>
+              <option value="Bartender">Front of House</option>
+              <option value="Server">Server</option>
+            </select>
+          </label>
+          <label class="form-field form-field-block">
+            <span class="form-label">Phone</span>
+            <input type="tel" name="phone" id="empPhone" placeholder="e.g. 609-250-8527" autocomplete="tel" />
+          </label>
+          <label class="form-field form-field-block">
+            <span class="form-label">Location</span>
+            <select name="usualRestaurant" id="empUsualRestaurant">
+              <option value="rp-9">Red Poke 9th Ave</option>
+              <option value="rp-8">Red Poke 8th Ave</option>
+              <option value="both">Both</option>
+            </select>
+          </label>
+          <fieldset class="week-avail-fieldset">
+            <legend class="form-label">Weekly availability</legend>
+            <p class="form-hint">Check every shift you can work. Rows are days (Mon–Sun); columns are shift times.</p>
+            <div id="employeeWeekAvail" class="availability-grid-wrap"></div>
+          </fieldset>
+          <div class="screen-actions screen-actions-split">
+            <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="saveEmployeeBtn">Save</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Screen 7: Messaging templates -->
+      <section class="screen" id="screen-messaging" data-screen="7">
+        <p class="messaging-intro">
+          Customize SMS and voice scripts for callouts. Use placeholders below — they are filled automatically from the shift and each worker.
+        </p>
+        <div class="template-vars-card">
+          <p class="template-vars-title">Placeholders</p>
+          <ul class="template-vars-list">
+            <li><code>{{firstName}}</code> — worker’s first name</li>
+            <li><code>{{workerName}}</code> — full name</li>
+            <li><code>{{roleLabel}}</code> — e.g. Kitchen Staff, Front of House, Server</li>
+            <li><code>{{roleCode}}</code> — Kitchen, Bartender, or Server</li>
+            <li><code>{{shiftTime}}</code> — e.g. 11:00 AM–3:00 PM</li>
+            <li><code>{{shiftDay}}</code> — calendar day (e.g. Mon Mar 24)</li>
+          </ul>
+        </div>
+        <label class="form-field form-field-block messaging-field">
+          <span class="form-label">Text (SMS) template</span>
+          <textarea id="smsTemplateInput" class="messaging-textarea" rows="5" placeholder="SMS body…"></textarea>
+          <p class="template-preview" id="smsTemplatePreview" aria-live="polite"></p>
+        </label>
+        <label class="form-field form-field-block messaging-field">
+          <span class="form-label">Phone call script</span>
+          <textarea id="voiceTemplateInput" class="messaging-textarea" rows="5" placeholder="Spoken when the call connects…"></textarea>
+          <p class="template-preview" id="voiceTemplatePreview" aria-live="polite"></p>
+        </label>
+        <p class="messaging-save-feedback" id="messagingSaveFeedback" hidden></p>
+        <div class="screen-actions">
+          <button type="button" class="btn btn-primary btn-block" id="saveMessagingTemplatesBtn">Save templates</button>
+        </div>
+      </section>
+
+      <!-- Screen 4: Shift Filled / History -->
+      <section class="screen" id="screen-history" data-screen="4">
+        <nav class="tabs">
+          <button type="button" class="tab active" data-tab="all">All</button>
+          <button type="button" class="tab" data-tab="pending">Pending</button>
+          <button type="button" class="tab" data-tab="filled">Filled</button>
+        </nav>
+        <ul class="history-list" id="historyList"></ul>
+        <div class="notes-section">
+          <label for="managerNotes">Manager notes</label>
+          <textarea id="managerNotes" rows="3" placeholder="Add notes about callouts, coverage, etc."></textarea>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
+      <button type="button" class="nav-item" data-goto="5">Employees</button>
+      <button type="button" class="nav-item" data-goto="7">Messaging</button>
+      <button type="button" class="nav-item" data-goto="4">History</button>
+    </nav>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
