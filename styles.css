@@ -35,13 +35,18 @@
   --space-main: 24px;
   --space-block: 20px;
   --space-tight: 12px;
-  /* Sticky header + main padding + bottom nav + safe area — shift screen column height */
-  --shift-edit-chrome: calc(12.5rem + var(--safe-bottom));
+  /* Fixed-height sticky chrome (must match .app-top grid rows + main top padding) */
+  --app-header-row-h: 3.5rem;
+  --app-nav-row-h: 3rem;
+  --app-top-total-h: calc(var(--app-header-row-h) + var(--app-nav-row-h));
+  --shift-edit-chrome: calc(var(--app-top-total-h) + var(--space-main) + var(--safe-bottom));
 }
 
 html {
   font-size: 16px;
   -webkit-text-size-adjust: 100%;
+  /* Avoid content width jumping when only some screens scroll (e.g. History vs Schedule). */
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -52,8 +57,13 @@ body {
   color: var(--text);
   line-height: 1.5;
   min-height: 100vh;
-  padding-bottom: calc(60px + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
   -webkit-font-smoothing: antialiased;
+}
+
+body.availability-modal-open,
+body.schedule-sheet-open {
+  overflow: hidden;
 }
 
 .app {
@@ -63,17 +73,31 @@ body {
   background: var(--surface);
 }
 
-/* Header */
-.header {
+/* Sticky top: fixed two-row height so switching tabs never grows/shrinks the bar */
+.app-top {
   position: sticky;
   top: 0;
   z-index: 10;
+  display: grid;
+  grid-template-rows: var(--app-header-row-h) var(--app-nav-row-h);
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Header */
+.header {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 16px var(--space-main);
+  min-height: 0;
+  height: 100%;
+  padding: 0 var(--space-main);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .back-btn {
@@ -102,9 +126,194 @@ body {
 
 .title {
   margin: 0;
+  flex: 1;
+  min-width: 0;
   font-size: 1.125rem;
   font-weight: 600;
   letter-spacing: -0.02em;
+  line-height: 1.25;
+  /* Long titles (e.g. “Shift Filled / History”) were wrapping and growing the sticky header. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 0 var(--space-main);
+  background: var(--surface);
+  box-sizing: border-box;
+}
+
+.top-nav .nav-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-nav .nav-item:hover,
+.top-nav .nav-item:focus-visible {
+  color: var(--text);
+  background: var(--hover-fill);
+  outline: none;
+}
+
+.top-nav .nav-item.active {
+  color: var(--primary);
+  font-weight: 600;
+  border-bottom-color: var(--primary);
+}
+
+/* Availability submission modal (Requests tab) */
+.availability-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-main);
+  padding-bottom: calc(var(--space-main) + var(--safe-bottom));
+  box-sizing: border-box;
+}
+
+.availability-modal[hidden] {
+  display: none !important;
+}
+
+.availability-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.availability-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 26rem;
+  max-height: min(92vh, 52rem);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 56px rgba(15, 23, 42, 0.18);
+  padding: var(--space-block);
+}
+
+.availability-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-tight);
+  margin-bottom: 10px;
+}
+
+.availability-modal-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  flex: 1;
+  min-width: 0;
+}
+
+.availability-modal-close {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 1.35rem;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.availability-modal-close:hover,
+.availability-modal-close:focus-visible {
+  background: var(--hover-fill);
+  color: var(--text);
+  outline: 1px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.availability-modal-meta {
+  margin: 0 0 var(--space-block);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.availability-modal-grid-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.schedule-sheet-modal {
+  z-index: 65;
+}
+
+.schedule-sheet-panel .availability-modal-meta {
+  margin-bottom: var(--space-tight);
+}
+
+.schedule-sheet-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-block);
+}
+
+.schedule-sheet-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-tight) 0;
+}
+
+.schedule-sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.schedule-sheet-field .schedule-template-select,
+.schedule-sheet-field .schedule-template-name-input,
+.schedule-sheet-field .schedule-add-restaurant-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.request-view-grid-wrap {
+  margin-top: 10px;
 }
 
 /* Main content */
@@ -183,6 +392,62 @@ body {
   border: 1px solid var(--border);
   background: var(--surface);
   padding: var(--space-block) var(--space-block) 16px;
+}
+
+.schedule-toolbar-compact {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-tight) var(--space-block);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-block);
+}
+
+.schedule-toolbar-left {
+  flex: 1;
+  min-width: min(100%, 200px);
+}
+
+.schedule-toolbar-left .employee-filter-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.schedule-toolbar-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-tight);
+  align-items: center;
+}
+
+/* Same weight as .btn; compact type for the schedule toolbar */
+.schedule-toolbar-btn {
+  padding: 7px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.schedule-template-select,
+.schedule-template-name-input,
+.schedule-add-restaurant-input {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.schedule-template-select {
+  min-width: 0;
+}
+
+.schedule-add-restaurant-input {
+  min-width: 0;
 }
 
 .restaurant-switcher {
@@ -617,6 +882,12 @@ body {
   gap: var(--space-tight);
 }
 
+.callout-footer-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight);
+}
+
 /* Screen 2: Mode tabs (Edit vs Callout) */
 .mode-tabs {
   flex-shrink: 0;
@@ -778,10 +1049,11 @@ body {
   margin-bottom: -1px;
   border-radius: 0;
   background: transparent;
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   color: var(--text-muted);
+  line-height: 1.2;
 }
 
 .tab:hover { color: var(--text); background: transparent; }
@@ -833,8 +1105,64 @@ body {
   border-color: #fde68a;
 }
 
+.history-item-status.declined {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.request-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-tight);
+  margin-top: 12px;
+  padding-top: var(--space-tight);
+  border-top: 1px solid var(--border);
+}
+
+.request-item-actions .request-action-btn {
+  flex: 1;
+  min-width: 6.5rem;
+}
+
 .history-item-meta { font-size: 0.85rem; color: var(--text-muted); margin: 0 0 4px; }
 .history-item-notes { font-size: 0.85rem; margin: 8px 0 0; padding-top: var(--space-tight); border-top: 1px solid var(--border); color: var(--text-muted); }
+
+.callout-log-item .callout-log-body {
+  margin-top: 10px;
+  padding-top: var(--space-tight);
+  border-top: 1px solid var(--border);
+}
+
+.callout-log-line {
+  font-size: 0.875rem;
+  line-height: 1.45;
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+.callout-log-line:last-child {
+  margin-bottom: 0;
+}
+
+.callout-log-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+
+.callout-log-muted {
+  color: var(--text-muted);
+}
+
+.callout-log-line--highlight .callout-log-label {
+  color: var(--text);
+}
+
+.callout-log-role {
+  font-weight: 500;
+  color: var(--text-muted);
+}
 
 .notes-section label {
   display: block;
@@ -934,22 +1262,6 @@ body {
   display: none !important;
 }
 
-/* Bottom nav */
-.bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-  max-width: 100%;
-  display: flex;
-  gap: 0;
-  padding: 10px var(--space-main);
-  padding-bottom: calc(10px + var(--safe-bottom));
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-}
-
 /* Employees */
 .visually-hidden {
   position: absolute;
@@ -1046,6 +1358,10 @@ body {
 
 .employees-toolbar {
   padding: 0;
+}
+
+.requests-list {
+  margin-top: 0;
 }
 
 .employee-list {
@@ -1244,34 +1560,16 @@ body {
   vertical-align: middle;
 }
 
-.nav-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 10px 6px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  color: var(--text-muted);
-  cursor: pointer;
-  text-align: center;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
+.availability-grid--readonly .availability-grid-cb {
+  cursor: default;
+  pointer-events: none;
+  opacity: 0.9;
 }
 
-.nav-item:hover { color: var(--text); }
-.nav-item.active {
-  color: var(--primary);
-  font-weight: 600;
-  box-shadow: inset 0 -2px 0 var(--primary);
+.availability-grid-cell--readonly {
+  background: var(--hover-fill);
 }
 
 @media (min-width: 780px) {
   .app { border-radius: 0; }
-  .bottom-nav { border-radius: 0; }
 }

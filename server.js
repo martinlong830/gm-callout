@@ -112,7 +112,22 @@ function createTwilioClient() {
   throw new Error("Missing TWILIO_AUTH_TOKEN or API key credentials");
 }
 
-const twilioClient = createTwilioClient();
+/** Lazy so the process can boot (e.g. Render health checks) before env is configured. */
+let twilioRestClient = null;
+function getTwilioClient() {
+  if (twilioRestClient) return twilioRestClient;
+  twilioRestClient = createTwilioClient();
+  return twilioRestClient;
+}
+
+function isTwilioEnvConfigError(err) {
+  const m = err && err.message;
+  return typeof m === "string" && /^Missing TWILIO/i.test(m);
+}
+
+const TWILIO_ENV_HINT =
+  "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER in your host’s environment (Render → Environment), save, then redeploy or restart.";
+
 const campaigns = new Map();
 
 /** In-memory state for interactive voice (yes/no + confirm). Requires PUBLIC_BASE_URL. */
@@ -388,7 +403,8 @@ app.get("/health", (_req, res) => {
 /** Verify Twilio credentials (open in browser while server runs). */
 app.get("/api/twilio/validate", async (_req, res) => {
   try {
-    const account = await twilioClient.api.accounts(TWILIO_ACCOUNT_SID).fetch();
+    const client = getTwilioClient();
+    const account = await client.api.accounts(TWILIO_ACCOUNT_SID).fetch();
     return res.json({
       ok: true,
       accountStatus: account.status,
@@ -396,6 +412,13 @@ app.get("/api/twilio/validate", async (_req, res) => {
       authMode: TWILIO_AUTH_TOKEN ? "auth_token" : "api_key",
     });
   } catch (err) {
+    if (isTwilioEnvConfigError(err)) {
+      return res.status(503).json({
+        ok: false,
+        error: err.message,
+        hint: TWILIO_ENV_HINT,
+      });
+    }
     const code = err && err.code;
     const msg = err && err.message;
     const status = err && err.status;
@@ -486,6 +509,7 @@ app.post("/api/send-text", async (req, res) => {
       });
     }
 
+    const client = getTwilioClient();
     const deliveries = [];
     await Promise.all(
       sendTargets.map(async (target) => {
@@ -493,7 +517,7 @@ app.post("/api/send-text", async (req, res) => {
           target.messageBody != null && String(target.messageBody).trim() !== ""
             ? String(target.messageBody)
             : String(message || "");
-        const msg = await twilioClient.messages.create({
+        const msg = await client.messages.create({
           from: TWILIO_FROM_NUMBER,
           to: target.phone,
           body: bodyText,
@@ -524,6 +548,9 @@ app.post("/api/send-text", async (req, res) => {
         "API accepted the message(s). If the phone does not receive SMS within a few minutes, open Twilio Console → Monitor → Logs → Messaging, search by Message SID, and check for errors. US toll-free senders often need Toll-Free verification; trial accounts can only text verified numbers.",
     });
   } catch (err) {
+    if (isTwilioEnvConfigError(err)) {
+      return res.status(503).json({ error: err.message, hint: TWILIO_ENV_HINT });
+    }
     const code = err && err.code;
     const twilioMsg = err && err.message;
     const moreInfo = err && err.moreInfo;
@@ -845,7 +872,8 @@ app.post("/api/voice/call", async (req, res) => {
       }
     }
 
-    const call = await twilioClient.calls.create(createOpts);
+    const client = getTwilioClient();
+    const call = await client.calls.create(createOpts);
     if (callUrl) {
       const openPreview =
         previewText.length > 140 ? `${previewText.slice(0, 140)}…` : previewText;
@@ -869,6 +897,9 @@ app.post("/api/voice/call", async (req, res) => {
       voiceInteractive: !!callUrl,
     });
   } catch (err) {
+    if (isTwilioEnvConfigError(err)) {
+      return res.status(503).json({ error: err.message, hint: TWILIO_ENV_HINT });
+    }
     const code = err && err.code;
     const msg = err && err.message;
     const hint = voiceCallTwilioHint(code);
@@ -888,6 +919,11 @@ app.get("*", (_req, res) => {
 
 const server = app.listen(Number(PORT), LISTEN_HOST, () => {
   console.log(`GM callout app listening on http://${LISTEN_HOST}:${PORT}`);
+  if (!TWILIO_ACCOUNT_SID) {
+    console.warn(
+      "[Env] TWILIO_ACCOUNT_SID is not set — add it in Render → Environment (with auth token and from number), then redeploy. UI works; SMS/voice will return 503 until then."
+    );
+  }
   console.log(`Twilio check: http://localhost:${PORT}/api/twilio/validate`);
   console.log(`Voice PUBLIC_BASE_URL preflight check: http://localhost:${PORT}/api/voice/public-url-check`);
   if (SKIP_PUBLIC_URL_PREFLIGHT) {

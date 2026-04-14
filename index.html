@@ -8,21 +8,46 @@
 </head>
 <body>
   <div class="app">
-    <header class="header">
-      <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
-      <h1 class="title" id="screenTitle">Schedule Overview</h1>
-    </header>
+    <div class="app-top">
+      <header class="header">
+        <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
+        <h1 class="title" id="screenTitle">Schedule Overview</h1>
+      </header>
+      <nav class="top-nav" aria-label="Main navigation">
+        <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
+        <button type="button" class="nav-item" data-goto="5">Employees</button>
+        <button type="button" class="nav-item" data-goto="8">Requests</button>
+      </nav>
+    </div>
 
     <main class="main">
       <!-- Screen 1: Schedule Overview -->
       <section class="screen active" id="screen-schedule" data-screen="1">
         <div class="calendar-table-wrap">
-          <div class="restaurant-switcher" role="group" aria-label="Restaurant location">
-            <button type="button" class="restaurant-chip active" data-restaurant-id="rp-9">
-              Red Poke 9th Ave
-            </button>
-            <button type="button" class="restaurant-chip" data-restaurant-id="rp-8">Red Poke 8th Ave</button>
+          <div class="schedule-toolbar-compact">
+            <div class="schedule-toolbar-left">
+              <span class="employee-filter-label" id="scheduleWeekChipsLabel">Week</span>
+              <div
+                class="employee-filter-chips"
+                id="scheduleWeekChips"
+                role="group"
+                aria-labelledby="scheduleWeekChipsLabel"
+              >
+                <button type="button" class="filter-chip active" data-schedule-week="0">Week 1</button>
+                <button type="button" class="filter-chip" data-schedule-week="1">Week 2</button>
+                <button type="button" class="filter-chip" data-schedule-week="2">Week 3</button>
+              </div>
+            </div>
+            <div class="schedule-toolbar-actions">
+              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal">
+                Templates
+              </button>
+              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal">
+                Manage Locations
+              </button>
+            </div>
           </div>
+          <div class="restaurant-switcher" id="restaurantSwitcher" role="group" aria-label="Restaurant location"></div>
           <div class="calendar-legend" aria-label="Role colors">
             <span class="legend-item"><span class="role-pill-mini role-kitchen">Kitchen</span></span>
             <span class="legend-item"><span class="role-pill-mini role-server">Server</span></span>
@@ -39,11 +64,7 @@
       <section class="screen" id="screen-eligible" data-screen="2">
         <div class="slot-location-filter" id="slotLocationFilterWrap">
           <span class="employee-filter-label" id="slotLocationFilterLabel">Staff filter</span>
-          <div class="employee-filter-chips" id="slotLocationFilterChips" role="group" aria-labelledby="slotLocationFilterLabel">
-            <button type="button" class="filter-chip" data-slot-loc="rp-9">Red Poke 9th Ave</button>
-            <button type="button" class="filter-chip" data-slot-loc="rp-8">Red Poke 8th Ave</button>
-            <button type="button" class="filter-chip" data-slot-loc="all">All employees</button>
-          </div>
+          <div class="employee-filter-chips" id="slotLocationFilterChips" role="group" aria-labelledby="slotLocationFilterLabel"></div>
         </div>
         <div class="shift-context" id="eligibleShiftContext"></div>
 
@@ -71,9 +92,14 @@
           <div class="worker-list-scroll">
             <ul class="worker-list" id="eligibleWorkerList"></ul>
           </div>
-          <div class="screen-actions screen-actions-split screen-actions-footer">
-            <button type="button" class="btn btn-secondary" id="callCoverageBtn">Call All</button>
-            <button type="button" class="btn btn-primary" id="textCoverageBtn">Text All</button>
+          <div class="callout-footer-block screen-actions-footer">
+            <button type="button" class="btn btn-secondary btn-block" id="editMessagingTemplatesBtn">
+              Edit text &amp; voice templates
+            </button>
+            <div class="screen-actions screen-actions-split">
+              <button type="button" class="btn btn-secondary" id="callCoverageBtn">Call All</button>
+              <button type="button" class="btn btn-primary" id="textCoverageBtn">Text All</button>
+            </div>
           </div>
         </div>
       </section>
@@ -109,6 +135,10 @@
             />
           </label>
           <div class="employee-filter-block">
+            <span class="employee-filter-label" id="employeeRestaurantFiltersLabel">Restaurant</span>
+            <div class="employee-filter-chips" id="employeeRestaurantFilters" role="group" aria-labelledby="employeeRestaurantFiltersLabel"></div>
+          </div>
+          <div class="employee-filter-block">
             <span class="employee-filter-label" id="employeeRoleFiltersLabel">Role</span>
             <div class="employee-filter-chips" id="employeeRoleFilters" role="group" aria-labelledby="employeeRoleFiltersLabel">
               <button type="button" class="filter-chip active" data-role-filter="all">All</button>
@@ -122,6 +152,43 @@
           </div>
         </div>
         <div id="employeeList" class="employee-list" aria-label="Employee roster"></div>
+      </section>
+
+      <!-- Screen 8: Requests -->
+      <section class="screen" id="screen-requests" data-screen="8">
+        <div class="employees-controls">
+          <label class="employee-search-wrap">
+            <span class="visually-hidden">Search by employee name</span>
+            <input
+              type="search"
+              id="requestsEmployeeSearch"
+              class="employee-search-input"
+              placeholder="Search employee name"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </label>
+          <div class="employee-filter-block">
+            <span class="employee-filter-label" id="requestsTypeFiltersLabel">Request type</span>
+            <div class="employee-filter-chips" id="requestsTypeChips" role="group" aria-labelledby="requestsTypeFiltersLabel">
+              <button type="button" class="filter-chip active" data-request-type="availability">
+                Availability Submissions
+              </button>
+              <button type="button" class="filter-chip" data-request-type="swap">Shift Swaps</button>
+              <button type="button" class="filter-chip" data-request-type="timeoff">Time Off</button>
+              <button type="button" class="filter-chip" data-request-type="callout">Callouts</button>
+            </div>
+          </div>
+          <div class="employee-filter-block">
+            <span class="employee-filter-label" id="requestsStatusFiltersLabel">Status</span>
+            <div class="employee-filter-chips" id="requestsStatusChips" role="group" aria-labelledby="requestsStatusFiltersLabel">
+              <button type="button" class="filter-chip active" data-request-status="all">All</button>
+              <button type="button" class="filter-chip" data-request-status="pending">Pending</button>
+              <button type="button" class="filter-chip" data-request-status="closed">Closed</button>
+            </div>
+          </div>
+        </div>
+        <ul class="history-list requests-list" id="requestsList" aria-label="Staff requests"></ul>
       </section>
 
       <!-- Screen 6: Add / Edit employee -->
@@ -151,11 +218,7 @@
           </label>
           <label class="form-field form-field-block">
             <span class="form-label">Location</span>
-            <select name="usualRestaurant" id="empUsualRestaurant">
-              <option value="rp-9">Red Poke 9th Ave</option>
-              <option value="rp-8">Red Poke 8th Ave</option>
-              <option value="both">Both</option>
-            </select>
+            <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
           <fieldset class="week-avail-fieldset">
             <legend class="form-label">Weekly availability</legend>
@@ -215,13 +278,126 @@
         </div>
       </section>
     </main>
+  </div>
 
-    <nav class="bottom-nav">
-      <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
-      <button type="button" class="nav-item" data-goto="5">Employees</button>
-      <button type="button" class="nav-item" data-goto="7">Messaging</button>
-      <button type="button" class="nav-item" data-goto="4">History</button>
-    </nav>
+  <div
+    class="availability-modal"
+    id="availabilityRequestModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="availabilityModalTitle"
+    hidden
+  >
+    <div class="availability-modal-backdrop" id="availabilityModalBackdrop"></div>
+    <div class="availability-modal-panel">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="availabilityModalTitle">Availability submission</h2>
+        <button type="button" class="availability-modal-close" id="availabilityModalClose" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="availability-modal-meta" id="availabilityModalMeta"></p>
+      <div class="availability-modal-grid-wrap" id="availabilityModalGrid"></div>
+    </div>
+  </div>
+
+  <div
+    class="availability-modal schedule-sheet-modal"
+    id="scheduleTemplateModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="scheduleTemplateModalTitle"
+    hidden
+  >
+    <div class="availability-modal-backdrop" id="scheduleTemplateModalBackdrop"></div>
+    <div class="availability-modal-panel schedule-sheet-panel">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="scheduleTemplateModalTitle">Schedule templates</h2>
+        <button type="button" class="availability-modal-close" id="scheduleTemplateModalClose" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="availability-modal-meta">
+        Apply a saved staffing pattern or save the current schedule (all locations and weeks).
+      </p>
+      <div class="schedule-sheet-stack">
+        <label class="schedule-sheet-field">
+          <span class="employee-filter-label">Saved template</span>
+          <select id="scheduleTemplateSelect" class="schedule-template-select" aria-label="Choose schedule template">
+            <option value="">Choose template…</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-primary btn-block" id="applyScheduleTemplateBtn">Apply template</button>
+        <label class="schedule-sheet-field">
+          <span class="employee-filter-label">Save current schedule as</span>
+          <input
+            type="text"
+            id="scheduleTemplateNameInput"
+            class="schedule-template-name-input"
+            placeholder="Template name"
+            maxlength="80"
+            autocomplete="off"
+          />
+        </label>
+        <button type="button" class="btn btn-secondary btn-block" id="saveScheduleTemplateBtn">Save template</button>
+      </div>
+    </div>
+  </div>
+
+  <div
+    class="availability-modal schedule-sheet-modal"
+    id="scheduleAddLocationModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="scheduleAddLocationModalTitle"
+    hidden
+  >
+    <div class="availability-modal-backdrop" id="scheduleAddLocationModalBackdrop"></div>
+    <div class="availability-modal-panel schedule-sheet-panel">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="scheduleAddLocationModalTitle">Manage locations</h2>
+        <button type="button" class="availability-modal-close" id="scheduleAddLocationModalClose" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="availability-modal-meta">
+        New locations start with every shift unassigned until you save staffing. They appear in the switcher, filters, and employee forms.
+      </p>
+      <div class="schedule-sheet-stack">
+        <label class="schedule-sheet-field">
+          <span class="employee-filter-label">Restaurant name</span>
+          <input
+            type="text"
+            id="addRestaurantName"
+            class="schedule-add-restaurant-input"
+            placeholder="e.g. Red Poke Downtown"
+            maxlength="120"
+            autocomplete="organization"
+          />
+        </label>
+        <label class="schedule-sheet-field">
+          <span class="employee-filter-label">Short label (optional)</span>
+          <input
+            type="text"
+            id="addRestaurantShort"
+            class="schedule-add-restaurant-input"
+            placeholder="For compact chips"
+            maxlength="24"
+            autocomplete="off"
+          />
+        </label>
+        <button type="button" class="btn btn-primary btn-block" id="addRestaurantBtn">Add location</button>
+        <hr class="schedule-sheet-divider" />
+        <label class="schedule-sheet-field">
+          <span class="employee-filter-label">Remove a location</span>
+          <select id="removeRestaurantSelect" class="schedule-template-select" aria-label="Location to remove"></select>
+        </label>
+        <button type="button" class="btn btn-secondary btn-block" id="removeRestaurantBtn">Remove location</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>
