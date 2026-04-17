@@ -752,19 +752,75 @@
     return JSON.parse(JSON.stringify(loadScheduleAssignmentsStore()));
   }
 
+  function parseShiftIdParts(shiftId) {
+    var m = String(shiftId || '').match(/^shift-(\d+)-(\d+)-(\d+)$/);
+    if (!m) return null;
+    return {
+      globalDayIdx: parseInt(m[1], 10),
+      roleIdx: parseInt(m[2], 10),
+      trIdx: parseInt(m[3], 10),
+    };
+  }
+
+  function buildWeekPatternFromCurrentRestaurant() {
+    var store = loadScheduleAssignmentsStore();
+    var src = store[currentRestaurantId] || {};
+    var start = scheduleCalendarWeekIndex * 7;
+    var end = start + 7;
+    var out = {};
+    Object.keys(src).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      if (p.globalDayIdx < start || p.globalDayIdx >= end) return;
+      var dayInWeek = p.globalDayIdx - start;
+      var k = dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
+      if (Array.isArray(src[shiftId])) out[k] = src[shiftId].slice();
+    });
+    return out;
+  }
+
+  function applyWeekPatternToCurrentRestaurant(weekPattern) {
+    if (!weekPattern || typeof weekPattern !== 'object') return false;
+    var store = loadScheduleAssignmentsStore();
+    if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
+    var targetStart = scheduleCalendarWeekIndex * 7;
+    for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
+      for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
+        for (var trIdx = 0; trIdx < TIME_RANGES.length; trIdx += 1) {
+          var k = dayInWeek + '-' + roleIdx + '-' + trIdx;
+          if (!Array.isArray(weekPattern[k])) continue;
+          var targetShiftId = 'shift-' + (targetStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
+          store[currentRestaurantId][targetShiftId] = weekPattern[k].slice();
+        }
+      }
+    }
+    saveScheduleAssignmentsStore(store);
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    return true;
+  }
+
   function applyScheduleTemplateById(tplId) {
     var list = loadScheduleTemplates();
     var tpl = list.find(function (t) {
       return t && t.id === tplId;
     });
-    if (!tpl || !tpl.assignments || typeof tpl.assignments !== 'object') return false;
-    var shell = assignmentStoreShell();
-    var merged = mergeAssignmentStoreWithShell(shell, tpl.assignments);
-    saveScheduleAssignmentsStore(merged);
-    rebuildSchedule();
-    renderCalendar();
-    if (scheduleBody) renderSchedule();
-    return true;
+    if (!tpl) return false;
+    if (tpl.weekPattern && typeof tpl.weekPattern === 'object') {
+      return applyWeekPatternToCurrentRestaurant(tpl.weekPattern);
+    }
+    if (tpl.assignments && typeof tpl.assignments === 'object') {
+      // Backward compatibility for older full-store templates.
+      var shell = assignmentStoreShell();
+      var merged = mergeAssignmentStoreWithShell(shell, tpl.assignments);
+      saveScheduleAssignmentsStore(merged);
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+      return true;
+    }
+    return false;
   }
 
   function saveCurrentScheduleAsTemplate(name) {
@@ -772,13 +828,15 @@
     if (!n) return false;
     saveScheduleAssignments();
     var list = loadScheduleTemplates();
+    var weekPattern = buildWeekPatternFromCurrentRestaurant();
+    if (!Object.keys(weekPattern).length) return false;
     var id =
       'tpl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     list.push({
       id: id,
       name: n,
       createdAt: new Date().toISOString(),
-      assignments: cloneAssignmentStore(),
+      weekPattern: weekPattern,
     });
     saveScheduleTemplatesList(list);
     return true;
@@ -787,6 +845,7 @@
   function populateScheduleTemplateSelect() {
     var sel = document.getElementById('scheduleTemplateSelect');
     if (!sel) return;
+    var applyBtn = document.getElementById('applyScheduleTemplateBtn');
     var prev = sel.value;
     var list = loadScheduleTemplates();
     sel.innerHTML =
@@ -798,7 +857,12 @@
           );
         })
         .join('');
-    if (prev && list.some(function (t) { return t.id === prev; })) sel.value = prev;
+    if (prev && list.some(function (t) { return t.id === prev; })) {
+      sel.value = prev;
+    } else if (list.length) {
+      sel.value = list[0].id;
+    }
+    if (applyBtn) applyBtn.disabled = list.length === 0;
   }
 
   function addRestaurantFromInput(nameStr, shortStr) {
@@ -1350,6 +1414,8 @@
   let campaignPollTimer = null;
   let voiceOutcomePollTimer = null;
   let requestsTypeFilter = 'availability';
+  let shiftEditSearchQuery = '';
+  let shiftCalloutSearchQuery = '';
   /** Per request-type section: pending | closed | all (each section remembers its own). */
   let requestsStatusByType = {
     availability: 'all',
@@ -1396,6 +1462,8 @@
   const empPhone = document.getElementById('empPhone');
   const empUsualRestaurant = document.getElementById('empUsualRestaurant');
   const employeeSearchInput = document.getElementById('employeeSearch');
+  const shiftEditSearchInput = document.getElementById('shiftEditSearch');
+  const shiftCalloutSearchInput = document.getElementById('shiftCalloutSearch');
   const screenEmployeesEl = document.getElementById('screen-employees');
   const requestsList = document.getElementById('requestsList');
   const requestsEmployeeSearch = document.getElementById('requestsEmployeeSearch');
@@ -1822,8 +1890,12 @@
         var d = parseDayHeader(dayStr);
         return (
           '<th>' +
+          '<span class="calendar-th-dow">' +
           escapeHtml(d.dow) +
-          '<div class="time-role-sub">' + escapeHtml(d.month + ' ' + d.dayNum) + '</div>' +
+          '</span>' +
+          '<div class="time-role-sub">' +
+          escapeHtml(d.month + ' ' + d.dayNum) +
+          '</div>' +
           '</th>'
         );
       }).join('') +
@@ -2572,6 +2644,9 @@
     if (!currentShift) return;
     setShiftMode('edit');
     syncSlotLocationFilterChips();
+    if (shiftEditSearchInput && shiftEditSearchInput.value !== shiftEditSearchQuery) {
+      shiftEditSearchInput.value = shiftEditSearchQuery;
+    }
 
     var poolRaw = EMPLOYEE_POOLS[currentShift.role] || [];
     var pool = poolRaw.filter(function (name) {
@@ -2579,6 +2654,12 @@
       if (!emp) return true;
       return employeeMatchesSlotStaffFilter(emp);
     });
+    var q = String(shiftEditSearchQuery || '').trim().toLowerCase();
+    if (q) {
+      pool = pool.filter(function (name) {
+        return String(name || '').toLowerCase().indexOf(q) !== -1;
+      });
+    }
     const displayRole = currentShift.role === 'Bartender' ? 'Front of House' : currentShift.role;
     const current = currentShift.workers && currentShift.workers.length ? currentShift.workers : [];
 
@@ -2615,6 +2696,10 @@
           '</div></li>'
         );
       }).join('');
+      if (!pool.length) {
+        editWorkerList.innerHTML =
+          '<li class="history-item"><p class="history-item-meta">No employees match this search.</p></li>';
+      }
     }
 
     showScreen(2);
@@ -2624,6 +2709,9 @@
     if (!currentShift) return;
     setShiftMode('callout');
     syncSlotLocationFilterChips();
+    if (shiftCalloutSearchInput && shiftCalloutSearchInput.value !== shiftCalloutSearchQuery) {
+      shiftCalloutSearchInput.value = shiftCalloutSearchQuery;
+    }
 
     var workersAll = ELIGIBLE_BY_ROLE[currentShift.role] || [];
     var workers = workersAll.filter(function (w) {
@@ -2633,6 +2721,12 @@
       if (!emp) return true;
       return employeeMatchesSlotStaffFilter(emp);
     });
+    var q = String(shiftCalloutSearchQuery || '').trim().toLowerCase();
+    if (q) {
+      workers = workers.filter(function (w) {
+        return String(w.name || '').toLowerCase().indexOf(q) !== -1;
+      });
+    }
     const primaryWorker =
       (currentShift.workers && currentShift.workers.length ? currentShift.workers[0] : currentShift.worker) || '—';
     eligibleShiftContext.textContent =
@@ -2668,6 +2762,10 @@
         '</div></li>'
       );
     }).join('');
+    if (!workers.length) {
+      eligibleWorkerList.innerHTML =
+        '<li class="history-item"><p class="history-item-meta">No eligible workers match this search.</p></li>';
+    }
 
     eligibleWorkerList.querySelectorAll('input[type="checkbox"]').forEach(function (input) {
       input.addEventListener('change', updateCoverageButtonLabels);
@@ -2688,6 +2786,20 @@
     calloutTabBtn.addEventListener('click', function () {
       if (!currentShift) return;
       openEligible();
+    });
+  }
+
+  if (shiftEditSearchInput) {
+    shiftEditSearchInput.addEventListener('input', function () {
+      shiftEditSearchQuery = this.value || '';
+      if (currentShift && currentScreen === 2 && shiftMode === 'edit') openShiftEdit();
+    });
+  }
+
+  if (shiftCalloutSearchInput) {
+    shiftCalloutSearchInput.addEventListener('input', function () {
+      shiftCalloutSearchQuery = this.value || '';
+      if (currentShift && currentScreen === 2 && shiftMode === 'callout') openEligible();
     });
   }
 
@@ -3096,8 +3208,14 @@
   if (applyScheduleTemplateBtn) {
     applyScheduleTemplateBtn.addEventListener('click', function () {
       var selTpl = document.getElementById('scheduleTemplateSelect');
-      if (selTpl && selTpl.value) {
-        applyScheduleTemplateById(selTpl.value);
+      var chosen = selTpl && selTpl.value ? selTpl.value : '';
+      if (!chosen) {
+        var list = loadScheduleTemplates();
+        if (list.length) chosen = list[0].id;
+      }
+      if (chosen) {
+        var ok = applyScheduleTemplateById(chosen);
+        if (!ok) return;
         closeScheduleTemplateModal();
       }
     });

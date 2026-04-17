@@ -79,6 +79,17 @@
 
         <div class="mode-panel" id="editPanel">
           <p class="panel-subtitle">Select who will be assigned to this shift</p>
+          <label class="employee-search-wrap shift-worker-search-wrap">
+            <span class="visually-hidden">Search employees in edit staffing</span>
+            <input
+              type="search"
+              id="shiftEditSearch"
+              class="employee-search-input"
+              placeholder="Search names"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </label>
           <div class="worker-list-scroll">
             <ul class="worker-list" id="editWorkerList"></ul>
           </div>
@@ -89,6 +100,17 @@
 
         <div class="mode-panel hidden" id="calloutPanel">
           <p class="panel-subtitle">Notify eligible workers to cover this shift</p>
+          <label class="employee-search-wrap shift-worker-search-wrap">
+            <span class="visually-hidden">Search employees in callout coverage</span>
+            <input
+              type="search"
+              id="shiftCalloutSearch"
+              class="employee-search-input"
+              placeholder="Search names"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </label>
           <div class="worker-list-scroll">
             <ul class="worker-list" id="eligibleWorkerList"></ul>
           </div>
