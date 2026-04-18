@@ -5,13 +5,65 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Callout Coverage — GM App</title>
   <link rel="stylesheet" href="styles.css" />
+  <script>
+    (function () {
+      try {
+        var s = sessionStorage.getItem('gm-callout-session');
+        if (s === 'manager' || s === '1') {
+          document.documentElement.classList.add('authed', 'manager-app');
+        } else if (s === 'employee') {
+          document.documentElement.classList.add('authed', 'employee-app');
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    })();
+  </script>
 </head>
 <body>
+  <div id="login-screen" class="login-screen" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <div class="login-card">
+      <h1 class="login-title" id="loginTitle">Callout Coverage</h1>
+      <p class="login-subtitle">Sign in to continue</p>
+      <form id="loginForm" class="login-form" autocomplete="on" novalidate>
+        <label class="login-field">
+          <span class="login-label">Email or name</span>
+          <input
+            type="text"
+            id="loginEmail"
+            name="username"
+            class="login-input"
+            required
+            autocomplete="username"
+            enterkeyhint="next"
+          />
+        </label>
+        <label class="login-field">
+          <span class="login-label">Password</span>
+          <input
+            type="password"
+            id="loginPassword"
+            name="password"
+            class="login-input"
+            required
+            autocomplete="current-password"
+            enterkeyhint="go"
+          />
+        </label>
+        <p class="login-error" id="loginError" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+
   <div class="app">
     <div class="app-top">
       <header class="header">
         <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
         <h1 class="title" id="screenTitle">Schedule Overview</h1>
+        <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign out">
+          Sign out
+        </button>
       </header>
       <nav class="top-nav" aria-label="Main navigation">
         <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
@@ -302,6 +354,101 @@
     </main>
   </div>
 
+  <div class="app-employee" id="appEmployee">
+    <div class="app-top">
+      <header class="header">
+        <h1 class="title" id="empScreenTitle">Home</h1>
+        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign out">Sign out</button>
+      </header>
+      <nav class="top-nav" aria-label="Employee navigation">
+        <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
+        <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
+        <button type="button" class="nav-item" data-emp-nav="requests">Requests</button>
+      </nav>
+    </div>
+    <main class="main emp-main">
+      <section class="emp-screen active" data-emp-screen="home" id="empScreenHome">
+        <div class="emp-card" id="empWelcomeCard"></div>
+        <div class="emp-section">
+          <h2 class="emp-section-title">Today’s shifts</h2>
+          <ul class="emp-shift-list" id="empShiftsToday"></ul>
+        </div>
+        <div class="emp-section">
+          <h2 class="emp-section-title">Upcoming shifts</h2>
+          <ul class="emp-shift-list" id="empShiftsUpcoming"></ul>
+        </div>
+      </section>
+      <section class="emp-screen" data-emp-screen="messages" id="empScreenMessages" hidden>
+        <div class="emp-manager-banner" id="empManagerBanner"></div>
+        <div class="emp-messages-layout" id="empMessagesLayout">
+          <ul class="emp-thread-list" id="empThreadList"></ul>
+          <div class="emp-chat-panel" id="empChatPanel" hidden>
+            <div class="emp-chat-top">
+              <button type="button" class="btn btn-secondary emp-back-threads" id="empBackThreads">Threads</button>
+              <span class="emp-chat-title" id="empChatTitle"></span>
+            </div>
+            <div class="emp-chat-log" id="empChatLog"></div>
+            <form class="emp-chat-form" id="empChatForm">
+              <input
+                type="text"
+                class="emp-chat-input"
+                id="empChatInput"
+                placeholder="Write a message…"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn btn-primary emp-chat-send">Send</button>
+            </form>
+          </div>
+        </div>
+      </section>
+      <section class="emp-screen" data-emp-screen="requests" id="empScreenRequests" hidden>
+        <p class="emp-hint">
+          Submissions appear on the manager side under <strong>Requests</strong> (and call-outs also under
+          <strong>Callouts</strong>).
+        </p>
+        <div class="emp-request-type-chips" role="tablist" aria-label="Request type">
+          <button type="button" class="filter-chip active" data-req-form="availability">Availability</button>
+          <button type="button" class="filter-chip" data-req-form="swap">Shift swap</button>
+          <button type="button" class="filter-chip" data-req-form="timeoff">Time off</button>
+          <button type="button" class="filter-chip" data-req-form="callout_request">Call-out</button>
+        </div>
+        <form class="emp-request-form" id="empFormAvailability">
+          <label class="form-field form-field-block">
+            <span class="form-label">What changed?</span>
+            <textarea id="empAvailDetails" rows="4" required placeholder="Describe your updated availability…"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Submit availability</button>
+        </form>
+        <form class="emp-request-form" id="empFormSwap" hidden>
+          <label class="form-field form-field-block">
+            <span class="form-label">Swap details</span>
+            <textarea id="empSwapDetails" rows="4" required placeholder="Which shift, what you’d like instead…"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Submit swap request</button>
+        </form>
+        <form class="emp-request-form" id="empFormTimeoff" hidden>
+          <label class="form-field form-field-block">
+            <span class="form-label">Dates &amp; reason</span>
+            <textarea id="empTimeoffDetails" rows="4" required></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Submit time off</button>
+        </form>
+        <form class="emp-request-form" id="empFormCallout" hidden>
+          <label class="form-field form-field-block">
+            <span class="form-label">Shift you can’t cover</span>
+            <select id="empCalloutShift" required></select>
+          </label>
+          <label class="form-field form-field-block">
+            <span class="form-label">Notes for your manager</span>
+            <textarea id="empCalloutReason" rows="3" required placeholder="Why you need coverage…"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Submit call-out</button>
+        </form>
+        <p class="emp-form-feedback" id="empRequestFeedback" role="status" hidden></p>
+      </section>
+    </main>
+  </div>
+
   <div
     class="availability-modal"
     id="availabilityRequestModal"
@@ -423,5 +570,83 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="employee-app.js"></script>
+  <script>
+    (function () {
+      var ALLOWED_EMAIL = 'martinlong830@gmail.com';
+      var ALLOWED_PASSWORD = 'redpoke';
+      var SESSION_KEY = 'gm-callout-session';
+
+      var loginForm = document.getElementById('loginForm');
+      var loginEmail = document.getElementById('loginEmail');
+      var loginPassword = document.getElementById('loginPassword');
+      var loginError = document.getElementById('loginError');
+
+      function norm(s) {
+        return String(s || '')
+          .trim()
+          .toLowerCase();
+      }
+
+      function showLoginError(msg) {
+        if (!loginError) return;
+        loginError.textContent = msg || '';
+        loginError.hidden = !msg;
+      }
+
+      function clearLoginError() {
+        showLoginError('');
+      }
+
+      function setSession(role) {
+        try {
+          sessionStorage.setItem(SESSION_KEY, role);
+        } catch (err) {
+          /* ignore */
+        }
+      }
+
+      function applyAuthedShell(role) {
+        var root = document.documentElement;
+        root.classList.add('authed');
+        root.classList.remove('manager-app', 'employee-app');
+        if (role === 'employee') root.classList.add('employee-app');
+        else root.classList.add('manager-app');
+      }
+
+      if (loginForm && loginEmail && loginPassword) {
+        loginForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearLoginError();
+          var id = norm(loginEmail.value);
+          var password = loginPassword.value || '';
+          if (id === ALLOWED_EMAIL && password === ALLOWED_PASSWORD) {
+            setSession('manager');
+            applyAuthedShell('manager');
+          } else if (id === 'jordan ma' && password === ALLOWED_PASSWORD) {
+            setSession('employee');
+            applyAuthedShell('employee');
+            if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+              window.gmCalloutEmployeeBootstrap();
+            }
+          } else {
+            showLoginError('Email, name, or password is incorrect.');
+          }
+        });
+      }
+
+      document.querySelectorAll('[data-session-signout]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          try {
+            sessionStorage.removeItem(SESSION_KEY);
+          } catch (err) {
+            /* ignore */
+          }
+          document.documentElement.classList.remove('authed', 'manager-app', 'employee-app');
+          location.reload();
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
