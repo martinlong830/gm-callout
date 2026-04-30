@@ -265,6 +265,44 @@ html.authed .header-signout-btn {
   color: var(--text-muted);
 }
 
+.emp-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.emp-section-head .emp-section-title {
+  margin: 0;
+}
+
+.emp-week-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.emp-week-nav-btn.btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+}
+
+.emp-week-nav-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 7.5rem;
+  text-align: center;
+}
+
+.emp-screen .emp-section + .emp-section {
+  margin-top: 14px;
+}
+
 .emp-shift-list {
   list-style: none;
   margin: 0;
@@ -295,6 +333,20 @@ html.authed .header-signout-btn {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--text);
+  text-align: right;
+}
+
+.emp-week-header {
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--hover-fill);
+  border-bottom: 1px solid var(--border);
 }
 
 .emp-shift-meta {
@@ -327,6 +379,30 @@ html.authed .header-signout-btn {
   margin-top: 4px;
   font-size: 0.8125rem;
   color: var(--text-muted);
+}
+
+.emp-avail-week-chips {
+  margin: 0 0 10px;
+}
+
+.emp-avail-grid-wrap {
+  margin-bottom: 12px;
+}
+
+.emp-avail-check-all {
+  margin-bottom: 10px;
+}
+
+.emp-timeoff-week-chips {
+  margin: 0 0 10px;
+}
+
+.emp-timeoff-grid-wrap {
+  margin-bottom: 12px;
+}
+
+.emp-timeoff-check-all {
+  margin-bottom: 10px;
 }
 
 .emp-messages-layout {
@@ -497,11 +573,179 @@ html.authed .header-signout-btn {
   margin-bottom: var(--space-block);
 }
 
+.emp-request-form[hidden] {
+  display: none !important;
+}
+
 .emp-form-feedback {
   margin-top: 14px;
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--primary);
+}
+
+/* Employee Actions — Shift Swap */
+.emp-form-swap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.emp-swap-intro {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  background: var(--hover-fill);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.emp-swap-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+.emp-swap-panel--offer {
+  border-left: 3px solid var(--primary);
+}
+
+.emp-swap-panel--accept {
+  border-left: 3px solid rgba(15, 23, 42, 0.22);
+}
+
+.emp-swap-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.03) 0%, transparent 100%);
+  border-bottom: 1px solid var(--border);
+}
+
+.emp-swap-panel-badge {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--primary);
+}
+
+.emp-swap-panel-badge--muted {
+  background: var(--text-muted);
+  opacity: 0.85;
+}
+
+.emp-swap-panel-head-text {
+  min-width: 0;
+}
+
+.emp-swap-panel-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.emp-swap-panel-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.emp-swap-panel-body {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.emp-swap-field .form-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.emp-swap-optional {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0.85;
+}
+
+.emp-swap-select,
+.emp-swap-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+.emp-swap-select {
+  min-height: 44px;
+  padding: 10px 12px;
+  color: var(--text);
+}
+
+.emp-swap-textarea {
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.45;
+}
+
+.emp-swap-textarea:focus,
+.emp-swap-select:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 0;
+  border-color: var(--primary);
+}
+
+.emp-swap-submit-offer {
+  margin-top: 4px;
+}
+
+.emp-swap-submit-accept {
+  margin-top: 4px;
+}
+
+.emp-swap-connector {
+  position: relative;
+  height: 20px;
+  margin: 0 auto;
+  width: 2px;
+  background: var(--border);
+}
+
+.emp-swap-connector::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid var(--border);
 }
 
 .callout-section-label {
@@ -730,6 +974,123 @@ html.authed .header-signout-btn {
 
 .schedule-sheet-modal {
   z-index: 65;
+}
+
+.draft-schedule-modal {
+  z-index: 66;
+}
+
+.draft-schedule-panel.availability-modal-panel {
+  max-width: min(96vw, 56rem);
+}
+
+.draft-role-chips {
+  margin-bottom: var(--space-tight);
+  flex-wrap: wrap;
+}
+
+.draft-schedule-table-wrap {
+  width: 100%;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: min(58vh, 520px);
+  margin-top: var(--space-tight);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.draft-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.draft-schedule-table th,
+.draft-schedule-table td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.draft-schedule-table thead th {
+  background: var(--hover-fill, rgba(15, 23, 42, 0.04));
+  font-weight: 600;
+  text-align: center;
+}
+
+.draft-slot-label {
+  white-space: nowrap;
+  text-align: left;
+}
+
+.draft-cell-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 8.5rem;
+}
+
+.draft-dayoff-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.draft-cell-times {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.draft-cell-times input[type="time"] {
+  min-width: 5.5rem;
+  padding: 4px 6px;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.draft-time-sep {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.draft-cell-hours {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 2.5rem;
+}
+
+.draft-schedule-empty {
+  margin: 0;
+  padding: var(--space-block);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.draft-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-tight);
+  margin-top: var(--space-block);
+  align-items: center;
+}
+
+.draft-schedule-actions .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.draft-schedule-actions .btn-primary {
+  flex: 1 1 140px;
 }
 
 .schedule-sheet-panel .availability-modal-meta {
@@ -1018,6 +1379,82 @@ html.authed .header-signout-btn {
   flex-direction: column;
 }
 
+.calendar-th-full {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.calendar-th-date-sub {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.calendar-matrix--redpoke .calendar-section-foh td,
+.calendar-matrix--redpoke .calendar-section-delivery td,
+.calendar-matrix--redpoke .calendar-section-boh td {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.calendar-slot-rp {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.calendar-slot-rp-time {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.calendar-slot-rp-break {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.calendar-slot-rp-hours {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.emp-shift-rp {
+  margin-top: 8px;
+  padding: 8px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.emp-shift-rp-time {
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.emp-shift-rp-break {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.emp-shift-rp-hours {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 /* Calendar matrix (table) */
 .calendar-matrix {
   /* Let day columns honor min-widths; scroll horizontally inside #calendarGrid instead of squishing. */
@@ -1086,7 +1523,7 @@ html.authed .header-signout-btn {
   gap: 8px;
   cursor: pointer;
   text-align: left;
-  min-height: 120px;
+  min-height: 168px;
   box-sizing: border-box;
 }
 
@@ -1146,7 +1583,42 @@ html.authed .header-signout-btn {
   min-height: 48px;
   align-items: center;
   justify-content: center;
-  font-size: 0.9rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.calendar-slot-wrap.calendar-slot-empty--timed {
+  min-height: 120px;
+  padding: 10px 10px;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+}
+
+.calendar-slot-rp--dayoff {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+  opacity: 0.92;
+}
+
+.calendar-slot-empty--timed .calendar-slot-rp--dayoff .calendar-slot-rp-time {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.calendar-slot-empty-label {
+  margin-top: auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: center;
+  color: var(--text-muted);
 }
 
 .calendar-slot-wrap.calendar-slot-empty:hover,
@@ -1159,6 +1631,68 @@ html.authed .header-signout-btn {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* Schedule (screen 1): wider calendar + more vertical space on desktop browsers */
+@media (min-width: 1024px) {
+  html.authed.manager-app .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+
+  html.authed.manager-app .main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #screen-schedule.active {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  #screen-schedule .calendar-table-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    width: calc(100% + 2 * var(--space-main));
+    margin-left: calc(-1 * var(--space-main));
+    margin-right: calc(-1 * var(--space-main));
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    padding: 12px var(--space-main) 16px;
+    box-sizing: border-box;
+  }
+
+  #screen-schedule #calendarGrid {
+    flex: 1;
+    min-height: min(72vh, calc(100dvh - 220px));
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .calendar-matrix thead th:not(.time-col),
+  .calendar-matrix tbody tr:not(.calendar-group-row) td {
+    min-width: 156px;
+  }
+
+  .calendar-slot-wrap:not(.calendar-slot-empty) {
+    min-height: 140px;
+  }
+
+  .availability-modal-panel {
+    max-width: min(92vw, 44rem);
+  }
+
+  .availability-matrix-dayhead {
+    min-width: 4.25rem;
+  }
 }
 
 .calendar-worker-name {
@@ -1249,6 +1783,31 @@ html.authed .header-signout-btn {
 
 .schedule-table tbody tr:last-child td { border-bottom: 0; }
 .schedule-table tbody tr:hover { background: var(--hover-fill); }
+
+.schedule-table-shiftcell {
+  min-width: 148px;
+  vertical-align: top;
+}
+
+.schedule-rp-time {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.schedule-rp-break {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.schedule-rp-hours {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+}
 
 .role-pill {
   display: inline-block;
@@ -1986,65 +2545,126 @@ html.authed .header-signout-btn {
 
 .availability-grid-wrap {
   width: 100%;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+/* Mon–Sun columns; rows = schedule lines; times shown in each cell. */
+.availability-matrix-scroll {
+  width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
-.availability-grid {
+.availability-matrix {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.78rem;
-  min-width: 320px;
+  font-size: 0.72rem;
+  min-width: max-content;
 }
 
-.availability-grid th,
-.availability-grid td {
-  border: 1px solid var(--border);
-  padding: 6px 8px;
+.availability-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--hover-fill);
+  color: var(--text-muted);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+  vertical-align: bottom;
+  padding: 6px 4px 8px;
   text-align: center;
 }
 
-.availability-grid thead th {
-  background: var(--surface);
-  color: var(--text-muted);
+/* Day columns — align with main schedule (weekday label). */
+.availability-matrix-dayhead {
+  min-width: 2.75rem;
+}
+
+.availability-matrix-dayhead-dow {
+  display: block;
+  font-size: 0.78rem;
   font-weight: 700;
-  font-size: 0.68rem;
-  line-height: 1.25;
+  letter-spacing: 0.04em;
+  color: var(--text);
 }
 
-.availability-grid-corner {
-  width: 2.25rem;
-}
-
-.availability-grid tbody th[scope] {
-  width: 2.25rem;
-  background: var(--surface);
-  font-weight: 700;
+.availability-matrix-cell--off {
+  background: #f8fafc;
   color: var(--text-muted);
-  font-size: 0.72rem;
+  text-align: center;
+  vertical-align: middle;
+  font-size: 0.85rem;
+  user-select: none;
 }
 
-.availability-grid-cell {
-  padding: 4px !important;
+.availability-matrix tbody tr:nth-child(even) td.availability-matrix-cell--off {
+  background: #f1f5f9;
 }
 
-.availability-grid-cb {
-  width: 1.15rem;
-  height: 1.15rem;
+.availability-matrix-off {
+  opacity: 0.55;
+}
+
+.availability-matrix tbody tr:nth-child(even) td.availability-matrix-cell {
+  background: var(--hover-fill);
+}
+
+.availability-matrix td.availability-matrix-cell {
+  border: 1px solid var(--border);
+  padding: 4px;
+  text-align: center;
+  vertical-align: top;
+}
+
+.availability-matrix-cell-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.availability-matrix-cell-time {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  max-width: 100%;
+  word-break: break-word;
+}
+
+.availability-matrix-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.5rem;
+  margin: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.availability-matrix-scroll--readonly .availability-matrix-label {
+  cursor: default;
+}
+
+.availability-matrix .availability-grid-cb {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
   cursor: pointer;
   accent-color: var(--primary);
-  vertical-align: middle;
 }
 
-.availability-grid--readonly .availability-grid-cb {
+.availability-matrix-scroll--readonly .availability-grid-cb {
   cursor: default;
   pointer-events: none;
   opacity: 0.9;
-}
-
-.availability-grid-cell--readonly {
-  background: var(--hover-fill);
 }
 
 /* Phones / small screens: fit width, reduce padding, keep calendar usable via horizontal scroll */
@@ -2119,7 +2739,7 @@ html.authed .header-signout-btn {
     line-height: 1.25;
   }
 
-  .calendar-matrix thead th:not(.time-col) .calendar-th-dow {
+  .calendar-matrix thead th:not(.time-col) .calendar-th-full {
     display: block;
     white-space: nowrap;
     overflow: hidden;
@@ -2127,7 +2747,7 @@ html.authed .header-signout-btn {
     max-width: 100%;
   }
 
-  .calendar-matrix thead th:not(.time-col) .time-role-sub {
+  .calendar-matrix thead th:not(.time-col) .calendar-th-date-sub {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

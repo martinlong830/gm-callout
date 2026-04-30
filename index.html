@@ -68,7 +68,7 @@
       <nav class="top-nav" aria-label="Main navigation">
         <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
         <button type="button" class="nav-item" data-goto="5">Employees</button>
-        <button type="button" class="nav-item" data-goto="8">Requests</button>
+        <button type="button" class="nav-item" data-goto="8">Actions</button>
       </nav>
     </div>
 
@@ -94,6 +94,9 @@
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal">
                 Templates
               </button>
+              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openDraftScheduleModal">
+                Shift times
+              </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal">
                 Manage Locations
               </button>
@@ -101,9 +104,9 @@
           </div>
           <div class="restaurant-switcher" id="restaurantSwitcher" role="group" aria-label="Restaurant location"></div>
           <div class="calendar-legend" aria-label="Role colors">
-            <span class="legend-item"><span class="role-pill-mini role-kitchen">Kitchen</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-server">Server</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-kitchen">Back of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
           </div>
           <div class="schedule-notice hidden" id="scheduleNotice">
             <p class="schedule-notice-text" id="scheduleNoticeText">0 texts sent</p>
@@ -130,7 +133,7 @@
         </nav>
 
         <div class="mode-panel" id="editPanel">
-          <p class="panel-subtitle">Select who will be assigned to this shift</p>
+          <p class="panel-subtitle">Select one or more people for this shift (auto-filled schedules start with one per slot)</p>
           <label class="employee-search-wrap shift-worker-search-wrap">
             <span class="visually-hidden">Search employees in edit staffing</span>
             <input
@@ -216,9 +219,9 @@
             <span class="employee-filter-label" id="employeeRoleFiltersLabel">Role</span>
             <div class="employee-filter-chips" id="employeeRoleFilters" role="group" aria-labelledby="employeeRoleFiltersLabel">
               <button type="button" class="filter-chip active" data-role-filter="all">All</button>
-              <button type="button" class="filter-chip" data-role-filter="Kitchen">Kitchen</button>
-              <button type="button" class="filter-chip" data-role-filter="Bartender">Front of House</button>
-              <button type="button" class="filter-chip" data-role-filter="Server">Server</button>
+              <button type="button" class="filter-chip" data-role-filter="Bartender">Front of the House</button>
+              <button type="button" class="filter-chip" data-role-filter="Kitchen">Back of the House</button>
+              <button type="button" class="filter-chip" data-role-filter="Server">Delivery/Dishwasher</button>
             </div>
           </div>
           <div class="employees-toolbar">
@@ -228,7 +231,7 @@
         <div id="employeeList" class="employee-list" aria-label="Employee roster"></div>
       </section>
 
-      <!-- Screen 8: Requests -->
+      <!-- Screen 8: Actions -->
       <section class="screen" id="screen-requests" data-screen="8">
         <div class="employees-controls">
           <label class="employee-search-wrap">
@@ -243,7 +246,7 @@
             />
           </label>
           <div class="employee-filter-block">
-            <span class="employee-filter-label" id="requestsTypeFiltersLabel">Request type</span>
+            <span class="employee-filter-label" id="requestsTypeFiltersLabel">Action type</span>
             <div class="employee-filter-chips" id="requestsTypeChips" role="group" aria-labelledby="requestsTypeFiltersLabel">
               <button type="button" class="filter-chip active" data-request-type="availability">
                 Availability Submissions
@@ -262,7 +265,7 @@
             </div>
           </div>
         </div>
-        <ul class="history-list requests-list" id="requestsList" aria-label="Staff requests"></ul>
+        <ul class="history-list requests-list" id="requestsList" aria-label="Staff actions"></ul>
       </section>
 
       <!-- Screen 6: Add / Edit employee -->
@@ -281,9 +284,9 @@
           <label class="form-field form-field-block">
             <span class="form-label">Staff type</span>
             <select name="staffType" id="empStaffType" required>
-              <option value="Kitchen">Kitchen</option>
-              <option value="Bartender">Front of House</option>
-              <option value="Server">Server</option>
+              <option value="Bartender">Front of the House</option>
+              <option value="Kitchen">Back of the House</option>
+              <option value="Server">Delivery/Dishwasher</option>
             </select>
           </label>
           <label class="form-field form-field-block">
@@ -295,8 +298,7 @@
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
           <fieldset class="week-avail-fieldset">
-            <legend class="form-label">Weekly availability</legend>
-            <p class="form-hint">Check every shift you can work. Rows are days (Mon–Sun); columns are shift times.</p>
+            <legend class="form-label">Weekly Availability</legend>
             <div id="employeeWeekAvail" class="availability-grid-wrap"></div>
           </fieldset>
           <div class="screen-actions screen-actions-split">
@@ -316,7 +318,7 @@
           <ul class="template-vars-list">
             <li><code>{{firstName}}</code> — worker’s first name</li>
             <li><code>{{workerName}}</code> — full name</li>
-            <li><code>{{roleLabel}}</code> — e.g. Kitchen Staff, Front of House, Server</li>
+            <li><code>{{roleLabel}}</code> — e.g. Back of the House, Front of the House, Delivery/Dishwasher</li>
             <li><code>{{roleCode}}</code> — Kitchen, Bartender, or Server</li>
             <li><code>{{shiftTime}}</code> — e.g. 11:00 AM–3:00 PM</li>
             <li><code>{{shiftDay}}</code> — calendar day (e.g. Mon Mar 24)</li>
@@ -363,7 +365,7 @@
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
         <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
-        <button type="button" class="nav-item" data-emp-nav="requests">Requests</button>
+        <button type="button" class="nav-item" data-emp-nav="requests">Actions</button>
       </nav>
     </div>
     <main class="main emp-main">
@@ -374,7 +376,14 @@
           <ul class="emp-shift-list" id="empShiftsToday"></ul>
         </div>
         <div class="emp-section">
-          <h2 class="emp-section-title">Upcoming shifts</h2>
+          <div class="emp-section-head">
+            <h2 class="emp-section-title">Upcoming shifts</h2>
+            <div class="emp-week-nav" aria-label="Upcoming week navigation">
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingPrevWeek">Prev week</button>
+              <span class="emp-week-nav-label" id="empUpcomingWeekLabel">Week of —</span>
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingNextWeek">Next week</button>
+            </div>
+          </div>
           <ul class="emp-shift-list" id="empShiftsUpcoming"></ul>
         </div>
       </section>
@@ -402,36 +411,84 @@
         </div>
       </section>
       <section class="emp-screen" data-emp-screen="requests" id="empScreenRequests" hidden>
-        <p class="emp-hint">
-          Submissions appear on the manager side under <strong>Requests</strong> (and call-outs also under
-          <strong>Callouts</strong>).
-        </p>
-        <div class="emp-request-type-chips" role="tablist" aria-label="Request type">
+        <div class="emp-request-type-chips" role="tablist" aria-label="Action type">
           <button type="button" class="filter-chip active" data-req-form="availability">Availability</button>
-          <button type="button" class="filter-chip" data-req-form="swap">Shift swap</button>
-          <button type="button" class="filter-chip" data-req-form="timeoff">Time off</button>
-          <button type="button" class="filter-chip" data-req-form="callout_request">Call-out</button>
+          <button type="button" class="filter-chip" data-req-form="timeoff">Time Off</button>
+          <button type="button" class="filter-chip" data-req-form="swap">Shift Swap</button>
+          <button type="button" class="filter-chip" data-req-form="callout_request">Callout</button>
         </div>
         <form class="emp-request-form" id="empFormAvailability">
-          <label class="form-field form-field-block">
-            <span class="form-label">What changed?</span>
-            <textarea id="empAvailDetails" rows="4" required placeholder="Describe your updated availability…"></textarea>
-          </label>
+          <p class="emp-hint">Set availability by role-based time slots and choose which week it applies to.</p>
+          <div class="employee-filter-chips emp-avail-week-chips" id="empAvailWeekChips" role="tablist" aria-label="Availability week"></div>
+          <div class="availability-grid-wrap emp-avail-grid-wrap" id="empAvailGrid"></div>
+          <button type="button" class="btn btn-secondary btn-block emp-avail-check-all" id="empAvailCheckAllBtn">Check all</button>
           <button type="submit" class="btn btn-primary btn-block">Submit availability</button>
         </form>
-        <form class="emp-request-form" id="empFormSwap" hidden>
-          <label class="form-field form-field-block">
-            <span class="form-label">Swap details</span>
-            <textarea id="empSwapDetails" rows="4" required placeholder="Which shift, what you’d like instead…"></textarea>
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Submit swap request</button>
+        <form class="emp-request-form emp-form-swap" id="empFormSwap" hidden>
+          <p class="emp-swap-intro">
+            Post a shift you want to trade, or pick up someone else’s open offer. Your manager approves every swap.
+          </p>
+          <section class="emp-swap-panel emp-swap-panel--offer" aria-labelledby="empSwapOfferTitle">
+            <div class="emp-swap-panel-head">
+              <span class="emp-swap-panel-badge" aria-hidden="true">1</span>
+              <div class="emp-swap-panel-head-text">
+                <h3 class="emp-swap-panel-title" id="empSwapOfferTitle">Offer a shift</h3>
+                <p class="emp-swap-panel-desc">Choose an upcoming shift from your schedule to make available for others.</p>
+              </div>
+            </div>
+            <div class="emp-swap-panel-body">
+              <label class="form-field form-field-block emp-swap-field">
+                <span class="form-label">Your shift</span>
+                <select id="empSwapShiftOffer" class="emp-swap-select" required></select>
+              </label>
+              <label class="form-field form-field-block emp-swap-field">
+                <span class="form-label">Notes <span class="emp-swap-optional">(optional)</span></span>
+                <textarea id="empSwapDetails" class="emp-swap-textarea" rows="3" placeholder="Preferences, timing, or who you’d like to swap with…"></textarea>
+              </label>
+              <button type="submit" class="btn btn-primary btn-block emp-swap-submit-offer">Post offer</button>
+            </div>
+          </section>
+          <div class="emp-swap-connector" aria-hidden="true"></div>
+          <section class="emp-swap-panel emp-swap-panel--accept" aria-labelledby="empSwapAcceptTitle">
+            <div class="emp-swap-panel-head">
+              <span class="emp-swap-panel-badge emp-swap-panel-badge--muted" aria-hidden="true">2</span>
+              <div class="emp-swap-panel-head-text">
+                <h3 class="emp-swap-panel-title" id="empSwapAcceptTitle">Available shifts</h3>
+                <p class="emp-swap-panel-desc">Accept an open offer from a teammate. It’s sent to your manager for approval.</p>
+              </div>
+            </div>
+            <div class="emp-swap-panel-body">
+              <label class="form-field form-field-block emp-swap-field">
+                <span class="form-label">Open offers</span>
+                <select id="empSwapAvailableShift" class="emp-swap-select"></select>
+              </label>
+              <label class="form-field form-field-block emp-swap-field">
+                <span class="form-label">Message <span class="emp-swap-optional">(optional)</span></span>
+                <textarea id="empSwapAcceptNote" class="emp-swap-textarea" rows="2" placeholder="Anything your manager should know…"></textarea>
+              </label>
+              <button type="button" class="btn btn-secondary btn-block emp-swap-submit-accept" id="empSwapAcceptBtn">
+                Request to accept
+              </button>
+            </div>
+          </section>
         </form>
         <form class="emp-request-form" id="empFormTimeoff" hidden>
+          <p class="emp-hint">Select the day range you need off. This submits as full-day time off.</p>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">Start date</span>
+              <input type="date" id="empTimeoffStartDate" required />
+            </label>
+            <label class="form-field">
+              <span class="form-label">End date</span>
+              <input type="date" id="empTimeoffEndDate" required />
+            </label>
+          </div>
           <label class="form-field form-field-block">
-            <span class="form-label">Dates &amp; reason</span>
-            <textarea id="empTimeoffDetails" rows="4" required></textarea>
+            <span class="form-label">Notes (optional)</span>
+            <textarea id="empTimeoffNote" rows="3" placeholder="Reason, partial-day details, or context..."></textarea>
           </label>
-          <button type="submit" class="btn btn-primary btn-block">Submit time off</button>
+          <button type="submit" class="btn btn-primary btn-block">Submit Time Off</button>
         </form>
         <form class="emp-request-form" id="empFormCallout" hidden>
           <label class="form-field form-field-block">
@@ -442,7 +499,7 @@
             <span class="form-label">Notes for your manager</span>
             <textarea id="empCalloutReason" rows="3" required placeholder="Why you need coverage…"></textarea>
           </label>
-          <button type="submit" class="btn btn-primary btn-block">Submit call-out</button>
+          <button type="submit" class="btn btn-primary btn-block">Submit Callout</button>
         </form>
         <p class="emp-form-feedback" id="empRequestFeedback" role="status" hidden></p>
       </section>
@@ -511,6 +568,41 @@
           />
         </label>
         <button type="button" class="btn btn-secondary btn-block" id="saveScheduleTemplateBtn">Save template</button>
+      </div>
+    </div>
+  </div>
+
+  <div
+    class="availability-modal schedule-sheet-modal draft-schedule-modal"
+    id="draftScheduleModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="draftScheduleModalTitle"
+    hidden
+  >
+    <div class="availability-modal-backdrop" id="draftScheduleModalBackdrop"></div>
+    <div class="availability-modal-panel schedule-sheet-panel draft-schedule-panel">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="draftScheduleModalTitle">Shift times</h2>
+        <button type="button" class="availability-modal-close" id="draftScheduleModalClose" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="availability-modal-meta">
+        Edit start/end for each day and slot line. Hours update from the range. Add a row for an extra slot. Reset restores the built-in Red Poke pattern for all roles.
+      </p>
+      <div
+        class="employee-filter-chips draft-role-chips"
+        id="draftScheduleRoleChips"
+        role="tablist"
+        aria-label="Staff type"
+      ></div>
+      <div class="draft-schedule-table-wrap" id="draftScheduleTableMount"></div>
+      <div class="draft-schedule-actions">
+        <button type="button" class="btn btn-secondary" id="addDraftSlotLineBtn">Add slot line</button>
+        <button type="button" class="btn btn-secondary" id="resetDraftScheduleBtn">Reset to defaults</button>
+        <button type="button" class="btn btn-primary" id="saveDraftScheduleBtn">Save</button>
       </div>
     </div>
   </div>

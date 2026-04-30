@@ -12,21 +12,293 @@
     }
   }
 
-  const TIME_RANGES = [
-    { start: '11:00', end: '15:00', label: '11:00 AM–3:00 PM' },
-    { start: '15:00', end: '19:00', label: '3:00 PM–7:00 PM' },
-    { start: '19:00', end: '23:00', label: '7:00 PM–11:00 PM' },
-  ];
+  /** Matches Red Poke draft PDF: `10:00am-07:30pm` (no spaces, lowercase am/pm). */
+  function redPokeShiftTimeLabel(start, end) {
+    function parts(t) {
+      var p = String(t || '').split(':');
+      return { h: parseInt(p[0], 10) || 0, m: parseInt(p[1], 10) || 0 };
+    }
+    function fmt(h, m) {
+      var pm = h >= 12;
+      var h12 = h % 12;
+      if (h12 === 0) h12 = 12;
+      var hh = String(h12).padStart(2, '0');
+      return hh + ':' + String(m).padStart(2, '0') + (pm ? 'pm' : 'am');
+    }
+    var s = parts(start);
+    var e = parts(end);
+    return fmt(s.h, s.m) + '-' + fmt(e.h, e.m);
+  }
+
+  function redPokeShiftHoursDecimal(start, end) {
+    function toMin(t) {
+      var p = String(t || '').split(':');
+      return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
+    }
+    var m = toMin(end) - toMin(start);
+    if (m <= 0) m += 24 * 60;
+    var h = m / 60;
+    if (Number.isInteger(h)) return String(h);
+    return (Math.round(h * 10) / 10).toFixed(1);
+  }
+
+  /** Short label for availability chips, e.g. 10a–7:30p (employee form). */
+  function compactAvailabilityRangeLabel(tr) {
+    function piece(t) {
+      var p = String(t || '').split(':');
+      var h = parseInt(p[0], 10) || 0;
+      var m = parseInt(p[1], 10) || 0;
+      var pm = h >= 12;
+      var h12 = h % 12;
+      if (h12 === 0) h12 = 12;
+      if (m === 0) return String(h12) + (pm ? 'p' : 'a');
+      return String(h12) + ':' + String(m).padStart(2, '0') + (pm ? 'p' : 'a');
+    }
+    return piece(tr.start) + '–' + piece(tr.end);
+  }
+
+  function makeTimeSlot(start, end) {
+    var sk = start + '|' + end;
+    return {
+      start: start,
+      end: end,
+      slotKey: sk,
+      label: redPokeShiftTimeLabel(start, end),
+    };
+  }
+
+  /**
+   * Default draft matrix (Red Poke PDF). Custom edits persist in localStorage — see loadDraftScheduleRows().
+   * Each row = one slot line; cells Mon→Sun; null = DAY-OFF. Times are 24h HH:MM.
+   */
+  const DEFAULT_DRAFT_SCHEDULE_ROWS = {
+    Bartender: [
+      [
+        ['10:00', '19:30'],
+        ['10:00', '19:30'],
+        ['10:00', '19:30'],
+        ['10:00', '19:30'],
+        ['09:00', '18:00'],
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+      ],
+      [
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        ['10:30', '16:00'],
+        ['10:30', '20:30'],
+        ['12:00', '21:30'],
+        ['12:00', '21:30'],
+      ],
+      [
+        ['11:30', '21:30'],
+        ['11:30', '21:30'],
+        ['11:30', '21:30'],
+        ['11:00', '20:30'],
+        ['11:30', '21:30'],
+        null,
+        null,
+      ],
+      [null, null, null, ['12:00', '21:30'], null, null, null],
+    ],
+    Kitchen: [
+      [
+        ['08:00', '17:00'],
+        ['08:00', '17:00'],
+        ['08:00', '17:00'],
+        ['08:00', '17:00'],
+        ['08:00', '15:00'],
+        ['09:00', '19:00'],
+        ['09:00', '20:00'],
+      ],
+      [
+        ['08:00', '13:00'],
+        ['08:00', '13:00'],
+        ['08:00', '13:00'],
+        ['08:00', '13:00'],
+        ['08:00', '13:00'],
+        ['10:00', '22:00'],
+        ['10:00', '22:00'],
+      ],
+      [
+        ['09:00', '16:00'],
+        ['09:00', '16:00'],
+        ['09:00', '16:00'],
+        ['09:00', '16:00'],
+        ['09:00', '16:00'],
+        null,
+        null,
+      ],
+      [
+        ['11:00', '20:00'],
+        ['11:00', '20:00'],
+        ['11:00', '20:00'],
+        ['11:00', '20:00'],
+        ['10:00', '20:00'],
+        null,
+        null,
+      ],
+      [
+        ['16:00', '22:00'],
+        ['16:00', '22:00'],
+        ['16:00', '22:00'],
+        ['12:00', '22:00'],
+        ['16:00', '22:00'],
+        null,
+        null,
+      ],
+    ],
+    Server: [
+      [
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        ['10:00', '18:00'],
+        ['10:00', '22:00'],
+        ['10:00', '16:00'],
+      ],
+      [
+        ['11:30', '22:00'],
+        ['11:30', '22:00'],
+        ['11:30', '22:00'],
+        ['11:30', '22:00'],
+        ['11:30', '22:00'],
+        null,
+        ['15:00', '22:00'],
+      ],
+    ],
+  };
+
+  function cloneDraftSchedule(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  const DRAFT_SCHEDULE_STORAGE_KEY = 'gm-callout-draft-schedule-v1';
+
+  function normalizeHHMM(val) {
+    if (val == null || val === '') return null;
+    var s = String(val).trim();
+    var m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!m) return null;
+    var h = Math.min(23, parseInt(m[1], 10));
+    var mi = Math.min(59, parseInt(m[2], 10));
+    return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+  }
+
+  function normalizeDraftCell(cell) {
+    if (cell === null || cell === undefined) return null;
+    if (!Array.isArray(cell) || cell.length < 2) return null;
+    var a = normalizeHHMM(cell[0]);
+    var b = normalizeHHMM(cell[1]);
+    if (!a || !b) return null;
+    return [a, b];
+  }
+
+  function sanitizeDraftRoleRows(rows, defaultRows) {
+    if (!Array.isArray(rows) || !rows.length) {
+      return cloneDraftSchedule(defaultRows);
+    }
+    var out = [];
+    rows.forEach(function (row) {
+      if (!Array.isArray(row)) return;
+      var cells = [];
+      for (var di = 0; di < 7; di += 1) {
+        cells.push(normalizeDraftCell(row[di]));
+      }
+      out.push(cells);
+    });
+    return out.length ? out : cloneDraftSchedule(defaultRows);
+  }
+
+  function loadDraftScheduleRows() {
+    var base = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+    try {
+      var raw = localStorage.getItem(DRAFT_SCHEDULE_STORAGE_KEY);
+      if (!raw) return base;
+      var p = JSON.parse(raw);
+      if (!p || typeof p !== 'object') return base;
+      ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+        var defR = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
+        if (!Array.isArray(p[role])) return;
+        base[role] = sanitizeDraftRoleRows(p[role], defR);
+      });
+    } catch (eDraft) {
+      /* ignore */
+    }
+    return base;
+  }
+
+  var draftScheduleRows = loadDraftScheduleRows();
+
+  function getDraftRowsForRole(role) {
+    var r = draftScheduleRows[role];
+    if (!r || !r.length) return DEFAULT_DRAFT_SCHEDULE_ROWS[role] || [];
+    return r;
+  }
+
+  function draftTimeSlotFor(role, weekdayKey, trIdx) {
+    var rows = getDraftRowsForRole(role);
+    if (!rows || !rows[trIdx]) return null;
+    var di = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(weekdayKey);
+    if (di < 0) return null;
+    var cell = rows[trIdx][di];
+    if (!cell) return null;
+    return makeTimeSlot(cell[0], cell[1]);
+  }
+
+  function slotCountForRole(role) {
+    return getDraftRowsForRole(role).length;
+  }
+
+  function buildAvailabilitySlotRangesUnion() {
+    var u = {};
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    var dows = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    dows.forEach(function (wk) {
+      roles.forEach(function (role) {
+        var n = slotCountForRole(role);
+        for (var i = 0; i < n; i += 1) {
+          var tr = draftTimeSlotFor(role, wk, i);
+          if (!tr) continue;
+          if (!u[tr.slotKey]) u[tr.slotKey] = tr;
+        }
+      });
+    });
+    var out = Object.keys(u).map(function (k) {
+      return u[k];
+    });
+    out.sort(function (a, b) {
+      if (a.start !== b.start) return a.start.localeCompare(b.start);
+      return a.end.localeCompare(b.end);
+    });
+    return out;
+  }
+
+  var AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+
+  const STAFF_TYPE_LABELS = {
+    Kitchen: 'Back of the House',
+    Bartender: 'Front of the House',
+    Server: 'Delivery/Dishwasher',
+  };
+
+  const STAFF_ROLE_CLASS = {
+    Kitchen: 'role-kitchen',
+    Bartender: 'role-bartender',
+    Server: 'role-server',
+  };
 
   const ROLE_DEFS = [
-    { role: 'Kitchen', roleClass: 'role-kitchen', groupLabel: 'Kitchen Staff' },
-    { role: 'Bartender', roleClass: 'role-bartender', groupLabel: 'Front of House' },
-    { role: 'Server', roleClass: 'role-server', groupLabel: 'Server' },
+    { role: 'Kitchen', roleClass: STAFF_ROLE_CLASS.Kitchen, groupLabel: STAFF_TYPE_LABELS.Kitchen },
+    { role: 'Bartender', roleClass: STAFF_ROLE_CLASS.Bartender, groupLabel: STAFF_TYPE_LABELS.Bartender },
+    { role: 'Server', roleClass: STAFF_ROLE_CLASS.Server, groupLabel: STAFF_TYPE_LABELS.Server },
   ];
 
-  /** v2: bump so demo seed (restaurant split + filters) loads; v1 roster ignored after upgrade. */
-  const STORAGE_KEY = 'gm-callout-employees-v3';
-  const SCHEDULE_ASSIGN_KEY = 'gm-callout-schedule-assignments-v3';
+  /** v9: weekly availability chips scoped by staff type. */
+  const STORAGE_KEY = 'gm-callout-employees-v9';
+  const SCHEDULE_ASSIGN_KEY = 'gm-callout-schedule-assignments-v8';
   const SCHEDULE_ASSIGN_LEGACY_V2 = 'gm-callout-schedule-assignments-v2';
   const RESTAURANT_STORAGE_KEY = 'gm-callout-current-restaurant-v1';
   const RESTAURANTS_LIST_KEY = 'gm-callout-restaurants-v1';
@@ -38,7 +310,7 @@
 
   function defaultRestaurants() {
     return [
-      { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 9th Ave' },
+      { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
       { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 8th Ave' },
     ];
   }
@@ -93,16 +365,86 @@
     "Hi {{firstName}}! We need a {{roleLabel}} replacement for {{shiftDay}}, {{shiftTime}}. If you're available, reply YES. If not, reply NO.";
   const DEFAULT_VOICE_TEMPLATE =
     "Hi {{firstName}}. We need {{roleLabel}} coverage on {{shiftDay}} for {{shiftTime}}. If you're available, say YES. If not, say NO.";
-  const MESSAGING_PREVIEW_SHIFT = {
-    day: 'Mon Mar 24',
-    role: 'Kitchen',
-    groupLabel: 'Kitchen Staff',
-    timeLabel: '11:00 AM–3:00 PM',
-    start: '11:00',
-    end: '15:00',
-  };
-  const STAFF_TYPE_ORDER = ['Kitchen', 'Bartender', 'Server'];
+  const MESSAGING_PREVIEW_SHIFT = (function () {
+    var tr = draftTimeSlotFor('Kitchen', 'Mon', 2);
+    return {
+      day: 'Mon Mar 24',
+      role: 'Kitchen',
+      groupLabel: STAFF_TYPE_LABELS.Kitchen,
+      timeLabel: tr ? tr.label : redPokeShiftTimeLabel('09:00', '16:00'),
+      start: tr ? tr.start : '09:00',
+      end: tr ? tr.end : '16:00',
+    };
+  })();
+  const STAFF_TYPE_ORDER = ['Bartender', 'Kitchen', 'Server'];
   const WEEKDAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  /**
+   * Union of all draft time bands for a staff type (sorted). Prefer slot-index rows + draftTimeSlotFor for UI.
+   */
+  function availabilitySlotRangesForStaffType(staffType) {
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      return AVAILABILITY_SLOT_RANGES;
+    }
+    var rows = getDraftRowsForRole(staffType);
+    if (!rows || !rows.length) return [];
+    var u = {};
+    rows.forEach(function (line) {
+      for (var di = 0; di < line.length; di += 1) {
+        var cell = line[di];
+        if (!cell) continue;
+        var tr = makeTimeSlot(cell[0], cell[1]);
+        u[tr.slotKey] = tr;
+      }
+    });
+    var out = Object.keys(u).map(function (k) {
+      return u[k];
+    });
+    out.sort(function (a, b) {
+      if (a.start !== b.start) return a.start.localeCompare(b.start);
+      return a.end.localeCompare(b.end);
+    });
+    return out;
+  }
+
+  /** Total schedulable cells Mon–Sun (only days/lines with a draft shift, not DAY-OFF). */
+  function countShiftCellsForStaffType(staffType) {
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      return WEEKDAY_KEYS.length * AVAILABILITY_SLOT_RANGES.length;
+    }
+    var n = 0;
+    var c = slotCountForRole(staffType);
+    WEEKDAY_KEYS.forEach(function (wk) {
+      for (var trIdx = 0; trIdx < c; trIdx += 1) {
+        if (draftTimeSlotFor(staffType, wk, trIdx)) n += 1;
+      }
+    });
+    return n;
+  }
+
+  function defaultWeeklyGridAllOpenForStaffType(staffType) {
+    var g = {};
+    WEEKDAY_KEYS.forEach(function (wk) {
+      g[wk] = {};
+    });
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+        WEEKDAY_KEYS.forEach(function (wk) {
+          g[wk][tr.slotKey] = true;
+        });
+      });
+      return g;
+    }
+    var c = slotCountForRole(staffType);
+    WEEKDAY_KEYS.forEach(function (wk) {
+      for (var trIdx = 0; trIdx < c; trIdx += 1) {
+        var tr = draftTimeSlotFor(staffType, wk, trIdx);
+        if (!tr) continue;
+        g[wk][tr.slotKey] = true;
+      }
+    });
+    return g;
+  }
 
   const SCHEDULE_VIEW_WEEK_COUNT = 3;
   let scheduleCalendarWeekIndex = 0;
@@ -115,6 +457,16 @@
     monday.setHours(0, 0, 0, 0);
     return monday;
   }
+
+  const FULL_WEEKDAY_NAMES_UPPER = [
+    'MONDAY',
+    'TUESDAY',
+    'WEDNESDAY',
+    'THURSDAY',
+    'FRIDAY',
+    'SATURDAY',
+    'SUNDAY',
+  ];
 
   /** `numWeeks` Mon–Sun blocks starting at `mondayDate` (local midnight). */
   function buildWeeksFromMonday(numWeeks, mondayDate) {
@@ -134,6 +486,7 @@
         out.push({
           label: label,
           weekdayKey: wk[i],
+          dayNameUpper: FULL_WEEKDAY_NAMES_UPPER[i],
           iso: iso,
           weekIndex: w,
           dayInWeek: i,
@@ -401,6 +754,21 @@
     return h >>> 0;
   }
 
+  /** Break / office line text in the style of the Red Poke draft PDF. */
+  function redPokeBreakAnnotation(trStart, trEnd, role, dayStr) {
+    var seed = hashString(String(trStart) + '|' + String(trEnd) + '|' + role + '|' + String(dayStr));
+    var opts = [
+      '(3:00PM BREAK TIME)',
+      '(3:30PM BREAK TIME)',
+      '(2:00PM OFFICE)',
+      '(NO BREAK TIME)',
+      '(4:00PM BREAK TIME)',
+      '(4:30PM BREAK TIME)',
+      '(3:00PM BREAK TIME)',
+    ];
+    return opts[seed % opts.length];
+  }
+
   function uniqueWorkers(pool, seed, count) {
     if (!pool.length) return [];
     const base = seed % pool.length;
@@ -411,6 +779,13 @@
       if (workers.indexOf(name) === -1) workers.push(name);
     }
     return workers;
+  }
+
+  /** Case-insensitive key for default schedule fill (one auto-assignment per person per day). */
+  function normalizeWorkerKey(name) {
+    return String(name || '')
+      .trim()
+      .toLowerCase();
   }
 
   function splitLegacyName(full) {
@@ -436,21 +811,35 @@
     const g = {};
     WEEKDAY_KEYS.forEach(function (wk) {
       g[wk] = {};
-      TIME_RANGES.forEach(function (tr) {
-        g[wk][tr.start] = true;
+      AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+        g[wk][tr.slotKey] = true;
       });
     });
     return g;
   }
 
-  function seedRandomWeeklyGrid(seedStr) {
+  function seedRandomWeeklyGrid(seedStr, staffType) {
     const g = {};
-    WEEKDAY_KEYS.forEach(function (wk, wi) {
+    WEEKDAY_KEYS.forEach(function (wk) {
       g[wk] = {};
-      TIME_RANGES.forEach(function (tr, ti) {
-        const h = hashString(seedStr + '|' + wk + '|' + tr.start);
-        g[wk][tr.start] = h % 5 !== 0;
+    });
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      WEEKDAY_KEYS.forEach(function (wk) {
+        AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+          const h = hashString(seedStr + '|' + wk + '|' + tr.slotKey);
+          g[wk][tr.slotKey] = h % 5 !== 0;
+        });
       });
+      return g;
+    }
+    var c = slotCountForRole(staffType);
+    WEEKDAY_KEYS.forEach(function (wk) {
+      for (var trIdx = 0; trIdx < c; trIdx += 1) {
+        var tr = draftTimeSlotFor(staffType, wk, trIdx);
+        if (!tr) continue;
+        const h = hashString(seedStr + '|' + wk + '|' + tr.slotKey + '|' + trIdx);
+        g[wk][tr.slotKey] = h % 5 !== 0;
+      }
     });
     return g;
   }
@@ -480,8 +869,8 @@
       const wk = weekdayKeyFromScheduleDay(key);
       if (WEEKDAY_KEYS.indexOf(wk) === -1) return;
       const low = String(wa[key] || '').trim().toLowerCase();
-      TIME_RANGES.forEach(function (tr) {
-        merged[wk][tr.start] = slotOpenForLegacyDayString(low, wk, tr.start);
+      AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+        merged[wk][tr.slotKey] = slotOpenForLegacyDayString(low, wk, tr.start);
       });
     });
     return merged;
@@ -500,7 +889,7 @@
       lastName: sp.lastName,
       staffType: staffType,
       phone: phone || '',
-      weeklyGrid: seedRandomWeeklyGrid(staffType + '|' + fullName),
+      weeklyGrid: seedRandomWeeklyGrid(staffType + '|' + fullName, staffType),
       usualRestaurant: ur,
     };
   }
@@ -532,15 +921,49 @@
     return list;
   }
 
-  function normalizeWeeklyGrid(g) {
-    const base = defaultWeeklyGridAllOpen();
+  function normalizeWeeklyGrid(g, staffType) {
+    var useDraft = staffType === 'Kitchen' || staffType === 'Bartender' || staffType === 'Server';
+    const base = {};
+    WEEKDAY_KEYS.forEach(function (wk) {
+      base[wk] = {};
+    });
+    if (useDraft) {
+      var c0 = slotCountForRole(staffType);
+      WEEKDAY_KEYS.forEach(function (wk) {
+        for (var ti = 0; ti < c0; ti += 1) {
+          var tr0 = draftTimeSlotFor(staffType, wk, ti);
+          if (!tr0) continue;
+          base[wk][tr0.slotKey] = true;
+        }
+      });
+    } else {
+      AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+        WEEKDAY_KEYS.forEach(function (wk) {
+          base[wk][tr.slotKey] = true;
+        });
+      });
+    }
     if (!g || typeof g !== 'object') return base;
     WEEKDAY_KEYS.forEach(function (wk) {
       if (!g[wk] || typeof g[wk] !== 'object') return;
-      TIME_RANGES.forEach(function (tr) {
-        const v = g[wk][tr.start];
-        base[wk][tr.start] = v === true;
-      });
+      if (useDraft) {
+        var c1 = slotCountForRole(staffType);
+        for (var tj = 0; tj < c1; tj += 1) {
+          var tr = draftTimeSlotFor(staffType, wk, tj);
+          if (!tr) continue;
+          var sk = tr.slotKey;
+          var v = g[wk][sk];
+          if (v === undefined) v = g[wk][tr.start];
+          base[wk][sk] = v === true;
+        }
+      } else {
+        AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+          var sk = tr.slotKey;
+          var v = g[wk][sk];
+          if (v === undefined) v = g[wk][tr.start];
+          base[wk][sk] = v === true;
+        });
+      }
     });
     return base;
   }
@@ -549,49 +972,79 @@
     var g = {};
     WEEKDAY_KEYS.forEach(function (wk) {
       g[wk] = {};
-      TIME_RANGES.forEach(function (tr) {
-        g[wk][tr.start] = value;
+      AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+        g[wk][tr.slotKey] = value;
       });
     });
     return g;
   }
 
-  /** Submitted weekly grids for dummy availability requests (Mon–Sun × shift columns). */
+  /** Submitted weekly grids for dummy availability requests (Mon–Sun × schedule slot lines). */
   var AVAILABILITY_REQUEST_GRIDS = {
     'req-av-1': normalizeWeeklyGrid(
       (function () {
-        var g = defaultWeeklyGridAllOpen();
-        g.Sun['19:00'] = false;
+        var g = defaultWeeklyGridAllOpenForStaffType('Kitchen');
+        var trSun = draftTimeSlotFor('Kitchen', 'Sun', 1);
+        if (trSun) g.Sun[trSun.slotKey] = false;
+        var trTue = draftTimeSlotFor('Kitchen', 'Tue', 2);
+        if (trTue) g.Tue[trTue.slotKey] = true;
         return g;
-      })()
+      })(),
+      'Kitchen'
     ),
     'req-av-2': normalizeWeeklyGrid(
       (function () {
-        var g = gridAllSlots(false);
-        g.Wed['11:00'] = true;
-        g.Wed['15:00'] = true;
+        var g = {};
+        WEEKDAY_KEYS.forEach(function (wk) {
+          g[wk] = {};
+        });
+        var c = slotCountForRole('Server');
+        WEEKDAY_KEYS.forEach(function (wk) {
+          for (var i = 0; i < c; i += 1) {
+            var tr = draftTimeSlotFor('Server', wk, i);
+            if (!tr) continue;
+            g[wk][tr.slotKey] = false;
+          }
+        });
+        var w0 = draftTimeSlotFor('Server', 'Wed', 0);
+        var w1 = draftTimeSlotFor('Server', 'Wed', 1);
+        if (w0) g.Wed[w0.slotKey] = true;
+        if (w1) g.Wed[w1.slotKey] = true;
         return g;
-      })()
+      })(),
+      'Server'
     ),
     'req-av-3': normalizeWeeklyGrid(
       (function () {
-        var g = gridAllSlots(false);
-        ['Fri', 'Sat', 'Sun'].forEach(function (wk) {
-          TIME_RANGES.forEach(function (tr) {
-            g[wk][tr.start] = true;
-          });
+        var g = {};
+        WEEKDAY_KEYS.forEach(function (wk) {
+          g[wk] = {};
+        });
+        var c = slotCountForRole('Kitchen');
+        WEEKDAY_KEYS.forEach(function (wk) {
+          for (var i = 0; i < c; i += 1) {
+            var tr = draftTimeSlotFor('Kitchen', wk, i);
+            if (!tr) continue;
+            var open = wk === 'Fri' || wk === 'Sat' || wk === 'Sun';
+            g[wk][tr.slotKey] = open;
+          }
         });
         return g;
-      })()
+      })(),
+      'Kitchen'
     ),
     'req-av-4': normalizeWeeklyGrid(
       (function () {
-        var g = defaultWeeklyGridAllOpen();
-        g.Fri['19:00'] = false;
-        g.Sat['11:00'] = true;
-        g.Sat['15:00'] = true;
+        var g = defaultWeeklyGridAllOpenForStaffType('Server');
+        var trFri = draftTimeSlotFor('Server', 'Fri', 1);
+        if (trFri) g.Fri[trFri.slotKey] = false;
+        var s0 = draftTimeSlotFor('Server', 'Sat', 0);
+        var s1 = draftTimeSlotFor('Server', 'Sat', 1);
+        if (s0) g.Sat[s0.slotKey] = true;
+        if (s1) g.Sat[s1.slotKey] = true;
         return g;
-      })()
+      })(),
+      'Server'
     ),
   };
 
@@ -608,11 +1061,11 @@
       : 'Server';
     let weeklyGrid;
     if (e.weeklyGrid && typeof e.weeklyGrid === 'object') {
-      weeklyGrid = normalizeWeeklyGrid(e.weeklyGrid);
+      weeklyGrid = normalizeWeeklyGrid(e.weeklyGrid, staffType);
     } else if (e.weekAvailability && typeof e.weekAvailability === 'object') {
-      weeklyGrid = migrateLegacyWeekAvailabilityToGrid(e.weekAvailability);
+      weeklyGrid = normalizeWeeklyGrid(migrateLegacyWeekAvailabilityToGrid(e.weekAvailability), staffType);
     } else {
-      weeklyGrid = defaultWeeklyGridAllOpen();
+      weeklyGrid = defaultWeeklyGridAllOpenForStaffType(staffType);
     }
     const ur = e.usualRestaurant;
     const usualOk = ur === 'both' || restaurantsList.some(function (r) { return r.id === ur; });
@@ -680,13 +1133,6 @@
       .map(employeeDisplayName);
   }
 
-  function unassignedWorkersForSlotCount(count) {
-    var n = Math.max(1, Math.floor(Number(count)) || 1);
-    var out = [];
-    for (var i = 0; i < n; i += 1) out.push('Unassigned');
-    return out;
-  }
-
   function restaurantUsesDefaultUnassignedSchedule(restaurantId) {
     var r = restaurantsList.find(function (x) {
       return x.id === restaurantId;
@@ -698,35 +1144,66 @@
     SCHEDULE.length = 0;
     var forceUnassigned = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
     ALL_WEEK_DAYS.forEach(function (dayStr, globalDayIdx) {
-      TIME_RANGES.forEach(function (tr, trIdx) {
-        ROLE_DEFS.forEach(function (rd, roleIdx) {
+      var wk = weekdayKeyFromScheduleDay(dayStr);
+      /* Auto-fill only: one person per slot (no multi-staff slots in default data) and at most one shift per person per day. Managers may add more people per shift or double-book days via edit / drag / saves. */
+      var usedToday = Object.create(null);
+      ROLE_DEFS.forEach(function (rd, roleIdx) {
+        var n = slotCountForRole(rd.role);
+        for (var trIdx = 0; trIdx < n; trIdx += 1) {
+          var tr = draftTimeSlotFor(rd.role, wk, trIdx);
+          if (!tr) continue;
           const seed = hashString(
-            'shift|' + dayStr + '|' + rd.role + '|' + tr.start + '|' + currentRestaurantId
+            'shift|' +
+              dayStr +
+              '|' +
+              rd.role +
+              '|' +
+              tr.start +
+              '|' +
+              tr.end +
+              '|' +
+              currentRestaurantId
           );
-          const count = countWorkersForShift(dayStr, rd.role, tr);
           const pool = namesPoolForScheduleRole(rd.role, currentRestaurantId);
+          var basePool = pool.length ? pool : EMPLOYEE_POOLS[rd.role];
           let workers;
           if (forceUnassigned) {
-            workers = unassignedWorkersForSlotCount(count);
+            workers = ['Unassigned'];
           } else {
-            workers = uniqueWorkers(pool.length ? pool : EMPLOYEE_POOLS[rd.role], seed, count);
-            if (!workers.length && count > 0) workers = ['Unassigned'];
+            var filtered = (basePool || []).filter(function (name) {
+              if (!name || name === 'Unassigned') return false;
+              return !usedToday[normalizeWorkerKey(name)];
+            });
+            if (filtered.length) {
+              workers = uniqueWorkers(filtered, seed, 1);
+            } else {
+              workers = ['Unassigned'];
+            }
+            if (!workers.length) workers = ['Unassigned'];
+            var chosen = workers[0];
+            if (chosen && chosen !== 'Unassigned') {
+              usedToday[normalizeWorkerKey(chosen)] = true;
+            }
           }
           const shiftId = 'shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx;
 
           SCHEDULE.push({
             id: shiftId,
             day: dayStr,
+            trIdx: trIdx,
             role: rd.role,
             roleClass: rd.roleClass,
             groupLabel: rd.groupLabel,
             start: tr.start,
             end: tr.end,
-            timeLabel: tr.label,
+            slotKey: tr.slotKey,
+            timeLabel: redPokeShiftTimeLabel(tr.start, tr.end),
+            redPokeBreak: redPokeBreakAnnotation(tr.start, tr.end, rd.role, dayStr),
+            redPokeHours: redPokeShiftHoursDecimal(tr.start, tr.end),
             workers: workers,
             worker: workers[0],
           });
-        });
+        }
       });
     });
     applyScheduleAssignmentsMerge();
@@ -816,6 +1293,51 @@
     };
   }
 
+  function pruneScheduleAssignmentsInvalidSlots() {
+    var store = loadScheduleAssignmentsStore();
+    var changed = false;
+    Object.keys(store).forEach(function (rid) {
+      var rs = store[rid];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        var rd = ROLE_DEFS[p.roleIdx];
+        if (!rd || !rd.role) {
+          delete rs[shiftId];
+          changed = true;
+          return;
+        }
+        var maxTr = slotCountForRole(rd.role);
+        if (p.trIdx >= maxTr) {
+          delete rs[shiftId];
+          changed = true;
+        }
+      });
+    });
+    if (changed) saveScheduleAssignmentsStore(store);
+  }
+
+  function persistDraftScheduleRows(nextRows) {
+    var merged = {};
+    ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+      var defR = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
+      merged[role] = sanitizeDraftRoleRows(nextRows[role], defR);
+    });
+    draftScheduleRows = merged;
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_STORAGE_KEY, JSON.stringify(merged));
+    } catch (eDraft) {
+      /* ignore */
+    }
+    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    pruneScheduleAssignmentsInvalidSlots();
+    rebuildEmployeeDerivedData();
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+  }
+
   function buildWeekPatternFromCurrentRestaurant() {
     var store = loadScheduleAssignmentsStore();
     var src = store[currentRestaurantId] || {};
@@ -840,7 +1362,8 @@
     var targetStart = scheduleCalendarWeekIndex * 7;
     for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
       for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
-        for (var trIdx = 0; trIdx < TIME_RANGES.length; trIdx += 1) {
+        var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role);
+        for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
           var k = dayInWeek + '-' + roleIdx + '-' + trIdx;
           if (!Array.isArray(weekPattern[k])) continue;
           var targetShiftId = 'shift-' + (targetStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
@@ -1071,7 +1594,12 @@
       saveRestaurantsList();
     }
     SCHEDULE.forEach(function (s) {
-      store[currentRestaurantId][s.id] = (s.workers || []).slice();
+      var list = (s.workers || []).filter(Boolean);
+      if (!list.length) {
+        var one = s.worker || 'Unassigned';
+        list = one && one !== 'Unassigned' ? [one] : ['Unassigned'];
+      }
+      store[currentRestaurantId][s.id] = list.slice();
     });
     saveScheduleAssignmentsStore(store);
   }
@@ -1173,7 +1701,10 @@
             groupLabel: s.groupLabel,
             start: s.start,
             end: s.end,
+            slotKey: s.slotKey,
             timeLabel: s.timeLabel,
+            redPokeBreak: s.redPokeBreak,
+            redPokeHours: s.redPokeHours,
             workers: (s.workers || []).slice(),
           });
         });
@@ -1280,10 +1811,13 @@
     empUsualRestaurant.value = ok ? ur : 'both';
   }
 
-  function timeRangeByStart(start) {
-    return TIME_RANGES.find(function (t) {
-      return t.start === start;
-    });
+  function timeRangeForShift(shift) {
+    if (!shift || shift.start == null || shift.end == null) return null;
+    return (
+      AVAILABILITY_SLOT_RANGES.find(function (t) {
+        return t.start === shift.start && t.end === shift.end;
+      }) || makeTimeSlot(shift.start, shift.end)
+    );
   }
 
   /**
@@ -1296,7 +1830,7 @@
     const wk = weekdayKeyFromScheduleDay(dayStr);
     const g = emp.weeklyGrid && emp.weeklyGrid[wk];
     if (!g) return true;
-    return g[tr.start] === true;
+    return g[tr.slotKey] === true;
   }
 
   function moveWorkerToShift(workerName, sourceShiftId, targetShiftId) {
@@ -1308,19 +1842,21 @@
       return s.id === targetShiftId;
     });
     if (!src || !tgt) return;
-    const sw = (src.workers || []).filter(Boolean);
-    const ix = sw.indexOf(workerName);
+    var sw = (src.workers || []).filter(Boolean);
+    var ix = sw.indexOf(workerName);
     if (ix === -1) return;
     sw.splice(ix, 1);
-    if (!sw.length) sw.push('Unassigned');
+    sw = sw.filter(function (n) {
+      return n && n !== 'Unassigned';
+    });
+    if (!sw.length) sw = ['Unassigned'];
     src.workers = sw;
     src.worker = sw[0];
 
-    let tw = (tgt.workers || []).filter(function (n) {
+    var tw = (tgt.workers || []).filter(function (n) {
       return n && n !== 'Unassigned';
     });
     if (tw.indexOf(workerName) === -1) tw.push(workerName);
-    if (!tw.length) tw = ['Unassigned'];
     tgt.workers = tw;
     tgt.worker = tw[0];
 
@@ -1329,10 +1865,24 @@
   }
 
   function countWeeklyOpenSlots(emp) {
+    if (!emp || !emp.staffType) return 0;
+    var useDraft =
+      emp.staffType === 'Kitchen' || emp.staffType === 'Bartender' || emp.staffType === 'Server';
     let n = 0;
-    WEEKDAY_KEYS.forEach(function (wk) {
-      TIME_RANGES.forEach(function (tr) {
-        if (emp.weeklyGrid && emp.weeklyGrid[wk] && emp.weeklyGrid[wk][tr.start]) n += 1;
+    if (useDraft) {
+      var c = slotCountForRole(emp.staffType);
+      WEEKDAY_KEYS.forEach(function (wk) {
+        for (var trIdx = 0; trIdx < c; trIdx += 1) {
+          var tr = draftTimeSlotFor(emp.staffType, wk, trIdx);
+          if (!tr) continue;
+          if (emp.weeklyGrid && emp.weeklyGrid[wk] && emp.weeklyGrid[wk][tr.slotKey] === true) n += 1;
+        }
+      });
+      return n;
+    }
+    AVAILABILITY_SLOT_RANGES.forEach(function (tr) {
+      WEEKDAY_KEYS.forEach(function (wk) {
+        if (emp.weeklyGrid && emp.weeklyGrid[wk] && emp.weeklyGrid[wk][tr.slotKey]) n += 1;
       });
     });
     return n;
@@ -1340,12 +1890,12 @@
 
   function formatWeekAvailabilitySummary(emp) {
     const open = countWeeklyOpenSlots(emp);
-    const total = WEEKDAY_KEYS.length * TIME_RANGES.length;
+    const total = emp && emp.staffType ? countShiftCellsForStaffType(emp.staffType) : 0;
     return open + '/' + total + ' shifts';
   }
 
   function buildEligibleByRole(role) {
-    const displayRole = role === 'Bartender' ? 'Front of House' : role;
+    const displayRole = STAFF_TYPE_LABELS[role] || role;
     return employees
       .filter(function (e) { return e.staffType === role; })
       .map(function (emp) {
@@ -1374,26 +1924,16 @@
     return employees.find(function (e) { return employeeDisplayName(e) === name; });
   }
 
-  function availabilityForShiftSlot(emp, dayStr, shiftStart) {
+  function availabilityForShiftSlot(emp, dayStr, shiftStart, shiftEnd) {
     if (!emp || !emp.weeklyGrid) return '—';
     const wk = weekdayKeyFromScheduleDay(dayStr);
     const g = emp.weeklyGrid[wk];
     if (!g) return '—';
-    return g[shiftStart] === true ? 'Available for this shift' : 'Not available';
-  }
-
-  function countWorkersForShift(dayStr, role, timeRange) {
-    const isFri = dayStr.startsWith('Fri ');
-    const isSat = dayStr.startsWith('Sat ');
-    const isNight = timeRange.start === '19:00';
-    const isEvening = timeRange.start === '15:00';
-
-    if ((role === 'Server' || role === 'Bartender') && (isFri || isSat) && isNight) return 3;
-    if ((role === 'Server' || role === 'Bartender') && (isFri || isSat) && isEvening) return 2;
-    if (role === 'Kitchen' && (isFri || isSat) && isNight) return 2;
-
-    const seed = hashString(dayStr + role + timeRange.start);
-    return seed % 11 === 0 ? 2 : 1;
+    const sk =
+      shiftEnd != null && shiftEnd !== ''
+        ? String(shiftStart) + '|' + String(shiftEnd)
+        : String(shiftStart);
+    return g[sk] === true ? 'Available for this shift' : 'Not available';
   }
 
   const titles = {
@@ -1404,19 +1944,7 @@
     5: 'Employees',
     6: 'Employee',
     7: 'Messaging',
-    8: 'Requests',
-  };
-
-  const STAFF_TYPE_LABELS = {
-    Kitchen: 'Kitchen',
-    Bartender: 'Front of House',
-    Server: 'Server',
-  };
-
-  const STAFF_ROLE_CLASS = {
-    Kitchen: 'role-kitchen',
-    Bartender: 'role-bartender',
-    Server: 'role-server',
+    8: 'Actions',
   };
 
   function loadMessagingTemplates() {
@@ -1484,21 +2012,31 @@
   let employeeSearchQuery = '';
   let scheduleDragState = null;
   let calendarDragListenersBound = false;
-  function findShift(dayStr, role, start) {
+  function findShift(dayStr, role, start, end) {
     return SCHEDULE.find(function (s) {
-      return s.day === dayStr && s.role === role && s.start === start;
+      return (
+        s.day === dayStr &&
+        s.role === role &&
+        s.start === start &&
+        (end == null || s.end === end)
+      );
     });
   }
 
-  function findShiftByWeekdayKey(weekdayKey, role, start) {
+  function findShiftByWeekdayKey(weekdayKey, role, start, end) {
     return SCHEDULE.find(function (s) {
-      return weekdayKeyFromScheduleDay(s.day) === weekdayKey && s.role === role && s.start === start;
+      return (
+        weekdayKeyFromScheduleDay(s.day) === weekdayKey &&
+        s.role === role &&
+        s.start === start &&
+        (end == null || s.end === end)
+      );
     });
   }
 
   let history = [
     (function () {
-      const shift = findShiftByWeekdayKey('Mon', 'Server', '11:00');
+      const shift = findShiftByWeekdayKey('Mon', 'Server', '10:30', '20:30');
       return shift
         ? {
             shift: shift,
@@ -1512,7 +2050,7 @@
         : null;
     })(),
     (function () {
-      const shift = findShiftByWeekdayKey('Sat', 'Bartender', '19:00');
+      const shift = findShiftByWeekdayKey('Sat', 'Bartender', '16:00', '22:00');
       return shift
         ? {
             shift: shift,
@@ -1607,6 +2145,15 @@
   const scheduleAddLocationModal = document.getElementById('scheduleAddLocationModal');
   const scheduleAddLocationModalBackdrop = document.getElementById('scheduleAddLocationModalBackdrop');
   const scheduleAddLocationModalClose = document.getElementById('scheduleAddLocationModalClose');
+  const draftScheduleModal = document.getElementById('draftScheduleModal');
+  const draftScheduleModalBackdrop = document.getElementById('draftScheduleModalBackdrop');
+  const draftScheduleModalClose = document.getElementById('draftScheduleModalClose');
+  const draftScheduleRoleChips = document.getElementById('draftScheduleRoleChips');
+  const draftScheduleTableMount = document.getElementById('draftScheduleTableMount');
+  const openDraftScheduleModalBtn = document.getElementById('openDraftScheduleModal');
+  const addDraftSlotLineBtn = document.getElementById('addDraftSlotLineBtn');
+  const resetDraftScheduleBtn = document.getElementById('resetDraftScheduleBtn');
+  const saveDraftScheduleBtn = document.getElementById('saveDraftScheduleBtn');
   const openScheduleTemplateModalBtn = document.getElementById('openScheduleTemplateModal');
   const openScheduleAddLocationModalBtn = document.getElementById('openScheduleAddLocationModal');
   const applyScheduleTemplateBtn = document.getElementById('applyScheduleTemplateBtn');
@@ -1616,7 +2163,8 @@
   function refreshScheduleSheetBodyLock() {
     var tplOpen = scheduleTemplateModal && !scheduleTemplateModal.hidden;
     var locOpen = scheduleAddLocationModal && !scheduleAddLocationModal.hidden;
-    document.body.classList.toggle('schedule-sheet-open', !!(tplOpen || locOpen));
+    var draftOpen = draftScheduleModal && !draftScheduleModal.hidden;
+    document.body.classList.toggle('schedule-sheet-open', !!(tplOpen || locOpen || draftOpen));
   }
 
   function closeScheduleTemplateModal() {
@@ -1626,8 +2174,182 @@
     refreshScheduleSheetBodyLock();
   }
 
+  var draftModalScratch = null;
+  var draftModalActiveRole = 'Bartender';
+
+  function closeDraftScheduleModal() {
+    if (!draftScheduleModal) return;
+    draftScheduleModal.hidden = true;
+    draftScheduleModal.setAttribute('aria-hidden', 'true');
+    draftModalScratch = null;
+    refreshScheduleSheetBodyLock();
+  }
+
+  function makeNullDraftWeekRow() {
+    var r = [];
+    for (var i = 0; i < 7; i += 1) r.push(null);
+    return r;
+  }
+
+  function updateDraftCellHoursEl(td, s, e) {
+    var span = td.querySelector('.draft-cell-hours');
+    if (!span) return;
+    if (!s || !e) {
+      span.textContent = '';
+      return;
+    }
+    span.textContent = redPokeShiftHoursDecimal(s, e) + ' h';
+  }
+
+  function renderDraftScheduleRoleChips() {
+    if (!draftScheduleRoleChips) return;
+    draftScheduleRoleChips.innerHTML = ROLE_DEFS.map(function (rd) {
+      var active = rd.role === draftModalActiveRole;
+      return (
+        '<button type="button" class="filter-chip' + (active ? ' active' : '') + '" data-draft-role="' + escapeHtml(rd.role) + '" role="tab" aria-selected="' + (active ? 'true' : 'false') + '">' +
+        escapeHtml(rd.groupLabel) +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  function renderDraftScheduleCellHtml(ri, di, cell) {
+    var off = !cell;
+    var start = off ? '' : escapeHtml(cell[0]);
+    var end = off ? '' : escapeHtml(cell[1]);
+    var hrs = '';
+    if (!off && cell[0] && cell[1]) hrs = redPokeShiftHoursDecimal(cell[0], cell[1]) + ' h';
+    return (
+      '<td data-draft-day="' + di + '">' +
+        '<div class="draft-cell-inner">' +
+          '<label class="draft-dayoff-label"><input type="checkbox" class="draft-dayoff"' + (off ? ' checked' : '') + ' /> Day off</label>' +
+          '<div class="draft-cell-times"' + (off ? ' hidden' : '') + '>' +
+            '<input type="time" class="draft-time-start" value="' + start + '" step="60" />' +
+            '<span class="draft-time-sep">–</span>' +
+            '<input type="time" class="draft-time-end" value="' + end + '" step="60" />' +
+            '<span class="draft-cell-hours">' + escapeHtml(hrs) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</td>'
+    );
+  }
+
+  function renderDraftScheduleTable() {
+    if (!draftScheduleTableMount || !draftModalScratch) return;
+    var role = draftModalActiveRole;
+    var rows = draftModalScratch[role];
+    if (!Array.isArray(rows) || !rows.length) {
+      draftScheduleTableMount.innerHTML = '<p class="draft-schedule-empty">No rows for this role.</p>';
+      return;
+    }
+    var head = '<thead><tr><th class="draft-slot-label">Slot</th>' +
+      WEEKDAY_KEYS.map(function (wk) {
+        return '<th>' + escapeHtml(wk) + '</th>';
+      }).join('') +
+      '</tr></thead>';
+    var body = '<tbody>' + rows.map(function (row, ri) {
+      return '<tr data-draft-row="' + ri + '">' +
+        '<th scope="row" class="draft-slot-label">Slot ' + (ri + 1) + '</th>' +
+        WEEKDAY_KEYS.map(function (wk, di) {
+          return renderDraftScheduleCellHtml(ri, di, row[di]);
+        }).join('') +
+        '</tr>';
+    }).join('') + '</tbody>';
+    draftScheduleTableMount.innerHTML = '<table class="draft-schedule-table">' + head + body + '</table>';
+  }
+
+  function bindDraftScheduleEditorOnce() {
+    if (bindDraftScheduleEditorOnce._done) return;
+    bindDraftScheduleEditorOnce._done = true;
+    if (draftScheduleRoleChips) {
+      draftScheduleRoleChips.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-draft-role]');
+        if (!btn) return;
+        var r = btn.getAttribute('data-draft-role');
+        if (!r || r === draftModalActiveRole) return;
+        draftModalActiveRole = r;
+        renderDraftScheduleRoleChips();
+        renderDraftScheduleTable();
+      });
+    }
+    if (draftScheduleTableMount) {
+      draftScheduleTableMount.addEventListener('change', function (e) {
+        var t = e.target;
+        if (!t || !t.classList || !t.classList.contains('draft-dayoff')) return;
+        var td = t.closest('td');
+        var tr = t.closest('tr');
+        if (!td || !tr || !draftModalScratch) return;
+        var di = parseInt(td.getAttribute('data-draft-day'), 10);
+        var ri = parseInt(tr.getAttribute('data-draft-row'), 10);
+        var timesEl = td.querySelector('.draft-cell-times');
+        if (t.checked) {
+          if (timesEl) timesEl.hidden = true;
+          draftModalScratch[draftModalActiveRole][ri][di] = null;
+          updateDraftCellHoursEl(td, null, null);
+        } else {
+          if (timesEl) timesEl.hidden = false;
+          var sInp = td.querySelector('.draft-time-start');
+          var eInp = td.querySelector('.draft-time-end');
+          var s = normalizeHHMM(sInp && sInp.value);
+          var e = normalizeHHMM(eInp && eInp.value);
+          if (s && e) {
+            draftModalScratch[draftModalActiveRole][ri][di] = [s, e];
+            updateDraftCellHoursEl(td, s, e);
+          } else {
+            draftModalScratch[draftModalActiveRole][ri][di] = null;
+            updateDraftCellHoursEl(td, null, null);
+          }
+        }
+      });
+      draftScheduleTableMount.addEventListener('input', function (e) {
+        var t = e.target;
+        if (!t || !t.classList) return;
+        if (!t.classList.contains('draft-time-start') && !t.classList.contains('draft-time-end')) return;
+        var td = t.closest('td');
+        var tr = t.closest('tr');
+        if (!td || !tr || !draftModalScratch) return;
+        var di = parseInt(td.getAttribute('data-draft-day'), 10);
+        var ri = parseInt(tr.getAttribute('data-draft-row'), 10);
+        var sInp = td.querySelector('.draft-time-start');
+        var eInp = td.querySelector('.draft-time-end');
+        var s = normalizeHHMM(sInp && sInp.value);
+        var e = normalizeHHMM(eInp && eInp.value);
+        if (s && e) {
+          draftModalScratch[draftModalActiveRole][ri][di] = [s, e];
+          updateDraftCellHoursEl(td, s, e);
+        } else {
+          draftModalScratch[draftModalActiveRole][ri][di] = null;
+          updateDraftCellHoursEl(td, null, null);
+        }
+      });
+    }
+  }
+
+  function openDraftScheduleModal() {
+    if (!draftScheduleModal) return;
+    if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
+      scheduleTemplateModal.hidden = true;
+      scheduleTemplateModal.setAttribute('aria-hidden', 'true');
+    }
+    if (scheduleAddLocationModal && !scheduleAddLocationModal.hidden) {
+      scheduleAddLocationModal.hidden = true;
+      scheduleAddLocationModal.setAttribute('aria-hidden', 'true');
+    }
+    draftModalScratch = cloneDraftSchedule(draftScheduleRows);
+    draftModalActiveRole = 'Bartender';
+    bindDraftScheduleEditorOnce();
+    renderDraftScheduleRoleChips();
+    renderDraftScheduleTable();
+    draftScheduleModal.hidden = false;
+    draftScheduleModal.setAttribute('aria-hidden', 'false');
+    refreshScheduleSheetBodyLock();
+  }
+
   function openScheduleTemplateModal() {
     if (!scheduleTemplateModal) return;
+    if (draftScheduleModal && !draftScheduleModal.hidden) {
+      closeDraftScheduleModal();
+    }
     if (scheduleAddLocationModal && !scheduleAddLocationModal.hidden) {
       scheduleAddLocationModal.hidden = true;
       scheduleAddLocationModal.setAttribute('aria-hidden', 'true');
@@ -1653,6 +2375,9 @@
 
   function openScheduleAddLocationModal() {
     if (!scheduleAddLocationModal) return;
+    if (draftScheduleModal && !draftScheduleModal.hidden) {
+      closeDraftScheduleModal();
+    }
     if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
       scheduleTemplateModal.hidden = true;
       scheduleTemplateModal.setAttribute('aria-hidden', 'true');
@@ -1764,14 +2489,15 @@
       });
     }
     if (s) {
-      var workers = (s.workers || []).filter(Boolean);
-      if (!workers.length) workers = [name];
-      else workers[0] = name;
-      s.workers = workers;
-      s.worker = workers[0];
+      var cur = (s.workers || []).filter(function (n) {
+        return n && n !== 'Unassigned';
+      });
+      if (cur.indexOf(name) === -1) cur.push(name);
+      s.workers = cur.length ? cur : ['Unassigned'];
+      s.worker = s.workers[0];
       if (item.shift && item.shift.id === s.id) {
-        item.shift.workers = workers.slice();
-        item.shift.worker = workers[0];
+        item.shift.workers = s.workers.slice();
+        item.shift.worker = s.worker;
       }
     }
 
@@ -1782,7 +2508,7 @@
     acceptedWorker = responder;
     if (acceptedWorkerName) acceptedWorkerName.textContent = name;
     if (acceptedRole) {
-      acceptedRole.textContent = role === 'Bartender' ? 'Front of House' : role;
+      acceptedRole.textContent = STAFF_TYPE_LABELS[role] || role;
     }
     var shiftLine =
       (meta.day || item.shift.day) +
@@ -1860,7 +2586,7 @@
         activeHistoryIndex = pendingTextCampaign.historyIndex;
 
         acceptedWorkerName.textContent = responder.name;
-        acceptedRole.textContent = responder.role === 'Bartender' ? 'Front of House' : responder.role;
+        acceptedRole.textContent = STAFF_TYPE_LABELS[responder.role] || responder.role;
         acceptedShiftTime.textContent = item.shift.day + ', ' + (item.shift.timeLabel || (item.shift.start + ' – ' + item.shift.end));
 
         pendingTextCampaign = null;
@@ -1891,6 +2617,7 @@
 
   function showScreen(num) {
     if (num !== 1) {
+      closeDraftScheduleModal();
       closeScheduleTemplateModal();
       closeScheduleAddLocationModal();
     }
@@ -1966,13 +2693,43 @@
     scheduleBody.innerHTML = SCHEDULE.filter(function (row) {
       return visibleSet[row.day];
     }).map(function (row) {
+      var tl = row.timeLabel || redPokeShiftTimeLabel(row.start, row.end);
+      var br = row.redPokeBreak || '';
+      var hrs = row.redPokeHours != null ? String(row.redPokeHours) : '';
       return (
         '<tr>' +
-        '<td>' + row.day + '</td>' +
-        '<td><span class="role-pill ' + row.roleClass + '">' + row.role + '</span></td>' +
-        '<td>' + row.worker + '</td>' +
-        '<td>' + row.start + ' – ' + row.end + '</td>' +
-        '<td><button type="button" class="btn-callout" data-report="' + row.id + '">Report Callout</button></td>' +
+        '<td>' +
+        escapeHtml(row.day) +
+        '</td>' +
+        '<td><span class="role-pill ' +
+        escapeHtml(row.roleClass) +
+        '">' +
+        escapeHtml(row.groupLabel || STAFF_TYPE_LABELS[row.role] || row.role) +
+        '</span></td>' +
+        '<td>' +
+        escapeHtml(
+          (function () {
+            var names = (row.workers || []).filter(function (n) {
+              return n && n !== 'Unassigned';
+            });
+            return names.length ? names.join(', ') : 'Unassigned';
+          })()
+        ) +
+        '</td>' +
+        '<td class="schedule-table-shiftcell">' +
+        '<div class="schedule-rp-time">' +
+        escapeHtml(tl) +
+        '</div>' +
+        '<div class="schedule-rp-break">' +
+        escapeHtml(br) +
+        '</div>' +
+        '<div class="schedule-rp-hours">' +
+        escapeHtml(hrs) +
+        '</div>' +
+        '</td>' +
+        '<td><button type="button" class="btn-callout" data-report="' +
+        escapeHtml(row.id) +
+        '">Report Callout</button></td>' +
         '</tr>'
       );
     }).join('');
@@ -1986,6 +2743,9 @@
     });
   }
 
+  /** Calendar section order: FOH, BOH, then Delivery/Dishwasher. */
+  const SCHEDULE_GRID_ROLE_ORDER = ['Bartender', 'Kitchen', 'Server'];
+
   function renderCalendar() {
     if (!calendarGrid) return;
     if (!SCHEDULE.length) {
@@ -1994,26 +2754,26 @@
     }
 
     function parseDayHeader(dayStr) {
-      // "Sun Mar 8" -> { dow: "Sun", month: "Mar", dayNum: 8 }
       var parts = dayStr.split(' ');
       return { dow: parts[0], month: parts[1], dayNum: parts[2] };
     }
 
-    const timeColLabel = 'Time';
     const visibleDays = getVisibleWeekDays();
-    const colCount = visibleDays.length + 1; // 1 left column + 7 days
-
+    const colCount = visibleDays.length;
     const headerHtml =
       '<thead><tr>' +
-      '<th class="time-col">' + escapeHtml(timeColLabel) + '</th>' +
       visibleDays.map(function (dayStr) {
+        var meta = WEEK_META.find(function (m) {
+          return m.label === dayStr;
+        });
         var d = parseDayHeader(dayStr);
+        var full = meta && meta.dayNameUpper ? meta.dayNameUpper : String(d.dow || '').toUpperCase();
         return (
-          '<th>' +
-          '<span class="calendar-th-dow">' +
-          escapeHtml(d.dow) +
+          '<th scope="col">' +
+          '<span class="calendar-th-full">' +
+          escapeHtml(full) +
           '</span>' +
-          '<div class="time-role-sub">' +
+          '<div class="calendar-th-date-sub">' +
           escapeHtml(d.month + ' ' + d.dayNum) +
           '</div>' +
           '</th>'
@@ -2023,24 +2783,76 @@
 
     const bodyRows = [];
 
-    ROLE_DEFS.forEach(function (rd) {
-      // Group header row inside the grid.
-      bodyRows.push('<tr class="calendar-group-row"><td colspan="' + colCount + '">' + escapeHtml(rd.groupLabel) + '</td></tr>');
+    SCHEDULE_GRID_ROLE_ORDER.forEach(function (roleKey) {
+      var rd = ROLE_DEFS.find(function (r) {
+        return r.role === roleKey;
+      });
+      if (!rd) return;
+      if (rd.role === 'Bartender') {
+        bodyRows.push(
+          '<tr class="calendar-group-row calendar-section-foh"><td colspan="' +
+            colCount +
+            '">FRONT OF THE HOUSE</td></tr>'
+        );
+      }
+      if (rd.role === 'Server') {
+        bodyRows.push(
+          '<tr class="calendar-group-row calendar-section-delivery"><td colspan="' +
+            colCount +
+            '">DELIVERY/DISHWASHER</td></tr>'
+        );
+      }
+      if (rd.role === 'Kitchen') {
+        bodyRows.push(
+          '<tr class="calendar-group-row calendar-section-boh"><td colspan="' +
+            colCount +
+            '">BACK OF THE HOUSE</td></tr>'
+        );
+      }
 
-      TIME_RANGES.forEach(function (tr) {
-        const rowTime = tr.label;
+      var slotN = slotCountForRole(rd.role);
+      for (var trIdx = 0; trIdx < slotN; trIdx += 1) {
         const tds = visibleDays.map(function (dayStr) {
           const shift = SCHEDULE.find(function (s) {
-            return s.day === dayStr && s.role === rd.role && s.start === tr.start;
+            return s.day === dayStr && s.role === rd.role && s.trIdx === trIdx;
           });
 
           if (!shift) {
+            var wkOff = weekdayKeyFromScheduleDay(dayStr);
+            var trOff = draftTimeSlotFor(rd.role, wkOff, trIdx);
+            if (trOff) {
+              var rpTimeOff = redPokeShiftTimeLabel(trOff.start, trOff.end);
+              var offLabel =
+                'DAY-OFF · ' +
+                rd.groupLabel +
+                ' · ' +
+                dayStr +
+                ' · ' +
+                rpTimeOff;
+              return (
+                '<td><div class="calendar-slot-wrap calendar-slot-empty calendar-slot-empty--timed" tabindex="-1" role="group" aria-label="' +
+                escapeHtml(offLabel) +
+                '">' +
+                '<div class="calendar-slot-rp calendar-slot-rp--dayoff">' +
+                '<div class="calendar-slot-rp-time">' +
+                escapeHtml(rpTimeOff) +
+                '</div>' +
+                '</div>' +
+                '<div class="calendar-slot-empty-label">DAY-OFF</div>' +
+                '</div></td>'
+              );
+            }
             return (
-              '<td><div class="calendar-slot-wrap calendar-slot-empty" aria-hidden="true">—</div></td>'
+              '<td><div class="calendar-slot-wrap calendar-slot-empty" aria-hidden="true">DAY-OFF</div></td>'
             );
           }
 
           const workers = shift.workers || [shift.worker].filter(Boolean);
+          const rpTime = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
+          const rpBreak =
+            shift.redPokeBreak || redPokeBreakAnnotation(shift.start, shift.end, rd.role, dayStr);
+          const rpHrs =
+            shift.redPokeHours != null ? String(shift.redPokeHours) : redPokeShiftHoursDecimal(shift.start, shift.end);
           const workerPills = workers.slice(0, 4).map(function (wname, wi) {
             const canDrag = wname && wname !== 'Unassigned';
             const dragAttr = canDrag ? 'draggable="true" ' : 'draggable="false" ';
@@ -2071,7 +2883,7 @@
             ' on ' +
             dayStr +
             ', ' +
-            tr.label +
+            rpTime +
             '.';
 
           return (
@@ -2081,6 +2893,17 @@
             '" tabindex="0" role="group" aria-label="' +
             escapeHtml(slotLabel) +
             '">' +
+            '<div class="calendar-slot-rp">' +
+            '<div class="calendar-slot-rp-time">' +
+            escapeHtml(rpTime) +
+            '</div>' +
+            '<div class="calendar-slot-rp-break">' +
+            escapeHtml(rpBreak) +
+            '</div>' +
+            '<div class="calendar-slot-rp-hours">' +
+            escapeHtml(rpHrs) +
+            '</div>' +
+            '</div>' +
             '<div class="calendar-slot-pills">' +
             workerPills +
             extra +
@@ -2090,16 +2913,16 @@
           );
         }).join('');
 
-        bodyRows.push(
-          '<tr>' +
-          '<th class="time-col">' + escapeHtml(rowTime) + '</th>' +
-          tds +
-          '</tr>'
-        );
-      });
+        bodyRows.push('<tr>' + tds + '</tr>');
+      }
     });
 
-    calendarGrid.innerHTML = '<table class="calendar-matrix">' + headerHtml + '<tbody>' + bodyRows.join('') + '</tbody></table>';
+    calendarGrid.innerHTML =
+      '<table class="calendar-matrix calendar-matrix--redpoke">' +
+      headerHtml +
+      '<tbody>' +
+      bodyRows.join('') +
+      '</tbody></table>';
 
     ensureCalendarInteraction();
   }
@@ -2113,7 +2936,7 @@
         return s.id === id;
       });
       if (!shift) return;
-      const tr = timeRangeByStart(shift.start);
+      const tr = timeRangeForShift(shift);
       const can = employeeCanWorkSlot(emp, shift.day, shift.role, tr);
       slot.classList.toggle('calendar-slot-invalid', Boolean(emp) && !can);
     });
@@ -2189,7 +3012,7 @@
       });
       if (!shift) return;
       const emp = employeeByDisplayName(scheduleDragState.name);
-      const tr = timeRangeByStart(shift.start);
+      const tr = timeRangeForShift(shift);
       if (!employeeCanWorkSlot(emp, shift.day, shift.role, tr)) {
         e.dataTransfer.dropEffect = 'none';
         return;
@@ -2207,7 +3030,7 @@
       });
       if (!shift) return;
       const emp = employeeByDisplayName(scheduleDragState.name);
-      const tr = timeRangeByStart(shift.start);
+      const tr = timeRangeForShift(shift);
       if (!employeeCanWorkSlot(emp, shift.day, shift.role, tr)) return;
       e.preventDefault();
       const n = scheduleDragState.name;
@@ -2275,80 +3098,152 @@
     }
   }
 
-  function renderEmployeeAvailabilityGrid(grid) {
-    const g = normalizeWeeklyGrid(grid);
-    const thead =
-      '<thead><tr>' +
-      '<th class="availability-grid-corner"></th>' +
-      TIME_RANGES.map(function (tr) {
-        return '<th scope="col">' + escapeHtml(tr.label) + '</th>';
-      }).join('') +
-      '</tr></thead>';
-    const rows = WEEKDAY_KEYS.map(function (wk) {
-      const cells = TIME_RANGES.map(function (tr) {
-        const id = 'ag-' + wk + '-' + String(tr.start).replace(':', '');
-        const checked = g[wk][tr.start] ? ' checked' : '';
-        return (
-          '<td class="availability-grid-cell">' +
-          '<input type="checkbox" class="availability-grid-cb" id="' +
-          id +
-          '" data-wk="' +
+  function renderAvailabilityCompactHtml(grid, readOnly, staffType) {
+    const g = normalizeWeeklyGrid(grid, staffType);
+    const ro = Boolean(readOnly);
+    const useDraft = staffType === 'Kitchen' || staffType === 'Bartender' || staffType === 'Server';
+    const slotList = useDraft ? null : AVAILABILITY_SLOT_RANGES;
+    const parts = [];
+    parts.push(
+      '<div class="availability-matrix-scroll' + (ro ? ' availability-matrix-scroll--readonly' : '') + '">' +
+        '<table class="availability-matrix">' +
+        '<thead><tr>'
+    );
+    WEEKDAY_KEYS.forEach(function (wk) {
+      parts.push(
+        '<th scope="col" class="availability-matrix-dayhead" title="' +
           escapeHtml(wk) +
-          '" data-start="' +
-          escapeHtml(tr.start) +
-          '"' +
-          checked +
-          ' />' +
-          '<label for="' +
-          id +
-          '" class="visually-hidden">' +
+          '">' +
+          '<span class="availability-matrix-dayhead-dow">' +
           escapeHtml(wk) +
-          ' ' +
-          escapeHtml(tr.label) +
-          '</label>' +
-          '</td>'
-        );
-      }).join('');
-      return (
-        '<tr><th scope="row">' + escapeHtml(wk) + '</th>' + cells + '</tr>'
+          '</span>' +
+          '</th>'
       );
-    }).join('');
-    return '<table class="availability-grid">' + thead + '<tbody>' + rows + '</tbody></table>';
+    });
+    parts.push('</tr></thead><tbody>');
+    if (useDraft) {
+      var role = staffType;
+      var rowCount = slotCountForRole(role);
+      for (var trIdx = 0; trIdx < rowCount; trIdx += 1) {
+        parts.push('<tr>');
+        WEEKDAY_KEYS.forEach(function (wk) {
+          var tr = draftTimeSlotFor(role, wk, trIdx);
+          if (!tr) {
+            parts.push(
+              '<td class="availability-matrix-cell availability-matrix-cell--off" title="' +
+                escapeHtml('Line ' + String(trIdx + 1) + ' · ' + wk + ' · DAY-OFF') +
+                '"><span class="availability-matrix-off" aria-hidden="true">—</span>' +
+                '<span class="visually-hidden">' +
+                escapeHtml('Line ' + String(trIdx + 1) + ' · ' + wk + ' · no shift (DAY-OFF)') +
+                '</span></td>'
+            );
+            return;
+          }
+          var shortH = compactAvailabilityRangeLabel(tr);
+          var id =
+            'ag-' +
+            wk +
+            '-r' +
+            trIdx +
+            '-' +
+            String(tr.slotKey).replace(/[^a-z0-9]/gi, '');
+          var checked = g[wk][tr.slotKey] ? ' checked' : '';
+          var ariaFull =
+            'Line ' +
+            String(trIdx + 1) +
+            ' · ' +
+            wk +
+            ' ' +
+            tr.label +
+            (g[wk][tr.slotKey] ? ', available' : ', not available');
+          var dis = ro ? ' disabled tabindex="-1"' : '';
+          parts.push('<td class="availability-matrix-cell">');
+          parts.push('<div class="availability-matrix-cell-stack">');
+          parts.push(
+            '<span class="availability-matrix-cell-time" title="' +
+              escapeHtml(tr.label) +
+              '">' +
+              escapeHtml(shortH) +
+              '</span>'
+          );
+          parts.push('<label class="availability-matrix-label">');
+          parts.push(
+            '<input type="checkbox" class="availability-grid-cb"' +
+              (ro ? '' : ' id="' + escapeHtml(id) + '"') +
+              ' data-wk="' +
+              escapeHtml(wk) +
+              '" data-slot-key="' +
+              escapeHtml(tr.slotKey) +
+              '" data-start="' +
+              escapeHtml(tr.start) +
+              '"' +
+              (ro ? ' aria-label="' + escapeHtml(ariaFull) + '"' : ' aria-label="' + escapeHtml(wk + ' ' + tr.label) + '"') +
+              dis +
+              checked +
+              ' />'
+          );
+          parts.push('<span class="visually-hidden">' + escapeHtml(wk + ' ' + shortH + ' · ' + tr.label) + '</span>');
+          parts.push('</label></div></td>');
+        });
+        parts.push('</tr>');
+      }
+    } else {
+      slotList.forEach(function (tr, rowIdx) {
+        const shortH = compactAvailabilityRangeLabel(tr);
+        parts.push('<tr>');
+        WEEKDAY_KEYS.forEach(function (wk) {
+          const id = 'ag-' + wk + '-' + String(tr.slotKey).replace(/[^a-z0-9]/gi, '');
+          const checked = g[wk][tr.slotKey] ? ' checked' : '';
+          const ariaFull =
+            'Line ' +
+            String(rowIdx + 1) +
+            ' · ' +
+            wk +
+            ' ' +
+            tr.label +
+            (g[wk][tr.slotKey] ? ', available' : ', not available');
+          const dis = ro ? ' disabled tabindex="-1"' : '';
+          parts.push('<td class="availability-matrix-cell">');
+          parts.push('<div class="availability-matrix-cell-stack">');
+          parts.push(
+            '<span class="availability-matrix-cell-time" title="' +
+              escapeHtml(tr.label) +
+              '">' +
+              escapeHtml(shortH) +
+              '</span>'
+          );
+          parts.push('<label class="availability-matrix-label">');
+          parts.push(
+            '<input type="checkbox" class="availability-grid-cb"' +
+              (ro ? '' : ' id="' + escapeHtml(id) + '"') +
+              ' data-wk="' +
+              escapeHtml(wk) +
+              '" data-slot-key="' +
+              escapeHtml(tr.slotKey) +
+              '" data-start="' +
+              escapeHtml(tr.start) +
+              '"' +
+              (ro ? ' aria-label="' + escapeHtml(ariaFull) + '"' : ' aria-label="' + escapeHtml(wk + ' ' + tr.label) + '"') +
+              dis +
+              checked +
+              ' />'
+          );
+          parts.push('<span class="visually-hidden">' + escapeHtml(wk + ' ' + shortH) + '</span>');
+          parts.push('</label></div></td>');
+        });
+        parts.push('</tr>');
+      });
+    }
+    parts.push('</tbody></table></div>');
+    return parts.join('');
   }
 
-  function renderAvailabilityGridReadOnly(grid) {
-    var g = normalizeWeeklyGrid(grid);
-    var thead =
-      '<thead><tr>' +
-      '<th class="availability-grid-corner"></th>' +
-      TIME_RANGES.map(function (tr) {
-        return '<th scope="col">' + escapeHtml(tr.label) + '</th>';
-      }).join('') +
-      '</tr></thead>';
-    var rows = WEEKDAY_KEYS.map(function (wk) {
-      var cells = TIME_RANGES.map(function (tr) {
-        var on = g[wk][tr.start];
-        var label = escapeHtml(wk + ' ' + tr.label);
-        return (
-          '<td class="availability-grid-cell availability-grid-cell--readonly">' +
-          '<input type="checkbox" class="availability-grid-cb" disabled' +
-          (on ? ' checked' : '') +
-          ' tabindex="-1" aria-label="' +
-          label +
-          (on ? ', available' : ', not available') +
-          '" />' +
-          '</td>'
-        );
-      }).join('');
-      return '<tr><th scope="row">' + escapeHtml(wk) + '</th>' + cells + '</tr>';
-    }).join('');
-    return (
-      '<table class="availability-grid availability-grid--readonly">' +
-      thead +
-      '<tbody>' +
-      rows +
-      '</tbody></table>'
-    );
+  function renderEmployeeAvailabilityGrid(grid, staffType) {
+    return renderAvailabilityCompactHtml(grid, false, staffType);
+  }
+
+  function renderAvailabilityGridReadOnly(grid, staffType) {
+    return renderAvailabilityCompactHtml(grid, true, staffType);
   }
 
   function openAvailabilitySubmissionModal(reqId) {
@@ -2367,7 +3262,10 @@
       formatRequestSubmittedDate(req.submittedAt) +
       ' · ' +
       req.summary;
-    availabilityModalGrid.innerHTML = renderAvailabilityGridReadOnly(req.submittedGrid);
+    availabilityModalGrid.innerHTML = renderAvailabilityGridReadOnly(
+      req.submittedGrid,
+      req.role || 'Kitchen'
+    );
     availabilityRequestModal.hidden = false;
     availabilityRequestModal.setAttribute('aria-hidden', 'false');
     document.body.classList.add('availability-modal-open');
@@ -2590,7 +3488,7 @@
     if (empRows.length) {
       headHtml =
         '<li class="history-item callout-section-label" aria-hidden="true">' +
-        '<p class="history-item-meta"><strong>Employee call-outs</strong> — submitted by staff who cannot work a scheduled shift</p>' +
+        '<p class="history-item-meta"><strong>Employee call-outs</strong></p>' +
         '</li>' +
         empRows.map(renderCalloutRequestRowHtml).join('');
     }
@@ -2710,19 +3608,36 @@
     rows.sort(function (a, b) {
       return String(b.submittedAt || '').localeCompare(String(a.submittedAt || ''));
     });
+    var bulkActionsHtml = '';
+    if (requestsTypeFilter === 'availability') {
+      var pendingCount = rows.filter(function (r) {
+        return r.status === 'pending';
+      }).length;
+      bulkActionsHtml =
+        '<li class="history-item">' +
+        '<div class="request-item-actions">' +
+        '<button type="button" class="btn btn-primary request-action-btn" data-request-bulk-action="approve-all-availability"' +
+        (pendingCount > 0 ? '' : ' disabled') +
+        '>' +
+        'Accept all (' + pendingCount + ')' +
+        '</button>' +
+        '</div>' +
+        '</li>';
+    }
     if (!rows.length) {
       requestsList.innerHTML =
-        '<li class="history-item"><p class="history-item-meta">No requests match this type, status, or search.</p></li>';
+        bulkActionsHtml +
+        '<li class="history-item"><p class="history-item-meta">No actions match this type, status, or search.</p></li>';
       return;
     }
-    requestsList.innerHTML = rows
+    requestsList.innerHTML = bulkActionsHtml + rows
       .map(function (r) {
         var typeLabel =
           r.type === 'availability'
             ? 'Availability'
             : r.type === 'swap'
-              ? 'Shift swap'
-              : 'Time off';
+              ? 'Shift Swap'
+              : 'Time Off';
         var roleLabel = STAFF_TYPE_LABELS[r.role] || r.role || '';
         var statusClass =
           r.status === 'approved' ? 'filled' : r.status === 'declined' ? 'declined' : 'pending';
@@ -2790,9 +3705,12 @@
       var urPref = emp && emp.usualRestaurant ? emp.usualRestaurant : 'both';
       renderEmployeeLocationSelectOptions(urPref);
     }
-    const grid = emp && emp.weeklyGrid ? emp.weeklyGrid : defaultWeeklyGridAllOpen();
+    var st = empStaffType ? empStaffType.value : 'Kitchen';
+    const grid = emp
+      ? normalizeWeeklyGrid(emp.weeklyGrid, st)
+      : defaultWeeklyGridAllOpenForStaffType(st);
     if (employeeWeekAvail) {
-      employeeWeekAvail.innerHTML = renderEmployeeAvailabilityGrid(grid);
+      employeeWeekAvail.innerHTML = renderEmployeeAvailabilityGrid(grid, st);
     }
     showScreen(6);
     screenTitle.textContent = editingEmployeeId ? 'Edit employee' : 'Add employee';
@@ -2849,7 +3767,11 @@
     }
 
     var poolRaw = EMPLOYEE_POOLS[currentShift.role] || [];
+    var currentNames = (currentShift.workers || []).filter(function (n) {
+      return n && n !== 'Unassigned';
+    });
     var pool = poolRaw.filter(function (name) {
+      if (!name || name === 'Unassigned') return false;
       var emp = employeeByDisplayName(name);
       if (!emp) return true;
       return employeeMatchesSlotStaffFilter(emp);
@@ -2860,8 +3782,10 @@
         return String(name || '').toLowerCase().indexOf(q) !== -1;
       });
     }
-    const displayRole = currentShift.role === 'Bartender' ? 'Front of House' : currentShift.role;
-    const current = currentShift.workers && currentShift.workers.length ? currentShift.workers : [];
+    currentNames.forEach(function (mn) {
+      if (mn && pool.indexOf(mn) === -1) pool.push(mn);
+    });
+    const displayRole = STAFF_TYPE_LABELS[currentShift.role] || currentShift.role;
 
     eligibleShiftContext.textContent =
       'Edit Staffing — ' +
@@ -2871,32 +3795,46 @@
       ' — ' +
       currentShift.day +
       ', ' +
-      (currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end));
+      (currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end)) +
+      ' · Choose one or more people (defaults use a single assignee per slot).';
 
     if (editWorkerList) {
-      editWorkerList.innerHTML = pool.map(function (name, i) {
-        const emp = employeeByDisplayName(name);
-        const availability = emp
-          ? availabilityForShiftSlot(emp, currentShift.day, currentShift.start)
-          : '—';
-        const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
-        const seed = hashString(currentShift.role + '|' + name + '|' + i);
-        const checked = current.indexOf(name) !== -1 ? ' checked' : '';
-        return (
-          '<li class="worker-item">' +
-          '<input type="checkbox" id="edit-' + seed + '" value="' + escapeHtml(name) + '"' + checked + '>' +
-          '<div class="worker-item-info">' +
-          '<p class="worker-item-name">' + escapeHtml(name) + '</p>' +
-          '<p class="worker-item-meta">' +
-          escapeHtml(displayRole) +
-          ' · ' +
-          escapeHtml(availability) +
-          escapeHtml(locPart) +
-          '</p>' +
-          '</div></li>'
-        );
-      }).join('');
-      if (!pool.length) {
+      editWorkerList.innerHTML = pool
+        .map(function (name, i) {
+          const emp = employeeByDisplayName(name);
+          const availability = emp
+            ? availabilityForShiftSlot(emp, currentShift.day, currentShift.start, currentShift.end)
+            : '—';
+          const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
+          const seed = hashString(currentShift.role + '|' + name + '|' + i);
+          const checked = currentNames.indexOf(name) !== -1 ? ' checked' : '';
+          return (
+            '<li class="worker-item">' +
+            '<input type="checkbox" class="edit-shift-worker-cb" id="edit-' +
+            seed +
+            '" value="' +
+            escapeHtml(name) +
+            '"' +
+            checked +
+            ' />' +
+            '<div class="worker-item-info">' +
+            '<p class="worker-item-name">' +
+            escapeHtml(name) +
+            '</p>' +
+            '<p class="worker-item-meta">' +
+            escapeHtml(displayRole) +
+            ' · ' +
+            escapeHtml(availability) +
+            escapeHtml(locPart) +
+            '</p>' +
+            '</div></li>'
+          );
+        })
+        .join('');
+      if (!pool.length && !q) {
+        editWorkerList.innerHTML =
+          '<li class="history-item"><p class="history-item-meta">No employees in this role for this location.</p></li>';
+      } else if (!pool.length && q) {
         editWorkerList.innerHTML =
           '<li class="history-item"><p class="history-item-meta">No employees match this search.</p></li>';
       }
@@ -3008,14 +3946,12 @@
       if (!currentShift) return;
       if (!editWorkerList) return;
 
-      var selected = Array.from(editWorkerList.querySelectorAll('input:checked')).map(function (c) {
-        return c.value;
-      });
-
-      if (!selected.length) {
-        // Keep at least one assigned worker.
-        selected = (currentShift.workers || []).filter(Boolean);
-      }
+      var selected = Array.from(editWorkerList.querySelectorAll('input.edit-shift-worker-cb:checked')).map(
+        function (c) {
+          return c.value;
+        }
+      );
+      if (!selected.length) selected = ['Unassigned'];
 
       currentShift.workers = selected;
       currentShift.worker = selected[0];
@@ -3246,11 +4182,22 @@
 
     // Update the schedule assignment to reflect the accepted replacement.
     if (last.shift && last.acceptedBy) {
-      var workers = (last.shift.workers || []).filter(Boolean);
-      if (!workers.length) workers = [last.acceptedBy.name];
-      else workers[0] = last.acceptedBy.name;
+      var nm = last.acceptedBy.name;
+      var workers = (last.shift.workers || []).filter(function (n) {
+        return n && n !== 'Unassigned';
+      });
+      if (workers.indexOf(nm) === -1) workers.push(nm);
+      if (!workers.length) workers = [nm];
       last.shift.workers = workers;
       last.shift.worker = workers[0];
+      var live = SCHEDULE.find(function (x) {
+        return x.id === last.shift.id;
+      });
+      if (live) {
+        live.workers = workers.slice();
+        live.worker = live.workers[0];
+        saveScheduleAssignments();
+      }
     }
 
     renderCalendar();
@@ -3287,6 +4234,11 @@
 
   document.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Escape') return;
+    if (draftScheduleModal && !draftScheduleModal.hidden) {
+      closeDraftScheduleModal();
+      ev.preventDefault();
+      return;
+    }
     if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
       closeScheduleTemplateModal();
       ev.preventDefault();
@@ -3343,6 +4295,28 @@
 
   if (requestsList) {
     requestsList.addEventListener('click', function (e) {
+      var bulkBtn = e.target.closest('[data-request-bulk-action]');
+      if (bulkBtn && requestsList.contains(bulkBtn)) {
+        var bulkAction = bulkBtn.getAttribute('data-request-bulk-action');
+        if (bulkAction === 'approve-all-availability') {
+          var changed = false;
+          staffRequests.forEach(function (r) {
+            if (r.type !== 'availability') return;
+            if (r.status !== 'pending') return;
+            if (requestsSearchQuery) {
+              var blob = ((r.employeeName || '') + ' ' + (r.summary || '')).toLowerCase();
+              if (blob.indexOf(requestsSearchQuery) === -1) return;
+            }
+            r.status = 'approved';
+            changed = true;
+          });
+          if (changed) {
+            persistStaffRequestStatuses();
+            renderRequestsList();
+          }
+        }
+        return;
+      }
       var viewBtn = e.target.closest('[data-view-availability]');
       if (viewBtn && requestsList.contains(viewBtn)) {
         var vid = viewBtn.getAttribute('data-view-availability');
@@ -3378,6 +4352,46 @@
   if (openScheduleTemplateModalBtn) {
     openScheduleTemplateModalBtn.addEventListener('click', function () {
       openScheduleTemplateModal();
+    });
+  }
+  if (openDraftScheduleModalBtn) {
+    openDraftScheduleModalBtn.addEventListener('click', function () {
+      openDraftScheduleModal();
+    });
+  }
+  if (draftScheduleModalBackdrop) {
+    draftScheduleModalBackdrop.addEventListener('click', function () {
+      closeDraftScheduleModal();
+    });
+  }
+  if (draftScheduleModalClose) {
+    draftScheduleModalClose.addEventListener('click', function () {
+      closeDraftScheduleModal();
+    });
+  }
+  if (addDraftSlotLineBtn) {
+    addDraftSlotLineBtn.addEventListener('click', function () {
+      if (!draftModalScratch) return;
+      var maxRows = 25;
+      var role = draftModalActiveRole;
+      if (!draftModalScratch[role] || draftModalScratch[role].length >= maxRows) return;
+      draftModalScratch[role].push(makeNullDraftWeekRow());
+      renderDraftScheduleTable();
+    });
+  }
+  if (resetDraftScheduleBtn) {
+    resetDraftScheduleBtn.addEventListener('click', function () {
+      if (!draftModalScratch) return;
+      draftModalScratch = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+      renderDraftScheduleRoleChips();
+      renderDraftScheduleTable();
+    });
+  }
+  if (saveDraftScheduleBtn) {
+    saveDraftScheduleBtn.addEventListener('click', function () {
+      if (!draftModalScratch) return;
+      persistDraftScheduleRows(draftModalScratch);
+      closeDraftScheduleModal();
     });
   }
   if (openScheduleAddLocationModalBtn) {
@@ -3501,12 +4515,13 @@
       const first = (empFirstName.value || '').trim();
       const last = (empLastName.value || '').trim();
       if (!first || !last) return;
-      const wg = defaultWeeklyGridAllOpen();
+      const stSave = empStaffType.value;
+      const wg = defaultWeeklyGridAllOpenForStaffType(stSave);
       if (employeeWeekAvail) {
         employeeWeekAvail.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
           const wk = inp.getAttribute('data-wk');
-          const st = inp.getAttribute('data-start');
-          if (wk && st && wg[wk]) wg[wk][st] = inp.checked;
+          const sk = inp.getAttribute('data-slot-key');
+          if (wk && sk && wg[wk]) wg[wk][sk] = inp.checked;
         });
       }
       var urVal = empUsualRestaurant ? empUsualRestaurant.value : 'both';
@@ -3520,9 +4535,9 @@
         id: editingEmployeeId || newEmployeeId(),
         firstName: first,
         lastName: last,
-        staffType: empStaffType.value,
+        staffType: stSave,
         phone: empPhone ? (empPhone.value || '').trim() : '',
-        weeklyGrid: normalizeWeeklyGrid(wg),
+        weeklyGrid: normalizeWeeklyGrid(wg, stSave),
         usualRestaurant: urVal,
       };
       if (editingEmployeeId) {
@@ -3538,6 +4553,23 @@
       if (scheduleBody) renderSchedule();
       renderEmployeeList();
       showScreen(5);
+    });
+  }
+
+  if (empStaffType && employeeWeekAvail) {
+    empStaffType.addEventListener('change', function () {
+      var st = empStaffType.value;
+      var collected = {};
+      WEEKDAY_KEYS.forEach(function (wk) {
+        collected[wk] = {};
+      });
+      employeeWeekAvail.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
+        var wk = inp.getAttribute('data-wk');
+        var sk = inp.getAttribute('data-slot-key');
+        if (wk && sk && collected[wk]) collected[wk][sk] = inp.checked;
+      });
+      var grid = normalizeWeeklyGrid(collected, st);
+      employeeWeekAvail.innerHTML = renderEmployeeAvailabilityGrid(grid, st);
     });
   }
 
@@ -3642,13 +4674,17 @@
           restaurantId: s.restaurantId,
           restaurantName: s.restaurantName,
           day: s.day,
+          dayNameUpper: meta && meta.dayNameUpper ? meta.dayNameUpper : '',
           iso: iso,
           role: s.role,
           roleClass: s.roleClass,
           groupLabel: s.groupLabel,
           timeLabel: s.timeLabel,
+          redPokeBreak: s.redPokeBreak,
+          redPokeHours: s.redPokeHours,
           start: s.start,
           end: s.end,
+          slotKey: s.slotKey,
         };
         if (iso === todayIso) today.push(o);
         else if (iso && iso > todayIso) upcoming.push(o);
@@ -3671,6 +4707,51 @@
       var code = c ? c.staffType : 'Kitchen';
       return STAFF_TYPE_LABELS[code] || code || 'Staff';
     },
+    getOpenSwapOffers: function (workerName) {
+      mergeEmployeeSubmittedFromStorage();
+      return staffRequests
+        .filter(function (r) {
+          return r && r.type === 'swap' && r.status === 'pending' && r.employeeName !== workerName && r.offeredShiftLabel;
+        })
+        .map(function (r) {
+          return {
+            id: r.id,
+            employeeName: r.employeeName,
+            role: r.role,
+            offeredShiftLabel: r.offeredShiftLabel,
+            summary: r.summary || '',
+          };
+        });
+    },
+    getAvailabilityWeekOptions: function () {
+      var todayIso = localTodayISO();
+      var out = [];
+      for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+        var startMeta = WEEK_META[wi * 7];
+        if (!startMeta) continue;
+        if (String(startMeta.iso) < String(todayIso)) continue;
+        var prefix = out.length === 0 ? 'This week' : out.length === 1 ? 'Next week' : 'Week ' + (out.length + 1);
+        out.push({
+          weekIndex: wi,
+          startIso: startMeta.iso,
+          label: prefix + ' (' + startMeta.label + ')',
+        });
+      }
+      if (!out.length && WEEK_META[0]) {
+        out.push({
+          weekIndex: 0,
+          startIso: WEEK_META[0].iso,
+          label: 'This week (' + WEEK_META[0].label + ')',
+        });
+      }
+      return out;
+    },
+    getDefaultAvailabilityGridForRole: function (staffType) {
+      return normalizeWeeklyGrid({}, staffType);
+    },
+    renderAvailabilityGridEditor: function (grid, staffType) {
+      return renderEmployeeAvailabilityGrid(grid, staffType);
+    },
     submitEmployeeRequest: function (row) {
       mergeEmployeeSubmittedFromStorage();
       var id = 'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
@@ -3684,6 +4765,10 @@
         status: 'pending',
       };
       if (row.submittedGrid) full.submittedGrid = row.submittedGrid;
+      if (row.submittedWeekLabel) full.submittedWeekLabel = row.submittedWeekLabel;
+      if (row.submittedWeekIndex != null) full.submittedWeekIndex = row.submittedWeekIndex;
+      if (row.offeredShiftLabel) full.offeredShiftLabel = row.offeredShiftLabel;
+      if (row.swapOfferId) full.swapOfferId = row.swapOfferId;
       staffRequests.push(full);
       var arr = loadEmployeeSubmittedRequestsArray();
       arr.push(full);
@@ -3691,6 +4776,8 @@
       mergeEmployeeSubmittedFromStorage();
       renderRequestsList();
     },
+    formatShiftTimeRedPoke: redPokeShiftTimeLabel,
+    shiftHoursDecimal: redPokeShiftHoursDecimal,
   };
 
   showScreen(1);

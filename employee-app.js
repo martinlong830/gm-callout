@@ -32,7 +32,7 @@
         {
           id: 'jamie',
           peerName: 'Jamie Li',
-          subtitle: 'Kitchen',
+          subtitle: 'Back of the House',
           messages: [
             {
               who: 'peer',
@@ -74,12 +74,15 @@
     if (!bridge || !bridge.employeeLoginName) return;
 
     var WORKER = bridge.employeeLoginName;
-    var titles = { home: 'Home', messages: 'Messages', requests: 'Requests' };
+    var titles = { home: 'Home', messages: 'Messages', requests: 'Actions' };
 
     var screenTitle = el('empScreenTitle');
     var welcomeCard = el('empWelcomeCard');
     var listToday = el('empShiftsToday');
     var listUp = el('empShiftsUpcoming');
+    var upcomingPrevWeekBtn = el('empUpcomingPrevWeek');
+    var upcomingNextWeekBtn = el('empUpcomingNextWeek');
+    var upcomingWeekLabel = el('empUpcomingWeekLabel');
     var managerBanner = el('empManagerBanner');
     var threadList = el('empThreadList');
     var chatPanel = el('empChatPanel');
@@ -90,6 +93,22 @@
     var backThreads = el('empBackThreads');
     var messagesLayout = el('empMessagesLayout');
     var feedback = el('empRequestFeedback');
+    var empAvailWeekChips = el('empAvailWeekChips');
+    var empAvailGrid = el('empAvailGrid');
+    var empAvailCheckAllBtn = el('empAvailCheckAllBtn');
+    var empTimeoffStartDate = el('empTimeoffStartDate');
+    var empTimeoffEndDate = el('empTimeoffEndDate');
+    var empTimeoffNote = el('empTimeoffNote');
+    var empSwapShiftOffer = el('empSwapShiftOffer');
+    var empSwapAvailableShift = el('empSwapAvailableShift');
+    var empSwapAcceptBtn = el('empSwapAcceptBtn');
+    var empSwapAcceptNote = el('empSwapAcceptNote');
+    var upcomingWeekCursor = 0;
+    var upcomingWeekStarts = [];
+    var upcomingRowsByWeek = {};
+    var availWeekOptions = [];
+    var selectedAvailWeekIndex = 0;
+    var currentAvailGrid = null;
 
     var store = loadChatStore();
 
@@ -114,37 +133,126 @@
       return 'role-server';
     }
 
+    function parseIsoDate(iso) {
+      if (!iso) return null;
+      var m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return null;
+      var y = parseInt(m[1], 10);
+      var mo = parseInt(m[2], 10) - 1;
+      var d = parseInt(m[3], 10);
+      return new Date(y, mo, d);
+    }
+
+    function formatCalendarDateLabel(row) {
+      var d = parseIsoDate(row && row.iso);
+      if (!d || Number.isNaN(d.getTime())) {
+        return row && row.day ? String(row.day) : '';
+      }
+      var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      var weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      return weekdays[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate();
+    }
+
+    function weekStartIsoFromIso(iso) {
+      var d = parseIsoDate(iso);
+      if (!d || Number.isNaN(d.getTime())) return '';
+      var day = d.getDay(); // Sun=0...Sat=6
+      var monOffset = day === 0 ? -6 : 1 - day;
+      var mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() + monOffset);
+      var y = mon.getFullYear();
+      var m = String(mon.getMonth() + 1).padStart(2, '0');
+      var dd = String(mon.getDate()).padStart(2, '0');
+      return y + '-' + m + '-' + dd;
+    }
+
+    function formatWeekHeaderLabel(weekStartIso) {
+      var d = parseIsoDate(weekStartIso);
+      if (!d || Number.isNaN(d.getTime())) return 'Upcoming';
+      var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return 'Week of ' + months[d.getMonth()] + ' ' + d.getDate();
+    }
+
+    function renderShiftItemHtml(r) {
+      var rc = r.roleClass || mapRoleClass(r.role);
+      var pill = escapeHtml(r.groupLabel || r.role || '');
+      var tl =
+        r.timeLabel ||
+        (bridge.formatShiftTimeRedPoke && r.start && r.end
+          ? bridge.formatShiftTimeRedPoke(r.start, r.end)
+          : (r.start || '') + ' – ' + (r.end || ''));
+      var br = r.redPokeBreak != null ? r.redPokeBreak : '(3:00PM BREAK TIME)';
+      var hrs = r.redPokeHours != null ? String(r.redPokeHours) : '';
+      var dayLabel = formatCalendarDateLabel(r);
+      return (
+        '<li class="emp-shift-item">' +
+        '<div class="emp-shift-top">' +
+        '<span class="role-pill ' +
+        escapeHtml(rc) +
+        '">' +
+        pill +
+        '</span>' +
+        '<span class="emp-shift-day">' +
+        escapeHtml(dayLabel) +
+        '</span>' +
+        '</div>' +
+        '<div class="emp-shift-rp">' +
+        '<div class="emp-shift-rp-time">' +
+        escapeHtml(tl) +
+        '</div>' +
+        '<div class="emp-shift-rp-break">' +
+        escapeHtml(br) +
+        '</div>' +
+        '<div class="emp-shift-rp-hours">' +
+        escapeHtml(hrs) +
+        '</div>' +
+        '</div>' +
+        '<p class="emp-shift-meta">' +
+        escapeHtml(r.restaurantName || '') +
+        '</p>' +
+        '</li>'
+      );
+    }
+
     function renderShiftList(ul, rows, emptyMsg) {
       if (!ul) return;
       if (!rows || !rows.length) {
         ul.innerHTML = '<li class="emp-shift-empty">' + escapeHtml(emptyMsg) + '</li>';
         return;
       }
-      ul.innerHTML = rows
-        .map(function (r) {
-          var rc = r.roleClass || mapRoleClass(r.role);
-          var pill = escapeHtml(r.groupLabel || r.role || '');
-          return (
-            '<li class="emp-shift-item">' +
-            '<div class="emp-shift-top">' +
-            '<span class="role-pill ' +
-            escapeHtml(rc) +
-            '">' +
-            pill +
-            '</span>' +
-            '<span class="emp-shift-day">' +
-            escapeHtml(r.day) +
-            '</span>' +
-            '</div>' +
-            '<p class="emp-shift-meta">' +
-            escapeHtml(r.timeLabel || (r.start + ' – ' + r.end)) +
-            ' · ' +
-            escapeHtml(r.restaurantName || '') +
-            '</p>' +
-            '</li>'
-          );
-        })
-        .join('');
+      ul.innerHTML = rows.map(renderShiftItemHtml).join('');
+    }
+
+    function partitionUpcomingByWeek(rows) {
+      var groups = {};
+      var order = [];
+      (rows || []).forEach(function (r) {
+        var wk = weekStartIsoFromIso(r && r.iso) || 'unknown';
+        if (!groups[wk]) {
+          groups[wk] = [];
+          order.push(wk);
+        }
+        groups[wk].push(r);
+      });
+      return { order: order, groups: groups };
+    }
+
+    function renderUpcomingWeekPager(ul, emptyMsg) {
+      if (!ul) return;
+      if (!upcomingWeekStarts.length) {
+        ul.innerHTML = '<li class="emp-shift-empty">' + escapeHtml(emptyMsg) + '</li>';
+        if (upcomingWeekLabel) upcomingWeekLabel.textContent = 'No upcoming shifts';
+        if (upcomingPrevWeekBtn) upcomingPrevWeekBtn.disabled = true;
+        if (upcomingNextWeekBtn) upcomingNextWeekBtn.disabled = true;
+        return;
+      }
+      if (upcomingWeekCursor < 0) upcomingWeekCursor = 0;
+      if (upcomingWeekCursor >= upcomingWeekStarts.length) upcomingWeekCursor = upcomingWeekStarts.length - 1;
+      var wk = upcomingWeekStarts[upcomingWeekCursor];
+      var rows = upcomingRowsByWeek[wk] || [];
+      ul.innerHTML = rows.map(renderShiftItemHtml).join('');
+      if (upcomingWeekLabel) upcomingWeekLabel.textContent = formatWeekHeaderLabel(wk);
+      if (upcomingPrevWeekBtn) upcomingPrevWeekBtn.disabled = upcomingWeekCursor <= 0;
+      if (upcomingNextWeekBtn) upcomingNextWeekBtn.disabled = upcomingWeekCursor >= upcomingWeekStarts.length - 1;
     }
 
     function renderHome() {
@@ -156,8 +264,7 @@
           '</p>' +
           '<p class="emp-welcome-meta">' +
           escapeHtml(role) +
-          '</p>' +
-          '<p class="emp-welcome-hint">Shifts match the manager schedule (all locations).</p>';
+          '</p>';
       }
       var buckets = bridge.getWorkerScheduleBuckets(WORKER);
       renderShiftList(
@@ -165,11 +272,13 @@
         buckets.today,
         'You have no shifts today in the current 3-week window.'
       );
-      renderShiftList(
-        listUp,
-        buckets.upcoming,
-        'No later shifts in the current 3-week window.'
-      );
+      var grouped = partitionUpcomingByWeek(buckets.upcoming);
+      upcomingWeekStarts = grouped.order;
+      upcomingRowsByWeek = grouped.groups;
+      if (upcomingWeekStarts.length && upcomingWeekCursor >= upcomingWeekStarts.length) {
+        upcomingWeekCursor = upcomingWeekStarts.length - 1;
+      }
+      renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
     }
 
     var mgr = bridge.getManagerContact();
@@ -291,10 +400,130 @@
           .join('');
     }
 
+    function populateSwapShiftOfferSelect() {
+      if (!empSwapShiftOffer) return;
+      var rows = allShiftsForSelect();
+      if (!rows.length) {
+        empSwapShiftOffer.innerHTML = '<option value="">No upcoming shifts available</option>';
+        empSwapShiftOffer.disabled = true;
+        return;
+      }
+      empSwapShiftOffer.disabled = false;
+      empSwapShiftOffer.innerHTML =
+        '<option value="">Choose a shift…</option>' +
+        rows
+          .map(function (r) {
+            var label = r.day + ' · ' + (r.timeLabel || r.start + ' – ' + r.end) + ' · ' + r.restaurantName;
+            var value =
+              r.restaurantId + '|' + r.id + '|' + encodeURIComponent(r.day) + '|' + encodeURIComponent(r.timeLabel || '');
+            return '<option value="' + escapeHtml(value) + '">' + escapeHtml(label) + '</option>';
+          })
+          .join('');
+    }
+
+    function populateAvailableSwapOffersSelect() {
+      if (!empSwapAvailableShift) return;
+      var offers = bridge.getOpenSwapOffers ? bridge.getOpenSwapOffers(WORKER) : [];
+      if (!offers.length) {
+        empSwapAvailableShift.innerHTML = '<option value="">No open shift swap offers</option>';
+        empSwapAvailableShift.disabled = true;
+        return;
+      }
+      empSwapAvailableShift.disabled = false;
+      empSwapAvailableShift.innerHTML =
+        '<option value="">Choose an offer…</option>' +
+        offers
+          .map(function (o) {
+            var label = o.offeredShiftLabel + ' · offered by ' + o.employeeName;
+            return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(label) + '</option>';
+          })
+          .join('');
+    }
+
     function showRequestFeedback(msg) {
       if (!feedback) return;
       feedback.textContent = msg || '';
       feedback.hidden = !msg;
+    }
+
+    function showEmpRequestForm(formKey) {
+      var map = {
+        availability: 'empFormAvailability',
+        timeoff: 'empFormTimeoff',
+        swap: 'empFormSwap',
+        callout_request: 'empFormCallout',
+      };
+      Object.keys(map).forEach(function (k) {
+        var f = el(map[k]);
+        if (f) f.hidden = k !== formKey;
+      });
+      document.querySelectorAll('[data-req-form]').forEach(function (c) {
+        c.classList.toggle('active', c.getAttribute('data-req-form') === formKey);
+      });
+    }
+
+    function renderAvailWeekChips() {
+      if (!empAvailWeekChips) return;
+      empAvailWeekChips.innerHTML = availWeekOptions
+        .map(function (w, idx) {
+          var active = idx === selectedAvailWeekIndex;
+          return (
+            '<button type="button" class="filter-chip' +
+            (active ? ' active' : '') +
+            '" data-avail-week-idx="' +
+            idx +
+            '" role="tab" aria-selected="' +
+            (active ? 'true' : 'false') +
+            '">' +
+            escapeHtml(w.label) +
+            '</button>'
+          );
+        })
+        .join('');
+    }
+
+    function collectAvailabilityGridFromDom() {
+      var out = {};
+      if (!empAvailGrid) return out;
+      empAvailGrid.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
+        var wk = inp.getAttribute('data-wk');
+        var sk = inp.getAttribute('data-slot-key');
+        if (!wk || !sk) return;
+        if (!out[wk]) out[wk] = {};
+        out[wk][sk] = !!inp.checked;
+      });
+      return out;
+    }
+
+    function renderAvailabilityRequestGrid(roleCode) {
+      if (!empAvailGrid || !bridge.getDefaultAvailabilityGridForRole || !bridge.renderAvailabilityGridEditor) return;
+      if (!currentAvailGrid) currentAvailGrid = bridge.getDefaultAvailabilityGridForRole(roleCode);
+      empAvailGrid.innerHTML = bridge.renderAvailabilityGridEditor(currentAvailGrid, roleCode);
+    }
+
+    function checkAllAvailabilityGrid() {
+      if (!empAvailGrid) return;
+      empAvailGrid.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
+        inp.checked = true;
+      });
+      currentAvailGrid = collectAvailabilityGridFromDom();
+    }
+
+    function initAvailabilityRequestForm() {
+      var roleCode = bridge.getWorkerRoleCode(WORKER);
+      currentAvailGrid = bridge.getDefaultAvailabilityGridForRole
+        ? bridge.getDefaultAvailabilityGridForRole(roleCode)
+        : null;
+      availWeekOptions = bridge.getAvailabilityWeekOptions ? bridge.getAvailabilityWeekOptions() : [];
+      selectedAvailWeekIndex = 0;
+      renderAvailWeekChips();
+      renderAvailabilityRequestGrid(roleCode);
+    }
+
+    function initTimeoffDateRangeForm() {
+      if (empTimeoffStartDate) empTimeoffStartDate.value = '';
+      if (empTimeoffEndDate) empTimeoffEndDate.value = '';
+      if (empTimeoffNote) empTimeoffNote.value = '';
     }
 
     function wireRequestForm(formId, getPayload) {
@@ -305,8 +534,10 @@
         var payload = getPayload();
         if (!payload) return;
         bridge.submitEmployeeRequest(payload);
-        form.reset();
-        showRequestFeedback('Submitted. Your manager will see it under Requests.');
+        if (formId === 'empFormAvailability') initAvailabilityRequestForm();
+        else if (formId === 'empFormTimeoff') initTimeoffDateRangeForm();
+        else form.reset();
+        showRequestFeedback('Submitted. Your manager will see it under Actions.');
         setTimeout(function () {
           showRequestFeedback('');
         }, 4000);
@@ -344,38 +575,59 @@
       }
 
       wireRequestForm('empFormAvailability', function () {
-        var ta = el('empAvailDetails');
-        var summary = (ta && ta.value) || '';
-        if (!String(summary).trim()) return null;
+        var weekOpt = availWeekOptions[selectedAvailWeekIndex];
+        if (!weekOpt) return null;
+        var roleCodeNow = bridge.getWorkerRoleCode(WORKER);
+        var roleLine = bridge.getWorkerRoleLine(WORKER);
+        var collected = collectAvailabilityGridFromDom();
+        currentAvailGrid = collected;
         return {
           type: 'availability',
           employeeName: WORKER,
-          role: roleCode,
-          summary: 'Availability update: ' + String(summary).trim(),
+          role: roleCodeNow,
+          summary: 'Availability update for ' + weekOpt.label + ' (' + roleLine + ').',
+          submittedWeekLabel: weekOpt.label,
+          submittedWeekIndex: weekOpt.weekIndex,
+          submittedGrid: collected,
         };
       });
 
       wireRequestForm('empFormSwap', function () {
         var ta = el('empSwapDetails');
-        var summary = (ta && ta.value) || '';
-        if (!String(summary).trim()) return null;
+        var sel = empSwapShiftOffer;
+        if (!sel || sel.disabled || !sel.value) {
+          showRequestFeedback('Choose one of your upcoming shifts to offer.');
+          return null;
+        }
+        var opt = sel.options[sel.selectedIndex];
+        var note = (ta && ta.value) || '';
+        var shiftLabel = opt ? opt.textContent : '';
         return {
           type: 'swap',
           employeeName: WORKER,
           role: roleCode,
-          summary: 'Shift swap: ' + String(summary).trim(),
+          offeredShiftLabel: shiftLabel,
+          summary:
+            'Shift Swap Offer: ' +
+            shiftLabel +
+            (String(note).trim() ? '. Notes: ' + String(note).trim() : ''),
         };
       });
 
       wireRequestForm('empFormTimeoff', function () {
-        var ta = el('empTimeoffDetails');
-        var summary = (ta && ta.value) || '';
-        if (!String(summary).trim()) return null;
+        var start = empTimeoffStartDate ? String(empTimeoffStartDate.value || '') : '';
+        var end = empTimeoffEndDate ? String(empTimeoffEndDate.value || '') : '';
+        var note = empTimeoffNote ? String(empTimeoffNote.value || '').trim() : '';
+        if (!start || !end) return null;
+        if (end < start) {
+          showRequestFeedback('End date must be on or after start date.');
+          return null;
+        }
         return {
           type: 'timeoff',
           employeeName: WORKER,
           role: roleCode,
-          summary: 'Time off: ' + String(summary).trim(),
+          summary: 'Time Off: ' + start + ' to ' + end + (note ? '. Notes: ' + note : ''),
         };
       });
 
@@ -405,19 +657,8 @@
       document.querySelectorAll('[data-req-form]').forEach(function (chip) {
         chip.addEventListener('click', function () {
           var t = chip.getAttribute('data-req-form');
-          document.querySelectorAll('[data-req-form]').forEach(function (c) {
-            c.classList.toggle('active', c === chip);
-          });
-          var map = {
-            availability: 'empFormAvailability',
-            swap: 'empFormSwap',
-            timeoff: 'empFormTimeoff',
-            callout_request: 'empFormCallout',
-          };
-          Object.keys(map).forEach(function (k) {
-            var f = el(map[k]);
-            if (f) f.hidden = k !== t;
-          });
+          if (!t) return;
+          showEmpRequestForm(t);
         });
       });
 
@@ -431,11 +672,78 @@
           }
           if (key === 'requests') {
             populateCalloutShiftSelect();
+            populateSwapShiftOfferSelect();
+            populateAvailableSwapOffersSelect();
+            initAvailabilityRequestForm();
+            initTimeoffDateRangeForm();
+            showEmpRequestForm('availability');
             showRequestFeedback('');
           }
           showEmpNav(key);
         });
       });
+
+      if (empAvailWeekChips) {
+        empAvailWeekChips.addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-avail-week-idx]');
+          if (!btn) return;
+          var idx = parseInt(btn.getAttribute('data-avail-week-idx'), 10);
+          if (Number.isNaN(idx) || idx < 0 || idx >= availWeekOptions.length) return;
+          selectedAvailWeekIndex = idx;
+          renderAvailWeekChips();
+        });
+      }
+
+      if (empAvailCheckAllBtn) {
+        empAvailCheckAllBtn.addEventListener('click', function () {
+          checkAllAvailabilityGrid();
+        });
+      }
+
+      if (empSwapAcceptBtn) {
+        empSwapAcceptBtn.addEventListener('click', function () {
+          if (!empSwapAvailableShift || empSwapAvailableShift.disabled || !empSwapAvailableShift.value) {
+            showRequestFeedback('Choose an available shift offer to accept.');
+            return;
+          }
+          var offerId = empSwapAvailableShift.value;
+          var offerOpt = empSwapAvailableShift.options[empSwapAvailableShift.selectedIndex];
+          var offerLabel = offerOpt ? offerOpt.textContent : '';
+          var note = empSwapAcceptNote ? String(empSwapAcceptNote.value || '').trim() : '';
+          bridge.submitEmployeeRequest({
+            type: 'swap',
+            employeeName: WORKER,
+            role: roleCode,
+            swapOfferId: offerId,
+            summary:
+              'Shift Swap Acceptance (manager approval): ' +
+              offerLabel +
+              (note ? '. Note: ' + note : ''),
+          });
+          if (empSwapAcceptNote) empSwapAcceptNote.value = '';
+          populateAvailableSwapOffersSelect();
+          showRequestFeedback('Submitted. Waiting for manager approval.');
+          setTimeout(function () {
+            showRequestFeedback('');
+          }, 4000);
+        });
+      }
+
+      if (upcomingPrevWeekBtn) {
+        upcomingPrevWeekBtn.addEventListener('click', function () {
+          if (upcomingWeekCursor <= 0) return;
+          upcomingWeekCursor -= 1;
+          renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
+        });
+      }
+
+      if (upcomingNextWeekBtn) {
+        upcomingNextWeekBtn.addEventListener('click', function () {
+          if (upcomingWeekCursor >= upcomingWeekStarts.length - 1) return;
+          upcomingWeekCursor += 1;
+          renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
+        });
+      }
     }
 
     renderHome();
