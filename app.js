@@ -309,6 +309,10 @@
   const EMPLOYEE_SUBMITTED_REQUESTS_KEY = 'gm-callout-employee-submitted-requests-v1';
   /** Self-serve employee portal sign-ins (client-side demo; not server auth). */
   const EMPLOYEE_PORTAL_ACCOUNTS_KEY = 'gm-callout-employee-portal-accounts-v1';
+  /** Manager self-registration (requires signup code); client-side demo only. */
+  const MANAGER_PORTAL_ACCOUNTS_KEY = 'gm-callout-manager-portal-accounts-v1';
+  /** Preset access code for creating a manager account on the login screen. */
+  const MANAGER_SELF_SIGNUP_CODE = 'redpoke';
   const SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
 
   function defaultRestaurants() {
@@ -1939,12 +1943,12 @@
 
   const titles = {
     1: 'Schedule Overview',
-    2: 'Shift Edit / Callout',
+    2: 'Shift Edit / Coverage',
     3: 'Shift Accepted',
     4: 'Shift Filled / History',
     5: 'Employees',
     6: 'Employee',
-    7: 'Callout script',
+    7: 'Call script',
     8: 'Actions',
   };
 
@@ -2010,6 +2014,8 @@
   let employeeSearchQuery = '';
   let scheduleDragState = null;
   let calendarDragListenersBound = false;
+  /** Tear down listeners when closing the calendar cell name editor. */
+  let calendarInlineEditCleanup = null;
   function findShift(dayStr, role, start, end) {
     return SCHEDULE.find(function (s) {
       return (
@@ -2684,6 +2690,7 @@
   const SCHEDULE_GRID_ROLE_ORDER = ['Bartender', 'Kitchen', 'Server'];
 
   function renderCalendar() {
+    closeCalendarInlineWorkerEdit();
     if (!calendarGrid) return;
     if (!SCHEDULE.length) {
       calendarGrid.innerHTML = '<p class="calendar-hint">No shifts to show.</p>';
@@ -2808,6 +2815,7 @@
               '" data-worker-index="' +
               wi +
               '"' +
+              ' title="Click to type a name; drag to move to another shift"' +
               '>' +
               escapeHtml(wname) +
               '</span>'
@@ -2886,13 +2894,186 @@
     });
   }
 
+  function closeCalendarInlineWorkerEdit() {
+    if (typeof calendarInlineEditCleanup === 'function') {
+      calendarInlineEditCleanup();
+    }
+    calendarInlineEditCleanup = null;
+  }
+
+  /**
+   * Replace a calendar name pill with an inline field + dropdown (Excel-style).
+   * Clicking elsewhere on the slot still opens Edit Staffing via openShiftEdit.
+   */
+  function openCalendarInlineWorkerEditor(wrap, shift, workerIndex, pillEl) {
+    closeCalendarInlineWorkerEdit();
+
+    var poolFull = buildEditStaffingNamePoolForShift(shift, '').slice();
+    if (poolFull.indexOf('Unassigned') === -1) poolFull.push('Unassigned');
+
+    var row = (shift.workers || [shift.worker].filter(Boolean)).slice();
+    while (row.length <= workerIndex) row.push('Unassigned');
+    var initialName = row[workerIndex] || 'Unassigned';
+
+    var host = document.createElement('span');
+    host.className = 'calendar-cell-edit-host';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'calendar-cell-name-input';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-label', 'Edit assigned name');
+    input.value = initialName === 'Unassigned' ? '' : initialName;
+    var ul = document.createElement('ul');
+    ul.className = 'calendar-name-dropdown';
+    ul.setAttribute('role', 'listbox');
+    host.appendChild(input);
+    host.appendChild(ul);
+    pillEl.replaceWith(host);
+
+    function filteredPool(q) {
+      var t = String(q || '').trim().toLowerCase();
+      return poolFull
+        .filter(function (n) {
+          if (!t) return true;
+          return String(n).toLowerCase().indexOf(t) !== -1;
+        })
+        .slice(0, 12);
+    }
+
+    function renderDd() {
+      ul.innerHTML = '';
+      var items = filteredPool(input.value);
+      if (!items.length) {
+        ul.classList.add('hidden');
+        return;
+      }
+      ul.classList.remove('hidden');
+      items.forEach(function (nm) {
+        var li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.setAttribute('data-name', nm);
+        li.textContent = nm;
+        ul.appendChild(li);
+      });
+    }
+
+    function pickCanonical(typed) {
+      var t = String(typed || '').trim();
+      if (!t || t.toLowerCase() === 'unassigned') return 'Unassigned';
+      var hit = poolFull.find(function (n) {
+        return String(n).toLowerCase() === t.toLowerCase();
+      });
+      return hit || null;
+    }
+
+    function tearDownListeners() {
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+    }
+
+    function finishAndRerender() {
+      tearDownListeners();
+      calendarInlineEditCleanup = null;
+      renderCalendar();
+    }
+
+    function commit() {
+      var chosen = pickCanonical(input.value);
+      if (!chosen && String(input.value || '').trim()) {
+        renderDd();
+        return;
+      }
+      if (!chosen) chosen = 'Unassigned';
+      var row2 = (shift.workers || [shift.worker].filter(Boolean)).slice();
+      while (row2.length <= workerIndex) row2.push('Unassigned');
+      row2[workerIndex] = chosen;
+      var nonU = row2.filter(function (n) {
+        return n && n !== 'Unassigned';
+      });
+      shift.workers = row2;
+      shift.worker = nonU.length ? nonU[0] : 'Unassigned';
+      saveScheduleAssignments();
+      finishAndRerender();
+    }
+
+    function cancel() {
+      tearDownListeners();
+      calendarInlineEditCleanup = null;
+      renderCalendar();
+    }
+
+    function onDocMouseDown(e) {
+      if (host.contains(e.target)) return;
+      cancel();
+    }
+
+    input.addEventListener('input', renderDd);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        var items = filteredPool(input.value);
+        if (items.length === 1) {
+          input.value = items[0];
+          commit();
+        } else {
+          var c = pickCanonical(input.value);
+          if (c) commit();
+        }
+      }
+    });
+    ul.addEventListener('mousedown', function (e) {
+      var li = e.target.closest('li[data-name]');
+      if (!li) return;
+      e.preventDefault();
+      input.value = li.getAttribute('data-name') || '';
+      commit();
+    });
+    input.addEventListener('blur', function () {
+      setTimeout(function () {
+        if (!document.body.contains(host)) return;
+        if (host.contains(document.activeElement)) return;
+        var c = pickCanonical(input.value);
+        if (c) commit();
+        else cancel();
+      }, 150);
+    });
+
+    setTimeout(function () {
+      document.addEventListener('mousedown', onDocMouseDown, true);
+    }, 0);
+
+    calendarInlineEditCleanup = tearDownListeners;
+
+    renderDd();
+    input.focus();
+    input.select();
+  }
+
   function ensureCalendarInteraction() {
     if (!calendarGrid || calendarDragListenersBound) return;
     calendarDragListenersBound = true;
 
     calendarGrid.addEventListener('click', function (e) {
+      const pill = e.target.closest('.calendar-worker-pill');
+      if (pill) {
+        const wrapP = e.target.closest('.calendar-slot-wrap[data-shiftid]');
+        if (!wrapP) return;
+        e.stopPropagation();
+        const sid = wrapP.dataset.shiftid;
+        const sh = SCHEDULE.find(function (s) {
+          return s.id === sid;
+        });
+        if (!sh) return;
+        const wi = parseInt(pill.getAttribute('data-worker-index') || '0', 10) || 0;
+        openCalendarInlineWorkerEditor(wrapP, sh, wi, pill);
+        return;
+      }
       const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid]');
       if (!wrap) return;
+      if (e.target.closest('.calendar-cell-edit-host')) return;
       const id = wrap.dataset.shiftid;
       currentShift = SCHEDULE.find(function (s) {
         return s.id === id;
@@ -2901,6 +3082,7 @@
     });
 
     calendarGrid.addEventListener('keydown', function (e) {
+      if (e.target.closest('.calendar-cell-name-input')) return;
       if (e.key !== 'Enter' && e.key !== ' ') return;
       const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid]');
       if (!wrap) return;
@@ -3695,16 +3877,11 @@
     });
   }
 
-  function openShiftEdit() {
-    if (!currentShift) return;
-    setShiftMode('edit');
-    syncSlotLocationFilterChips();
-    if (shiftEditSearchInput && shiftEditSearchInput.value !== shiftEditSearchQuery) {
-      shiftEditSearchInput.value = shiftEditSearchQuery;
-    }
-
-    var poolRaw = EMPLOYEE_POOLS[currentShift.role] || [];
-    var currentNames = (currentShift.workers || []).filter(function (n) {
+  /** Names assignable on Edit Staffing for this shift (same rules as the checklist). */
+  function buildEditStaffingNamePoolForShift(shift, searchQueryOpt) {
+    if (!shift) return [];
+    var poolRaw = EMPLOYEE_POOLS[shift.role] || [];
+    var currentNames = (shift.workers || []).filter(function (n) {
       return n && n !== 'Unassigned';
     });
     var pool = poolRaw.filter(function (name) {
@@ -3713,7 +3890,7 @@
       if (!emp) return true;
       return employeeMatchesSlotStaffFilter(emp);
     });
-    var q = String(shiftEditSearchQuery || '').trim().toLowerCase();
+    var q = String(searchQueryOpt || '').trim().toLowerCase();
     if (q) {
       pool = pool.filter(function (name) {
         return String(name || '').toLowerCase().indexOf(q) !== -1;
@@ -3721,6 +3898,21 @@
     }
     currentNames.forEach(function (mn) {
       if (mn && pool.indexOf(mn) === -1) pool.push(mn);
+    });
+    return pool;
+  }
+
+  function openShiftEdit() {
+    if (!currentShift) return;
+    setShiftMode('edit');
+    syncSlotLocationFilterChips();
+    if (shiftEditSearchInput && shiftEditSearchInput.value !== shiftEditSearchQuery) {
+      shiftEditSearchInput.value = shiftEditSearchQuery;
+    }
+
+    var pool = buildEditStaffingNamePoolForShift(currentShift, shiftEditSearchQuery);
+    var currentNames = (currentShift.workers || []).filter(function (n) {
+      return n && n !== 'Unassigned';
     });
     const displayRole = STAFF_TYPE_LABELS[currentShift.role] || currentShift.role;
 
@@ -4584,6 +4776,77 @@
     if (scheduleBody) renderSchedule();
     renderEmployeeList();
     return { ok: true, message: 'Account created. You can sign in now.', displayName: displayName };
+  };
+
+  function loadPortalManagerAccounts() {
+    try {
+      var raw = localStorage.getItem(MANAGER_PORTAL_ACCOUNTS_KEY);
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (Array.isArray(p)) {
+          return p.filter(function (x) {
+            return x && x.loginKey && x.password && x.emailDisplay;
+          });
+        }
+      }
+    } catch (eMgr) {
+      /* ignore */
+    }
+    return [];
+  }
+
+  function savePortalManagerAccounts(arr) {
+    try {
+      localStorage.setItem(MANAGER_PORTAL_ACCOUNTS_KEY, JSON.stringify(arr));
+    } catch (eMgr2) {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Register a new manager for the portal (localStorage). Requires MANAGER_SELF_SIGNUP_CODE.
+   * Passwords are stored in plain text for this demo only.
+   */
+  window.gmCalloutRegisterManagerAccount = function (opts) {
+    opts = opts || {};
+    var code = String(opts.signupCode != null ? opts.signupCode : '')
+      .trim()
+      .toLowerCase();
+    if (code !== MANAGER_SELF_SIGNUP_CODE) {
+      return { ok: false, message: 'Access code is incorrect.' };
+    }
+    var emailRaw = String(opts.email != null ? opts.email : '').trim();
+    if (!emailRaw) return { ok: false, message: 'Email is required.' };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
+      return { ok: false, message: 'Enter a valid email address.' };
+    }
+    var pw = String(opts.password != null ? opts.password : '');
+    if (pw.length < 4) return { ok: false, message: 'Password must be at least 4 characters.' };
+    var loginKey = normPortalLoginKey(emailRaw);
+    var accounts = loadPortalManagerAccounts();
+    if (accounts.some(function (a) { return a.loginKey === loginKey; })) {
+      return { ok: false, message: 'A manager account already exists for that email.' };
+    }
+    accounts.push({
+      loginKey: loginKey,
+      emailDisplay: emailRaw,
+      password: pw,
+    });
+    savePortalManagerAccounts(accounts);
+    return { ok: true, message: 'Manager account created. Sign in with your email and password.' };
+  };
+
+  /** Match registered manager portal login (localStorage). */
+  window.gmCalloutPortalManagerLogin = function (email, password) {
+    var id = normPortalLoginKey(email);
+    var pw = String(password || '');
+    var accounts = loadPortalManagerAccounts();
+    var m = accounts.find(function (a) {
+      return a.loginKey === id;
+    });
+    if (!m) return { ok: false };
+    if (m.password !== pw) return { ok: false };
+    return { ok: true };
   };
 
   /** Match portal login (registered accounts + demo Jordan). */

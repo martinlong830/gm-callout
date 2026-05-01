@@ -761,7 +761,7 @@ app.get("*", (_req, res) => {
 });
 
 const server = app.listen(Number(PORT), LISTEN_HOST, () => {
-  console.log(`GM callout app listening on http://${LISTEN_HOST}:${PORT}`);
+  console.log(`Red Poke Scheduler (gm-callout) listening on http://${LISTEN_HOST}:${PORT}`);
   if (!TWILIO_ACCOUNT_SID) {
     console.warn(
       "[Env] TWILIO_ACCOUNT_SID is not set — add it in Render → Environment (with auth token and from number), then redeploy. UI works; outbound calls will return 503 until then."

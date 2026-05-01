@@ -106,10 +106,23 @@ html.authed .login-screen {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
   padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
     max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   background: linear-gradient(165deg, #f1f5f9 0%, #e2e8f0 40%, #f8fafc 100%);
-  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: manipulation;
+}
+
+/* Create account: grey band above the card (class toggled in index.html) */
+.login-screen.login-screen--register {
+  align-items: flex-start;
+  padding-top: max(48px, calc(env(safe-area-inset-top, 0px) + 32px));
 }
 
 .login-card {
@@ -120,6 +133,20 @@ html.authed .login-screen {
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
+}
+
+.login-logo-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 12px;
+}
+
+.login-logo {
+  height: clamp(4.5rem, 24vw, 5.75rem);
+  width: auto;
+  max-width: min(9rem, 78%);
+  object-fit: contain;
+  display: block;
 }
 
 .login-title {
@@ -197,12 +224,6 @@ html.authed .login-screen {
   gap: 12px;
 }
 
-@media (max-width: 380px) {
-  .login-form-row {
-    grid-template-columns: 1fr;
-  }
-}
-
 .login-footer-actions {
   margin: 18px 0 0;
   text-align: center;
@@ -226,6 +247,89 @@ html.authed .login-screen {
 
 .login-submit {
   margin-top: 4px;
+}
+
+/* Login + create account: phones, notches, keyboard-safe scrolling */
+@media (max-width: 480px) {
+  .login-screen {
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
+    padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .login-screen.login-screen--register {
+    padding-top: max(56px, calc(env(safe-area-inset-top, 0px) + 36px));
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: 26rem;
+    margin-inline: auto;
+    padding-top: 20px;
+    padding-bottom: max(22px, env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  .login-title {
+    font-size: 1.28rem;
+    line-height: 1.2;
+  }
+
+  .login-subtitle {
+    margin-bottom: 16px;
+  }
+
+  .login-hint {
+    margin-bottom: 14px;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+
+  .login-form {
+    gap: 12px;
+  }
+
+  .login-form-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  /* 16px+ avoids iOS zooming the viewport on input focus */
+  .login-input {
+    font-size: 16px;
+    padding: 14px 14px;
+  }
+
+  .login-footer-actions .login-link-btn {
+    width: 100%;
+    min-height: 48px;
+    padding: 10px 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    text-underline-offset: 3px;
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+  }
+
+  .login-link-btn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  .login-footer-actions {
+    margin-top: 16px;
+  }
+
+  .login-screen .btn.login-submit {
+    min-height: 48px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    font-size: 1rem;
+  }
 }
 
 .header-signout-btn {
@@ -838,6 +942,14 @@ html.authed .header-signout-btn {
   overflow: hidden;
 }
 
+.header-logo {
+  height: 2.125rem;
+  width: auto;
+  flex-shrink: 0;
+  object-fit: contain;
+  display: block;
+}
+
 .back-btn {
   display: flex;
   align-items: center;
@@ -1206,6 +1318,42 @@ html.authed .header-signout-btn {
   }
 }
 
+/*
+ * Narrow viewports: fill space under the sticky header with flex so the worker
+ * list (Edit Staffing / Coverage) gets a real flex height — vh-only sizing left
+ * too little room after chips, shift context, tabs, search, and footer.
+ */
+@media (max-width: 1023px) {
+  html.authed.manager-app .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  html.authed.manager-app .main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  html.authed.manager-app .main > .screen.active {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  html.authed.manager-app #screen-eligible.screen.active {
+    overflow: hidden;
+    max-height: none;
+    min-height: 0;
+  }
+}
+
 /* Schedule table */
 .table-wrap {
   overflow-x: auto;
@@ -1292,11 +1440,11 @@ html.authed .header-signout-btn {
   align-items: center;
 }
 
-/* Same weight as .btn; compact type for the schedule toolbar */
+/* Compact type for the schedule toolbar */
 .btn.schedule-toolbar-btn {
   padding: 8px 14px;
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.2;
   letter-spacing: 0;
   white-space: nowrap;
@@ -1519,6 +1667,40 @@ html.authed .header-signout-btn {
 .calendar-matrix thead th:not(.time-col),
 .calendar-matrix tbody tr:not(.calendar-group-row) td {
   min-width: 128px;
+  box-sizing: border-box;
+}
+
+/*
+ * Schedule home calendar: fixed table layout + equal day columns so a focused text
+ * input’s default intrinsic min-width can’t widen the matrix (horizontal “tile stretch”).
+ */
+.calendar-matrix.calendar-matrix--redpoke {
+  width: 100%;
+  min-width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+.calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
+  min-width: 0;
+  width: 1%;
+}
+
+/* Below desktop width: fixed equal columns cram day cells — scroll horizontally with roomy columns instead. */
+@media (max-width: 1023px) {
+  .calendar-matrix.calendar-matrix--redpoke {
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
+    table-layout: auto;
+  }
+
+  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
+    width: auto;
+    min-width: clamp(11rem, 42vw, 14.5rem);
+  }
 }
 
 .calendar-matrix thead th {
@@ -1558,6 +1740,8 @@ html.authed .header-signout-btn {
 
 .calendar-slot-wrap {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: var(--radius-sm);
@@ -1579,11 +1763,93 @@ html.authed .header-signout-btn {
 }
 
 .calendar-slot-pills {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 7px;
   flex: 1;
+  min-width: 0;
   min-height: 0;
+}
+
+.calendar-cell-edit-host {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  align-self: stretch;
+  position: relative;
+  z-index: 2;
+  /* Keeps calendar slot height stable vs a single .role-pill-mini row */
+}
+
+.calendar-cell-name-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  /* Match .role-pill-mini padding + font so the cell doesn’t jump */
+  padding: 5px 8px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  height: calc(1.35 * 0.72rem + 12px);
+  min-height: calc(1.35 * 0.72rem + 12px);
+  max-height: calc(1.35 * 0.72rem + 12px);
+  background: #fff;
+  color: var(--text);
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  field-sizing: fixed;
+}
+
+.calendar-cell-name-input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.calendar-name-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  max-height: 11rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  z-index: 30;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+}
+
+.calendar-name-dropdown.hidden {
+  display: none;
+}
+
+.calendar-name-dropdown li {
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.calendar-name-dropdown li:hover,
+.calendar-name-dropdown li:focus {
+  background: var(--hover-fill);
+  outline: none;
 }
 
 .calendar-matrix--drag-active .calendar-slot-wrap[data-shiftid] {
@@ -1607,7 +1873,7 @@ html.authed .header-signout-btn {
 }
 
 .calendar-worker-pill--static {
-  cursor: default;
+  cursor: text;
 }
 
 .calendar-group-row td {
@@ -1724,6 +1990,12 @@ html.authed .header-signout-btn {
   .calendar-matrix thead th:not(.time-col),
   .calendar-matrix tbody tr:not(.calendar-group-row) td {
     min-width: 156px;
+  }
+
+  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
+    min-width: 0;
+    width: 1%;
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) {
@@ -2736,9 +3008,10 @@ html.authed .header-signout-btn {
     padding: 8px 6px;
   }
 
+  /* Default day columns — Red Poke schedule uses wider mins via .calendar-matrix--redpoke rule above */
   .calendar-matrix thead th:not(.time-col),
   .calendar-matrix tbody tr:not(.calendar-group-row) td {
-    min-width: 120px;
+    min-width: min(148px, 44vw);
   }
 
   .calendar-matrix .time-col {
@@ -2758,17 +3031,19 @@ html.authed .header-signout-btn {
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) .role-pill-mini.calendar-worker-pill {
-    display: block;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
-    white-space: nowrap;
+    white-space: normal;
     overflow: hidden;
     text-overflow: ellipsis;
-    overflow-wrap: normal;
+    overflow-wrap: break-word;
     word-break: normal;
-    writing-mode: horizontal-tb;
-    text-orientation: mixed;
+    line-height: 1.35;
+    max-height: 2.85em;
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) .time-role-sub {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Callout Coverage — GM App</title>
+  <title>Red Poke Scheduler</title>
   <link rel="stylesheet" href="styles.css" />
   <script>
     (function () {
@@ -23,7 +23,17 @@
 <body>
   <div id="login-screen" class="login-screen" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="login-card">
-      <h1 class="login-title" id="loginTitle">Callout Coverage</h1>
+      <div class="login-logo-wrap">
+        <img
+          class="login-logo"
+          src="assets/red-poke-logo.png"
+          alt="red poke"
+          width="120"
+          height="120"
+          decoding="async"
+        />
+      </div>
+      <h1 class="login-title" id="loginTitle">Red Poke Scheduler</h1>
       <div id="loginPanel">
         <p class="login-subtitle">Sign in to continue</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
@@ -57,6 +67,9 @@
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showRegisterPanelBtn">Create employee account</button>
         </p>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showManagerRegisterPanelBtn">Create manager account</button>
+        </p>
       </div>
       <div id="registerPanel" hidden>
         <p class="login-subtitle">Create your employee account</p>
@@ -65,11 +78,33 @@
           <div class="login-form-row">
             <label class="login-field">
               <span class="login-label">First name</span>
-              <input type="text" id="regFirstName" class="login-input" required autocomplete="given-name" maxlength="60" />
+              <input
+                type="text"
+                id="regFirstName"
+                class="login-input"
+                required
+                autocomplete="given-name"
+                autocapitalize="words"
+                autocorrect="on"
+                spellcheck="false"
+                maxlength="60"
+                enterkeyhint="next"
+              />
             </label>
             <label class="login-field">
               <span class="login-label">Last name</span>
-              <input type="text" id="regLastName" class="login-input" required autocomplete="family-name" maxlength="60" />
+              <input
+                type="text"
+                id="regLastName"
+                class="login-input"
+                required
+                autocomplete="family-name"
+                autocapitalize="words"
+                autocorrect="on"
+                spellcheck="false"
+                maxlength="60"
+                enterkeyhint="next"
+              />
             </label>
           </div>
           <label class="login-field">
@@ -82,11 +117,12 @@
               autocomplete="tel"
               inputmode="tel"
               maxlength="32"
+              enterkeyhint="next"
             />
           </label>
           <label class="login-field">
             <span class="login-label">Staff type</span>
-            <select id="regStaffType" class="login-input" required>
+            <select id="regStaffType" class="login-input" required enterkeyhint="next">
               <option value="Kitchen">Back of the House</option>
               <option value="Bartender">Front of the House</option>
               <option value="Server">Delivery/Dishwasher</option>
@@ -101,6 +137,7 @@
               required
               autocomplete="new-password"
               minlength="4"
+              enterkeyhint="next"
             />
           </label>
           <label class="login-field">
@@ -112,6 +149,7 @@
               required
               autocomplete="new-password"
               minlength="4"
+              enterkeyhint="done"
             />
           </label>
           <p class="login-error" id="registerError" role="alert" hidden></p>
@@ -121,6 +159,65 @@
           <button type="button" class="login-link-btn" id="showLoginPanelBtn">Back to sign in</button>
         </p>
       </div>
+      <div id="managerRegisterPanel" hidden>
+        <p class="login-subtitle">Create manager account</p>
+        <p class="login-hint">Enter the access code, then your email and password. You will sign in as a manager on this device.</p>
+        <form id="managerRegisterForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Access code</span>
+            <input
+              type="password"
+              id="mgrRegCode"
+              class="login-input"
+              required
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              enterkeyhint="next"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Email</span>
+            <input
+              type="email"
+              id="mgrRegEmail"
+              class="login-input"
+              required
+              autocomplete="email"
+              enterkeyhint="next"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input
+              type="password"
+              id="mgrRegPassword"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+              enterkeyhint="next"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Confirm password</span>
+            <input
+              type="password"
+              id="mgrRegPasswordConfirm"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+              enterkeyhint="done"
+            />
+          </label>
+          <p class="login-error" id="managerRegisterError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Create manager account</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginFromManagerRegisterBtn">Back to sign in</button>
+        </p>
+      </div>
     </div>
   </div>
 
@@ -128,6 +225,14 @@
     <div class="app-top">
       <header class="header">
         <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
+        <img
+          class="header-logo"
+          src="assets/red-poke-logo.png"
+          alt="red poke"
+          width="64"
+          height="64"
+          decoding="async"
+        />
         <h1 class="title" id="screenTitle">Schedule Overview</h1>
         <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign out">
           Sign out
@@ -163,7 +268,7 @@
                 Templates
               </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openDraftScheduleModal">
-                Shift times
+                Shift Times
               </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal">
                 Manage Locations
@@ -177,13 +282,13 @@
             <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
           </div>
           <div class="schedule-notice hidden" id="scheduleNotice">
-            <p class="schedule-notice-text" id="scheduleNoticeText">Callout updates appear here.</p>
+            <p class="schedule-notice-text" id="scheduleNoticeText">Schedule updates appear here.</p>
           </div>
           <div id="calendarGrid" aria-label="Schedule calendar"></div>
         </div>
       </section>
 
-      <!-- Screen 2: Shift Edit / Callout -->
+      <!-- Screen 2: Shift Edit / Coverage -->
       <section class="screen" id="screen-eligible" data-screen="2">
         <div class="slot-location-filter" id="slotLocationFilterWrap">
           <span class="employee-filter-label" id="slotLocationFilterLabel">Staff filter</span>
@@ -196,7 +301,7 @@
             Edit Staffing
           </button>
           <button type="button" class="mode-tab" id="calloutTabBtn">
-            Callout Coverage
+            Coverage
           </button>
         </nav>
 
@@ -224,7 +329,7 @@
         <div class="mode-panel hidden" id="calloutPanel">
           <p class="panel-subtitle">Notify eligible workers to cover this shift</p>
           <label class="employee-search-wrap shift-worker-search-wrap">
-            <span class="visually-hidden">Search employees in callout coverage</span>
+            <span class="visually-hidden">Search employees for coverage calls</span>
             <input
               type="search"
               id="shiftCalloutSearch"
@@ -318,8 +423,8 @@
               <button type="button" class="filter-chip active" data-request-type="availability">
                 Availability Submissions
               </button>
-              <button type="button" class="filter-chip" data-request-type="swap">Shift Swaps</button>
               <button type="button" class="filter-chip" data-request-type="timeoff">Time Off</button>
+              <button type="button" class="filter-chip" data-request-type="swap">Shift Swaps</button>
               <button type="button" class="filter-chip" data-request-type="callout">Callouts</button>
             </div>
           </div>
@@ -421,6 +526,14 @@
   <div class="app-employee" id="appEmployee">
     <div class="app-top">
       <header class="header">
+        <img
+          class="header-logo"
+          src="assets/red-poke-logo.png"
+          alt="red poke"
+          width="64"
+          height="64"
+          decoding="async"
+        />
         <h1 class="title" id="empScreenTitle">Home</h1>
         <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign out">Sign out</button>
       </header>
@@ -646,7 +759,7 @@
     <div class="availability-modal-backdrop" id="draftScheduleModalBackdrop"></div>
     <div class="availability-modal-panel schedule-sheet-panel draft-schedule-panel">
       <div class="availability-modal-head">
-        <h2 class="availability-modal-title" id="draftScheduleModalTitle">Shift times</h2>
+        <h2 class="availability-modal-title" id="draftScheduleModalTitle">Shift Times</h2>
         <button type="button" class="availability-modal-close" id="draftScheduleModalClose" aria-label="Close">
           ×
         </button>
@@ -739,9 +852,15 @@
       var loginPassword = document.getElementById('loginPassword');
       var loginError = document.getElementById('loginError');
       var showRegisterPanelBtn = document.getElementById('showRegisterPanelBtn');
+      var showManagerRegisterPanelBtn = document.getElementById('showManagerRegisterPanelBtn');
+      var managerRegisterPanel = document.getElementById('managerRegisterPanel');
       var showLoginPanelBtn = document.getElementById('showLoginPanelBtn');
+      var showLoginFromManagerRegisterBtn = document.getElementById('showLoginFromManagerRegisterBtn');
       var registerForm = document.getElementById('registerForm');
       var registerError = document.getElementById('registerError');
+      var managerRegisterForm = document.getElementById('managerRegisterForm');
+      var managerRegisterError = document.getElementById('managerRegisterError');
+      var loginScreenEl = document.getElementById('login-screen');
 
       function norm(s) {
         return String(s || '')
@@ -771,6 +890,16 @@
         showRegisterError('');
       }
 
+      function showManagerRegisterError(msg) {
+        if (!managerRegisterError) return;
+        managerRegisterError.textContent = msg || '';
+        managerRegisterError.hidden = !msg;
+      }
+
+      function clearManagerRegisterError() {
+        showManagerRegisterError('');
+      }
+
       function setSession(role) {
         try {
           sessionStorage.setItem(SESSION_KEY, role);
@@ -790,13 +919,28 @@
       function showLoginPanel() {
         if (loginPanel) loginPanel.hidden = false;
         if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
         clearRegisterError();
+        clearManagerRegisterError();
       }
 
       function showRegisterPanel() {
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = false;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
+        clearManagerRegisterError();
+      }
+
+      function showManagerRegisterPanelFn() {
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        clearLoginError();
+        clearRegisterError();
       }
 
       if (showRegisterPanelBtn) {
@@ -804,8 +948,18 @@
           showRegisterPanel();
         });
       }
+      if (showManagerRegisterPanelBtn) {
+        showManagerRegisterPanelBtn.addEventListener('click', function () {
+          showManagerRegisterPanelFn();
+        });
+      }
       if (showLoginPanelBtn) {
         showLoginPanelBtn.addEventListener('click', function () {
+          showLoginPanel();
+        });
+      }
+      if (showLoginFromManagerRegisterBtn) {
+        showLoginFromManagerRegisterBtn.addEventListener('click', function () {
           showLoginPanel();
         });
       }
@@ -816,7 +970,14 @@
           clearLoginError();
           var id = norm(loginEmail.value);
           var password = loginPassword.value || '';
-          if (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) {
+          var portalMgr =
+            typeof window.gmCalloutPortalManagerLogin === 'function'
+              ? window.gmCalloutPortalManagerLogin(loginEmail.value, password)
+              : { ok: false };
+          if (
+            (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) ||
+            (portalMgr && portalMgr.ok)
+          ) {
             try {
               sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
             } catch (err0) {
@@ -886,6 +1047,42 @@
             res.message || 'Account created. Sign in with your name and password.',
             'success'
           );
+        });
+      }
+
+      if (managerRegisterForm) {
+        managerRegisterForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearManagerRegisterError();
+          var codeEl = document.getElementById('mgrRegCode');
+          var emEl = document.getElementById('mgrRegEmail');
+          var pwEl = document.getElementById('mgrRegPassword');
+          var pw2El = document.getElementById('mgrRegPasswordConfirm');
+          var p1 = pwEl && pwEl.value ? String(pwEl.value) : '';
+          var p2 = pw2El && pw2El.value ? String(pw2El.value) : '';
+          if (p1 !== p2) {
+            showManagerRegisterError('Passwords do not match.');
+            return;
+          }
+          if (typeof window.gmCalloutRegisterManagerAccount !== 'function') {
+            showManagerRegisterError('Registration is not available yet. Refresh the page and try again.');
+            return;
+          }
+          var res = window.gmCalloutRegisterManagerAccount({
+            signupCode: codeEl && codeEl.value,
+            email: emEl && emEl.value,
+            password: p1,
+          });
+          if (!res || !res.ok) {
+            showManagerRegisterError((res && res.message) || 'Could not create account.');
+            return;
+          }
+          var savedEmail = emEl ? String(emEl.value || '').trim() : '';
+          managerRegisterForm.reset();
+          showLoginPanel();
+          if (loginEmail) loginEmail.value = savedEmail;
+          if (loginPassword) loginPassword.value = '';
+          showLoginError(res.message || 'Manager account created. Sign in with your email and password.', 'success');
         });
       }
 
