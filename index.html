@@ -24,35 +24,103 @@
   <div id="login-screen" class="login-screen" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="login-card">
       <h1 class="login-title" id="loginTitle">Callout Coverage</h1>
-      <p class="login-subtitle">Sign in to continue</p>
-      <form id="loginForm" class="login-form" autocomplete="on" novalidate>
-        <label class="login-field">
-          <span class="login-label">Email or name</span>
-          <input
-            type="text"
-            id="loginEmail"
-            name="username"
-            class="login-input"
-            required
-            autocomplete="username"
-            enterkeyhint="next"
-          />
-        </label>
-        <label class="login-field">
-          <span class="login-label">Password</span>
-          <input
-            type="password"
-            id="loginPassword"
-            name="password"
-            class="login-input"
-            required
-            autocomplete="current-password"
-            enterkeyhint="go"
-          />
-        </label>
-        <p class="login-error" id="loginError" role="alert" hidden></p>
-        <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
-      </form>
+      <div id="loginPanel">
+        <p class="login-subtitle">Sign in to continue</p>
+        <form id="loginForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Email or name</span>
+            <input
+              type="text"
+              id="loginEmail"
+              name="username"
+              class="login-input"
+              required
+              autocomplete="username"
+              enterkeyhint="next"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input
+              type="password"
+              id="loginPassword"
+              name="password"
+              class="login-input"
+              required
+              autocomplete="current-password"
+              enterkeyhint="go"
+            />
+          </label>
+          <p class="login-error" id="loginError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showRegisterPanelBtn">Create employee account</button>
+        </p>
+      </div>
+      <div id="registerPanel" hidden>
+        <p class="login-subtitle">Create your employee account</p>
+        <p class="login-hint">You will sign in with your first and last name and password. Your manager will see you and your phone on the roster.</p>
+        <form id="registerForm" class="login-form" autocomplete="on" novalidate>
+          <div class="login-form-row">
+            <label class="login-field">
+              <span class="login-label">First name</span>
+              <input type="text" id="regFirstName" class="login-input" required autocomplete="given-name" maxlength="60" />
+            </label>
+            <label class="login-field">
+              <span class="login-label">Last name</span>
+              <input type="text" id="regLastName" class="login-input" required autocomplete="family-name" maxlength="60" />
+            </label>
+          </div>
+          <label class="login-field">
+            <span class="login-label">Phone number</span>
+            <input
+              type="tel"
+              id="regPhone"
+              class="login-input"
+              required
+              autocomplete="tel"
+              inputmode="tel"
+              maxlength="32"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Staff type</span>
+            <select id="regStaffType" class="login-input" required>
+              <option value="Kitchen">Back of the House</option>
+              <option value="Bartender">Front of the House</option>
+              <option value="Server">Delivery/Dishwasher</option>
+            </select>
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input
+              type="password"
+              id="regPassword"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Confirm password</span>
+            <input
+              type="password"
+              id="regPasswordConfirm"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+            />
+          </label>
+          <p class="login-error" id="registerError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Create account</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginPanelBtn">Back to sign in</button>
+        </p>
+      </div>
     </div>
   </div>
 
@@ -109,7 +177,7 @@
             <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
           </div>
           <div class="schedule-notice hidden" id="scheduleNotice">
-            <p class="schedule-notice-text" id="scheduleNoticeText">0 texts sent</p>
+            <p class="schedule-notice-text" id="scheduleNoticeText">Callout updates appear here.</p>
           </div>
           <div id="calendarGrid" aria-label="Schedule calendar"></div>
         </div>
@@ -171,11 +239,10 @@
           </div>
           <div class="callout-footer-block screen-actions-footer">
             <button type="button" class="btn btn-secondary btn-block" id="editMessagingTemplatesBtn">
-              Edit text &amp; voice templates
+              Edit call script
             </button>
-            <div class="screen-actions screen-actions-split">
-              <button type="button" class="btn btn-secondary" id="callCoverageBtn">Call All</button>
-              <button type="button" class="btn btn-primary" id="textCoverageBtn">Text All</button>
+            <div class="screen-actions">
+              <button type="button" class="btn btn-primary btn-block" id="callCoverageBtn">Call All</button>
             </div>
           </div>
         </div>
@@ -308,10 +375,10 @@
         </form>
       </section>
 
-      <!-- Screen 7: Messaging templates -->
+      <!-- Screen 7: Outbound call script -->
       <section class="screen" id="screen-messaging" data-screen="7">
         <p class="messaging-intro">
-          Customize SMS and voice scripts for callouts. Use placeholders below — they are filled automatically from the shift and each worker.
+          Customize what Twilio says on coverage callouts. Placeholders below are filled from the shift and each worker when you tap Call.
         </p>
         <div class="template-vars-card">
           <p class="template-vars-title">Placeholders</p>
@@ -325,18 +392,13 @@
           </ul>
         </div>
         <label class="form-field form-field-block messaging-field">
-          <span class="form-label">Text (SMS) template</span>
-          <textarea id="smsTemplateInput" class="messaging-textarea" rows="5" placeholder="SMS body…"></textarea>
-          <p class="template-preview" id="smsTemplatePreview" aria-live="polite"></p>
-        </label>
-        <label class="form-field form-field-block messaging-field">
           <span class="form-label">Phone call script</span>
           <textarea id="voiceTemplateInput" class="messaging-textarea" rows="5" placeholder="Spoken when the call connects…"></textarea>
           <p class="template-preview" id="voiceTemplatePreview" aria-live="polite"></p>
         </label>
         <p class="messaging-save-feedback" id="messagingSaveFeedback" hidden></p>
         <div class="screen-actions">
-          <button type="button" class="btn btn-primary btn-block" id="saveMessagingTemplatesBtn">Save templates</button>
+          <button type="button" class="btn btn-primary btn-block" id="saveMessagingTemplatesBtn">Save script</button>
         </div>
       </section>
 
@@ -668,11 +730,18 @@
       var ALLOWED_EMAIL = 'martinlong830@gmail.com';
       var ALLOWED_PASSWORD = 'redpoke';
       var SESSION_KEY = 'gm-callout-session';
+      var SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
 
+      var loginPanel = document.getElementById('loginPanel');
+      var registerPanel = document.getElementById('registerPanel');
       var loginForm = document.getElementById('loginForm');
       var loginEmail = document.getElementById('loginEmail');
       var loginPassword = document.getElementById('loginPassword');
       var loginError = document.getElementById('loginError');
+      var showRegisterPanelBtn = document.getElementById('showRegisterPanelBtn');
+      var showLoginPanelBtn = document.getElementById('showLoginPanelBtn');
+      var registerForm = document.getElementById('registerForm');
+      var registerError = document.getElementById('registerError');
 
       function norm(s) {
         return String(s || '')
@@ -680,14 +749,26 @@
           .toLowerCase();
       }
 
-      function showLoginError(msg) {
+      function showLoginError(msg, variant) {
         if (!loginError) return;
         loginError.textContent = msg || '';
         loginError.hidden = !msg;
+        if (!msg) loginError.classList.remove('is-success');
+        else loginError.classList.toggle('is-success', variant === 'success');
       }
 
       function clearLoginError() {
         showLoginError('');
+      }
+
+      function showRegisterError(msg) {
+        if (!registerError) return;
+        registerError.textContent = msg || '';
+        registerError.hidden = !msg;
+      }
+
+      function clearRegisterError() {
+        showRegisterError('');
       }
 
       function setSession(role) {
@@ -706,24 +787,105 @@
         else root.classList.add('manager-app');
       }
 
+      function showLoginPanel() {
+        if (loginPanel) loginPanel.hidden = false;
+        if (registerPanel) registerPanel.hidden = true;
+        clearRegisterError();
+      }
+
+      function showRegisterPanel() {
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = false;
+        clearLoginError();
+      }
+
+      if (showRegisterPanelBtn) {
+        showRegisterPanelBtn.addEventListener('click', function () {
+          showRegisterPanel();
+        });
+      }
+      if (showLoginPanelBtn) {
+        showLoginPanelBtn.addEventListener('click', function () {
+          showLoginPanel();
+        });
+      }
+
       if (loginForm && loginEmail && loginPassword) {
         loginForm.addEventListener('submit', function (e) {
           e.preventDefault();
           clearLoginError();
           var id = norm(loginEmail.value);
           var password = loginPassword.value || '';
-          if (id === ALLOWED_EMAIL && password === ALLOWED_PASSWORD) {
+          if (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) {
+            try {
+              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+            } catch (err0) {
+              /* ignore */
+            }
             setSession('manager');
             applyAuthedShell('manager');
-          } else if (id === 'jordan ma' && password === ALLOWED_PASSWORD) {
-            setSession('employee');
-            applyAuthedShell('employee');
-            if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-              window.gmCalloutEmployeeBootstrap();
-            }
           } else {
-            showLoginError('Email, name, or password is incorrect.');
+            var portal =
+              typeof window.gmCalloutPortalEmployeeLogin === 'function'
+                ? window.gmCalloutPortalEmployeeLogin(loginEmail.value, password)
+                : { ok: false };
+            if (portal && portal.ok && portal.displayName) {
+              try {
+                sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, portal.displayName);
+              } catch (err1) {
+                /* ignore */
+              }
+              setSession('employee');
+              applyAuthedShell('employee');
+              if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                window.gmCalloutEmployeeBootstrap();
+              }
+            } else {
+              showLoginError('Email, name, or password is incorrect.');
+            }
           }
+        });
+      }
+
+      if (registerForm) {
+        registerForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearRegisterError();
+          var fn = document.getElementById('regFirstName');
+          var ln = document.getElementById('regLastName');
+          var ph = document.getElementById('regPhone');
+          var st = document.getElementById('regStaffType');
+          var pw = document.getElementById('regPassword');
+          var pw2 = document.getElementById('regPasswordConfirm');
+          var p1 = pw && pw.value ? String(pw.value) : '';
+          var p2 = pw2 && pw2.value ? String(pw2.value) : '';
+          if (p1 !== p2) {
+            showRegisterError('Passwords do not match.');
+            return;
+          }
+          if (typeof window.gmCalloutRegisterEmployeeAccount !== 'function') {
+            showRegisterError('Registration is not available yet. Refresh the page and try again.');
+            return;
+          }
+          var res = window.gmCalloutRegisterEmployeeAccount({
+            firstName: fn && fn.value,
+            lastName: ln && ln.value,
+            phone: ph && ph.value,
+            staffType: st && st.value,
+            password: p1,
+          });
+          if (!res || !res.ok) {
+            showRegisterError((res && res.message) || 'Could not create account.');
+            return;
+          }
+          registerForm.reset();
+          showLoginPanel();
+          if (loginEmail) loginEmail.value = res.displayName || '';
+          if (loginPassword) loginPassword.value = '';
+          showLoginError(
+            res.message || 'Account created. Sign in with your name and password.',
+            'success'
+          );
         });
       }
 
@@ -731,6 +893,7 @@
         btn.addEventListener('click', function () {
           try {
             sessionStorage.removeItem(SESSION_KEY);
+            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
           } catch (err) {
             /* ignore */
           }

@@ -2,7 +2,7 @@
   "name": "gm-callout",
   "version": "1.0.0",
   "private": true,
-  "description": "Restaurant GM callout coverage prototype with Twilio SMS integration",
+  "description": "Restaurant GM callout coverage prototype with Twilio voice calls",
   "main": "server.js",
   "engines": {
     "node": ">=18.0.0"

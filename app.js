@@ -307,6 +307,9 @@
   const REQUESTS_STORAGE_KEY = 'gm-callout-staff-requests-status-v1';
   /** Staff requests submitted from the employee portal (full rows, survives reload). */
   const EMPLOYEE_SUBMITTED_REQUESTS_KEY = 'gm-callout-employee-submitted-requests-v1';
+  /** Self-serve employee portal sign-ins (client-side demo; not server auth). */
+  const EMPLOYEE_PORTAL_ACCOUNTS_KEY = 'gm-callout-employee-portal-accounts-v1';
+  const SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
 
   function defaultRestaurants() {
     return [
@@ -361,8 +364,6 @@
     /* ignore */
   }
   slotStaffFilter = currentRestaurantId;
-  const DEFAULT_SMS_TEMPLATE =
-    "Hi {{firstName}}! We need a {{roleLabel}} replacement for {{shiftDay}}, {{shiftTime}}. If you're available, reply YES. If not, reply NO.";
   const DEFAULT_VOICE_TEMPLATE =
     "Hi {{firstName}}. We need {{roleLabel}} coverage on {{shiftDay}} for {{shiftTime}}. If you're available, say YES. If not, say NO.";
   const MESSAGING_PREVIEW_SHIFT = (function () {
@@ -1943,7 +1944,7 @@
     4: 'Shift Filled / History',
     5: 'Employees',
     6: 'Employee',
-    7: 'Messaging',
+    7: 'Callout script',
     8: 'Actions',
   };
 
@@ -1952,17 +1953,15 @@
       const raw = localStorage.getItem(MESSAGING_STORAGE_KEY);
       if (raw) {
         const o = JSON.parse(raw);
-        const sms = typeof o.sms === 'string' ? o.sms : '';
         const voice = typeof o.voice === 'string' ? o.voice : '';
         return {
-          sms: sms.trim().length ? sms : DEFAULT_SMS_TEMPLATE,
           voice: voice.trim().length ? voice : DEFAULT_VOICE_TEMPLATE,
         };
       }
     } catch (err) {
       // ignore
     }
-    return { sms: DEFAULT_SMS_TEMPLATE, voice: DEFAULT_VOICE_TEMPLATE };
+    return { voice: DEFAULT_VOICE_TEMPLATE };
   }
 
   function saveMessagingTemplates(t) {
@@ -1970,7 +1969,6 @@
       localStorage.setItem(
         MESSAGING_STORAGE_KEY,
         JSON.stringify({
-          sms: t.sms != null ? t.sms : '',
           voice: t.voice != null ? t.voice : '',
         })
       );
@@ -2044,7 +2042,7 @@
             acceptedBy: { name: 'Taylor P.', role: 'Server' },
             notified: ['Alex R.', 'Taylor P.', 'Riley C.'],
             noResponse: ['Alex R.', 'Riley C.'],
-            contactMethod: 'text',
+            contactMethod: 'call',
             originalWorkers: (shift.workers || [shift.worker]).filter(Boolean),
           }
         : null;
@@ -2067,9 +2065,7 @@
   let acceptedWorker = null;
   let scheduleView = 'table';
   let shiftMode = 'edit';
-  let pendingTextCampaign = null;
   let activeHistoryIndex = null;
-  let campaignPollTimer = null;
   let voiceOutcomePollTimer = null;
   let requestsTypeFilter = 'availability';
   let shiftEditSearchQuery = '';
@@ -2095,7 +2091,6 @@
   const eligibleShiftContext = document.getElementById('eligibleShiftContext');
   const eligibleWorkerList = document.getElementById('eligibleWorkerList');
   const editWorkerList = document.getElementById('editWorkerList');
-  const textCoverageBtn = document.getElementById('textCoverageBtn');
   const callCoverageBtn = document.getElementById('callCoverageBtn');
   const saveScheduleBtn = document.getElementById('saveScheduleBtn');
   const editTabBtn = document.getElementById('editTabBtn');
@@ -2133,9 +2128,7 @@
   const availabilityModalTitle = document.getElementById('availabilityModalTitle');
   const availabilityModalMeta = document.getElementById('availabilityModalMeta');
   const availabilityModalGrid = document.getElementById('availabilityModalGrid');
-  const smsTemplateInput = document.getElementById('smsTemplateInput');
   const voiceTemplateInput = document.getElementById('voiceTemplateInput');
-  const smsTemplatePreview = document.getElementById('smsTemplatePreview');
   const voiceTemplatePreview = document.getElementById('voiceTemplatePreview');
   const saveMessagingTemplatesBtn = document.getElementById('saveMessagingTemplatesBtn');
   const messagingSaveFeedback = document.getElementById('messagingSaveFeedback');
@@ -2407,12 +2400,8 @@
   }
 
   function renderMessagingPreviews() {
-    const sms = smsTemplateInput ? smsTemplateInput.value : '';
     const voice = voiceTemplateInput ? voiceTemplateInput.value : '';
     const v = buildMessagingTemplateVars(MESSAGING_PREVIEW_SHIFT, { name: 'Jamie Lee' });
-    if (smsTemplatePreview) {
-      smsTemplatePreview.textContent = 'Preview (sample): ' + applyMessagingTemplate(sms, v);
-    }
     if (voiceTemplatePreview) {
       voiceTemplatePreview.textContent = 'Preview (sample): ' + applyMessagingTemplate(voice, v);
     }
@@ -2420,7 +2409,6 @@
 
   function openMessagingScreen() {
     const t = loadMessagingTemplates();
-    if (smsTemplateInput) smsTemplateInput.value = t.sms;
     if (voiceTemplateInput) voiceTemplateInput.value = t.voice;
     renderMessagingPreviews();
   }
@@ -2447,13 +2435,6 @@
   function hideScheduleNotice() {
     if (!scheduleNotice) return;
     scheduleNotice.classList.add('hidden');
-  }
-
-  function stopCampaignPolling() {
-    if (campaignPollTimer) {
-      clearInterval(campaignPollTimer);
-      campaignPollTimer = null;
-    }
   }
 
   function stopVoiceOutcomePolling() {
@@ -2564,54 +2545,10 @@
     voiceOutcomePollTimer = setInterval(tick, 2500);
   }
 
-  async function checkCampaignStatus(campaignId) {
-    try {
-      const res = await fetch(API_BASE + '/api/campaigns/' + encodeURIComponent(campaignId));
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!pendingTextCampaign || pendingTextCampaign.campaignId !== campaignId) return;
-
-      if (data.status === 'accepted' && data.acceptedBy) {
-        var item = history[pendingTextCampaign.historyIndex];
-        if (!item) return;
-        var responder = {
-          name: data.acceptedBy.name,
-          role: data.acceptedBy.role || item.shift.role,
-        };
-
-        acceptedWorker = responder;
-        item.status = 'accepted';
-        item.acceptedBy = responder;
-        item.noResponse = item.notified.filter(function (name) { return name !== responder.name; });
-        activeHistoryIndex = pendingTextCampaign.historyIndex;
-
-        acceptedWorkerName.textContent = responder.name;
-        acceptedRole.textContent = STAFF_TYPE_LABELS[responder.role] || responder.role;
-        acceptedShiftTime.textContent = item.shift.day + ', ' + (item.shift.timeLabel || (item.shift.start + ' – ' + item.shift.end));
-
-        pendingTextCampaign = null;
-        stopCampaignPolling();
-        hideScheduleNotice();
-        refreshRequestsListIfCallouts();
-        showScreen(3);
-      }
-    } catch (e) {
-      // Keep polling; transient network errors can occur while developing.
-    }
-  }
-
-  function startCampaignPolling(campaignId) {
-    stopCampaignPolling();
-    campaignPollTimer = setInterval(function () {
-      checkCampaignStatus(campaignId);
-    }, 3000);
-  }
-
   function updateCoverageButtonLabels() {
     if (!currentShift) return;
     var selectedCount = getSelectedEligibleWorkers().length;
     var suffix = selectedCount > 0 ? (selectedCount + ' ' + (selectedCount === 1 ? 'Person' : 'People')) : 'All';
-    if (textCoverageBtn) textCoverageBtn.textContent = 'Text ' + suffix;
     if (callCoverageBtn) callCoverageBtn.textContent = 'Call ' + suffix;
   }
 
@@ -3368,8 +3305,8 @@
   }
 
   function calloutContactMethodLabel(method) {
-    if (method === 'text') return 'Text';
     if (method === 'call') return 'Phone call';
+    if (method === 'text') return '—';
     return method ? String(method) : '—';
   }
 
@@ -3378,7 +3315,7 @@
       return { word: 'Awaiting response', cls: 'pending' };
     }
     if (item.status === 'accepted') {
-      return { word: 'Covered (text reply)', cls: 'filled' };
+      return { word: 'Covered', cls: 'filled' };
     }
     if (item.voiceConfirmed) {
       return { word: 'Covered (phone)', cls: 'filled' };
@@ -3495,7 +3432,7 @@
     var covHead =
       items.length > 0
         ? '<li class="history-item callout-section-label" aria-hidden="true">' +
-          '<p class="history-item-meta"><strong>Coverage outreach</strong> — texts and calls from Schedule → Report Callout</p>' +
+          '<p class="history-item-meta"><strong>Coverage outreach</strong> — phone calls from Schedule → Report Callout</p>' +
           '</li>'
         : '';
 
@@ -3962,213 +3899,121 @@
     });
   }
 
-  async function triggerCoverage(method) {
+  async function triggerCoverage() {
     if (!currentShift) return;
     var workers = ELIGIBLE_BY_ROLE[currentShift.role] || [];
     var notifiedWorkers = getSelectedEligibleWorkers();
     if (notifiedWorkers.length === 0) notifiedWorkers = workers;
 
-    if (method === 'text') {
-      var historyEntry = {
-        shift: currentShift,
-        status: 'pending',
-        acceptedBy: null,
-        notified: notifiedWorkers.map(function (w) { return w.name; }),
-        noResponse: notifiedWorkers.map(function (w) { return w.name; }),
-        originalWorkers: (currentShift.workers || [currentShift.worker]).filter(Boolean),
-        contactMethod: method,
-        restaurantId: currentRestaurantId,
-        restaurantName: restaurantLabel(currentRestaurantId),
-      };
-      history.push(historyEntry);
-      activeHistoryIndex = history.length - 1;
+    stopVoiceOutcomePolling();
+    var callTargets = notifiedWorkers.filter(function (w) { return w.phone; });
+    if (!callTargets.length) {
+      showScheduleNotice('No phone on selected workers. Choose someone with a number (e.g. Martin Long).', false);
+      showScreen(1);
+      return;
+    }
+    try {
+      var voiceTpl = loadMessagingTemplates().voice;
+      var voiceCallSids = [];
       var shiftLabel = currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end);
-      var smsTpl = loadMessagingTemplates().sms;
-      var sampleWorker = notifiedWorkers[0] || { name: 'Team' };
-      var smsMessage = applyMessagingTemplate(smsTpl, buildMessagingTemplateVars(currentShift, sampleWorker)).trim();
-
-      try {
-        var payload = {
-          shift: {
-            id: currentShift.id,
-            day: currentShift.day,
-            role: currentShift.role,
-            groupLabel: currentShift.groupLabel || currentShift.role,
-            timeLabel: shiftLabel,
-          },
-          recipients: notifiedWorkers.map(function (w) {
-            return {
-              id: w.id,
-              name: w.name,
-              role: currentShift.role,
-              phone: w.phone || '',
-              messageBody: applyMessagingTemplate(smsTpl, buildMessagingTemplateVars(currentShift, w)).trim(),
-            };
-          }),
-          message: smsMessage || applyMessagingTemplate(DEFAULT_SMS_TEMPLATE, buildMessagingTemplateVars(currentShift, sampleWorker)).trim(),
-        };
-
-        var response = await fetch(API_BASE + '/api/send-text', {
+      for (var ci = 0; ci < callTargets.length; ci++) {
+        var cw = callTargets[ci];
+        var firstName = cw.name.split(/\s+/)[0].replace(/\.$/, '') || 'there';
+        var voiceVars = buildMessagingTemplateVars(currentShift, cw);
+        var voiceScript = applyMessagingTemplate(voiceTpl, voiceVars).trim();
+        if (!voiceScript) {
+          voiceScript = applyMessagingTemplate(DEFAULT_VOICE_TEMPLATE, voiceVars).trim();
+        }
+        var cResp = await fetch(API_BASE + '/api/voice/call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            to: cw.phone,
+            name: cw.name,
+            firstName: firstName,
+            voiceScript: voiceScript,
+            shiftDay: voiceVars.shiftDay,
+            shiftTime: voiceVars.shiftTime,
+            roleLabel: voiceVars.roleLabel,
+            voiceInteractive: true,
+            callback: {
+              workerId: cw.id,
+              workerName: cw.name,
+              workerRole: cw.role || currentShift.role,
+              phone: cw.phone,
+              shift: {
+                id: currentShift.id,
+                day: currentShift.day,
+                role: currentShift.role,
+                start: currentShift.start,
+                end: currentShift.end,
+                timeLabel: shiftLabel,
+                groupLabel: currentShift.groupLabel || currentShift.role,
+              },
+            },
+          }),
         });
-        var result = await response.json().catch(function () { return {}; });
-        if (!response.ok) {
-          var errParts = [result.error || 'Unknown error'];
-          if (result.twilioCode) errParts.push('Twilio code ' + result.twilioCode);
-          if (result.moreInfo) errParts.push(result.moreInfo);
-          if (result.hint) errParts.push(result.hint);
-          showScheduleNotice('Text send failed: ' + errParts.join(' — '), false);
+        var cResult = await cResp.json().catch(function () { return {}; });
+        if (!cResp.ok) {
+          var callErrParts = [cResult.error || 'Unknown error'];
+          if (cResult.reason) callErrParts.push(String(cResult.reason));
+          if (cResult.detail && String(cResult.detail).length < 220) {
+            callErrParts.push(String(cResult.detail).trim());
+          }
+          if (cResult.twilioCode != null) callErrParts.push('Twilio code ' + cResult.twilioCode);
+          if (cResult.twilioHint) callErrParts.push('(ref ' + cResult.twilioHint + ')');
+          if (cResult.hint) callErrParts.push(cResult.hint);
+          if (cResult.moreInfo) callErrParts.push(String(cResult.moreInfo));
+          showScheduleNotice('Call failed:\n' + callErrParts.join('\n'), false);
           showScreen(1);
           return;
         }
-
-        pendingTextCampaign = {
-          campaignId: result.campaignId,
-          historyIndex: activeHistoryIndex,
-          shift: currentShift,
-          notifiedWorkers: notifiedWorkers,
-          message: smsMessage,
-        };
-
-        showScreen(1);
-        var noticeLines = [];
-        noticeLines.push(result.sentCount + ' text(s) queued by Twilio.');
-        if (result.deliveries && result.deliveries.length) {
-          result.deliveries.forEach(function (d) {
-            noticeLines.push('→ ' + (d.name || '?') + ' at ' + d.to + ' — status: ' + (d.status || '?') + ' — SID: ' + (d.messageSid || '—'));
-          });
+        if (cResult.callSid && cResult.voiceInteractive) {
+          voiceCallSids.push({ sid: cResult.callSid });
         }
-        noticeLines.push('If nothing arrives: check Twilio Console → Monitor → Logs → Messaging for that SID (toll-free often needs verification; trial only sends to verified numbers).');
-        showScheduleNotice(noticeLines.join('\n'), false);
-        startCampaignPolling(result.campaignId);
-        refreshRequestsListIfCallouts();
-      } catch (err) {
-        showScreen(1);
-        showScheduleNotice('Text send failed: network error', false);
       }
-      return;
+      history.push({
+        shift: currentShift,
+        status: 'pending',
+        acceptedBy: null,
+        notified: callTargets.map(function (t) { return t.name; }),
+        noResponse: callTargets.map(function (t) { return t.name; }),
+        originalWorkers: (currentShift.workers || [currentShift.worker]).filter(Boolean),
+        contactMethod: 'call',
+        restaurantId: currentRestaurantId,
+        restaurantName: restaurantLabel(currentRestaurantId),
+      });
+      activeHistoryIndex = history.length - 1;
+      showScreen(1);
+      var callingNames = callTargets
+        .map(function (t) {
+          return t.name;
+        })
+        .join(', ');
+      showScheduleNotice(
+        'Calling ' +
+          callingNames +
+          '\n\nIf the phone never rings: open Twilio Console → Monitor → Calls / Errors (look for 11200 = TwiML URL fetch failed). Trial accounts must verify the destination number. To test audio only without ngrok TwiML, set VOICE_INLINE_ONLY=1 in .env and restart the server.',
+        false
+      );
+      if (voiceCallSids.length) {
+        startVoiceOutcomePolling(activeHistoryIndex, voiceCallSids);
+      }
+      refreshRequestsListIfCallouts();
+    } catch (callErr) {
+      showScreen(1);
+      showScheduleNotice(
+        'Call failed: could not reach the API (' +
+          (callErr && callErr.message ? callErr.message : 'network error') +
+          '). If the app is on port 8000, ensure npm start is running on 8787.',
+        false
+      );
     }
-
-    if (method === 'call') {
-      stopVoiceOutcomePolling();
-      var callTargets = notifiedWorkers.filter(function (w) { return w.phone; });
-      if (!callTargets.length) {
-        showScheduleNotice('No phone on selected workers. Choose someone with a number (e.g. Martin Long).', false);
-        showScreen(1);
-        return;
-      }
-      try {
-        var voiceTpl = loadMessagingTemplates().voice;
-        var voiceCallSids = [];
-        var shiftLabel = currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end);
-        for (var ci = 0; ci < callTargets.length; ci++) {
-          var cw = callTargets[ci];
-          var firstName = cw.name.split(/\s+/)[0].replace(/\.$/, '') || 'there';
-          var voiceVars = buildMessagingTemplateVars(currentShift, cw);
-          var voiceScript = applyMessagingTemplate(voiceTpl, voiceVars).trim();
-          if (!voiceScript) {
-            voiceScript = applyMessagingTemplate(DEFAULT_VOICE_TEMPLATE, voiceVars).trim();
-          }
-          var cResp = await fetch(API_BASE + '/api/voice/call', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              to: cw.phone,
-              name: cw.name,
-              firstName: firstName,
-              voiceScript: voiceScript,
-              shiftDay: voiceVars.shiftDay,
-              shiftTime: voiceVars.shiftTime,
-              roleLabel: voiceVars.roleLabel,
-              voiceInteractive: true,
-              callback: {
-                workerId: cw.id,
-                workerName: cw.name,
-                workerRole: cw.role || currentShift.role,
-                phone: cw.phone,
-                shift: {
-                  id: currentShift.id,
-                  day: currentShift.day,
-                  role: currentShift.role,
-                  start: currentShift.start,
-                  end: currentShift.end,
-                  timeLabel: shiftLabel,
-                  groupLabel: currentShift.groupLabel || currentShift.role,
-                },
-              },
-            }),
-          });
-          var cResult = await cResp.json().catch(function () { return {}; });
-          if (!cResp.ok) {
-            var callErrParts = [cResult.error || 'Unknown error'];
-            if (cResult.reason) callErrParts.push(String(cResult.reason));
-            if (cResult.detail && String(cResult.detail).length < 220) {
-              callErrParts.push(String(cResult.detail).trim());
-            }
-            if (cResult.twilioCode != null) callErrParts.push('Twilio code ' + cResult.twilioCode);
-            if (cResult.twilioHint) callErrParts.push('(ref ' + cResult.twilioHint + ')');
-            if (cResult.hint) callErrParts.push(cResult.hint);
-            if (cResult.moreInfo) callErrParts.push(String(cResult.moreInfo));
-            showScheduleNotice('Call failed:\n' + callErrParts.join('\n'), false);
-            showScreen(1);
-            return;
-          }
-          if (cResult.callSid && cResult.voiceInteractive) {
-            voiceCallSids.push({ sid: cResult.callSid });
-          }
-        }
-        history.push({
-          shift: currentShift,
-          status: 'pending',
-          acceptedBy: null,
-          notified: callTargets.map(function (t) { return t.name; }),
-          noResponse: callTargets.map(function (t) { return t.name; }),
-          originalWorkers: (currentShift.workers || [currentShift.worker]).filter(Boolean),
-          contactMethod: 'call',
-          restaurantId: currentRestaurantId,
-          restaurantName: restaurantLabel(currentRestaurantId),
-        });
-        activeHistoryIndex = history.length - 1;
-        showScreen(1);
-        var callingNames = callTargets
-          .map(function (t) {
-            return t.name;
-          })
-          .join(', ');
-        showScheduleNotice(
-          'Calling ' +
-            callingNames +
-            '\n\nIf the phone never rings: open Twilio Console → Monitor → Calls / Errors (look for 11200 = TwiML URL fetch failed). Trial accounts must verify the destination number. To test audio only without ngrok TwiML, set VOICE_INLINE_ONLY=1 in .env and restart the server.',
-          false
-        );
-        if (voiceCallSids.length) {
-          startVoiceOutcomePolling(activeHistoryIndex, voiceCallSids);
-        }
-        refreshRequestsListIfCallouts();
-      } catch (callErr) {
-        showScreen(1);
-        showScheduleNotice(
-          'Call failed: could not reach the API (' +
-            (callErr && callErr.message ? callErr.message : 'network error') +
-            '). If the app is on port 8000, ensure npm start is running on 8787.',
-          false
-        );
-      }
-      return;
-    }
-  }
-
-  if (textCoverageBtn) {
-    textCoverageBtn.addEventListener('click', async function () {
-      await triggerCoverage('text');
-    });
   }
 
   if (callCoverageBtn) {
     callCoverageBtn.addEventListener('click', async function () {
-      await triggerCoverage('call');
+      await triggerCoverage();
     });
   }
 
@@ -4179,7 +4024,6 @@
     var last = history[idx];
     last.status = 'filled';
     stopVoiceOutcomePolling();
-
     // Update the schedule assignment to reflect the accepted replacement.
     if (last.shift && last.acceptedBy) {
       var nm = last.acceptedBy.name;
@@ -4206,7 +4050,6 @@
     currentShift = null;
     acceptedWorker = null;
     activeHistoryIndex = null;
-    stopCampaignPolling();
     showScreen(4);
   });
 
@@ -4225,7 +4068,7 @@
     btn.addEventListener('click', function () {
       var goto = parseInt(this.dataset.goto, 10);
       if (goto === 5) renderEmployeeList();
-      if (goto !== 1 && !pendingTextCampaign) hideScheduleNotice();
+      if (goto !== 1) hideScheduleNotice();
       showScreen(goto);
       /* Keep sticky app-top aligned when switching tabs. */
       window.scrollTo(0, 0);
@@ -4585,7 +4428,11 @@
     filter = filter || 'all';
     var items = history.slice().reverse();
     if (filter === 'pending') items = items.filter(function (i) { return i.status !== 'filled'; });
-    if (filter === 'filled') items = items.filter(function (i) { return i.status === 'filled'; });
+    if (filter === 'filled') {
+      items = items.filter(function (i) {
+        return i.status === 'filled' || i.status === 'accepted';
+      });
+    }
 
     historyList.innerHTML = items.length === 0
       ? '<li class="history-item"><p class="history-item-meta">No callout history yet. Report a callout from Schedule.</p></li>'
@@ -4615,20 +4462,16 @@
         }).join('');
   }
 
-  if (smsTemplateInput) {
-    smsTemplateInput.addEventListener('input', renderMessagingPreviews);
-  }
   if (voiceTemplateInput) {
     voiceTemplateInput.addEventListener('input', renderMessagingPreviews);
   }
   if (saveMessagingTemplatesBtn) {
     saveMessagingTemplatesBtn.addEventListener('click', function () {
       saveMessagingTemplates({
-        sms: smsTemplateInput ? smsTemplateInput.value : '',
         voice: voiceTemplateInput ? voiceTemplateInput.value : '',
       });
       if (messagingSaveFeedback) {
-        messagingSaveFeedback.textContent = 'Templates saved.';
+        messagingSaveFeedback.textContent = 'Script saved.';
         messagingSaveFeedback.hidden = false;
         setTimeout(function () {
           messagingSaveFeedback.hidden = true;
@@ -4652,10 +4495,126 @@
   populateRemoveRestaurantSelect();
   renderEmployeeLocationSelectOptions('both');
 
+  function normPortalLoginKey(s) {
+    return String(s || '')
+      .trim()
+      .toLowerCase();
+  }
+
+  function loadPortalEmployeeAccounts() {
+    try {
+      var raw = localStorage.getItem(EMPLOYEE_PORTAL_ACCOUNTS_KEY);
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (Array.isArray(p)) {
+          return p.filter(function (x) {
+            return x && x.loginKey && x.password && x.displayName && x.staffType;
+          });
+        }
+      }
+    } catch (ePortal) {
+      /* ignore */
+    }
+    return [];
+  }
+
+  function savePortalEmployeeAccounts(arr) {
+    try {
+      localStorage.setItem(EMPLOYEE_PORTAL_ACCOUNTS_KEY, JSON.stringify(arr));
+    } catch (ePortal2) {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Register a new employee for the portal and roster (localStorage).
+   * Passwords are stored in plain text for this demo only.
+   */
+  window.gmCalloutRegisterEmployeeAccount = function (opts) {
+    opts = opts || {};
+    var fn = String(opts.firstName != null ? opts.firstName : '').trim();
+    var ln = String(opts.lastName != null ? opts.lastName : '').trim();
+    var staffType = String(opts.staffType != null ? opts.staffType : '').trim();
+    var phone = String(opts.phone != null ? opts.phone : '').trim();
+    var pw = String(opts.password != null ? opts.password : '');
+    if (!fn || !ln) return { ok: false, message: 'First and last name are required.' };
+    if (!phone) return { ok: false, message: 'Phone number is required.' };
+    var phoneDigits = phone.replace(/\D/g, '');
+    if (phoneDigits.length < 7) {
+      return { ok: false, message: 'Enter a valid phone number (at least 7 digits).' };
+    }
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      return { ok: false, message: 'Choose a valid staff type.' };
+    }
+    if (pw.length < 4) return { ok: false, message: 'Password must be at least 4 characters.' };
+    var displayName = fn + ' ' + ln;
+    var loginKey = normPortalLoginKey(displayName);
+    if (loginKey === normPortalLoginKey('Jordan Ma')) {
+      return { ok: false, message: 'That name is reserved for the demo account.' };
+    }
+    if (employeeByDisplayName(displayName)) {
+      return { ok: false, message: 'An employee with that name already exists.' };
+    }
+    var accounts = loadPortalEmployeeAccounts();
+    if (accounts.some(function (a) { return a.loginKey === loginKey; })) {
+      return { ok: false, message: 'An account already exists for that name.' };
+    }
+    var rec = migrateEmployeeRecord({
+      id: newEmployeeId(),
+      firstName: fn,
+      lastName: ln,
+      staffType: staffType,
+      phone: phone,
+      weeklyGrid: defaultWeeklyGridAllOpenForStaffType(staffType),
+      usualRestaurant: 'both',
+    });
+    if (!rec) return { ok: false, message: 'Could not create employee record.' };
+    employees.push(rec);
+    saveEmployees();
+    accounts.push({
+      loginKey: loginKey,
+      password: pw,
+      displayName: displayName,
+      staffType: staffType,
+      phone: phone,
+    });
+    savePortalEmployeeAccounts(accounts);
+    rebuildEmployeeDerivedData();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    renderEmployeeList();
+    return { ok: true, message: 'Account created. You can sign in now.', displayName: displayName };
+  };
+
+  /** Match portal login (registered accounts + demo Jordan). */
+  window.gmCalloutPortalEmployeeLogin = function (loginId, password) {
+    var id = normPortalLoginKey(loginId);
+    var pw = String(password || '');
+    if (id === normPortalLoginKey('Jordan Ma') && pw === 'redpoke') {
+      return { ok: true, displayName: 'Jordan Ma' };
+    }
+    var accounts = loadPortalEmployeeAccounts();
+    var m = accounts.find(function (a) {
+      return a.loginKey === id;
+    });
+    if (!m) return { ok: false };
+    if (m.password !== pw) return { ok: false };
+    return { ok: true, displayName: m.displayName };
+  };
+
   window.gmCalloutBridge = {
     employeeLoginName: 'Jordan Ma',
     getManagerContact: function () {
       return { name: 'Martin Long', email: 'martinlong830@gmail.com' };
+    },
+    getEmployeeLoginName: function () {
+      try {
+        var s = sessionStorage.getItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+        if (s && String(s).trim()) return String(s).trim();
+      } catch (eSess) {
+        /* ignore */
+      }
+      return 'Jordan Ma';
     },
     getWorkerScheduleBuckets: function (workerName) {
       mergeEmployeeSubmittedFromStorage();

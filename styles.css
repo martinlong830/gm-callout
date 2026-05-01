@@ -180,6 +180,50 @@ html.authed .login-screen {
   color: var(--danger);
 }
 
+.login-error.is-success {
+  color: #15803d;
+}
+
+.login-hint {
+  margin: 0 0 18px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.login-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 380px) {
+  .login-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.login-footer-actions {
+  margin: 18px 0 0;
+  text-align: center;
+}
+
+.login-link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.login-link-btn:hover {
+  opacity: 0.88;
+}
+
 .login-submit {
   margin-top: 4px;
 }

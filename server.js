@@ -128,8 +128,6 @@ function isTwilioEnvConfigError(err) {
 const TWILIO_ENV_HINT =
   "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER in your host’s environment (Render → Environment), save, then redeploy or restart.";
 
-const campaigns = new Map();
-
 /** In-memory state for interactive voice (yes/no + confirm). Requires PUBLIC_BASE_URL. */
 const voiceFlowSessions = new Map();
 const VOICE_FLOW_TTL_MS = 3 * 60 * 60 * 1000;
@@ -348,10 +346,6 @@ function normalizePhone(value) {
   return value;
 }
 
-function createCampaignId() {
-  return `cmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function escapeXmlText(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -450,157 +444,6 @@ app.get("/api/voice/public-url-check", async (_req, res) => {
     voiceInlineOnly: VOICE_INLINE_ONLY,
     skipPreflightEnv: SKIP_PUBLIC_URL_PREFLIGHT,
   });
-});
-
-app.get("/api/campaigns/:id", (req, res) => {
-  const campaign = campaigns.get(req.params.id);
-  if (!campaign) {
-    return res.status(404).json({ error: "Campaign not found" });
-  }
-  return res.json({
-    id: campaign.id,
-    status: campaign.status,
-    acceptedBy: campaign.acceptedBy,
-    sentCount: campaign.sentCount,
-    createdAt: campaign.createdAt,
-  });
-});
-
-app.post("/api/send-text", async (req, res) => {
-  try {
-    const { shift, recipients, message } = req.body || {};
-    const hasBroadcast = message != null && String(message).trim() !== "";
-    const hasPerRecipient =
-      Array.isArray(recipients) &&
-      recipients.some((r) => r.messageBody != null && String(r.messageBody).trim() !== "");
-    if (!shift || !Array.isArray(recipients) || (!hasBroadcast && !hasPerRecipient)) {
-      return res.status(400).json({
-        error: "Missing shift, recipients, or message content (set message and/or per-recipient messageBody)",
-      });
-    }
-    if (!TWILIO_FROM_NUMBER) {
-      return res.status(500).json({ error: "Missing TWILIO_FROM_NUMBER in server env" });
-    }
-
-    const campaign = {
-      id: createCampaignId(),
-      createdAt: new Date().toISOString(),
-      status: "pending",
-      shift,
-      acceptedBy: null,
-      sentCount: 0,
-      recipients: recipients.map((r) => ({
-        id: r.id || "",
-        name: r.name || "Unknown",
-        role: r.role || shift.role || "",
-        phone: normalizePhone(r.phone || ""),
-        messageBody: r.messageBody != null ? String(r.messageBody) : "",
-        messageSid: null,
-        response: null,
-      })),
-    };
-
-    const sendTargets = campaign.recipients.filter((r) => !!r.phone);
-    if (!sendTargets.length) {
-      campaigns.set(campaign.id, campaign);
-      return res.status(400).json({
-        error: "No recipients have phone numbers. Add a phone to selected workers.",
-        campaignId: campaign.id,
-      });
-    }
-
-    const client = getTwilioClient();
-    const deliveries = [];
-    await Promise.all(
-      sendTargets.map(async (target) => {
-        const bodyText =
-          target.messageBody != null && String(target.messageBody).trim() !== ""
-            ? String(target.messageBody)
-            : String(message || "");
-        const msg = await client.messages.create({
-          from: TWILIO_FROM_NUMBER,
-          to: target.phone,
-          body: bodyText,
-        });
-        target.messageSid = msg.sid;
-        deliveries.push({
-          to: target.phone,
-          name: target.name,
-          messageSid: msg.sid,
-          status: msg.status || "unknown",
-          errorCode: msg.errorCode || null,
-          errorMessage: msg.errorMessage || null,
-          bodyPreview: bodyText.slice(0, 160),
-        });
-        console.log("[SMS sent]", target.phone, msg.sid, msg.status, "chars:", bodyText.length);
-      })
-    );
-
-    campaign.sentCount = sendTargets.length;
-    campaigns.set(campaign.id, campaign);
-
-    return res.json({
-      ok: true,
-      campaignId: campaign.id,
-      sentCount: campaign.sentCount,
-      deliveries,
-      deliveryNote:
-        "API accepted the message(s). If the phone does not receive SMS within a few minutes, open Twilio Console → Monitor → Logs → Messaging, search by Message SID, and check for errors. US toll-free senders often need Toll-Free verification; trial accounts can only text verified numbers.",
-    });
-  } catch (err) {
-    if (isTwilioEnvConfigError(err)) {
-      return res.status(503).json({ error: err.message, hint: TWILIO_ENV_HINT });
-    }
-    const code = err && err.code;
-    const twilioMsg = err && err.message;
-    const moreInfo = err && err.moreInfo;
-    const status = err && err.status;
-    const details = err && err.details;
-    console.error("[Twilio send-text]", status, code, twilioMsg, moreInfo || "", details || "");
-    const detail = [twilioMsg, code ? `code ${code}` : "", moreInfo].filter(Boolean).join(" — ");
-    return res.status(500).json({
-      error: detail || "Twilio send failed",
-      twilioCode: code,
-      twilioStatus: status,
-      moreInfo: moreInfo || undefined,
-      hint:
-        status === 403 || String(twilioMsg).includes("403")
-          ? "403 often means bad Account SID / Auth Token, or requests not hitting this Node server. Open http://localhost:8787/api/twilio/validate and ensure ok:true. Use npm start (port 8787) or set API base in app."
-          : undefined,
-    });
-  }
-});
-
-app.post("/api/twilio/inbound", (req, res) => {
-  const from = normalizePhone(req.body.From || "");
-  const body = String(req.body.Body || "").trim().toLowerCase();
-  const wantsYes = body.startsWith("yes");
-  const wantsNo = body.startsWith("no");
-
-  if (from && (wantsYes || wantsNo)) {
-    const list = Array.from(campaigns.values()).reverse();
-    for (const campaign of list) {
-      if (campaign.status === "filled") continue;
-      const recipient = campaign.recipients.find((r) => r.phone === from);
-      if (!recipient) continue;
-
-      recipient.response = wantsYes ? "yes" : "no";
-
-      if (wantsYes && campaign.status === "pending") {
-        campaign.status = "accepted";
-        campaign.acceptedBy = {
-          id: recipient.id,
-          name: recipient.name,
-          role: recipient.role,
-          phone: recipient.phone,
-        };
-      }
-      break;
-    }
-  }
-
-  const twiml = new twilio.twiml.MessagingResponse();
-  return res.type("text/xml").send(twiml.toString());
 });
 
 /** Twilio fetches this URL when the outbound call connects (must be public HTTPS). */
@@ -921,7 +764,7 @@ const server = app.listen(Number(PORT), LISTEN_HOST, () => {
   console.log(`GM callout app listening on http://${LISTEN_HOST}:${PORT}`);
   if (!TWILIO_ACCOUNT_SID) {
     console.warn(
-      "[Env] TWILIO_ACCOUNT_SID is not set — add it in Render → Environment (with auth token and from number), then redeploy. UI works; SMS/voice will return 503 until then."
+      "[Env] TWILIO_ACCOUNT_SID is not set — add it in Render → Environment (with auth token and from number), then redeploy. UI works; outbound calls will return 503 until then."
     );
   }
   console.log(`Twilio check: http://localhost:${PORT}/api/twilio/validate`);

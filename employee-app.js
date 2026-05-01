@@ -71,9 +71,13 @@
     if (!document.documentElement.classList.contains('employee-app')) return;
 
     var bridge = window.gmCalloutBridge;
-    if (!bridge || !bridge.employeeLoginName) return;
+    if (!bridge) return;
 
-    var WORKER = bridge.employeeLoginName;
+    var WORKER =
+      bridge.getEmployeeLoginName && typeof bridge.getEmployeeLoginName === 'function'
+        ? bridge.getEmployeeLoginName()
+        : bridge.employeeLoginName || 'Jordan Ma';
+    if (!WORKER) return;
     var titles = { home: 'Home', messages: 'Messages', requests: 'Actions' };
 
     var screenTitle = el('empScreenTitle');
