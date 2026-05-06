@@ -36,6 +36,9 @@
       <h1 class="login-title" id="loginTitle">Red Poke Scheduler</h1>
       <div id="loginPanel">
         <p class="login-subtitle">Sign in to continue</p>
+        <p class="login-hint">
+          Use your <strong>email</strong> and password for Supabase. Use your <strong>name</strong> (no @) for the local demo employee sign-in.
+        </p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
             <span class="login-label">Email or name</span>
@@ -73,8 +76,20 @@
       </div>
       <div id="registerPanel" hidden>
         <p class="login-subtitle">Create your employee account</p>
-        <p class="login-hint">You will sign in with your first and last name and password. Your manager will see you and your phone on the roster.</p>
+        <p class="login-hint">
+          With cloud sign-in: use your <strong>email</strong> below and the same password you choose here. Without cloud, use your <strong>name</strong> (no @) on the sign-in screen. Your manager will see you on the roster.
+        </p>
         <form id="registerForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Work email</span>
+            <input
+              type="email"
+              id="regEmail"
+              class="login-input"
+              autocomplete="email"
+              enterkeyhint="next"
+            />
+          </label>
           <div class="login-form-row">
             <label class="login-field">
               <span class="login-label">First name</span>
@@ -161,7 +176,9 @@
       </div>
       <div id="managerRegisterPanel" hidden>
         <p class="login-subtitle">Create manager account</p>
-        <p class="login-hint">Enter the access code, then your email and password. You will sign in as a manager on this device.</p>
+        <p class="login-hint">
+          Enter the access code, then your email and password. With cloud sign-in, the account is created in Supabase; otherwise it is stored only on this device.
+        </p>
         <form id="managerRegisterForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
             <span class="login-label">Access code</span>
@@ -234,14 +251,15 @@
           decoding="async"
         />
         <h1 class="title" id="screenTitle">Schedule Overview</h1>
-        <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign out">
-          Sign out
+        <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign Out">
+          Sign Out
         </button>
       </header>
       <nav class="top-nav" aria-label="Main navigation">
         <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
-        <button type="button" class="nav-item" data-goto="5">Employees</button>
+        <button type="button" class="nav-item" data-goto="5">Team</button>
         <button type="button" class="nav-item" data-goto="8">Actions</button>
+        <button type="button" class="nav-item" data-goto="9">Messages</button>
       </nav>
     </div>
 
@@ -369,7 +387,7 @@
         </div>
       </section>
 
-      <!-- Screen 5: Employees -->
+      <!-- Screen 5: Team -->
       <section class="screen" id="screen-employees" data-screen="5">
         <div class="employees-controls">
           <label class="employee-search-wrap">
@@ -400,7 +418,48 @@
             <button type="button" class="btn btn-primary" id="addEmployeeBtn">Add employee</button>
           </div>
         </div>
-        <div id="employeeList" class="employee-list" aria-label="Employee roster"></div>
+        <div id="employeeList" class="employee-list" aria-label="Team roster"></div>
+      </section>
+
+      <!-- Screen 9: Manager Messages (same model as employee Messages; syncs to employee_chat_store for this user) -->
+      <section class="screen" id="screen-manager-messages" data-screen="9">
+        <div class="emp-messages-layout emp-messages-layout--stacked" id="mgrMessagesLayout">
+          <div class="emp-messages-list-view" id="mgrMessagesListView">
+            <label class="emp-message-search-wrap">
+              <span class="visually-hidden">Search conversations or team member</span>
+              <input
+                type="search"
+                id="mgrMessageSearch"
+                class="employee-search-input emp-messages-search"
+                placeholder="Search conversations or team…"
+                autocomplete="off"
+                enterkeyhint="search"
+              />
+            </label>
+            <div class="emp-thread-list-scroll">
+              <ul class="emp-thread-list" id="mgrThreadList"></ul>
+            </div>
+          </div>
+          <div class="emp-chat-panel" id="mgrChatPanel" hidden>
+            <div class="emp-chat-top">
+              <button type="button" class="emp-chat-back" id="mgrChatBack" aria-label="Back to conversation list">
+                Back
+              </button>
+              <span class="emp-chat-title" id="mgrChatTitle"></span>
+            </div>
+            <div class="emp-chat-log" id="mgrChatLog"></div>
+            <form class="emp-chat-form" id="mgrChatForm">
+              <input
+                type="text"
+                class="emp-chat-input"
+                id="mgrChatInput"
+                placeholder="Write a message…"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn btn-primary emp-chat-send">Send</button>
+            </form>
+          </div>
+        </div>
       </section>
 
       <!-- Screen 8: Actions -->
@@ -535,7 +594,7 @@
           decoding="async"
         />
         <h1 class="title" id="empScreenTitle">Home</h1>
-        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign out">Sign out</button>
+        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
       </header>
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
@@ -564,11 +623,28 @@
       </section>
       <section class="emp-screen" data-emp-screen="messages" id="empScreenMessages" hidden>
         <div class="emp-manager-banner" id="empManagerBanner"></div>
-        <div class="emp-messages-layout" id="empMessagesLayout">
-          <ul class="emp-thread-list" id="empThreadList"></ul>
+        <div class="emp-messages-layout emp-messages-layout--stacked" id="empMessagesLayout">
+          <div class="emp-messages-list-view" id="empMessagesListView">
+            <label class="emp-message-search-wrap">
+              <span class="visually-hidden">Search conversations or team member</span>
+              <input
+                type="search"
+                id="empMessageSearch"
+                class="employee-search-input emp-messages-search"
+                placeholder="Search conversations or team…"
+                autocomplete="off"
+                enterkeyhint="search"
+              />
+            </label>
+            <div class="emp-thread-list-scroll">
+              <ul class="emp-thread-list" id="empThreadList"></ul>
+            </div>
+          </div>
           <div class="emp-chat-panel" id="empChatPanel" hidden>
             <div class="emp-chat-top">
-              <button type="button" class="btn btn-secondary emp-back-threads" id="empBackThreads">Threads</button>
+              <button type="button" class="emp-chat-back" id="empChatBack" aria-label="Back to conversation list">
+                Back
+              </button>
               <span class="emp-chat-title" id="empChatTitle"></span>
             </div>
             <div class="emp-chat-log" id="empChatLog"></div>
@@ -836,8 +912,12 @@
     </div>
   </div>
 
+  <script src="/gm-supabase-config.js?v=2"></script>
+  <script src="/vendor/supabase-js.js"></script>
+  <script src="gm-supabase-init.js"></script>
   <script src="app.js"></script>
   <script src="employee-app.js"></script>
+  <script src="manager-messaging.js"></script>
   <script>
     (function () {
       var ALLOWED_EMAIL = 'martinlong830@gmail.com';
@@ -964,47 +1044,153 @@
         });
       }
 
+      function looksLikeEmailForSupabase(s) {
+        return String(s || '').trim().indexOf('@') > 0;
+      }
+
+      function tryLegacyManagerThenEmployee(rawLogin, password) {
+        var id = norm(rawLogin);
+        var portalMgr =
+          typeof window.gmCalloutPortalManagerLogin === 'function'
+            ? window.gmCalloutPortalManagerLogin(rawLogin, password)
+            : { ok: false };
+        if (
+          (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) ||
+          (portalMgr && portalMgr.ok)
+        ) {
+          try {
+            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+          } catch (err0) {
+            /* ignore */
+          }
+          setSession('manager');
+          applyAuthedShell('manager');
+          if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+            window.gmCalloutManagerMessagingBootstrap();
+          }
+          return true;
+        }
+        var portal =
+          typeof window.gmCalloutPortalEmployeeLogin === 'function'
+            ? window.gmCalloutPortalEmployeeLogin(rawLogin, password)
+            : { ok: false };
+        if (portal && portal.ok && portal.displayName) {
+          try {
+            sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, portal.displayName);
+          } catch (err1) {
+            /* ignore */
+          }
+          setSession('employee');
+          applyAuthedShell('employee');
+          if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+            window.gmCalloutEmployeeBootstrap();
+          }
+          return true;
+        }
+        showLoginError('Email, name, or password is incorrect.');
+        return false;
+      }
+
       if (loginForm && loginEmail && loginPassword) {
         loginForm.addEventListener('submit', function (e) {
           e.preventDefault();
           clearLoginError();
-          var id = norm(loginEmail.value);
+          var rawLogin = loginEmail.value;
           var password = loginPassword.value || '';
-          var portalMgr =
-            typeof window.gmCalloutPortalManagerLogin === 'function'
-              ? window.gmCalloutPortalManagerLogin(loginEmail.value, password)
-              : { ok: false };
+
           if (
-            (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) ||
-            (portalMgr && portalMgr.ok)
+            window.gmSupabaseEnabled &&
+            window.gmSupabase &&
+            typeof window.gmSupabase.auth !== 'undefined' &&
+            looksLikeEmailForSupabase(rawLogin)
           ) {
-            try {
-              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-            } catch (err0) {
-              /* ignore */
-            }
-            setSession('manager');
-            applyAuthedShell('manager');
-          } else {
-            var portal =
-              typeof window.gmCalloutPortalEmployeeLogin === 'function'
-                ? window.gmCalloutPortalEmployeeLogin(loginEmail.value, password)
-                : { ok: false };
-            if (portal && portal.ok && portal.displayName) {
+            (async function () {
+              var sb = window.gmSupabase;
               try {
-                sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, portal.displayName);
-              } catch (err1) {
-                /* ignore */
+                var signIn = await sb.auth.signInWithPassword({
+                  email: String(rawLogin).trim(),
+                  password: password,
+                });
+                if (signIn.error) {
+                  showLoginError(signIn.error.message || 'Sign in failed.');
+                  return;
+                }
+                if (!signIn.data || !signIn.data.session || !signIn.data.user) {
+                  showLoginError('Sign in failed.');
+                  return;
+                }
+                var uid = signIn.data.user.id;
+                var profRes = await sb
+                  .from('profiles')
+                  .select('role, display_name')
+                  .eq('id', uid)
+                  .maybeSingle();
+                if (profRes.error || !profRes.data) {
+                  await sb.auth.signOut();
+                  showLoginError(
+                    (profRes.error && profRes.error.message) ||
+                      'No profile row for this user. Run the SQL migration and try again.'
+                  );
+                  return;
+                }
+                var role = profRes.data.role;
+                var displayName = profRes.data.display_name || signIn.data.user.email || '';
+                if (role === 'manager') {
+                  try {
+                    sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+                  } catch (em0) {
+                    /* ignore */
+                  }
+                  setSession('manager');
+                  applyAuthedShell('manager');
+                  if (
+                    window.gmSupabaseEnabled &&
+                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
+                  ) {
+                    try {
+                      await window.gmCalloutSupabaseHydrateFromRemote();
+                    } catch (_hydrMgr) {
+                      /* ignore */
+                    }
+                  }
+                  if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                    window.gmCalloutManagerMessagingBootstrap();
+                  }
+                  return;
+                }
+                if (role === 'employee') {
+                  try {
+                    sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName);
+                  } catch (em1) {
+                    /* ignore */
+                  }
+                  setSession('employee');
+                  applyAuthedShell('employee');
+                  if (
+                    window.gmSupabaseEnabled &&
+                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
+                  ) {
+                    try {
+                      await window.gmCalloutSupabaseHydrateFromRemote();
+                    } catch (_hydrEmp) {
+                      /* ignore */
+                    }
+                  }
+                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                    window.gmCalloutEmployeeBootstrap();
+                  }
+                  return;
+                }
+                await sb.auth.signOut();
+                showLoginError('Your profile role is not set to manager or employee.');
+              } catch (ex) {
+                showLoginError((ex && ex.message) || 'Sign in failed.');
               }
-              setSession('employee');
-              applyAuthedShell('employee');
-              if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-                window.gmCalloutEmployeeBootstrap();
-              }
-            } else {
-              showLoginError('Email, name, or password is incorrect.');
-            }
+            })();
+            return;
           }
+
+          tryLegacyManagerThenEmployee(rawLogin, password);
         });
       }
 
@@ -1014,6 +1200,7 @@
           clearRegisterError();
           var fn = document.getElementById('regFirstName');
           var ln = document.getElementById('regLastName');
+          var regEmailEl = document.getElementById('regEmail');
           var ph = document.getElementById('regPhone');
           var st = document.getElementById('regStaffType');
           var pw = document.getElementById('regPassword');
@@ -1024,6 +1211,109 @@
             showRegisterError('Passwords do not match.');
             return;
           }
+          if (p1.length < 4) {
+            showRegisterError('Password must be at least 4 characters.');
+            return;
+          }
+
+          if (
+            window.gmSupabaseEnabled &&
+            window.gmSupabase &&
+            window.gmSupabase.auth &&
+            typeof window.gmCalloutRegisterEmployeeRosterOnly === 'function'
+          ) {
+            var emailRaw = regEmailEl && regEmailEl.value ? String(regEmailEl.value).trim() : '';
+            if (!emailRaw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
+              showRegisterError('Enter a valid work email for cloud sign-up.');
+              return;
+            }
+            (async function () {
+              var sb = window.gmSupabase;
+              var displayName =
+                (fn && fn.value ? String(fn.value).trim() : '') +
+                ' ' +
+                (ln && ln.value ? String(ln.value).trim() : '');
+              displayName = displayName.trim();
+              if (!displayName) {
+                showRegisterError('First and last name are required.');
+                return;
+              }
+              try {
+                var up = await sb.auth.signUp({
+                  email: emailRaw,
+                  password: p1,
+                  options: {
+                    data: {
+                      role: 'employee',
+                      display_name: displayName,
+                      phone: ph && ph.value ? String(ph.value).trim() : '',
+                      staff_type: st && st.value ? String(st.value) : '',
+                    },
+                  },
+                });
+                if (up.error) {
+                  showRegisterError(up.error.message || 'Could not create account.');
+                  return;
+                }
+                if (!up.data || !up.data.user) {
+                  showRegisterError('Could not create account.');
+                  return;
+                }
+                var roster = window.gmCalloutRegisterEmployeeRosterOnly({
+                  firstName: fn && fn.value,
+                  lastName: ln && ln.value,
+                  phone: ph && ph.value,
+                  staffType: st && st.value,
+                });
+                if (roster && typeof roster.then === 'function') {
+                  roster = await roster;
+                }
+                if (!roster || !roster.ok) {
+                  showRegisterError(
+                    (roster && roster.message) ||
+                      'Cloud account was created but roster update failed. Ask a manager for help.'
+                  );
+                  return;
+                }
+                registerForm.reset();
+                if (up.data.session) {
+                  try {
+                    sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, roster.displayName || displayName);
+                  } catch (rs0) {
+                    /* ignore */
+                  }
+                  setSession('employee');
+                  applyAuthedShell('employee');
+                  if (
+                    window.gmSupabaseEnabled &&
+                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
+                  ) {
+                    try {
+                      await window.gmCalloutSupabaseHydrateFromRemote();
+                    } catch (_hydrReg) {
+                      /* ignore */
+                    }
+                  }
+                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                    window.gmCalloutEmployeeBootstrap();
+                  }
+                  showLoginError('Signed in. Welcome!', 'success');
+                  return;
+                }
+                showLoginPanel();
+                if (loginEmail) loginEmail.value = emailRaw;
+                if (loginPassword) loginPassword.value = '';
+                showLoginError(
+                  'Check your email to confirm your account, then sign in with this email and password.',
+                  'success'
+                );
+              } catch (rx) {
+                showRegisterError((rx && rx.message) || 'Could not create account.');
+              }
+            })();
+            return;
+          }
+
           if (typeof window.gmCalloutRegisterEmployeeAccount !== 'function') {
             showRegisterError('Registration is not available yet. Refresh the page and try again.');
             return;
@@ -1064,6 +1354,99 @@
             showManagerRegisterError('Passwords do not match.');
             return;
           }
+          if (p1.length < 4) {
+            showManagerRegisterError('Password must be at least 4 characters.');
+            return;
+          }
+
+          if (window.gmSupabaseEnabled && window.gmSupabase && window.gmSupabase.auth) {
+            var codeRaw = codeEl && codeEl.value ? String(codeEl.value).trim().toLowerCase() : '';
+            // Must match MANAGER_SELF_SIGNUP_CODE in app.js.
+            if (codeRaw !== 'redpoke') {
+              showManagerRegisterError('Access code is incorrect.');
+              return;
+            }
+            var emailRaw = emEl ? String(emEl.value || '').trim() : '';
+            if (!emailRaw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
+              showManagerRegisterError('Enter a valid email address.');
+              return;
+            }
+            (async function () {
+              var sb = window.gmSupabase;
+              var localPart = emailRaw.split('@')[0] || 'Manager';
+              var displayGuess = localPart.replace(/[._]+/g, ' ').trim() || 'Manager';
+              try {
+                var up = await sb.auth.signUp({
+                  email: emailRaw,
+                  password: p1,
+                  options: {
+                    data: {
+                      role: 'manager',
+                      display_name: displayGuess,
+                    },
+                  },
+                });
+                if (up.error) {
+                  showManagerRegisterError(up.error.message || 'Could not create account.');
+                  return;
+                }
+                if (!up.data || !up.data.user) {
+                  showManagerRegisterError('Could not create account.');
+                  return;
+                }
+                var uid = up.data.user.id;
+                // Only query profiles when we have a session (JWT). With "confirm email" on,
+                // signUp returns no session yet — anon cannot read profiles and .single() errors.
+                if (up.data.session) {
+                  var profRes = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
+                  if (profRes.error || !profRes.data || profRes.data.role !== 'manager') {
+                    await sb.auth.signOut();
+                    showManagerRegisterError(
+                      (profRes.error && profRes.error.message) ||
+                        'Account was created but the manager profile is missing or wrong. Check the database trigger.'
+                    );
+                    return;
+                  }
+                }
+                managerRegisterForm.reset();
+                if (up.data.session) {
+                  try {
+                    sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+                  } catch (mx0) {
+                    /* ignore */
+                  }
+                  setSession('manager');
+                  applyAuthedShell('manager');
+                  if (
+                    window.gmSupabaseEnabled &&
+                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
+                  ) {
+                    try {
+                      await window.gmCalloutSupabaseHydrateFromRemote();
+                    } catch (_hydrMgrReg) {
+                      /* ignore */
+                    }
+                  }
+                  if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                    window.gmCalloutManagerMessagingBootstrap();
+                  }
+                  showLoginError('Signed in as manager.', 'success');
+                  return;
+                }
+                showLoginPanel();
+                if (loginEmail) loginEmail.value = emailRaw;
+                if (loginPassword) loginPassword.value = '';
+                showLoginError(
+                  'Check your email to confirm your account, then sign in with this email and password.',
+                  'success'
+                );
+              } catch (mx) {
+                showManagerRegisterError((mx && mx.message) || 'Could not create account.');
+              }
+            })();
+            return;
+          }
+
           if (typeof window.gmCalloutRegisterManagerAccount !== 'function') {
             showManagerRegisterError('Registration is not available yet. Refresh the page and try again.');
             return;
@@ -1088,14 +1471,23 @@
 
       document.querySelectorAll('[data-session-signout]').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          try {
-            sessionStorage.removeItem(SESSION_KEY);
-            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-          } catch (err) {
-            /* ignore */
-          }
-          document.documentElement.classList.remove('authed', 'manager-app', 'employee-app');
-          location.reload();
+          (async function () {
+            try {
+              if (window.gmSupabase && window.gmSupabase.auth) {
+                await window.gmSupabase.auth.signOut();
+              }
+            } catch (so) {
+              /* ignore */
+            }
+            try {
+              sessionStorage.removeItem(SESSION_KEY);
+              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+            } catch (err) {
+              /* ignore */
+            }
+            document.documentElement.classList.remove('authed', 'manager-app', 'employee-app');
+            location.reload();
+          })();
         });
       });
     })();

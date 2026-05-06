@@ -303,7 +303,14 @@
   const RESTAURANT_STORAGE_KEY = 'gm-callout-current-restaurant-v1';
   const RESTAURANTS_LIST_KEY = 'gm-callout-restaurants-v1';
   const SCHEDULE_TEMPLATES_KEY = 'gm-callout-schedule-templates-v1';
+  /** Supabase `public.team_state` row id (single-store). */
+  const TEAM_STATE_ROW_ID = 'main';
   const MESSAGING_STORAGE_KEY = 'gm-callout-messaging-templates-v1';
+  const CALLOUT_HISTORY_KEY = 'gm-callout-coverage-callout-history-v1';
+  /** Same key as `employee-app.js` (Messages). */
+  const EMPLOYEE_CHAT_STORAGE_KEY = 'gm-callout-employee-messages-v1';
+  /** Manager Messages tab (`manager-messaging.js`). */
+  const MANAGER_CHAT_STORAGE_KEY = 'gm-callout-manager-messages-v1';
   const REQUESTS_STORAGE_KEY = 'gm-callout-staff-requests-status-v1';
   /** Staff requests submitted from the employee portal (full rows, survives reload). */
   const EMPLOYEE_SUBMITTED_REQUESTS_KEY = 'gm-callout-employee-submitted-requests-v1';
@@ -314,12 +321,12 @@
   /** Preset access code for creating a manager account on the login screen. */
   const MANAGER_SELF_SIGNUP_CODE = 'redpoke';
   const SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
+  /** When true, roster + staff requests load/save via Supabase (see gmCalloutSupabaseHydrateFromRemote). */
+  const GM_SUPABASE_DATA = typeof window !== 'undefined' && !!window.gmSupabaseEnabled;
 
+  /** Single-store: Red Poke 598 9th Ave only (no second location in-app for now). */
   function defaultRestaurants() {
-    return [
-      { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
-      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 8th Ave' },
-    ];
+    return [{ id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' }];
   }
 
   function loadRestaurants() {
@@ -328,15 +335,16 @@
       if (raw) {
         var p = JSON.parse(raw);
         if (Array.isArray(p) && p.length) {
-          return p.filter(function (r) {
+          var only = p.filter(function (r) {
             return (
               r &&
+              r.id === 'rp-9' &&
               typeof r.id === 'string' &&
-              r.id &&
               typeof r.name === 'string' &&
               String(r.name).trim()
             );
           });
+          if (only.length) return only;
         }
       }
     } catch (e0) {
@@ -354,6 +362,7 @@
   }
 
   let restaurantsList = loadRestaurants();
+  saveRestaurantsList();
 
   let currentRestaurantId = restaurantsList.length ? restaurantsList[0].id : 'rp-9';
   /** Shift slot screen: restaurant id or 'all'. */
@@ -679,7 +688,9 @@
     if (_reqStatusMap && typeof _reqStatusMap === 'object') {
       staffRequests.forEach(function (r) {
         var s = _reqStatusMap[r.id];
-        if (s === 'pending' || s === 'approved' || s === 'declined') r.status = s;
+        if (s === 'pending' || s === 'approved' || s === 'declined' || s === 'rejected') {
+          r.status = s === 'rejected' ? 'declined' : s;
+        }
       });
     }
   } catch (_eReqLoad) {
@@ -688,6 +699,350 @@
 
   function isEmployeeSubmittedRequestId(id) {
     return String(id || '').indexOf('req-emp-') === 0;
+  }
+
+  function isUuidCloudId(id) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      String(id || '')
+    );
+  }
+
+  function staffRequestStatusFromDb(st) {
+    if (st === 'rejected') return 'declined';
+    if (st === 'closed') return 'approved';
+    if (st === 'pending' || st === 'approved' || st === 'declined') return st;
+    return 'pending';
+  }
+
+  function staffRequestStatusToDb(ux) {
+    if (ux === 'declined') return 'rejected';
+    return ux;
+  }
+
+  function staffRequestDbTypeFromUi(t) {
+    if (t === 'callout_request') return 'callout';
+    if (t === 'availability' || t === 'timeoff' || t === 'swap' || t === 'callout') return t;
+    return null;
+  }
+
+  function mapStaffRequestFromDbRow(row) {
+    if (!row || !row.id) return null;
+    var p = row.payload && typeof row.payload === 'object' ? row.payload : {};
+    var dbType = row.type;
+    var uiType = p.uiType || (dbType === 'callout' ? 'callout_request' : dbType);
+    var created = row.created_at ? String(row.created_at).slice(0, 10) : '';
+    var full = {
+      id: row.id,
+      type: uiType,
+      employeeName: p.employeeName != null ? p.employeeName : '',
+      role: p.role != null ? p.role : 'Kitchen',
+      summary: p.summary != null ? p.summary : '',
+      submittedAt: p.submittedAt != null ? p.submittedAt : created,
+      status: staffRequestStatusFromDb(row.status),
+    };
+    if (p.submittedGrid) full.submittedGrid = p.submittedGrid;
+    if (p.submittedWeekLabel) full.submittedWeekLabel = p.submittedWeekLabel;
+    if (p.submittedWeekIndex != null) full.submittedWeekIndex = p.submittedWeekIndex;
+    if (p.offeredShiftLabel) full.offeredShiftLabel = p.offeredShiftLabel;
+    if (p.swapOfferId) full.swapOfferId = p.swapOfferId;
+    return full;
+  }
+
+  function employeeRecordToDbRow(emp) {
+    if (!emp) return null;
+    var display = employeeDisplayName(emp);
+    var ur = emp.usualRestaurant;
+    var urDb = ur === 'both' || !ur ? 'rp-9' : ur;
+    return {
+      id: emp.id,
+      auth_user_id: emp.authUserId || null,
+      first_name: emp.firstName || '',
+      last_name: emp.lastName || '',
+      display_name: (display || '').trim() || 'Staff',
+      phone: emp.phone != null ? String(emp.phone) : '',
+      staff_type: emp.staffType,
+      usual_restaurant: urDb,
+      weekly_grid: emp.weeklyGrid || {},
+      meta: emp.meta && typeof emp.meta === 'object' ? emp.meta : {},
+    };
+  }
+
+  async function insertStaffRequestRemote(full) {
+    if (!window.gmSupabase) return { ok: false, message: 'No Supabase client.' };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, message: 'Not signed in.' };
+    var dbType = staffRequestDbTypeFromUi(full.type);
+    if (!dbType) return { ok: false, message: 'Invalid request type.' };
+    var payload = {
+      employeeName: full.employeeName,
+      role: full.role,
+      summary: full.summary,
+      submittedAt: full.submittedAt,
+      uiType: full.type,
+    };
+    if (full.submittedGrid) payload.submittedGrid = full.submittedGrid;
+    if (full.submittedWeekLabel) payload.submittedWeekLabel = full.submittedWeekLabel;
+    if (full.submittedWeekIndex != null) payload.submittedWeekIndex = full.submittedWeekIndex;
+    if (full.offeredShiftLabel) payload.offeredShiftLabel = full.offeredShiftLabel;
+    if (full.swapOfferId) payload.swapOfferId = full.swapOfferId;
+    var ins = await sb
+      .from('staff_requests')
+      .insert({
+        requester_id: sessRes.data.session.user.id,
+        type: dbType,
+        status: 'pending',
+        payload: payload,
+      })
+      .select('id')
+      .maybeSingle();
+    if (ins.error) return { ok: false, message: ins.error.message || String(ins.error) };
+    if (!ins.data || !ins.data.id) return { ok: false, message: 'Insert returned no id.' };
+    return { ok: true, id: ins.data.id };
+  }
+
+  async function updateStaffRequestStatusRemote(id, uxStatus) {
+    if (!isUuidCloudId(id) || !window.gmSupabase) return { ok: false };
+    var dbSt = staffRequestStatusToDb(uxStatus);
+    if (dbSt !== 'approved' && dbSt !== 'rejected' && dbSt !== 'pending' && dbSt !== 'closed') {
+      return { ok: false };
+    }
+    var res = await window.gmSupabase.from('staff_requests').update({ status: dbSt }).eq('id', id);
+    if (res.error) {
+      console.warn('gm-callout: staff_requests update', res.error);
+      return { ok: false };
+    }
+    return { ok: true };
+  }
+
+  function syncEmployeesToSupabaseAfterSave() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    (async function () {
+      var sb = window.gmSupabase;
+      var sessRes = await sb.auth.getSession();
+      if (!sessRes.data || !sessRes.data.session) return;
+      var uid = sessRes.data.session.user.id;
+      var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
+      if (prof.error || !prof.data) return;
+      var rows;
+      if (prof.data.role === 'manager') {
+        rows = employees.map(employeeRecordToDbRow).filter(Boolean);
+      } else {
+        rows = employees
+          .filter(function (e) {
+            return e && e.authUserId === uid;
+          })
+          .map(employeeRecordToDbRow)
+          .filter(Boolean);
+        if (!rows.length) return;
+      }
+      var res = await sb.from('employees').upsert(rows, { onConflict: 'id' });
+      if (res.error) console.warn('gm-callout: employees upsert', res.error);
+    })();
+  }
+
+  var teamStateSyncTimer = null;
+  var employeeChatCloudTimer = null;
+
+  function isValidEmployeeChatPayload(o) {
+    return !!(o && typeof o === 'object' && o.version === 1 && Array.isArray(o.threads));
+  }
+
+  /** Remove legacy "New message" threads from stored chat (old prompt UI). */
+  function sanitizeEmployeeChatPayload(payload) {
+    if (!isValidEmployeeChatPayload(payload)) return payload;
+    var re = /^new\s*message$/i;
+    var threads = payload.threads.filter(function (t) {
+      return !re.test(String((t && t.peerName) || '').trim());
+    });
+    var active = payload.activeThreadId;
+    if (active && !threads.some(function (t) {
+      return t && t.id === active;
+    })) {
+      active = null;
+    }
+    return { version: 1, activeThreadId: active, threads: threads };
+  }
+
+  function queueEmployeeChatCloudSave(store) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!isValidEmployeeChatPayload(store)) return;
+    if (employeeChatCloudTimer) clearTimeout(employeeChatCloudTimer);
+    employeeChatCloudTimer = setTimeout(function () {
+      employeeChatCloudTimer = null;
+      pushEmployeeChatStoreToSupabase(store);
+    }, 700);
+  }
+
+  async function pushEmployeeChatStoreToSupabase(store) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!isValidEmployeeChatPayload(store)) return;
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return;
+    var uid = sessRes.data.session.user.id;
+    var res = await sb.from('employee_chat_store').upsert(
+      { user_id: uid, payload: store },
+      { onConflict: 'user_id' }
+    );
+    if (res.error) console.warn('gm-callout: employee_chat_store upsert', res.error);
+  }
+
+  async function hydrateUserChatStoreFromRemote(sb, uid, storageKey) {
+    var res = await sb.from('employee_chat_store').select('payload').eq('user_id', uid).maybeSingle();
+    if (res.error) {
+      console.warn('gm-callout: employee_chat_store select', res.error);
+      return;
+    }
+    if (!res.data || !isValidEmployeeChatPayload(res.data.payload)) return;
+    var payload = sanitizeEmployeeChatPayload(res.data.payload);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    } catch (_ec) {
+      /* ignore */
+    }
+    if (
+      payload.threads.length !== res.data.payload.threads.length ||
+      payload.activeThreadId !== res.data.payload.activeThreadId
+    ) {
+      void sb.from('employee_chat_store').upsert(
+        { user_id: uid, payload: payload },
+        { onConflict: 'user_id' }
+      );
+    }
+  }
+
+  function scheduleAssignmentsStoreIsPopulated(store) {
+    if (!store || typeof store !== 'object') return false;
+    return Object.keys(store).some(function (rid) {
+      var inner = store[rid];
+      return inner && typeof inner === 'object' && Object.keys(inner).length > 0;
+    });
+  }
+
+  function draftScheduleJsonHasLayers(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    return ['Bartender', 'Kitchen', 'Server'].some(function (role) {
+      return Array.isArray(obj[role]) && obj[role].length > 0;
+    });
+  }
+
+  function scheduleTeamStateDebouncedSync() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (teamStateSyncTimer) clearTimeout(teamStateSyncTimer);
+    teamStateSyncTimer = setTimeout(function () {
+      teamStateSyncTimer = null;
+      pushTeamStateToSupabase();
+    }, 700);
+  }
+
+  async function pushTeamStateToSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return;
+    var uid = sessRes.data.session.user.id;
+    var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
+    if (prof.error || !prof.data || prof.data.role !== 'manager') return;
+    var assign = loadScheduleAssignmentsStore();
+    var templates = loadScheduleTemplates();
+    var draftObj = {};
+    ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+      draftObj[role] = draftScheduleRows[role] ? draftScheduleRows[role] : [];
+    });
+    var msg = loadMessagingTemplates();
+    var payload = {
+      id: TEAM_STATE_ROW_ID,
+      schedule_assignments: assign,
+      schedule_templates: Array.isArray(templates) ? templates : [],
+      draft_schedule: draftObj,
+      messaging_templates: { voice: msg.voice != null ? String(msg.voice) : '' },
+      current_restaurant_id: currentRestaurantId || 'rp-9',
+      callout_history: buildCalloutHistoryPayload(),
+    };
+    var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' });
+    if (res.error) console.warn('gm-callout: team_state upsert', res.error);
+  }
+
+  function applyTeamStateRowFromRemote(row, ctx) {
+    ctx = ctx || {};
+    var isMgr = !!ctx.isManager;
+    if (!row || typeof row !== 'object') return;
+
+    var sched = row.schedule_assignments;
+    if (scheduleAssignmentsStoreIsPopulated(sched)) {
+      try {
+        localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(sched));
+      } catch (_s) {
+        /* ignore */
+      }
+    } else if (isMgr && scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
+      scheduleTeamStateDebouncedSync();
+    }
+
+    var tpl = row.schedule_templates;
+    if (Array.isArray(tpl) && tpl.length > 0) {
+      try {
+        localStorage.setItem(SCHEDULE_TEMPLATES_KEY, JSON.stringify(tpl));
+      } catch (_t) {
+        /* ignore */
+      }
+    } else if (isMgr && loadScheduleTemplates().length > 0) {
+      scheduleTeamStateDebouncedSync();
+    }
+
+    var dr = row.draft_schedule;
+    if (draftScheduleJsonHasLayers(dr)) {
+      try {
+        localStorage.setItem(DRAFT_SCHEDULE_STORAGE_KEY, JSON.stringify(dr));
+      } catch (_d) {
+        /* ignore */
+      }
+      draftScheduleRows = loadDraftScheduleRows();
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    } else if (isMgr && draftScheduleJsonHasLayers(draftScheduleRows)) {
+      scheduleTeamStateDebouncedSync();
+    }
+
+    var msg = row.messaging_templates;
+    if (msg && typeof msg === 'object') {
+      try {
+        localStorage.setItem(
+          MESSAGING_STORAGE_KEY,
+          JSON.stringify({
+            voice: msg.voice != null ? String(msg.voice) : '',
+          })
+        );
+      } catch (_m) {
+        /* ignore */
+      }
+    }
+
+    var cr = row.current_restaurant_id;
+    if (cr && typeof cr === 'string' && restaurantsList.some(function (r) { return r.id === cr; })) {
+      currentRestaurantId = cr;
+      slotStaffFilter = cr;
+      try {
+        localStorage.setItem(RESTAURANT_STORAGE_KEY, cr);
+      } catch (_r) {
+        /* ignore */
+      }
+    }
+
+    applyCalloutHistoryFromRemote(row.callout_history, { isManager: isMgr });
+
+    try {
+      pruneScheduleAssignmentsInvalidSlots();
+    } catch (_p) {
+      /* ignore */
+    }
+    rebuildEmployeeDerivedData();
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    if (typeof updateRestaurantSwitcherUI === 'function') updateRestaurantSwitcherUI();
+    if (typeof renderHistory === 'function') renderHistory();
+    if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
   }
 
   function loadEmployeeSubmittedRequestsArray() {
@@ -809,6 +1164,9 @@
   }
 
   function newEmployeeId() {
+    if (GM_SUPABASE_DATA && typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
     return 'emp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   }
 
@@ -899,10 +1257,9 @@
     };
   }
 
-  /** Seed home location: mostly 9th-only or 8th-only; one “both” per role list for filter variety. */
-  function locationForLegacySeedIndex(i) {
-    if (i === 3) return 'both';
-    return i % 2 === 0 ? 'rp-9' : 'rp-8';
+  /** Seed home location: single site (598 9th Ave). */
+  function locationForLegacySeedIndex() {
+    return 'rp-9';
   }
 
   function seedDefaultEmployees() {
@@ -913,15 +1270,15 @@
           n,
           'Kitchen',
           n.indexOf('Martin') !== -1 ? '609-250-8527' : '',
-          locationForLegacySeedIndex(i)
+          locationForLegacySeedIndex()
         )
       );
     });
     LEGACY_BARTENDER.forEach(function (n, i) {
-      list.push(makeEmployeeFromLegacy(n, 'Bartender', '', locationForLegacySeedIndex(i)));
+      list.push(makeEmployeeFromLegacy(n, 'Bartender', '', locationForLegacySeedIndex()));
     });
     LEGACY_SERVER.forEach(function (n, i) {
-      list.push(makeEmployeeFromLegacy(n, 'Server', '', locationForLegacySeedIndex(i)));
+      list.push(makeEmployeeFromLegacy(n, 'Server', '', locationForLegacySeedIndex()));
     });
     return list;
   }
@@ -1074,7 +1431,7 @@
     }
     const ur = e.usualRestaurant;
     const usualOk = ur === 'both' || restaurantsList.some(function (r) { return r.id === ur; });
-    return {
+    var out = {
       id: typeof e.id === 'string' ? e.id : newEmployeeId(),
       firstName: String(e.firstName != null ? e.firstName : '').trim(),
       lastName: String(e.lastName != null ? e.lastName : '').trim(),
@@ -1083,6 +1440,9 @@
       weeklyGrid: weeklyGrid,
       usualRestaurant: usualOk ? ur : 'both',
     };
+    if (e.authUserId) out.authUserId = e.authUserId;
+    if (e.meta && typeof e.meta === 'object') out.meta = e.meta;
+    return out;
   }
 
   function loadEmployees() {
@@ -1106,6 +1466,7 @@
     } catch (err) {
       // ignore
     }
+    syncEmployeesToSupabaseAfterSave();
   }
 
   let employees = loadEmployees();
@@ -1230,12 +1591,34 @@
     return shell;
   }
 
+  /** Fold legacy 8th Ave assignment keys into rp-9 when moving to single-site. */
+  function mergeFormerRp8AssignmentsIntoRp9(parsed) {
+    if (!parsed || typeof parsed !== 'object' || !parsed['rp-8'] || typeof parsed['rp-8'] !== 'object') {
+      return false;
+    }
+    var n9 = parsed['rp-9'] && typeof parsed['rp-9'] === 'object' ? Object.assign({}, parsed['rp-9']) : {};
+    var e8 = parsed['rp-8'];
+    Object.keys(e8).forEach(function (shiftId) {
+      if (n9[shiftId] === undefined || n9[shiftId] === null) n9[shiftId] = e8[shiftId];
+    });
+    parsed['rp-9'] = n9;
+    delete parsed['rp-8'];
+    return true;
+  }
+
   function loadScheduleAssignmentsStore() {
     try {
       var v3raw = localStorage.getItem(SCHEDULE_ASSIGN_KEY);
       if (v3raw) {
         var p = JSON.parse(v3raw);
         if (p && typeof p === 'object') {
+          if (mergeFormerRp8AssignmentsIntoRp9(p)) {
+            try {
+              localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(p));
+            } catch (eM8) {
+              /* ignore */
+            }
+          }
           return mergeAssignmentStoreWithShell(assignmentStoreShell(), p);
         }
       }
@@ -1261,6 +1644,7 @@
     } catch (err) {
       /* ignore */
     }
+    scheduleTeamStateDebouncedSync();
   }
 
   function loadScheduleTemplates() {
@@ -1282,6 +1666,7 @@
     } catch (eTpl2) {
       /* ignore */
     }
+    scheduleTeamStateDebouncedSync();
   }
 
   function cloneAssignmentStore() {
@@ -1335,6 +1720,7 @@
     } catch (eDraft) {
       /* ignore */
     }
+    scheduleTeamStateDebouncedSync();
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     pruneScheduleAssignmentsInvalidSlots();
     rebuildEmployeeDerivedData();
@@ -1946,10 +2332,11 @@
     2: 'Shift Edit / Coverage',
     3: 'Shift Accepted',
     4: 'Shift Filled / History',
-    5: 'Employees',
+    5: 'Team',
     6: 'Employee',
     7: 'Call script',
     8: 'Actions',
+    9: 'Messages',
   };
 
   function loadMessagingTemplates() {
@@ -1979,6 +2366,7 @@
     } catch (err) {
       // ignore
     }
+    scheduleTeamStateDebouncedSync();
   }
 
   function applyMessagingTemplate(template, vars) {
@@ -2068,6 +2456,85 @@
         : null;
     })(),
   ].filter(Boolean);
+
+  function buildCalloutHistoryPayload() {
+    return history
+      .map(function (item) {
+        if (!item || !item.shift || typeof item.shift !== 'object') return null;
+        var sh = item.shift;
+        return {
+          shift: {
+            id: sh.id,
+            day: sh.day,
+            trIdx: sh.trIdx,
+            role: sh.role,
+            roleClass: sh.roleClass,
+            groupLabel: sh.groupLabel,
+            start: sh.start,
+            end: sh.end,
+            slotKey: sh.slotKey,
+            timeLabel: sh.timeLabel,
+            redPokeBreak: sh.redPokeBreak,
+            redPokeHours: sh.redPokeHours,
+            workers: (sh.workers || []).slice(),
+            worker: sh.worker,
+          },
+          status: item.status,
+          acceptedBy: item.acceptedBy || null,
+          notified: Array.isArray(item.notified) ? item.notified.slice() : [],
+          noResponse: Array.isArray(item.noResponse) ? item.noResponse.slice() : [],
+          contactMethod: item.contactMethod || null,
+          originalWorkers: Array.isArray(item.originalWorkers) ? item.originalWorkers.slice() : [],
+          restaurantId: item.restaurantId || null,
+          restaurantName: item.restaurantName || null,
+          voiceConfirmed: !!item.voiceConfirmed,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function applyCalloutHistoryFromRemote(raw, ctx) {
+    ctx = ctx || {};
+    var isMgr = !!ctx.isManager;
+    var arr = Array.isArray(raw) ? raw : [];
+    if (arr.length === 0) {
+      if (isMgr && history.length > 0) {
+        scheduleTeamStateDebouncedSync();
+      }
+      return;
+    }
+    history.length = 0;
+    arr.forEach(function (entry) {
+      if (!entry || !entry.shift || typeof entry.shift !== 'object') return;
+      history.push({
+        shift: entry.shift,
+        status: entry.status || 'pending',
+        acceptedBy: entry.acceptedBy || null,
+        notified: Array.isArray(entry.notified) ? entry.notified.slice() : [],
+        noResponse: Array.isArray(entry.noResponse) ? entry.noResponse.slice() : [],
+        contactMethod: entry.contactMethod || null,
+        originalWorkers: Array.isArray(entry.originalWorkers) ? entry.originalWorkers.slice() : [],
+        restaurantId: entry.restaurantId || null,
+        restaurantName: entry.restaurantName || null,
+        voiceConfirmed: !!entry.voiceConfirmed,
+      });
+    });
+    try {
+      localStorage.setItem(CALLOUT_HISTORY_KEY, JSON.stringify(buildCalloutHistoryPayload()));
+    } catch (_h) {
+      /* ignore */
+    }
+  }
+
+  function persistCalloutHistoryLocalAndSync() {
+    try {
+      localStorage.setItem(CALLOUT_HISTORY_KEY, JSON.stringify(buildCalloutHistoryPayload()));
+    } catch (_h2) {
+      /* ignore */
+    }
+    scheduleTeamStateDebouncedSync();
+  }
+
   let acceptedWorker = null;
   let scheduleView = 'table';
   let shiftMode = 'edit';
@@ -2506,6 +2973,7 @@
     activeHistoryIndex = historyIndex;
     renderHistory();
     refreshRequestsListIfCallouts();
+    persistCalloutHistoryLocalAndSync();
     hideScheduleNotice();
     showScheduleNotice(
       name + ' confirmed coverage by phone for ' + shiftLine + '. Schedule updated. Tap History to review.',
@@ -2559,6 +3027,13 @@
   }
 
   function showScreen(num) {
+    if (
+      currentScreen === 9 &&
+      num !== 9 &&
+      typeof window.gmCalloutManagerCloseMessagesToList === 'function'
+    ) {
+      window.gmCalloutManagerCloseMessagesToList();
+    }
     if (num !== 1) {
       closeDraftScheduleModal();
       closeScheduleTemplateModal();
@@ -2575,7 +3050,7 @@
       n.setAttribute('aria-current', active ? 'page' : null);
     });
     screenTitle.textContent = titles[num] || titles[1];
-    backBtn.hidden = num === 1 || num === 4 || num === 5 || num === 8;
+    backBtn.hidden = num === 1 || num === 4 || num === 5 || num === 8 || num === 9;
     if (num === 1) {
       updateRestaurantSwitcherUI();
       syncScheduleWeekChips();
@@ -2593,6 +3068,9 @@
       }
       syncRequestsStatusChipsUI();
       renderRequestsList();
+    }
+    if (num === 9 && typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
+      window.gmCalloutManagerMessagesRefreshUi();
     }
   }
 
@@ -3558,7 +4036,7 @@
 
     var empRows = staffRequests
       .filter(function (r) {
-        return r.type === 'callout_request';
+        return r.type === 'callout_request' || r.type === 'callout';
       })
       .filter(function (r) {
         if (statusKey === 'pending') return r.status === 'pending';
@@ -4176,6 +4654,7 @@
         restaurantName: restaurantLabel(currentRestaurantId),
       });
       activeHistoryIndex = history.length - 1;
+      persistCalloutHistoryLocalAndSync();
       showScreen(1);
       var callingNames = callTargets
         .map(function (t) {
@@ -4239,6 +4718,7 @@
     renderCalendar();
     renderHistory();
     refreshRequestsListIfCallouts();
+    persistCalloutHistoryLocalAndSync();
     currentShift = null;
     acceptedWorker = null;
     activeHistoryIndex = null;
@@ -4344,6 +4824,9 @@
             }
             r.status = 'approved';
             changed = true;
+            if (GM_SUPABASE_DATA && isUuidCloudId(r.id)) {
+              updateStaffRequestStatusRemote(r.id, 'approved');
+            }
           });
           if (changed) {
             persistStaffRequestStatuses();
@@ -4368,6 +4851,9 @@
       });
       if (!req || req.status !== 'pending') return;
       req.status = action === 'approve' ? 'approved' : 'declined';
+      if (GM_SUPABASE_DATA && isUuidCloudId(id)) {
+        updateStaffRequestStatusRemote(id, req.status);
+      }
       persistStaffRequestStatuses();
       renderRequestsList();
     });
@@ -4778,6 +5264,86 @@
     return { ok: true, message: 'Account created. You can sign in now.', displayName: displayName };
   };
 
+  /**
+   * Add employee to local roster only (no portal name/password row).
+   * Use after Supabase Auth sign-up so scheduling/roster includes them; they sign in with email via Supabase.
+   */
+  window.gmCalloutRegisterEmployeeRosterOnly = function (opts) {
+    opts = opts || {};
+    var fn = String(opts.firstName != null ? opts.firstName : '').trim();
+    var ln = String(opts.lastName != null ? opts.lastName : '').trim();
+    var staffType = String(opts.staffType != null ? opts.staffType : '').trim();
+    var phone = String(opts.phone != null ? opts.phone : '').trim();
+    if (!fn || !ln) return { ok: false, message: 'First and last name are required.' };
+    if (!phone) return { ok: false, message: 'Phone number is required.' };
+    var phoneDigits = phone.replace(/\D/g, '');
+    if (phoneDigits.length < 7) {
+      return { ok: false, message: 'Enter a valid phone number (at least 7 digits).' };
+    }
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      return { ok: false, message: 'Choose a valid staff type.' };
+    }
+    var displayName = fn + ' ' + ln;
+    var loginKey = normPortalLoginKey(displayName);
+    if (loginKey === normPortalLoginKey('Jordan Ma')) {
+      return { ok: false, message: 'That name is reserved for the demo account.' };
+    }
+    if (employeeByDisplayName(displayName)) {
+      return { ok: false, message: 'An employee with that name already exists.' };
+    }
+    var accounts = loadPortalEmployeeAccounts();
+    if (accounts.some(function (a) { return a.loginKey === loginKey; })) {
+      return { ok: false, message: 'An account already exists for that name.' };
+    }
+    var rec = migrateEmployeeRecord({
+      id: newEmployeeId(),
+      firstName: fn,
+      lastName: ln,
+      staffType: staffType,
+      phone: phone,
+      weeklyGrid: defaultWeeklyGridAllOpenForStaffType(staffType),
+      usualRestaurant: 'both',
+    });
+    if (!rec) return { ok: false, message: 'Could not create employee record.' };
+
+    function pushAndRender() {
+      employees.push(rec);
+      saveEmployees();
+      rebuildEmployeeDerivedData();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+      renderEmployeeList();
+      return {
+        ok: true,
+        message: 'Account created. Sign in with your email and password.',
+        displayName: displayName,
+      };
+    }
+
+    if (GM_SUPABASE_DATA && window.gmSupabase) {
+      return (async function () {
+        var sb = window.gmSupabase;
+        var sessRes = await sb.auth.getSession();
+        if (sessRes.data && sessRes.data.session) {
+          rec.authUserId = sessRes.data.session.user.id;
+          var row = employeeRecordToDbRow(rec);
+          row.auth_user_id = sessRes.data.session.user.id;
+          var ins = await sb.from('employees').insert(row).select('id').maybeSingle();
+          if (ins.error) {
+            return {
+              ok: false,
+              message: ins.error.message || 'Could not save roster to cloud.',
+            };
+          }
+          if (ins.data && ins.data.id) rec.id = ins.data.id;
+        }
+        return pushAndRender();
+      })();
+    }
+
+    return pushAndRender();
+  };
+
   function loadPortalManagerAccounts() {
     try {
       var raw = localStorage.getItem(MANAGER_PORTAL_ACCOUNTS_KEY);
@@ -4976,9 +5542,7 @@
     },
     submitEmployeeRequest: function (row) {
       mergeEmployeeSubmittedFromStorage();
-      var id = 'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
       var full = {
-        id: id,
         type: row.type,
         employeeName: row.employeeName,
         role: row.role,
@@ -4991,16 +5555,237 @@
       if (row.submittedWeekIndex != null) full.submittedWeekIndex = row.submittedWeekIndex;
       if (row.offeredShiftLabel) full.offeredShiftLabel = row.offeredShiftLabel;
       if (row.swapOfferId) full.swapOfferId = row.swapOfferId;
-      staffRequests.push(full);
-      var arr = loadEmployeeSubmittedRequestsArray();
-      arr.push(full);
-      saveEmployeeSubmittedRequestsArray(arr);
-      mergeEmployeeSubmittedFromStorage();
-      renderRequestsList();
+
+      function pushLocalWithId(id) {
+        full.id = id;
+        staffRequests.push(full);
+        if (!isUuidCloudId(id)) {
+          var arr = loadEmployeeSubmittedRequestsArray();
+          arr.push(full);
+          saveEmployeeSubmittedRequestsArray(arr);
+        }
+        mergeEmployeeSubmittedFromStorage();
+        renderRequestsList();
+      }
+
+      if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+        pushLocalWithId(
+          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
+        );
+        return;
+      }
+      (async function () {
+        var remote = await insertStaffRequestRemote(full);
+        if (remote.ok && remote.id) {
+          pushLocalWithId(remote.id);
+          return;
+        }
+        pushLocalWithId(
+          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
+        );
+        if (remote.message) console.warn('gm-callout: submitEmployeeRequest fallback', remote.message);
+      })();
     },
     formatShiftTimeRedPoke: redPokeShiftTimeLabel,
     shiftHoursDecimal: redPokeShiftHoursDecimal,
+    /** Manager: all staff. Employee portal: manager + coworkers (excludes signed-in name). Used by Messages search. */
+    getMessageRecipients: function () {
+      var isEmp =
+        typeof document !== 'undefined' &&
+        document.documentElement &&
+        document.documentElement.classList.contains('employee-app');
+      var selfName = '';
+      if (isEmp) {
+        try {
+          var sx = sessionStorage.getItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+          if (sx && String(sx).trim()) selfName = String(sx).trim();
+        } catch (eSess) {
+          /* ignore */
+        }
+        if (!selfName) selfName = 'Jordan Ma';
+      }
+      var out = [];
+      if (isEmp) {
+        out.push({ id: 'msg-mgr', name: 'Martin Long', subtitle: 'Manager' });
+      }
+      employees.forEach(function (e) {
+        if (!e) return;
+        var n = employeeDisplayName(e);
+        if (isEmp && n === selfName) return;
+        out.push({
+          id: String(e.id),
+          name: n,
+          subtitle: STAFF_TYPE_LABELS[e.staffType] || e.staffType || '',
+        });
+      });
+      return out;
+    },
   };
 
-  showScreen(1);
+  async function gmCalloutSupabaseHydrateFromRemote() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false, reason: 'disabled' };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var reqRes;
+    var empRes;
+    var profRes;
+    var teamRes;
+    try {
+      var batch = await Promise.all([
+        sb.from('staff_requests').select('*').order('created_at', { ascending: false }),
+        sb.from('employees').select('*').order('display_name', { ascending: true }),
+        sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle(),
+        sb.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle(),
+      ]);
+      reqRes = batch[0];
+      empRes = batch[1];
+      profRes = batch[2];
+      teamRes = batch[3];
+    } catch (fetchErr) {
+      console.warn('gm-callout: hydrate fetch', fetchErr);
+      return { ok: false, reason: 'fetch_failed' };
+    }
+    if (reqRes.error) console.warn('gm-callout: staff_requests select', reqRes.error);
+    if (empRes.error) console.warn('gm-callout: employees select', empRes.error);
+    if (profRes.error) console.warn('gm-callout: profiles select', profRes.error);
+    if (teamRes.error) console.warn('gm-callout: team_state select', teamRes.error);
+
+    var isManager =
+      profRes &&
+      !profRes.error &&
+      profRes.data &&
+      profRes.data.role === 'manager';
+
+    if (empRes.data && empRes.data.length) {
+      var next = empRes.data
+        .map(function (row) {
+          return migrateEmployeeRecord({
+            id: row.id,
+            authUserId: row.auth_user_id || undefined,
+            firstName: row.first_name,
+            lastName: row.last_name,
+            staffType: row.staff_type,
+            phone: row.phone,
+            weeklyGrid: row.weekly_grid,
+            usualRestaurant: row.usual_restaurant || 'rp-9',
+            meta: row.meta,
+          });
+        })
+        .filter(Boolean);
+      if (next.length) {
+        employees.length = 0;
+        next.forEach(function (e) {
+          employees.push(e);
+        });
+      }
+    } else if (
+      !empRes.error &&
+      Array.isArray(empRes.data) &&
+      empRes.data.length === 0 &&
+      isManager &&
+      employees.length > 0
+    ) {
+      /** First-time cloud roster: DB table exists but has no rows; push in-memory roster (demo seed or local). */
+      var reassigned = false;
+      employees.forEach(function (e) {
+        if (!e || isUuidCloudId(e.id)) return;
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          e.id = crypto.randomUUID();
+          reassigned = true;
+        }
+      });
+      if (reassigned) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+        } catch (_le) {
+          /* ignore */
+        }
+      }
+      var rows = employees.map(employeeRecordToDbRow).filter(Boolean);
+      if (rows.length) {
+        var up = await sb.from('employees').upsert(rows, { onConflict: 'id' });
+        if (up.error) {
+          console.warn('gm-callout: seed employees to empty cloud', up.error);
+        } else {
+          var empReload = await sb
+            .from('employees')
+            .select('*')
+            .order('display_name', { ascending: true });
+          if (empReload.data && empReload.data.length) {
+            employees.length = 0;
+            empReload.data.forEach(function (row) {
+              var m = migrateEmployeeRecord({
+                id: row.id,
+                authUserId: row.auth_user_id || undefined,
+                firstName: row.first_name,
+                lastName: row.last_name,
+                staffType: row.staff_type,
+                phone: row.phone,
+                weeklyGrid: row.weekly_grid,
+                usualRestaurant: row.usual_restaurant || 'rp-9',
+                meta: row.meta,
+              });
+              if (m) employees.push(m);
+            });
+          }
+        }
+      }
+    }
+    if (!teamRes.error && teamRes.data) {
+      applyTeamStateRowFromRemote(teamRes.data, { isManager: isManager });
+    }
+    if (reqRes.data && reqRes.data.length) {
+      reqRes.data.forEach(function (row) {
+        var mapped = mapStaffRequestFromDbRow(row);
+        if (!mapped) return;
+        var ex = staffRequests.find(function (r) {
+          return r.id === mapped.id;
+        });
+        if (ex) {
+          ex.type = mapped.type;
+          ex.employeeName = mapped.employeeName;
+          ex.role = mapped.role;
+          ex.summary = mapped.summary;
+          ex.submittedAt = mapped.submittedAt;
+          ex.status = mapped.status;
+          if (mapped.submittedGrid) ex.submittedGrid = mapped.submittedGrid;
+          if (mapped.submittedWeekLabel) ex.submittedWeekLabel = mapped.submittedWeekLabel;
+          if (mapped.submittedWeekIndex != null) ex.submittedWeekIndex = mapped.submittedWeekIndex;
+          if (mapped.offeredShiftLabel) ex.offeredShiftLabel = mapped.offeredShiftLabel;
+          if (mapped.swapOfferId) ex.swapOfferId = mapped.swapOfferId;
+        } else {
+          staffRequests.push(mapped);
+        }
+      });
+    }
+    await hydrateUserChatStoreFromRemote(
+      sb,
+      sessRes.data.session.user.id,
+      isManager ? MANAGER_CHAT_STORAGE_KEY : EMPLOYEE_CHAT_STORAGE_KEY
+    );
+    mergeEmployeeSubmittedFromStorage();
+    rebuildEmployeeDerivedData();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    if (typeof renderRequestsList === 'function') renderRequestsList();
+    if (typeof renderEmployeeList === 'function') renderEmployeeList();
+    if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
+      window.gmCalloutManagerMessagesRefreshUi();
+    }
+    return { ok: true };
+  }
+  window.gmCalloutSupabaseHydrateFromRemote = gmCalloutSupabaseHydrateFromRemote;
+  window.gmCalloutQueueEmployeeChatCloudSave = queueEmployeeChatCloudSave;
+
+  (async function () {
+    if (GM_SUPABASE_DATA) {
+      try {
+        await gmCalloutSupabaseHydrateFromRemote();
+      } catch (hydrErr) {
+        console.warn('gm-callout: hydrate', hydrErr);
+      }
+    }
+    showScreen(1);
+  })();
 })();

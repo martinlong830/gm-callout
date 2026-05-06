@@ -31,6 +31,8 @@ const TWILIO_FROM_NUMBER = stripEnv(process.env.TWILIO_FROM_NUMBER);
 const TWILIO_API_KEY_SID = stripEnv(process.env.TWILIO_API_KEY_SID);
 const TWILIO_API_KEY_SECRET = stripEnv(process.env.TWILIO_API_KEY_SECRET);
 const PUBLIC_BASE_URL = stripEnv(process.env.PUBLIC_BASE_URL);
+const SUPABASE_URL = stripEnv(process.env.SUPABASE_URL);
+const SUPABASE_ANON_KEY = stripEnv(process.env.SUPABASE_ANON_KEY);
 const PORT = stripEnv(process.env.PORT) || "8000";
 /** Render and most PaaS require listening on all interfaces, not only localhost. */
 const LISTEN_HOST = stripEnv(process.env.LISTEN_HOST) || "0.0.0.0";
@@ -94,6 +96,43 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+/** Injects public Supabase URL + anon key for the browser client (RLS must protect data). */
+app.get("/gm-supabase-config.js", (req, res) => {
+  // Unique line so bodies differ every request — avoids HTTP 304 + stale empty config after .env changes.
+  const payload =
+    `/* gm-callout-supabase-config ${Date.now()} */\n` +
+    `window.__GM_SUPABASE_URL__=${JSON.stringify(SUPABASE_URL)};window.__GM_SUPABASE_ANON_KEY__=${JSON.stringify(SUPABASE_ANON_KEY)};`;
+  res.status(200);
+  res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.end(payload);
+});
+
+const supabaseUmdPath = path.join(
+  __dirname,
+  "node_modules",
+  "@supabase",
+  "supabase-js",
+  "dist",
+  "umd",
+  "supabase.js"
+);
+
+app.get("/vendor/supabase-js.js", (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.sendFile(supabaseUmdPath, { etag: false, lastModified: false }, (err) => {
+    if (err) {
+      res
+        .status(404)
+        .type("text/plain")
+        .send("Supabase browser bundle missing. Run npm install on the server.");
+    }
+  });
+});
+
 app.use(express.static(__dirname));
 
 function createTwilioClient() {

@@ -2,6 +2,7 @@
 # After first deploy, set PUBLIC_BASE_URL in the dashboard to your service URL, e.g.
 #   https://gm-callout.onrender.com
 # (no trailing slash). Add all Twilio vars there — do not commit secrets.
+# Optional: SUPABASE_URL and SUPABASE_ANON_KEY (see docs/SUPABASE.md) for cloud auth + DB.
 
 services:
   - type: web
