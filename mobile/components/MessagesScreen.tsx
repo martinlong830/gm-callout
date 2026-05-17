@@ -25,7 +25,7 @@ import {
 } from '../lib/chatStore';
 import { supabase } from '../lib/supabase';
 
-const MANAGER_CONTACT = { id: 'msg-mgr', name: 'Martin Long', subtitle: 'Manager' };
+const MANAGER_CONTACT = { id: 'msg-mgr', name: 'MARK ONG', subtitle: 'Manager' };
 
 type MessageRecipient = { id: string; name: string; subtitle: string };
 

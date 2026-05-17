@@ -55,32 +55,7 @@
     return {
       version: 1,
       activeThreadId: null,
-      threads: [
-        {
-          id: 'jamie',
-          peerName: 'Jamie Li',
-          subtitle: 'Back of the House',
-          messages: [
-            {
-              who: 'peer',
-              body: 'Hey — want to trade a lunch shift next week? Let me know what works.',
-              at: new Date().toISOString(),
-            },
-          ],
-        },
-        {
-          id: 'alex',
-          peerName: 'Alex R.',
-          subtitle: 'Delivery/Dishwasher',
-          messages: [
-            {
-              who: 'peer',
-              body: 'Can you confirm Sat brunch coverage after the swap?',
-              at: new Date().toISOString(),
-            },
-          ],
-        },
-      ],
+      threads: [],
     };
   }
 

@@ -33,6 +33,7 @@ const TWILIO_API_KEY_SECRET = stripEnv(process.env.TWILIO_API_KEY_SECRET);
 const PUBLIC_BASE_URL = stripEnv(process.env.PUBLIC_BASE_URL);
 const SUPABASE_URL = stripEnv(process.env.SUPABASE_URL);
 const SUPABASE_ANON_KEY = stripEnv(process.env.SUPABASE_ANON_KEY);
+const SUPABASE_SERVICE_ROLE_KEY = stripEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
 const PORT = stripEnv(process.env.PORT) || "8000";
 /** Render and most PaaS require listening on all interfaces, not only localhost. */
 const LISTEN_HOST = stripEnv(process.env.LISTEN_HOST) || "0.0.0.0";
@@ -96,6 +97,15 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+const { createPortalAuthRouter } = require("./portal-auth-server");
+app.use(
+  "/api/portal",
+  createPortalAuthRouter({
+    supabaseUrl: SUPABASE_URL,
+    supabaseServiceRoleKey: SUPABASE_SERVICE_ROLE_KEY,
+  })
+);
 
 /** Injects public Supabase URL + anon key for the browser client (RLS must protect data). */
 app.get("/gm-supabase-config.js", (req, res) => {

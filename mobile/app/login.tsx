@@ -19,7 +19,7 @@ import { isSupabaseConfigured } from '../lib/supabase';
 export default function LoginScreen() {
   const router = useRouter();
   const { signIn, session, role, loading: authLoading } = useAuth();
-  const [email, setEmail] = useState('');
+  const [loginName, setLoginName] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -41,13 +41,13 @@ export default function LoginScreen() {
 
   async function onSubmit() {
     setMessage(null);
-    const e = email.trim();
-    if (!e || !password) {
-      setMessage('Enter email and password.');
+    const name = loginName.trim();
+    if (!name || !password) {
+      setMessage('Enter your name and password.');
       return;
     }
     setBusy(true);
-    const res = await signIn(e, password);
+    const res = await signIn(name, password);
     setBusy(false);
     if (!res.ok) {
       setMessage(res.message);
@@ -67,7 +67,7 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.title}>Red Poke Scheduler</Text>
-          <Text style={styles.subtitle}>Sign in with the same email and password as the web app.</Text>
+          <Text style={styles.subtitle}>Sign in with the same name and password as the web app.</Text>
 
           {!isSupabaseConfigured ? (
             <View style={styles.card}>
@@ -78,15 +78,14 @@ export default function LoginScreen() {
             </View>
           ) : (
             <View style={styles.card}>
-              <Text style={styles.label}>Email</Text>
+              <Text style={styles.label}>Name</Text>
               <TextInput
                 style={styles.input}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                autoComplete="email"
-                value={email}
-                onChangeText={setEmail}
-                placeholder="you@example.com"
+                autoCapitalize="words"
+                autoComplete="username"
+                value={loginName}
+                onChangeText={setLoginName}
+                placeholder="Your full name"
                 placeholderTextColor="#888"
               />
               <Text style={styles.label}>Password</Text>

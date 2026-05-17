@@ -18,8 +18,12 @@ In **SQL Editor** → New query, run **each** file once, in this order:
 3. `supabase/migrations/20260504120000_team_state.sql` — `team_state` single row (`main`): schedule assignments, templates, draft matrix, messaging template text, current restaurant id  
 4. `supabase/migrations/20260504130000_team_state_callout_history.sql` — adds **`callout_history`** JSON array on `team_state` (coverage outreach log from Schedule)  
 5. `supabase/migrations/20260504140000_employee_chat_store.sql` — **`employee_chat_store`**: one row per auth user (`payload` = Messages threads JSON)  
+6. `supabase/migrations/20260504150000_employee_chat_store_realtime.sql` — Realtime on `employee_chat_store`  
+7. `supabase/migrations/20260516120000_timeclock.sql` — **`timeclock`** profile role, `employees.clock_pin`, `time_clock_entries`, punch RPCs  
 
 Or use the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase db push` after linking the project.
+
+If your hosted project **already has** time-clock tables from a previous laptop, compare names/columns with migration `20260516120000_timeclock.sql`. Skip or adjust the migration if they match.
 
 **`relation "profiles" already exists`:** The first file was already applied. Do **not** re-run it. In **Table Editor**, if `staff_requests` is present you are fine; only run the **`employees`** migration file next (or skip it too if `employees` already exists).
 
@@ -31,6 +35,10 @@ Or use the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase db pu
 **Employee sign-up from the app:** If **Confirm email** is required (Auth → Providers → Email), new employees get a confirmation link first; after they confirm, they sign in with **email + password** on the main screen. For local testing you can turn confirmation off so they get a session immediately after **Create employee account**.
 
 **Manager sign-up (“Create manager account”):** With `SUPABASE_*` set and the app served via `npm start`, new managers use **Supabase `signUp`** (access code still **`redpoke`** in the form). Without cloud env vars, managers are still added only to **localStorage** (`gmCalloutRegisterManagerAccount`).
+
+**Time clock device (“Time clock device sign in”):** Register with access code **`redpoke`**, **device name**, and password (no email in the UI). The Node server creates the auth user with a hidden internal address. Requires **`SUPABASE_SERVICE_ROLE_KEY`** in `.env` (server only). Run migration `20260517120000_portal_login_names.sql`. Staff punch in/out with a **6-digit PIN** on each `employees` row.
+
+**All portal accounts (manager / employee / time clock):** Sign-in and sign-up use **name + password** via `POST /api/portal/signin` and `/api/portal/signup`. Add `SUPABASE_SERVICE_ROLE_KEY` from Project Settings → API → `service_role` to `.env`, restart `npm start`.
 
 ## 4. First manager account
 

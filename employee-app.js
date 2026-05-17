@@ -55,32 +55,7 @@
     return {
       version: 1,
       activeThreadId: null,
-      threads: [
-        {
-          id: 'jamie',
-          peerName: 'Jamie Li',
-          subtitle: 'Back of the House',
-          messages: [
-            {
-              who: 'peer',
-              body: 'Hey Jordan — want to trade a lunch shift next week? Let me know what works.',
-              at: new Date().toISOString(),
-            },
-          ],
-        },
-        {
-          id: 'manager',
-          peerName: 'Martin Long',
-          subtitle: 'Manager',
-          messages: [
-            {
-              who: 'peer',
-              body: 'Hi Jordan — ping me here if you need anything on the schedule.',
-              at: new Date().toISOString(),
-            },
-          ],
-        },
-      ],
+      threads: [],
     };
   }
 
@@ -110,7 +85,7 @@
     var WORKER =
       bridge.getEmployeeLoginName && typeof bridge.getEmployeeLoginName === 'function'
         ? bridge.getEmployeeLoginName()
-        : bridge.employeeLoginName || 'Jordan Ma';
+        : bridge.employeeLoginName || '';
     if (!WORKER) return;
     var titles = { home: 'Home', messages: 'Messages', requests: 'Actions' };
 

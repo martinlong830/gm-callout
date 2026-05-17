@@ -13,6 +13,8 @@
           document.documentElement.classList.add('authed', 'manager-app');
         } else if (s === 'employee') {
           document.documentElement.classList.add('authed', 'employee-app');
+        } else if (s === 'timeclock') {
+          document.documentElement.classList.add('authed', 'timeclock-app');
         }
       } catch (e) {
         /* ignore */
@@ -36,12 +38,10 @@
       <h1 class="login-title" id="loginTitle">Red Poke Scheduler</h1>
       <div id="loginPanel">
         <p class="login-subtitle">Sign in to continue</p>
-        <p class="login-hint">
-          Use your <strong>email</strong> and password for Supabase. Use your <strong>name</strong> (no @) for the local demo employee sign-in.
-        </p>
+        <p class="login-hint">Sign in with your <strong>name</strong> and password.</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Email or name</span>
+            <span class="login-label">Name</span>
             <input
               type="text"
               id="loginEmail"
@@ -73,23 +73,18 @@
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showManagerRegisterPanelBtn">Create manager account</button>
         </p>
+        <p class="login-device-signin">
+          <button type="button" class="login-device-link" id="showTimeclockLoginPanelBtn">
+            Time clock tablet sign in
+          </button>
+        </p>
       </div>
       <div id="registerPanel" hidden>
         <p class="login-subtitle">Create your employee account</p>
         <p class="login-hint">
-          With cloud sign-in: use your <strong>email</strong> below and the same password you choose here. Without cloud, use your <strong>name</strong> (no @) on the sign-in screen. Your manager will see you on the roster.
+          Choose a <strong>name</strong> and password for sign-in. Your manager will see you on the roster.
         </p>
         <form id="registerForm" class="login-form" autocomplete="on" novalidate>
-          <label class="login-field">
-            <span class="login-label">Work email</span>
-            <input
-              type="email"
-              id="regEmail"
-              class="login-input"
-              autocomplete="email"
-              enterkeyhint="next"
-            />
-          </label>
           <div class="login-form-row">
             <label class="login-field">
               <span class="login-label">First name</span>
@@ -177,7 +172,7 @@
       <div id="managerRegisterPanel" hidden>
         <p class="login-subtitle">Create manager account</p>
         <p class="login-hint">
-          Enter the access code, then your email and password. With cloud sign-in, the account is created in Supabase; otherwise it is stored only on this device.
+          Enter the access code, your name, and password.
         </p>
         <form id="managerRegisterForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
@@ -194,13 +189,13 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Email</span>
+            <span class="login-label">Name</span>
             <input
-              type="email"
-              id="mgrRegEmail"
+              type="text"
+              id="mgrRegName"
               class="login-input"
               required
-              autocomplete="email"
+              autocomplete="nickname"
               enterkeyhint="next"
             />
           </label>
@@ -235,6 +230,67 @@
           <button type="button" class="login-link-btn" id="showLoginFromManagerRegisterBtn">Back to sign in</button>
         </p>
       </div>
+      <div id="timeclockLoginPanel" hidden>
+        <p class="login-subtitle">Time clock device</p>
+        <p class="login-hint">
+          Sign in with your <strong>device name</strong> and password (no email needed). Staff use their <strong>6-digit PIN</strong> on the next screen.
+        </p>
+        <form id="timeclockLoginForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Device name</span>
+            <input type="text" id="timeclockLoginName" class="login-input" required autocomplete="username" placeholder="e.g. Front counter iPad" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input type="password" id="timeclockLoginPassword" class="login-input" required autocomplete="current-password" />
+          </label>
+          <p class="login-error" id="timeclockLoginError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Open time clock</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showTimeclockRegisterPanelBtn">Register time clock device</button>
+        </p>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginFromTimeclockPanelBtn">Back to sign in</button>
+        </p>
+      </div>
+      <div id="timeclockRegisterPanel" hidden>
+        <p class="login-subtitle">Register time clock device</p>
+        <p class="login-hint">
+          Enter the access code from your manager, then a device name and password. No email required.
+        </p>
+        <form id="timeclockRegisterForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Access code</span>
+            <input
+              type="password"
+              id="tcRegAccessCode"
+              class="login-input"
+              required
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Device name</span>
+            <input type="text" id="tcRegDeviceName" class="login-input" required placeholder="e.g. Front counter iPad" autocomplete="nickname" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input type="password" id="tcRegPassword" class="login-input" required minlength="4" autocomplete="new-password" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Confirm password</span>
+            <input type="password" id="tcRegPasswordConfirm" class="login-input" required minlength="4" autocomplete="new-password" />
+          </label>
+          <p class="login-error" id="timeclockRegisterError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Create device account</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginFromTimeclockRegisterBtn">Back to sign in</button>
+        </p>
+      </div>
     </div>
   </div>
 
@@ -260,6 +316,7 @@
         <button type="button" class="nav-item" data-goto="5">Team</button>
         <button type="button" class="nav-item" data-goto="8">Actions</button>
         <button type="button" class="nav-item" data-goto="9">Messages</button>
+        <button type="button" class="nav-item" data-goto="10">Timecards</button>
       </nav>
     </div>
 
@@ -415,6 +472,9 @@
             </div>
           </div>
           <div class="employees-toolbar">
+            <button type="button" class="btn btn-secondary" id="generateAllPinsBtn" hidden>
+              Generate all PINs
+            </button>
             <button type="button" class="btn btn-primary" id="addEmployeeBtn">Add employee</button>
           </div>
         </div>
@@ -502,6 +562,9 @@
       <!-- Screen 6: Add / Edit employee -->
       <section class="screen" id="screen-employee-form" data-screen="6">
         <form id="employeeForm" class="employee-form">
+          <section class="emp-form-section emp-form-section--profile" aria-labelledby="empProfileSectionTitle">
+            <h2 class="emp-form-section-title" id="empProfileSectionTitle">Profile</h2>
+            <div class="emp-form-section-body">
           <div class="form-row">
             <label class="form-field">
               <span class="form-label">First name</span>
@@ -528,10 +591,62 @@
             <span class="form-label">Location</span>
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
-          <fieldset class="week-avail-fieldset">
-            <legend class="form-label">Weekly Availability</legend>
-            <div id="employeeWeekAvail" class="availability-grid-wrap"></div>
-          </fieldset>
+          <label class="form-field form-field-block">
+            <span class="form-label">Hourly rate ($)</span>
+            <input
+              type="number"
+              name="hourlyRate"
+              id="empHourlyRate"
+              min="0"
+              step="0.01"
+              inputmode="decimal"
+              placeholder="e.g. 18.00"
+            />
+          </label>
+
+          <div class="form-field form-field-block" id="empClockPinBlock" hidden>
+            <span class="form-label">Time clock PIN</span>
+            <div class="emp-clock-pin-row">
+              <span class="emp-clock-pin-value" id="empClockPinDisplay">------</span>
+              <button type="button" class="btn btn-secondary" id="empRegeneratePinBtn">New PIN</button>
+            </div>
+            <p class="calendar-hint">Share this 6-digit PIN with the employee for the shared time clock tablet.</p>
+          </div>
+
+              <div id="empProfilePanel" class="emp-profile-extra" hidden>
+                <h3 class="emp-form-subtitle">Time clock this week</h3>
+                <p class="emp-schedule-caption" id="empDetailTimeclockSummary">—</p>
+                <ul class="emp-detail-punch-list" id="empDetailPunches" aria-label="Punches this week"></ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="emp-form-section emp-form-section--schedule" aria-labelledby="empScheduleSectionTitle">
+            <h2 class="emp-form-section-title" id="empScheduleSectionTitle">Schedule</h2>
+            <div class="emp-form-section-body">
+              <div class="emp-schedule-block">
+                <h3 class="emp-form-subtitle">Assigned shifts</h3>
+                <p class="emp-schedule-caption" id="empScheduleShiftsCaption">—</p>
+                <p class="calendar-hint" id="empScheduleNewHint">Save this employee to see assigned shifts from the published schedule.</p>
+                <div id="empScheduleAssigned" class="emp-schedule-assigned" hidden>
+                  <label class="emp-detail-filter">
+                    <span class="emp-detail-filter-label">Show</span>
+                    <select id="empDetailScheduleFilter" class="emp-detail-select">
+                      <option value="all">All shifts</option>
+                      <option value="today">Today only</option>
+                      <option value="upcoming">Upcoming only</option>
+                    </select>
+                  </label>
+                  <ul id="empDetailShifts" class="emp-detail-shift-compact" aria-live="polite"></ul>
+                </div>
+              </div>
+
+              <fieldset class="week-avail-fieldset">
+                <legend class="emp-form-subtitle">Weekly availability</legend>
+                <div id="employeeWeekAvail" class="availability-grid-wrap"></div>
+              </fieldset>
+            </div>
+          </section>
           <div class="screen-actions screen-actions-split">
             <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn">Cancel</button>
             <button type="submit" class="btn btn-primary" id="saveEmployeeBtn">Save</button>
@@ -579,6 +694,71 @@
           <textarea id="managerNotes" rows="3" placeholder="Add notes about callouts, coverage, etc."></textarea>
         </div>
       </section>
+
+      <!-- Screen 10: Timecards roster -->
+      <section class="screen" id="screen-timecards" data-screen="10">
+        <p class="calendar-hint timecards-hint">Pay week totals use rounded clock times minus unpaid breaks.</p>
+        <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
+      </section>
+
+      <!-- Screen 11: Employee timecard shifts -->
+      <section class="screen" id="screen-timecards-employee" data-screen="11">
+        <p class="calendar-hint" id="timecardsEmployeeWeekLabel"></p>
+        <div class="timecards-table-wrap">
+          <table class="timecards-table" id="timecardsEmployeeTable">
+            <thead>
+              <tr>
+                <th scope="col">Date</th>
+                <th scope="col">Shift</th>
+                <th scope="col">Scheduled</th>
+                <th scope="col">Recorded</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody id="timecardsEmployeeBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Screen 12: Shift timecard detail -->
+      <section class="screen" id="screen-timecards-shift" data-screen="12">
+        <div id="timecardsShiftDetail" class="timecards-shift-detail"></div>
+      </section>
+    </main>
+  </div>
+
+
+  <div class="app-timeclock" id="appTimeclock">
+    <div class="app-top">
+      <header class="header">
+        <img class="header-logo" src="assets/red-poke-logo.png" alt="red poke" width="64" height="64" decoding="async" />
+        <h1 class="title">Time Clock</h1>
+        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
+      </header>
+    </div>
+    <main class="main timeclock-main">
+      <span class="timeclock-device-label" id="timeclockDeviceLabel"></span>
+      <p class="timeclock-intro">Enter your 6-digit PIN to clock in or out.</p>
+      <div class="timeclock-pin-display" id="timeclockPinDisplay" aria-live="polite">○○○○○○</div>
+      <p class="timeclock-status" id="timeclockStatus" hidden></p>
+      <div class="timeclock-pad" id="timeclockPinPad">
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="1">1</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="2">2</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="3">3</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="4">4</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="5">5</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="6">6</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="7">7</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="8">8</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="9">9</button>
+        <button type="button" class="timeclock-pad-btn" data-tc-digit="0">0</button>
+      </div>
+      <div class="timeclock-pad-actions">
+        <button type="button" class="btn btn-secondary" id="timeclockClear">Clear</button>
+        <button type="button" class="btn btn-secondary" id="timeclockBackspace">Delete</button>
+      </div>
+      <p class="timeclock-recent-title">Recent punches</p>
+      <ul class="timeclock-recent-list" id="timeclockRecentList"></ul>
     </main>
   </div>
 
@@ -915,9 +1095,13 @@
   <script src="/gm-supabase-config.js?v=2"></script>
   <script src="/vendor/supabase-js.js"></script>
   <script src="gm-supabase-init.js"></script>
+  <script src="timecards-manager.js"></script>
   <script src="app.js"></script>
   <script src="employee-app.js"></script>
   <script src="manager-messaging.js"></script>
+  <script src="timeclock-app.js"></script>
+  <script src="portal-auth-client.js"></script>
+  <script src="login-timeclock.js"></script>
   <script>
     (function () {
       var ALLOWED_EMAIL = 'martinlong830@gmail.com';
@@ -991,15 +1175,71 @@
       function applyAuthedShell(role) {
         var root = document.documentElement;
         root.classList.add('authed');
-        root.classList.remove('manager-app', 'employee-app');
+        root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
         if (role === 'employee') root.classList.add('employee-app');
+        else if (role === 'timeclock') root.classList.add('timeclock-app');
         else root.classList.add('manager-app');
+      }
+
+      async function finishPortalLogin(role, displayName) {
+        if (role === 'manager') {
+          try {
+            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+          } catch (_e0) {
+            /* ignore */
+          }
+          setSession('manager');
+          applyAuthedShell('manager');
+          if (typeof window.gmCalloutSupabaseHydrateFromRemote === 'function') {
+            try {
+              await window.gmCalloutSupabaseHydrateFromRemote();
+            } catch (_h) {
+              /* ignore */
+            }
+          }
+          if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+            window.gmCalloutManagerMessagingBootstrap();
+          }
+          return;
+        }
+        if (role === 'employee') {
+          try {
+            sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName || '');
+          } catch (_e1) {
+            /* ignore */
+          }
+          setSession('employee');
+          applyAuthedShell('employee');
+          if (typeof window.gmCalloutSupabaseHydrateFromRemote === 'function') {
+            try {
+              await window.gmCalloutSupabaseHydrateFromRemote();
+            } catch (_h2) {
+              /* ignore */
+            }
+          }
+          if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+            window.gmCalloutEmployeeBootstrap();
+          }
+          return;
+        }
+        if (role === 'timeclock' && typeof window.gmCalloutApplySupabaseRole === 'function') {
+          window.gmCalloutApplySupabaseRole(role, displayName);
+        }
+      }
+
+      var timeclockLoginPanel = document.getElementById('timeclockLoginPanel');
+      var timeclockRegisterPanel = document.getElementById('timeclockRegisterPanel');
+
+      function hideTimeclockLoginPanels() {
+        if (timeclockLoginPanel) timeclockLoginPanel.hidden = true;
+        if (timeclockRegisterPanel) timeclockRegisterPanel.hidden = true;
       }
 
       function showLoginPanel() {
         if (loginPanel) loginPanel.hidden = false;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hideTimeclockLoginPanels();
         if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
         clearRegisterError();
         clearManagerRegisterError();
@@ -1009,6 +1249,7 @@
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = false;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hideTimeclockLoginPanels();
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
         clearManagerRegisterError();
@@ -1018,6 +1259,7 @@
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = false;
+        hideTimeclockLoginPanels();
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
         clearRegisterError();
@@ -1042,10 +1284,6 @@
         showLoginFromManagerRegisterBtn.addEventListener('click', function () {
           showLoginPanel();
         });
-      }
-
-      function looksLikeEmailForSupabase(s) {
-        return String(s || '').trim().indexOf('@') > 0;
       }
 
       function tryLegacyManagerThenEmployee(rawLogin, password) {
@@ -1087,7 +1325,7 @@
           }
           return true;
         }
-        showLoginError('Email, name, or password is incorrect.');
+        showLoginError('Name or password is incorrect.');
         return false;
       }
 
@@ -1098,94 +1336,15 @@
           var rawLogin = loginEmail.value;
           var password = loginPassword.value || '';
 
-          if (
-            window.gmSupabaseEnabled &&
-            window.gmSupabase &&
-            typeof window.gmSupabase.auth !== 'undefined' &&
-            looksLikeEmailForSupabase(rawLogin)
-          ) {
+          if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
-              var sb = window.gmSupabase;
-              try {
-                var signIn = await sb.auth.signInWithPassword({
-                  email: String(rawLogin).trim(),
-                  password: password,
-                });
-                if (signIn.error) {
-                  showLoginError(signIn.error.message || 'Sign in failed.');
-                  return;
-                }
-                if (!signIn.data || !signIn.data.session || !signIn.data.user) {
-                  showLoginError('Sign in failed.');
-                  return;
-                }
-                var uid = signIn.data.user.id;
-                var profRes = await sb
-                  .from('profiles')
-                  .select('role, display_name')
-                  .eq('id', uid)
-                  .maybeSingle();
-                if (profRes.error || !profRes.data) {
-                  await sb.auth.signOut();
-                  showLoginError(
-                    (profRes.error && profRes.error.message) ||
-                      'No profile row for this user. Run the SQL migration and try again.'
-                  );
-                  return;
-                }
-                var role = profRes.data.role;
-                var displayName = profRes.data.display_name || signIn.data.user.email || '';
-                if (role === 'manager') {
-                  try {
-                    sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-                  } catch (em0) {
-                    /* ignore */
-                  }
-                  setSession('manager');
-                  applyAuthedShell('manager');
-                  if (
-                    window.gmSupabaseEnabled &&
-                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
-                  ) {
-                    try {
-                      await window.gmCalloutSupabaseHydrateFromRemote();
-                    } catch (_hydrMgr) {
-                      /* ignore */
-                    }
-                  }
-                  if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-                    window.gmCalloutManagerMessagingBootstrap();
-                  }
-                  return;
-                }
-                if (role === 'employee') {
-                  try {
-                    sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName);
-                  } catch (em1) {
-                    /* ignore */
-                  }
-                  setSession('employee');
-                  applyAuthedShell('employee');
-                  if (
-                    window.gmSupabaseEnabled &&
-                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
-                  ) {
-                    try {
-                      await window.gmCalloutSupabaseHydrateFromRemote();
-                    } catch (_hydrEmp) {
-                      /* ignore */
-                    }
-                  }
-                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-                    window.gmCalloutEmployeeBootstrap();
-                  }
-                  return;
-                }
-                await sb.auth.signOut();
-                showLoginError('Your profile role is not set to manager or employee.');
-              } catch (ex) {
-                showLoginError((ex && ex.message) || 'Sign in failed.');
+              var res = await window.gmPortalAuth.signIn(String(rawLogin).trim(), password);
+              if (!res.ok) {
+                if (tryLegacyManagerThenEmployee(rawLogin, password)) return;
+                showLoginError(res.message || 'Sign in failed.');
+                return;
               }
+              await finishPortalLogin(res.role, res.displayName);
             })();
             return;
           }
@@ -1200,7 +1359,6 @@
           clearRegisterError();
           var fn = document.getElementById('regFirstName');
           var ln = document.getElementById('regLastName');
-          var regEmailEl = document.getElementById('regEmail');
           var ph = document.getElementById('regPhone');
           var st = document.getElementById('regStaffType');
           var pw = document.getElementById('regPassword');
@@ -1217,46 +1375,32 @@
           }
 
           if (
-            window.gmSupabaseEnabled &&
-            window.gmSupabase &&
-            window.gmSupabase.auth &&
+            window.gmPortalAuth &&
+            window.gmPortalAuth.enabled &&
+            window.gmPortalAuth.enabled() &&
             typeof window.gmCalloutRegisterEmployeeRosterOnly === 'function'
           ) {
-            var emailRaw = regEmailEl && regEmailEl.value ? String(regEmailEl.value).trim() : '';
-            if (!emailRaw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
-              showRegisterError('Enter a valid work email for cloud sign-up.');
+            var displayName =
+              (fn && fn.value ? String(fn.value).trim() : '') +
+              ' ' +
+              (ln && ln.value ? String(ln.value).trim() : '');
+            displayName = displayName.trim();
+            if (!displayName) {
+              showRegisterError('First and last name are required.');
               return;
             }
             (async function () {
-              var sb = window.gmSupabase;
-              var displayName =
-                (fn && fn.value ? String(fn.value).trim() : '') +
-                ' ' +
-                (ln && ln.value ? String(ln.value).trim() : '');
-              displayName = displayName.trim();
-              if (!displayName) {
-                showRegisterError('First and last name are required.');
-                return;
-              }
               try {
-                var up = await sb.auth.signUp({
-                  email: emailRaw,
+                var up = await window.gmPortalAuth.signUp({
+                  loginName: displayName,
                   password: p1,
-                  options: {
-                    data: {
-                      role: 'employee',
-                      display_name: displayName,
-                      phone: ph && ph.value ? String(ph.value).trim() : '',
-                      staff_type: st && st.value ? String(st.value) : '',
-                    },
-                  },
+                  role: 'employee',
+                  displayName: displayName,
+                  phone: ph && ph.value ? String(ph.value).trim() : '',
+                  staffType: st && st.value ? String(st.value) : '',
                 });
-                if (up.error) {
-                  showRegisterError(up.error.message || 'Could not create account.');
-                  return;
-                }
-                if (!up.data || !up.data.user) {
-                  showRegisterError('Could not create account.');
+                if (!up.ok) {
+                  showRegisterError(up.message || 'Could not create account.');
                   return;
                 }
                 var roster = window.gmCalloutRegisterEmployeeRosterOnly({
@@ -1271,42 +1415,19 @@
                 if (!roster || !roster.ok) {
                   showRegisterError(
                     (roster && roster.message) ||
-                      'Cloud account was created but roster update failed. Ask a manager for help.'
+                      'Account was created but roster update failed. Ask a manager for help.'
                   );
                   return;
                 }
                 registerForm.reset();
-                if (up.data.session) {
-                  try {
-                    sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, roster.displayName || displayName);
-                  } catch (rs0) {
-                    /* ignore */
-                  }
-                  setSession('employee');
-                  applyAuthedShell('employee');
-                  if (
-                    window.gmSupabaseEnabled &&
-                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
-                  ) {
-                    try {
-                      await window.gmCalloutSupabaseHydrateFromRemote();
-                    } catch (_hydrReg) {
-                      /* ignore */
-                    }
-                  }
-                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-                    window.gmCalloutEmployeeBootstrap();
-                  }
-                  showLoginError('Signed in. Welcome!', 'success');
+                if (up.needsSignIn) {
+                  showLoginPanel();
+                  if (loginEmail) loginEmail.value = displayName;
+                  showLoginError(up.message || 'Account created. Sign in with your name and password.', 'success');
                   return;
                 }
-                showLoginPanel();
-                if (loginEmail) loginEmail.value = emailRaw;
-                if (loginPassword) loginPassword.value = '';
-                showLoginError(
-                  'Check your email to confirm your account, then sign in with this email and password.',
-                  'success'
-                );
+                await finishPortalLogin('employee', roster.displayName || displayName);
+                showLoginError('Signed in. Welcome!', 'success');
               } catch (rx) {
                 showRegisterError((rx && rx.message) || 'Could not create account.');
               }
@@ -1345,7 +1466,6 @@
           e.preventDefault();
           clearManagerRegisterError();
           var codeEl = document.getElementById('mgrRegCode');
-          var emEl = document.getElementById('mgrRegEmail');
           var pwEl = document.getElementById('mgrRegPassword');
           var pw2El = document.getElementById('mgrRegPasswordConfirm');
           var p1 = pwEl && pwEl.value ? String(pwEl.value) : '';
@@ -1359,87 +1479,36 @@
             return;
           }
 
-          if (window.gmSupabaseEnabled && window.gmSupabase && window.gmSupabase.auth) {
-            var codeRaw = codeEl && codeEl.value ? String(codeEl.value).trim().toLowerCase() : '';
-            // Must match MANAGER_SELF_SIGNUP_CODE in app.js.
-            if (codeRaw !== 'redpoke') {
-              showManagerRegisterError('Access code is incorrect.');
-              return;
-            }
-            var emailRaw = emEl ? String(emEl.value || '').trim() : '';
-            if (!emailRaw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
-              showManagerRegisterError('Enter a valid email address.');
+          if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
+            var codeRaw = codeEl && codeEl.value ? String(codeEl.value).trim() : '';
+            var mgrNameEl = document.getElementById('mgrRegName');
+            var mgrName = mgrNameEl ? String(mgrNameEl.value || '').trim() : '';
+            if (!mgrName) {
+              showManagerRegisterError('Name is required.');
               return;
             }
             (async function () {
-              var sb = window.gmSupabase;
-              var localPart = emailRaw.split('@')[0] || 'Manager';
-              var displayGuess = localPart.replace(/[._]+/g, ' ').trim() || 'Manager';
               try {
-                var up = await sb.auth.signUp({
-                  email: emailRaw,
+                var up = await window.gmPortalAuth.signUp({
+                  loginName: mgrName,
                   password: p1,
-                  options: {
-                    data: {
-                      role: 'manager',
-                      display_name: displayGuess,
-                    },
-                  },
+                  role: 'manager',
+                  accessCode: codeRaw,
+                  displayName: mgrName,
                 });
-                if (up.error) {
-                  showManagerRegisterError(up.error.message || 'Could not create account.');
+                if (!up.ok) {
+                  showManagerRegisterError(up.message || 'Could not create account.');
                   return;
-                }
-                if (!up.data || !up.data.user) {
-                  showManagerRegisterError('Could not create account.');
-                  return;
-                }
-                var uid = up.data.user.id;
-                // Only query profiles when we have a session (JWT). With "confirm email" on,
-                // signUp returns no session yet — anon cannot read profiles and .single() errors.
-                if (up.data.session) {
-                  var profRes = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
-                  if (profRes.error || !profRes.data || profRes.data.role !== 'manager') {
-                    await sb.auth.signOut();
-                    showManagerRegisterError(
-                      (profRes.error && profRes.error.message) ||
-                        'Account was created but the manager profile is missing or wrong. Check the database trigger.'
-                    );
-                    return;
-                  }
                 }
                 managerRegisterForm.reset();
-                if (up.data.session) {
-                  try {
-                    sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-                  } catch (mx0) {
-                    /* ignore */
-                  }
-                  setSession('manager');
-                  applyAuthedShell('manager');
-                  if (
-                    window.gmSupabaseEnabled &&
-                    typeof window.gmCalloutSupabaseHydrateFromRemote === 'function'
-                  ) {
-                    try {
-                      await window.gmCalloutSupabaseHydrateFromRemote();
-                    } catch (_hydrMgrReg) {
-                      /* ignore */
-                    }
-                  }
-                  if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-                    window.gmCalloutManagerMessagingBootstrap();
-                  }
-                  showLoginError('Signed in as manager.', 'success');
+                if (up.needsSignIn) {
+                  showLoginPanel();
+                  if (loginEmail) loginEmail.value = mgrName;
+                  showLoginError(up.message || 'Account created. Sign in with your name and password.', 'success');
                   return;
                 }
-                showLoginPanel();
-                if (loginEmail) loginEmail.value = emailRaw;
-                if (loginPassword) loginPassword.value = '';
-                showLoginError(
-                  'Check your email to confirm your account, then sign in with this email and password.',
-                  'success'
-                );
+                await finishPortalLogin('manager', up.displayName || mgrName);
+                showLoginError('Signed in as manager.', 'success');
               } catch (mx) {
                 showManagerRegisterError((mx && mx.message) || 'Could not create account.');
               }
@@ -1451,21 +1520,22 @@
             showManagerRegisterError('Registration is not available yet. Refresh the page and try again.');
             return;
           }
+          var mgrNameElLegacy = document.getElementById('mgrRegName');
           var res = window.gmCalloutRegisterManagerAccount({
             signupCode: codeEl && codeEl.value,
-            email: emEl && emEl.value,
+            email: mgrNameElLegacy && mgrNameElLegacy.value,
             password: p1,
           });
           if (!res || !res.ok) {
             showManagerRegisterError((res && res.message) || 'Could not create account.');
             return;
           }
-          var savedEmail = emEl ? String(emEl.value || '').trim() : '';
+          var savedName = mgrNameElLegacy ? String(mgrNameElLegacy.value || '').trim() : '';
           managerRegisterForm.reset();
           showLoginPanel();
-          if (loginEmail) loginEmail.value = savedEmail;
+          if (loginEmail) loginEmail.value = savedName;
           if (loginPassword) loginPassword.value = '';
-          showLoginError(res.message || 'Manager account created. Sign in with your email and password.', 'success');
+          showLoginError(res.message || 'Manager account created. Sign in with your name and password.', 'success');
         });
       }
 
@@ -1485,7 +1555,7 @@
             } catch (err) {
               /* ignore */
             }
-            document.documentElement.classList.remove('authed', 'manager-app', 'employee-app');
+            document.documentElement.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
             location.reload();
           })();
         });

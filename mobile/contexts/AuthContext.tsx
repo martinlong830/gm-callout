@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
+import { isPortalAuthConfigured, portalSignIn } from '../lib/portalAuth';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 export type AppRole = 'manager' | 'employee';
@@ -17,7 +18,7 @@ type AuthState = {
   role: AppRole | null;
   displayName: string;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<{ ok: true } | { ok: false; message: string }>;
+  signIn: (loginName: string, password: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   signOut: () => Promise<void>;
 };
 
@@ -57,9 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     setRole(r);
-    setDisplayName(
-      String(prof.data.display_name || '').trim() || sess.user.email || ''
-    );
+    setDisplayName(String(prof.data.display_name || '').trim());
   }, []);
 
   useEffect(() => {
@@ -83,25 +82,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [applySession]);
 
   const signIn = useCallback(
-    async (email: string, password: string) => {
+    async (loginName: string, password: string) => {
       if (!supabase) {
         return { ok: false as const, message: 'Supabase is not configured.' };
       }
-      const trimmed = email.trim();
-      const signInRes = await supabase.auth.signInWithPassword({
-        email: trimmed,
-        password,
-      });
-      if (signInRes.error) {
-        return { ok: false as const, message: signInRes.error.message || 'Sign in failed.' };
+      if (!isPortalAuthConfigured()) {
+        return {
+          ok: false as const,
+          message:
+            'Set EXPO_PUBLIC_GM_WEB_URL in mobile/.env to your web server URL, then restart Expo.',
+        };
       }
-      if (!signInRes.data.session?.user) {
+      const portal = await portalSignIn(loginName, password);
+      if (!portal.ok) return portal;
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
         return { ok: false as const, message: 'Sign in failed.' };
       }
       const prof = await supabase
         .from('profiles')
         .select('role, display_name')
-        .eq('id', signInRes.data.user.id)
+        .eq('id', data.session.user.id)
         .maybeSingle();
       if (prof.error || !prof.data) {
         await supabase.auth.signOut();
@@ -116,10 +117,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await supabase.auth.signOut();
         return {
           ok: false as const,
-          message: 'Your profile role is not set to manager or employee.',
+          message: 'This account is not a manager or employee app login.',
         };
       }
-      await applySession(signInRes.data.session);
+      await applySession(data.session);
       return { ok: true as const };
     },
     [applySession]
