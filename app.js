@@ -2373,19 +2373,134 @@
     if (!target) return false;
     var workers = shiftRow.workers || [];
     return workers.some(function (w) {
-      var wc = String(w || '').trim().toLowerCase();
-      if (wc === target) return true;
-      var wa = wc.split(/\s+/).filter(Boolean);
-      var ta = target.split(/\s+/).filter(Boolean);
-      if (!wa.length || !ta.length) return false;
-      if (wa[0] !== ta[0]) return false;
-      if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
-      var wl = wa[wa.length - 1].replace(/\.$/, '');
-      var tl = ta[ta.length - 1].replace(/\.$/, '');
-      if (wl === tl) return true;
-      if (wl.length && tl.length && wl[0] === tl[0]) return true;
-      return false;
+      return workerNamesMatch(w, workerFullName);
     });
+  }
+
+  /** Fuzzy match for roster names (schedule assignments, requests, callouts). */
+  function workerNamesMatch(a, b) {
+    var wc = String(a || '').trim().toLowerCase();
+    var target = String(b || '').trim().toLowerCase();
+    if (!wc || !target) return false;
+    if (wc === target) return true;
+    var wa = wc.split(/\s+/).filter(Boolean);
+    var ta = target.split(/\s+/).filter(Boolean);
+    if (!wa.length || !ta.length) return false;
+    if (wa[0] !== ta[0]) return false;
+    if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
+    var wl = wa[wa.length - 1].replace(/\.$/, '');
+    var tl = ta[ta.length - 1].replace(/\.$/, '');
+    if (wl === tl) return true;
+    if (wl.length && tl.length && wl[0] === tl[0]) return true;
+    return false;
+  }
+
+  function renameWorkerInScheduleAssignmentStore(oldName, newName) {
+    if (!oldName || !newName || workerNamesMatch(oldName, newName)) return false;
+    var store = loadScheduleAssignmentsStore();
+    var changed = false;
+    Object.keys(store).forEach(function (rid) {
+      var rs = store[rid];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach(function (shiftId) {
+        var entry = normalizeScheduleAssignment(rs[shiftId]);
+        var updated = false;
+        var next = (entry.workers || []).map(function (w) {
+          if (w && w !== 'Unassigned' && workerNamesMatch(w, oldName)) {
+            updated = true;
+            return newName;
+          }
+          return w;
+        });
+        if (updated) {
+          entry.workers = next.length ? next : ['Unassigned'];
+          rs[shiftId] = entry;
+          changed = true;
+        }
+      });
+    });
+    if (changed) saveScheduleAssignmentsStore(store);
+    return changed;
+  }
+
+  function renameWorkerInStaffRequests(oldName, newName) {
+    if (!oldName || !newName || workerNamesMatch(oldName, newName)) return false;
+    var changed = false;
+    staffRequests.forEach(function (r) {
+      if (r.employeeName && workerNamesMatch(r.employeeName, oldName)) {
+        r.employeeName = newName;
+        changed = true;
+      }
+    });
+    if (changed) {
+      syncEmployeeSubmittedFromStaffRequests();
+    }
+    return changed;
+  }
+
+  function renameWorkerInCalloutHistory(oldName, newName) {
+    if (!oldName || !newName || workerNamesMatch(oldName, newName)) return false;
+    var changed = false;
+    history.forEach(function (item) {
+      if (!item) return;
+      if (item.acceptedBy && item.acceptedBy.name && workerNamesMatch(item.acceptedBy.name, oldName)) {
+        item.acceptedBy.name = newName;
+        changed = true;
+      }
+      ['notified', 'noResponse', 'originalWorkers'].forEach(function (key) {
+        if (!Array.isArray(item[key])) return;
+        item[key].forEach(function (n, i) {
+          if (n && workerNamesMatch(n, oldName)) {
+            item[key][i] = newName;
+            changed = true;
+          }
+        });
+      });
+      if (item.shift) {
+        if (item.shift.worker && workerNamesMatch(item.shift.worker, oldName)) {
+          item.shift.worker = newName;
+          changed = true;
+        }
+        if (Array.isArray(item.shift.workers)) {
+          item.shift.workers.forEach(function (w, wi) {
+            if (w && workerNamesMatch(w, oldName)) {
+              item.shift.workers[wi] = newName;
+              changed = true;
+            }
+          });
+        }
+      }
+    });
+    if (changed) persistCalloutHistoryLocalAndSync();
+    return changed;
+  }
+
+  function renamePortalEmployeeAccount(oldName, newName) {
+    if (!oldName || !newName || workerNamesMatch(oldName, newName)) return false;
+    var accounts = loadPortalEmployeeAccounts();
+    var oldKey = normPortalLoginKey(oldName);
+    var changed = false;
+    accounts.forEach(function (a) {
+      if (
+        (a.displayName && workerNamesMatch(a.displayName, oldName)) ||
+        a.loginKey === oldKey
+      ) {
+        a.displayName = newName;
+        a.loginKey = normPortalLoginKey(newName);
+        changed = true;
+      }
+    });
+    if (changed) savePortalEmployeeAccounts(accounts);
+    return changed;
+  }
+
+  /** Keep schedule, requests, and callout logs in sync when a roster name changes. */
+  function propagateEmployeeRename(oldName, newName) {
+    if (!oldName || !newName || workerNamesMatch(oldName, newName)) return;
+    renameWorkerInScheduleAssignmentStore(oldName, newName);
+    renameWorkerInStaffRequests(oldName, newName);
+    renameWorkerInCalloutHistory(oldName, newName);
+    renamePortalEmployeeAccount(oldName, newName);
   }
 
   /** All locations’ schedule rows (same data the manager calendar uses), for employee views. */
@@ -5692,9 +5807,11 @@
       if (hrNum != null) rec.hourlyRate = Math.round(hrNum * 100) / 100;
       var wasNew = !editingEmployeeId;
       var savedId = editingEmployeeId || rec.id;
+      var previousDisplayName = null;
       if (editingEmployeeId) {
         const ix = employees.findIndex(function (e) { return e.id === editingEmployeeId; });
         if (ix !== -1) {
+          previousDisplayName = employeeDisplayName(employees[ix]);
           rec.clockPin = employees[ix].clockPin;
           if (employees[ix].meta) rec.meta = employees[ix].meta;
           if (employees[ix].authUserId) rec.authUserId = employees[ix].authUserId;
@@ -5704,12 +5821,20 @@
         applyHourlyRatePresetIfMissing(rec);
         employees.push(rec);
       }
+      var newDisplayName = employeeDisplayName(rec);
+      if (previousDisplayName) {
+        propagateEmployeeRename(previousDisplayName, newDisplayName);
+      }
       editingEmployeeId = null;
       saveEmployees();
       rebuildEmployeeDerivedData();
       renderCalendar();
       if (scheduleBody) renderSchedule();
       renderEmployeeList();
+      if (currentScreen === 8) renderRequestsList();
+      if (currentScreen === 10 && window.gmCalloutTimecards) {
+        window.gmCalloutTimecards.renderRoster();
+      }
       showScreen(5);
       if (GM_SUPABASE_DATA && isUuidCloudId(savedId) && (wasNew || !rec.clockPin)) {
         void assignClockPinRemote(savedId).then(function (pinRes) {
