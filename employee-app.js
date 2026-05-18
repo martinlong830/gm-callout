@@ -112,6 +112,7 @@
     var empAvailCheckAllBtn = el('empAvailCheckAllBtn');
     var empTimeoffStartDate = el('empTimeoffStartDate');
     var empTimeoffEndDate = el('empTimeoffEndDate');
+    var empTimeoffLeaveType = el('empTimeoffLeaveType');
     var empTimeoffNote = el('empTimeoffNote');
     var empSwapShiftOffer = el('empSwapShiftOffer');
     var empSwapAvailableShift = el('empSwapAvailableShift');
@@ -720,6 +721,7 @@
     function initTimeoffDateRangeForm() {
       if (empTimeoffStartDate) empTimeoffStartDate.value = '';
       if (empTimeoffEndDate) empTimeoffEndDate.value = '';
+      if (empTimeoffLeaveType) empTimeoffLeaveType.value = 'vacation';
       if (empTimeoffNote) empTimeoffNote.value = '';
     }
 
@@ -823,17 +825,29 @@
       wireRequestForm('empFormTimeoff', function () {
         var start = empTimeoffStartDate ? String(empTimeoffStartDate.value || '') : '';
         var end = empTimeoffEndDate ? String(empTimeoffEndDate.value || '') : '';
+        var leaveType =
+          empTimeoffLeaveType && empTimeoffLeaveType.value === 'sick' ? 'sick' : 'vacation';
         var note = empTimeoffNote ? String(empTimeoffNote.value || '').trim() : '';
         if (!start || !end) return null;
         if (end < start) {
           showRequestFeedback('End date must be on or after start date.');
           return null;
         }
+        var typeLabel = leaveType === 'sick' ? 'Sick leave' : 'Vacation leave';
         return {
           type: 'timeoff',
           employeeName: WORKER,
           role: roleCode,
-          summary: 'Time Off: ' + start + ' to ' + end + (note ? '. Notes: ' + note : ''),
+          leaveType: leaveType,
+          timeoffStart: start,
+          timeoffEnd: end,
+          summary:
+            typeLabel +
+            ': ' +
+            start +
+            ' to ' +
+            end +
+            (note ? '. Notes: ' + note : ''),
         };
       });
 

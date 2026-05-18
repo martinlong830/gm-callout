@@ -715,13 +715,14 @@
 
       <!-- Screen 10: Timecards roster -->
       <section class="screen" id="screen-timecards" data-screen="10">
-        <p class="calendar-hint timecards-hint">Pay week totals use rounded punch times minus unpaid breaks.</p>
+        <p class="calendar-hint timecards-hint">Pay week totals use 5-min rounded punches minus breaks. SoH = 1 hr premium per day over 10h (5-min rounded). VL/SL come from approved time off (editable per employee). Roster order: FOH → BOH → Delivery.</p>
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
       </section>
 
       <!-- Screen 11: Employee timecard shifts -->
       <section class="screen" id="screen-timecards-employee" data-screen="11">
         <p class="calendar-hint" id="timecardsEmployeeWeekLabel"></p>
+        <div id="timecardsEmployeeSummary" class="timecards-employee-summary-mount"></div>
         <div class="timecards-table-wrap">
           <table class="timecards-table" id="timecardsEmployeeTable">
             <thead>
@@ -730,6 +731,7 @@
                 <th scope="col">Shift</th>
                 <th scope="col">Scheduled</th>
                 <th scope="col">Recorded</th>
+                <th scope="col">Day total</th>
                 <th scope="col">Status</th>
               </tr>
             </thead>
@@ -923,6 +925,13 @@
         </form>
         <form class="emp-request-form" id="empFormTimeoff" hidden>
           <p class="emp-hint">Select the day range you need off. This submits as full-day time off.</p>
+          <label class="form-field form-field-block">
+            <span class="form-label">Type</span>
+            <select id="empTimeoffLeaveType" required>
+              <option value="vacation">Vacation leave</option>
+              <option value="sick">Sick leave</option>
+            </select>
+          </label>
           <div class="form-row">
             <label class="form-field">
               <span class="form-label">Start date</span>

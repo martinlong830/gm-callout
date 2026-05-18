@@ -4005,3 +4005,103 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-history-when {
   color: var(--text-muted);
 }
+
+.timecards-table--wide {
+  min-width: 960px;
+}
+
+.timecards-extra-cell {
+  white-space: nowrap;
+}
+
+.timecards-extra-input {
+  width: 4.25rem;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: right;
+}
+
+.timecards-extra-suffix {
+  margin-left: 4px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.timecards-soh-dates {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  max-width: 10rem;
+  line-height: 1.35;
+}
+
+.timecards-employee-summary-mount {
+  margin-bottom: 12px;
+}
+
+.timecards-leave-hint {
+  margin: 0 0 8px;
+}
+
+.timecards-employee-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--surface);
+}
+
+.timecards-employee-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px 16px;
+  align-items: end;
+}
+
+.timecards-summary-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.timecards-summary-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.timecards-summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timecards-summary-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.timecards-summary-value--dates {
+  font-weight: 500;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.timecards-soh-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #fef3c7;
+  color: #b45309;
+  vertical-align: middle;
+}

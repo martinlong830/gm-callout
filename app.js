@@ -765,6 +765,9 @@
     if (p.submittedWeekIndex != null) full.submittedWeekIndex = p.submittedWeekIndex;
     if (p.offeredShiftLabel) full.offeredShiftLabel = p.offeredShiftLabel;
     if (p.swapOfferId) full.swapOfferId = p.swapOfferId;
+    if (p.leaveType) full.leaveType = p.leaveType;
+    if (p.timeoffStart) full.timeoffStart = p.timeoffStart;
+    if (p.timeoffEnd) full.timeoffEnd = p.timeoffEnd;
     return full;
   }
 
@@ -872,6 +875,9 @@
     if (full.submittedWeekIndex != null) payload.submittedWeekIndex = full.submittedWeekIndex;
     if (full.offeredShiftLabel) payload.offeredShiftLabel = full.offeredShiftLabel;
     if (full.swapOfferId) payload.swapOfferId = full.swapOfferId;
+    if (full.leaveType) payload.leaveType = full.leaveType;
+    if (full.timeoffStart) payload.timeoffStart = full.timeoffStart;
+    if (full.timeoffEnd) payload.timeoffEnd = full.timeoffEnd;
     var ins = await sb
       .from('staff_requests')
       .insert({
@@ -2963,6 +2969,25 @@
     return r;
   }
 
+  /** Default start/end when turning Day off back on (same row or built-in template). */
+  function draftDefaultTimesForCell(role, ri, di) {
+    var row = draftModalScratch && draftModalScratch[role] && draftModalScratch[role][ri];
+    if (row) {
+      for (var i = 0; i < 7; i += 1) {
+        var c = row[i];
+        if (c && c[0] && c[1]) return [c[0], c[1]];
+      }
+    }
+    var def = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
+    if (def && def[ri]) {
+      if (def[ri][di] && def[ri][di][0] && def[ri][di][1]) return [def[ri][di][0], def[ri][di][1]];
+      for (var j = 0; j < 7; j += 1) {
+        if (def[ri][j] && def[ri][j][0] && def[ri][j][1]) return [def[ri][j][0], def[ri][j][1]];
+      }
+    }
+    return ['10:00', '18:00'];
+  }
+
   function updateDraftCellHoursEl(td, s, e) {
     var span = td.querySelector('.draft-cell-hours');
     if (!span) return;
@@ -3064,13 +3089,15 @@
           var eInp = td.querySelector('.draft-time-end');
           var s = normalizeHHMM(sInp && sInp.value);
           var e = normalizeHHMM(eInp && eInp.value);
-          if (s && e) {
-            draftModalScratch[draftModalActiveRole][ri][di] = [s, e];
-            updateDraftCellHoursEl(td, s, e);
-          } else {
-            draftModalScratch[draftModalActiveRole][ri][di] = null;
-            updateDraftCellHoursEl(td, null, null);
+          if (!s || !e) {
+            var defTimes = draftDefaultTimesForCell(draftModalActiveRole, ri, di);
+            s = defTimes[0];
+            e = defTimes[1];
+            if (sInp) sInp.value = s;
+            if (eInp) eInp.value = e;
           }
+          draftModalScratch[draftModalActiveRole][ri][di] = [s, e];
+          updateDraftCellHoursEl(td, s, e);
         }
       });
       draftScheduleTableMount.addEventListener('input', function (e) {
@@ -5402,6 +5429,9 @@
       }
       persistStaffRequestStatuses();
       renderRequestsList();
+      if (req.type === 'timeoff' && window.gmCalloutTimecards) {
+        window.gmCalloutTimecards.renderRoster();
+      }
     });
   }
 
@@ -6164,6 +6194,9 @@
       if (row.submittedWeekIndex != null) full.submittedWeekIndex = row.submittedWeekIndex;
       if (row.offeredShiftLabel) full.offeredShiftLabel = row.offeredShiftLabel;
       if (row.swapOfferId) full.swapOfferId = row.swapOfferId;
+      if (row.leaveType) full.leaveType = row.leaveType;
+      if (row.timeoffStart) full.timeoffStart = row.timeoffStart;
+      if (row.timeoffEnd) full.timeoffEnd = row.timeoffEnd;
 
       function pushLocalWithId(id) {
         full.id = id;
@@ -6492,6 +6525,12 @@
       escapeHtml: escapeHtml,
       employees: employees,
       employeeDisplayName: employeeDisplayName,
+      normNameKey: normNameKey,
+      nameFirstToken: nameFirstToken,
+      nameLastToken: nameLastToken,
+      getStaffRequests: function () {
+        return staffRequests;
+      },
       STAFF_TYPE_LABELS: STAFF_TYPE_LABELS,
       shiftRowIncludesWorker: shiftRowIncludesWorker,
       buildAllLocationScheduleSnapshot: buildAllLocationScheduleSnapshot,
