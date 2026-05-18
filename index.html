@@ -38,7 +38,7 @@
       <h1 class="login-title" id="loginTitle">Red Poke Scheduler</h1>
       <div id="loginPanel">
         <p class="login-subtitle">Sign in to continue</p>
-        <p class="login-hint">Sign in with your <strong>name</strong> and password.</p>
+        <p class="login-hint">Sign in with your <strong>name</strong> and password. Managers: <strong>Martin Long</strong> or <strong>Ongi Management</strong>.</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
             <span class="login-label">Name</span>
@@ -1104,8 +1104,6 @@
   <script src="login-timeclock.js"></script>
   <script>
     (function () {
-      var ALLOWED_EMAIL = 'martinlong830@gmail.com';
-      var ALLOWED_PASSWORD = 'redpoke';
       var SESSION_KEY = 'gm-callout-session';
       var SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
 
@@ -1286,28 +1284,7 @@
         });
       }
 
-      function tryLegacyManagerThenEmployee(rawLogin, password) {
-        var id = norm(rawLogin);
-        var portalMgr =
-          typeof window.gmCalloutPortalManagerLogin === 'function'
-            ? window.gmCalloutPortalManagerLogin(rawLogin, password)
-            : { ok: false };
-        if (
-          (id === norm(ALLOWED_EMAIL) && password === ALLOWED_PASSWORD) ||
-          (portalMgr && portalMgr.ok)
-        ) {
-          try {
-            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-          } catch (err0) {
-            /* ignore */
-          }
-          setSession('manager');
-          applyAuthedShell('manager');
-          if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-            window.gmCalloutManagerMessagingBootstrap();
-          }
-          return true;
-        }
+      function tryLegacyEmployeeLogin(rawLogin, password) {
         var portal =
           typeof window.gmCalloutPortalEmployeeLogin === 'function'
             ? window.gmCalloutPortalEmployeeLogin(rawLogin, password)
@@ -1325,7 +1302,6 @@
           }
           return true;
         }
-        showLoginError('Name or password is incorrect.');
         return false;
       }
 
@@ -1340,7 +1316,7 @@
             (async function () {
               var res = await window.gmPortalAuth.signIn(String(rawLogin).trim(), password);
               if (!res.ok) {
-                if (tryLegacyManagerThenEmployee(rawLogin, password)) return;
+                if (tryLegacyEmployeeLogin(rawLogin, password)) return;
                 showLoginError(res.message || 'Sign in failed.');
                 return;
               }
@@ -1349,7 +1325,8 @@
             return;
           }
 
-          tryLegacyManagerThenEmployee(rawLogin, password);
+          if (tryLegacyEmployeeLogin(rawLogin, password)) return;
+          showLoginError('Name or password is incorrect. Managers: Martin Long or Ongi Management.');
         });
       }
 

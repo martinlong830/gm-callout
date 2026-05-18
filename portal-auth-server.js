@@ -112,35 +112,13 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
     };
   }
 
-  /** Older accounts: Supabase email/password only; profiles.login_name not set yet. */
+  /** Older accounts: profiles.login_name not set yet (name sign-in only). */
   async function signInLegacyAccount(loginName, password) {
     const raw = String(loginName || "").trim();
     const pw = String(password || "");
     if (!raw || !pw) return { error: "Name and password are required." };
-
     if (raw.includes("@")) {
-      const { data, error } = await admin.auth.signInWithPassword({
-        email: raw,
-        password: pw,
-      });
-      if (error || !data.session || !data.user) {
-        return { error: "Name or password is incorrect." };
-      }
-      const { data: prof, error: profErr } = await admin
-        .from("profiles")
-        .select(profileSelect)
-        .eq("id", data.user.id)
-        .maybeSingle();
-      if (profErr || !prof) {
-        return { error: "No profile for this account. Run Supabase migrations." };
-      }
-      const loginLabel = prof.login_name || prof.display_name || raw.split("@")[0];
-      await backfillProfileLoginFields(prof, data.user.email || raw, loginLabel);
-      return {
-        session: data.session,
-        role: prof.role,
-        displayName: prof.display_name || loginLabel,
-      };
+      return { error: "Sign in with your name, not email. Managers: Martin Long or Ongi Management." };
     }
 
     const norm = normalizeLoginName(raw);
@@ -212,6 +190,13 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
       }
 
       const loginNameNorm = normalizeLoginName(loginName);
+      const ALLOWED_MANAGER_NAMES = new Set(["martin long", "ongi management"]);
+      if (role === "manager" && !ALLOWED_MANAGER_NAMES.has(loginNameNorm)) {
+        return res.status(403).json({
+          ok: false,
+          message: "Manager sign-in is only for Martin Long or Ongi Management. Ask an owner to run account setup.",
+        });
+      }
       const { data: existing } = await admin
         .from("profiles")
         .select("id")

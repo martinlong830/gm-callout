@@ -517,7 +517,7 @@
     }
     if (!d().gmSupabaseReadyNow()) {
       wrap.innerHTML =
-        '<p class="calendar-hint">Sign in with your manager account (Supabase) to use Timecards.</p>';
+        '<p class="calendar-hint">Timecards need Supabase on this server (SUPABASE_URL and SUPABASE_ANON_KEY). Sign in as Martin Long or Ongi Management after redeploy.</p>';
       return;
     }
     wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';

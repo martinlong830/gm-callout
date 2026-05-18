@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Reset portal accounts: login = full name, password = redpoke.
- * Managers: Martin Long (martinlong830@gmail.com), Ongi Management.
+ * Managers: Martin Long, Ongi Management (name sign-in only; no Gmail).
  * Employees: full FOH / BOH / delivery roster.
  * Timeclock: iPad (kept for tablet).
  */
@@ -15,17 +15,12 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 const PASSWORD = "redpoke";
 
+const LEGACY_MANAGER_EMAIL = "martinlong830@gmail.com";
+const INTERNAL_EMAIL_DOMAIN = "example.org";
+
 const MANAGERS = [
-  {
-    loginName: "Martin Long",
-    displayName: "Martin Long",
-    email: "martinlong830@gmail.com",
-  },
-  {
-    loginName: "Ongi Management",
-    displayName: "Ongi Management",
-    email: null,
-  },
+  { loginName: "Martin Long", displayName: "Martin Long" },
+  { loginName: "Ongi Management", displayName: "Ongi Management" },
 ];
 
 const EMPLOYEES = [
@@ -55,7 +50,25 @@ function normalizeLoginName(name) {
 }
 
 function makeInternalEmail() {
-  return `gm.${crypto.randomUUID().replace(/-/g, "")}@example.org`;
+  return `gm.${crypto.randomUUID().replace(/-/g, "")}@${INTERNAL_EMAIL_DOMAIN}`;
+}
+
+function isPublicEmail(email) {
+  const e = String(email || "").toLowerCase();
+  return e.includes("@") && !e.endsWith(`@${INTERNAL_EMAIL_DOMAIN}`);
+}
+
+async function deleteAuthUsersByEmail(admin, email) {
+  const want = String(email || "").trim().toLowerCase();
+  if (!want) return;
+  const { data: listData } = await admin.auth.admin.listUsers({ perPage: 1000 });
+  for (const u of listData?.users || []) {
+    if (String(u.email || "").toLowerCase() !== want) continue;
+    const { error: delErr } = await admin.auth.admin.deleteUser(u.id);
+    console.log(
+      delErr ? `skip delete ${u.email}: ${delErr.message}` : `removed legacy auth user: ${u.email}`
+    );
+  }
 }
 
 async function ensureAccount(admin, spec) {
@@ -71,7 +84,7 @@ async function ensureAccount(admin, spec) {
     .maybeSingle();
 
   let userId = existingProf?.id;
-  let internalEmail = spec.email || existingProf?.internal_auth_email;
+  let internalEmail = existingProf?.internal_auth_email;
 
   if (!userId) {
     const { data: byDisplay } = await admin
@@ -85,7 +98,7 @@ async function ensureAccount(admin, spec) {
     }
   }
 
-  if (!internalEmail) internalEmail = makeInternalEmail();
+  if (!internalEmail || isPublicEmail(internalEmail)) internalEmail = makeInternalEmail();
 
   if (!userId) {
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -110,7 +123,7 @@ async function ensureAccount(admin, spec) {
   } else {
     const { error: pwErr } = await admin.auth.admin.updateUserById(userId, {
       password: PASSWORD,
-      email: spec.email || internalEmail,
+      email: internalEmail,
       email_confirm: true,
       user_metadata: {
         role,
@@ -129,7 +142,7 @@ async function ensureAccount(admin, spec) {
       display_name: displayName,
       login_name: loginName,
       login_name_norm: norm,
-      internal_auth_email: spec.email || internalEmail,
+      internal_auth_email: internalEmail,
     },
     { onConflict: "id" }
   );
@@ -157,6 +170,8 @@ async function main() {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
+  await deleteAuthUsersByEmail(admin, LEGACY_MANAGER_EMAIL);
+
   const kept = new Set();
 
   for (const m of MANAGERS) {
@@ -164,7 +179,6 @@ async function main() {
       loginName: m.loginName,
       displayName: m.displayName,
       role: "manager",
-      email: m.email,
     });
     kept.add(r.userId);
     console.log("manager:", r.loginName);
