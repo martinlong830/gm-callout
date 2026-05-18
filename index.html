@@ -1312,9 +1312,12 @@
           var rawLogin = loginEmail.value;
           var password = loginPassword.value || '';
 
+          var loginTrim = String(rawLogin).trim();
+          var loginNorm = norm(loginTrim).replace(/\s+/g, ' ');
+
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
-              var res = await window.gmPortalAuth.signIn(String(rawLogin).trim(), password);
+              var res = await window.gmPortalAuth.signIn(loginTrim, password);
               if (!res.ok) {
                 if (tryLegacyEmployeeLogin(rawLogin, password)) return;
                 showLoginError(res.message || 'Sign in failed.');
@@ -1322,6 +1325,13 @@
               }
               await finishPortalLogin(res.role, res.displayName);
             })();
+            return;
+          }
+
+          if (loginNorm === 'martin long' || loginNorm === 'ongi management') {
+            showLoginError(
+              'Manager sign-in needs Supabase on this server. In Render → Environment, add SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, redeploy, then run node scripts/reset-portal-accounts.js against that project.'
+            );
             return;
           }
 

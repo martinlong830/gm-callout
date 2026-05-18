@@ -440,7 +440,16 @@ function buildGreetingTwiML(firstName) {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    supabase: {
+      url: !!SUPABASE_URL,
+      anonKey: !!SUPABASE_ANON_KEY,
+      serviceRoleKey: !!SUPABASE_SERVICE_ROLE_KEY,
+      browserReady: !!(SUPABASE_URL && SUPABASE_ANON_KEY),
+      portalSignInReady: !!(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY),
+    },
+  });
 });
 
 /** Verify Twilio credentials (open in browser while server runs). */

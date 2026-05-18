@@ -17,10 +17,17 @@
       data = {};
     }
     if (!res.ok || !data.ok) {
+      var msg = (data && data.message) || "Request failed.";
+      if (res.status === 503) {
+        msg =
+          msg ||
+          "Server auth is not configured. On Render, set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, then redeploy.";
+      }
       return {
         ok: false,
-        message: (data && data.message) || "Request failed.",
+        message: msg,
         needsSignIn: !!(data && data.needsSignIn),
+        status: res.status,
       };
     }
     return { ok: true, data: data };
