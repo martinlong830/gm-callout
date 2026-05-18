@@ -468,7 +468,7 @@
   const SCHEDULE_VIEW_WEEK_COUNT = SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
   /** Index in WEEK_META for this calendar week; also the replication template week. */
   const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
-  const SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY = 'gm_schedule_past_weeks_migrated_v1';
+  const SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY = 'gm_schedule_past_weeks_migrated_v2';
   let scheduleCalendarWeekIndex = SCHEDULE_TEMPLATE_WEEK_INDEX;
 
   function getThisMondayDate() {
@@ -1058,17 +1058,21 @@
     var sched = row.schedule_assignments;
     if (scheduleAssignmentsStoreIsPopulated(sched)) {
       try {
-        var mergedSched = migrateScheduleAssignmentsForPastWeeks(
+        var mig = migrateScheduleAssignmentsForPastWeeks(
           mergeAssignmentStoreWithShell(assignmentStoreShell(), sched)
-        ).store;
+        );
+        var mergedSched = mig.store;
+        var schedChanged = mig.changed;
         if (isMgr) {
           restaurantsList.forEach(function (r) {
             if (!mergedSched[r.id]) mergedSched[r.id] = {};
-            replicateWeekZeroToFutureWeeksInStore(mergedSched[r.id], SCHEDULE_VIEW_WEEK_COUNT);
+            if (replicateWeekZeroToFutureWeeksInStore(mergedSched[r.id], SCHEDULE_VIEW_WEEK_COUNT)) {
+              schedChanged = true;
+            }
           });
         }
         localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
-        if (isMgr) scheduleTeamStateDebouncedSync();
+        if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
       } catch (_s) {
         /* ignore */
       }
@@ -1605,6 +1609,36 @@
     return !!(r && r.defaultUnassignedSchedule);
   }
 
+  /** FOH/BOH/Delivery rows map trIdx → one roster name (sheet-style), not random per day. */
+  function scheduleRowRosterDefault(role, trIdx) {
+    if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
+    if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
+    if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
+    return null;
+  }
+
+  function workerAllowedOnScheduleRow(name, basePool) {
+    if (!name || name === 'Unassigned') return false;
+    if (!basePool || !basePool.length) return true;
+    var key = normalizeWorkerKey(name);
+    return basePool.some(function (n) {
+      return normalizeWorkerKey(n) === key;
+    });
+  }
+
+  function pickDefaultScheduleWorkers(role, trIdx, basePool, usedToday, seed) {
+    var rowName = scheduleRowRosterDefault(role, trIdx);
+    if (rowName && workerAllowedOnScheduleRow(rowName, basePool) && !usedToday[normalizeWorkerKey(rowName)]) {
+      return [rowName];
+    }
+    var filtered = (basePool || []).filter(function (name) {
+      if (!name || name === 'Unassigned') return false;
+      return !usedToday[normalizeWorkerKey(name)];
+    });
+    if (filtered.length) return uniqueWorkers(filtered, seed, 1);
+    return ['Unassigned'];
+  }
+
   function rebuildSchedule() {
     SCHEDULE.length = 0;
     var forceUnassigned = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
@@ -1635,15 +1669,7 @@
           if (forceUnassigned) {
             workers = ['Unassigned'];
           } else {
-            var filtered = (basePool || []).filter(function (name) {
-              if (!name || name === 'Unassigned') return false;
-              return !usedToday[normalizeWorkerKey(name)];
-            });
-            if (filtered.length) {
-              workers = uniqueWorkers(filtered, seed, 1);
-            } else {
-              workers = ['Unassigned'];
-            }
+            workers = pickDefaultScheduleWorkers(rd.role, trIdx, basePool, usedToday, seed);
             if (!workers.length) workers = ['Unassigned'];
             var chosen = workers[0];
             if (chosen && chosen !== 'Unassigned') {
@@ -1707,55 +1733,39 @@
 
   function migrateScheduleAssignmentsForPastWeeks(store) {
     if (!store || typeof store !== 'object') return { store: store, changed: false };
+    var offset = SCHEDULE_PAST_WEEK_COUNT * 7;
+    var changed = false;
+    var hadOldKeys = false;
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      var removeIds = [];
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p || p.globalDayIdx >= offset) return;
+        hadOldKeys = true;
+        var newId = 'shift-' + (p.globalDayIdx + offset) + '-' + p.roleIdx + '-' + p.trIdx;
+        if (rs[newId] == null) {
+          rs[newId] = rs[shiftId];
+          changed = true;
+        }
+        removeIds.push(shiftId);
+      });
+      removeIds.forEach(function (shiftId) {
+        delete rs[shiftId];
+        changed = true;
+      });
+    });
     try {
-      if (localStorage.getItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY) === '1') {
-        return { store: store, changed: false };
+      if (!hadOldKeys) {
+        localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
+      } else if (changed) {
+        localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
       }
     } catch (eFlag) {
       /* ignore */
     }
-    var offset = SCHEDULE_PAST_WEEK_COUNT * 7;
-    var hasOldLayout = false;
-    var hasNewLayout = false;
-    restaurantsList.forEach(function (r) {
-      var rs = store[r.id];
-      if (!rs || typeof rs !== 'object') return;
-      Object.keys(rs).forEach(function (shiftId) {
-        var p = parseShiftIdParts(shiftId);
-        if (!p) return;
-        if (p.globalDayIdx >= offset) hasNewLayout = true;
-        else hasOldLayout = true;
-      });
-    });
-    if (hasNewLayout || !hasOldLayout) {
-      try {
-        localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
-      } catch (eDone) {
-        /* ignore */
-      }
-      return { store: store, changed: false };
-    }
-    restaurantsList.forEach(function (r) {
-      var rs = store[r.id];
-      if (!rs || typeof rs !== 'object') return;
-      var next = {};
-      Object.keys(rs).forEach(function (shiftId) {
-        var p = parseShiftIdParts(shiftId);
-        if (!p) {
-          next[shiftId] = rs[shiftId];
-          return;
-        }
-        var newId = 'shift-' + (p.globalDayIdx + offset) + '-' + p.roleIdx + '-' + p.trIdx;
-        next[newId] = rs[shiftId];
-      });
-      store[r.id] = next;
-    });
-    try {
-      localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
-    } catch (eSaveFlag) {
-      /* ignore */
-    }
-    return { store: store, changed: true };
+    return { store: store, changed: changed };
   }
 
   function loadScheduleAssignmentsStore() {
@@ -2194,10 +2204,23 @@
     var p = parseShiftIdParts(shiftId);
     if (!p) return null;
     var tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+    if (p.globalDayIdx >= tplStart && p.globalDayIdx < tplStart + 7) {
+      var legacyId = 'shift-' + (p.globalDayIdx - tplStart) + '-' + p.roleIdx + '-' + p.trIdx;
+      if (stored[legacyId] != null) {
+        return normalizeScheduleAssignment(stored[legacyId]);
+      }
+      return null;
+    }
     if (p.globalDayIdx < tplStart + 7) return null;
     var dayInWeek = p.globalDayIdx % 7;
     var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
-    if (stored[templateId] == null) return null;
+    if (stored[templateId] == null) {
+      var legacyTplId = 'shift-' + dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
+      if (stored[legacyTplId] != null) {
+        return normalizeScheduleAssignment(stored[legacyTplId]);
+      }
+      return null;
+    }
     return normalizeScheduleAssignment(stored[templateId]);
   }
 

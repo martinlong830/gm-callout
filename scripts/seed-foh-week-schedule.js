@@ -12,6 +12,8 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") });
 const TEAM_STATE_ROW_ID = "main";
 const RESTAURANT_ID = "rp-9";
 const BARTENDER_ROLE_IDX = 1;
+/** Must match app.js SCHEDULE_PAST_WEEK_COUNT — "this week" in the schedule navigator. */
+const SCHEDULE_TEMPLATE_WEEK_INDEX = 12;
 
 function fmtTimeLabel(start, end) {
   function parts(t) {
@@ -174,7 +176,8 @@ async function main() {
   if (!existingAssign[RESTAURANT_ID]) existingAssign[RESTAURANT_ID] = {};
 
   clearWeekBartenderAssignments(existingAssign, 0);
-  const weekAssign = buildAssignmentsFromRows(0);
+  clearWeekBartenderAssignments(existingAssign, SCHEDULE_TEMPLATE_WEEK_INDEX);
+  const weekAssign = buildAssignmentsFromRows(SCHEDULE_TEMPLATE_WEEK_INDEX);
   Object.assign(existingAssign[RESTAURANT_ID], weekAssign[RESTAURANT_ID]);
 
   const { error } = await admin.from("team_state").upsert(
@@ -195,7 +198,7 @@ async function main() {
   }
 
   console.log("FOH sheet schedule applied (times, breaks, hours).");
-  console.log("Hard-refresh Schedule → Week 1.");
+  console.log("Hard-refresh Schedule → This week.");
 }
 
 main().catch((e) => {
