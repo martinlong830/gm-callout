@@ -149,6 +149,8 @@ html.authed.employee-app #empScreenMessages .emp-messages-layout {
 
 html.authed .login-screen {
   display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .login-screen {
@@ -1642,6 +1644,65 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .schedule-toolbar-left .employee-filter-label {
   display: block;
   margin-bottom: 6px;
+}
+
+.schedule-week-nav {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.schedule-week-nav-btn.btn {
+  min-height: 32px;
+  min-width: 32px;
+  padding: 4px 8px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.schedule-week-nav-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.schedule-week-nav-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  white-space: nowrap;
+}
+
+.schedule-week-nav-jump {
+  min-height: 32px;
+  max-width: 9.5rem;
+  padding: 4px 28px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.schedule-week-nav-jump:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.schedule-week-nav-today.btn {
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .schedule-toolbar-actions {
@@ -3655,10 +3716,85 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   margin: 0 0 10px;
 }
 
+.timecards-download-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .timecards-download-btn {
   flex-shrink: 0;
   font-size: 0.8125rem;
   padding: 6px 12px;
+}
+
+.timecards-grand-totals {
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.timecards-grand-totals-title {
+  margin: 0 0 4px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.timecards-grand-totals-meta {
+  margin: 0 0 12px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.timecards-grand-totals-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 640px) {
+  .timecards-grand-totals-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.timecards-total-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--hover-fill, #f9fafb);
+  border: 1px solid var(--border);
+}
+
+.timecards-total-card--emph {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.timecards-total-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.timecards-total-value {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.timecards-total-pay {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
 }
 
 .timecards-sort-btn {

@@ -59,6 +59,9 @@
     var root = document.documentElement;
     root.classList.add('authed', 'timeclock-app');
     root.classList.remove('manager-app', 'employee-app');
+    if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+      window.gmCalloutSetLoginGateOpen(false);
+    }
   }
 
   async function finishTimeclockSignIn() {

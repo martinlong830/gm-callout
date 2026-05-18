@@ -75,8 +75,32 @@
     return Math.max(0, Math.round(hrs * 60) - br);
   }
 
-  var OT_WEEKLY_MINUTES = 40 * 60;
   var OT_RATE_MULTIPLIER = 1.5;
+  var PAY_ROUND_MINUTES = 15;
+
+  function roundToNearest15Minutes(mins) {
+    var m = Math.max(0, Math.round(Number(mins) || 0));
+    return Math.round(m / PAY_ROUND_MINUTES) * PAY_ROUND_MINUTES;
+  }
+
+  /** Regular = scheduled paid time (15-min rounded); OT = extra recorded time after schedule at 1.5×. */
+  function shiftRegularOvertimeMinutes(schedMins, recordedMins) {
+    var sched = roundToNearest15Minutes(schedMins);
+    var rec = roundToNearest15Minutes(recordedMins);
+    var regMins = Math.min(rec, sched);
+    var otMins = Math.max(0, rec - sched);
+    return { regMins: regMins, otMins: otMins, totalMins: regMins + otMins, schedRounded: sched, recRounded: rec };
+  }
+
+  function payFromRegOtMinutes(emp, regMins, otMins) {
+    var rate = employeeHourlyRate(emp);
+    if (rate == null) {
+      return { regPay: null, otPay: null, totalPay: null };
+    }
+    var regPay = (regMins / 60) * rate;
+    var otPay = (otMins / 60) * rate * OT_RATE_MULTIPLIER;
+    return { regPay: regPay, otPay: otPay, totalPay: regPay + otPay };
+  }
 
   function decimalHoursFromMinutes(mins) {
     var h = mins / 60;
@@ -97,37 +121,6 @@
     return '$' + amount.toFixed(2);
   }
 
-  function splitRegularAndOvertimeMinutes(paidMins) {
-    var total = Math.max(0, Math.round(paidMins));
-    var regMins = Math.min(total, OT_WEEKLY_MINUTES);
-    var otMins = Math.max(0, total - OT_WEEKLY_MINUTES);
-    return { regMins: regMins, otMins: otMins, totalMins: regMins + otMins };
-  }
-
-  function weekPayBreakdown(emp, paidMins) {
-    var split = splitRegularAndOvertimeMinutes(paidMins);
-    var rate = employeeHourlyRate(emp);
-    if (rate == null) {
-      return {
-        regMins: split.regMins,
-        otMins: split.otMins,
-        totalMins: split.totalMins,
-        regPay: null,
-        otPay: null,
-        totalPay: null,
-      };
-    }
-    var regPay = (split.regMins / 60) * rate;
-    var otPay = (split.otMins / 60) * rate * OT_RATE_MULTIPLIER;
-    return {
-      regMins: split.regMins,
-      otMins: split.otMins,
-      totalMins: split.totalMins,
-      regPay: regPay,
-      otPay: otPay,
-      totalPay: regPay + otPay,
-    };
-  }
 
   function statusSortRank(status) {
     if (status === 'OK') return 0;
@@ -138,21 +131,131 @@
 
   function buildRosterRowData(emp) {
     var agg = aggregateEmployeeWeek(emp);
-    var pay = weekPayBreakdown(emp, agg.paidMins);
     return {
       emp: emp,
       name: d().employeeDisplayName(emp),
       role: d().STAFF_TYPE_LABELS[emp.staffType] || emp.staffType || '',
       schedMins: agg.schedMins,
-      regMins: pay.regMins,
-      otMins: pay.otMins,
-      totalMins: pay.totalMins,
-      regPay: pay.regPay,
-      otPay: pay.otPay,
-      totalPay: pay.totalPay,
+      regMins: agg.regMins,
+      otMins: agg.otMins,
+      totalMins: agg.totalMins,
+      regPay: agg.regPay,
+      otPay: agg.otPay,
+      totalPay: agg.totalPay,
       status: agg.status,
       statusRank: statusSortRank(agg.status),
     };
+  }
+
+  function buildShiftDetailRow(emp, row) {
+    var s = row.shift;
+    var schedMins = scheduledPaidMinutes(s);
+    var entry = findEntryForShift(emp.id, s.id, row.iso);
+    var recordedMins = entry ? recordedPaidMinutes(entry) : 0;
+    var split = shiftRegularOvertimeMinutes(schedMins, recordedMins);
+    var pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
+    var st = shiftStatusLabel(s, entry);
+    return {
+      emp: emp,
+      name: d().employeeDisplayName(emp),
+      role: d().STAFF_TYPE_LABELS[emp.staffType] || emp.staffType || '',
+      dateIso: row.iso,
+      dayLabel: s.day,
+      shiftLabel: s.timeLabel || d().redPokeShiftTimeLabel(s.start, s.end),
+      location: s.restaurantName || '',
+      schedMins: schedMins,
+      recordedMins: recordedMins,
+      regMins: split.regMins,
+      otMins: split.otMins,
+      totalMins: split.totalMins,
+      regPay: pay.regPay,
+      otPay: pay.otPay,
+      totalPay: pay.totalPay,
+      status: st,
+      shiftId: s.id,
+    };
+  }
+
+  function buildAllShiftDetailRows(emps) {
+    var out = [];
+    emps.forEach(function (emp) {
+      buildShiftsForEmployeeInWeek(emp).forEach(function (row) {
+        out.push(buildShiftDetailRow(emp, row));
+      });
+    });
+    out.sort(function (a, b) {
+      var n = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      if (n !== 0) return n;
+      if (a.dateIso !== b.dateIso) return String(a.dateIso).localeCompare(String(b.dateIso));
+      return String(a.shiftLabel).localeCompare(String(b.shiftLabel));
+    });
+    return out;
+  }
+
+  function computeRosterTotals(rows) {
+    var t = {
+      schedMins: 0,
+      regMins: 0,
+      otMins: 0,
+      totalMins: 0,
+      regPay: 0,
+      otPay: 0,
+      totalPay: 0,
+      hasPay: true,
+      headcount: rows.length,
+    };
+    rows.forEach(function (r) {
+      t.schedMins += r.schedMins;
+      t.regMins += r.regMins;
+      t.otMins += r.otMins;
+      t.totalMins += r.totalMins;
+      if (r.regPay == null || r.otPay == null || r.totalPay == null) {
+        t.hasPay = false;
+      } else {
+        t.regPay += r.regPay;
+        t.otPay += r.otPay;
+        t.totalPay += r.totalPay;
+      }
+    });
+    return t;
+  }
+
+  function renderGrandTotalsHtml(totals) {
+    var payReg = totals.hasPay ? formatPayAmount(totals.regPay) : '—';
+    var payOt = totals.hasPay ? formatPayAmount(totals.otPay) : '—';
+    var payTotal = totals.hasPay ? formatPayAmount(totals.totalPay) : '—';
+    return (
+      '<section class="timecards-grand-totals" aria-label="Pay week grand totals">' +
+      '<h3 class="timecards-grand-totals-title">Grand totals</h3>' +
+      '<p class="timecards-grand-totals-meta">' +
+      d().escapeHtml(String(totals.headcount)) +
+      ' employees</p>' +
+      '<div class="timecards-grand-totals-grid">' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">Scheduled</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(decimalHoursFromMinutes(totals.schedMins) + 'h') +
+      '</span></div>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">Regular</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(decimalHoursFromMinutes(totals.regMins) + 'h') +
+      '</span><span class="timecards-total-pay">' +
+      d().escapeHtml(payReg) +
+      '</span></div>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">Overtime</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(decimalHoursFromMinutes(totals.otMins) + 'h') +
+      '</span><span class="timecards-total-pay">' +
+      d().escapeHtml(payOt) +
+      '</span></div>' +
+      '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">Total</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(decimalHoursFromMinutes(totals.totalMins) + 'h') +
+      '</span><span class="timecards-total-pay">' +
+      d().escapeHtml(payTotal) +
+      '</span></div>' +
+      '</div>' +
+      '</section>'
+    );
   }
 
   function compareRosterRows(a, b, col, dir) {
@@ -239,6 +342,19 @@
     return val.toFixed(2);
   }
 
+  function downloadCsvFile(fileBase, suffix, lines) {
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fileBase + suffix + '.csv';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function downloadRosterSpreadsheet() {
     if (!rosterCache || !rosterCache.rows.length) return;
     var rows = sortedRosterRows(rosterCache.rows);
@@ -276,16 +392,74 @@
           .join(',')
       );
     });
-    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = rosterCache.fileBase + '.csv';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    var totals = computeRosterTotals(rows);
+    if (totals.hasPay) {
+      lines.push(
+        [
+          'GRAND TOTAL',
+          '',
+          decimalHoursFromMinutes(totals.schedMins),
+          decimalHoursFromMinutes(totals.regMins),
+          payCsv(totals.regPay),
+          decimalHoursFromMinutes(totals.otMins),
+          payCsv(totals.otPay),
+          decimalHoursFromMinutes(totals.totalMins),
+          payCsv(totals.totalPay),
+          '',
+          '',
+        ]
+          .map(csvEscape)
+          .join(',')
+      );
+    }
+    downloadCsvFile(rosterCache.fileBase, '-summary', lines);
+  }
+
+  function downloadShiftDetailSpreadsheet() {
+    if (!rosterCache || !rosterCache.shiftRows.length) return;
+    var header = [
+      'Name',
+      'Role',
+      'Date',
+      'Day',
+      'Shift',
+      'Location',
+      'Scheduled (hrs)',
+      'Recorded (hrs)',
+      'Regular (hrs)',
+      'Overtime (hrs)',
+      'Regular pay',
+      'Overtime pay',
+      'Total pay',
+      'Status',
+      'Hourly rate',
+    ];
+    var lines = [header.map(csvEscape).join(',')];
+    rosterCache.shiftRows.forEach(function (row) {
+      var rate = employeeHourlyRate(row.emp);
+      lines.push(
+        [
+          row.name,
+          row.role,
+          row.dateIso,
+          row.dayLabel,
+          row.shiftLabel,
+          row.location,
+          decimalHoursFromMinutes(row.schedMins),
+          row.recordedMins ? decimalHoursFromMinutes(row.recordedMins) : '',
+          decimalHoursFromMinutes(row.regMins),
+          decimalHoursFromMinutes(row.otMins),
+          payCsv(row.regPay),
+          payCsv(row.otPay),
+          payCsv(row.totalPay),
+          row.status,
+          rate != null ? rate.toFixed(2) : '',
+        ]
+          .map(csvEscape)
+          .join(',')
+      );
+    });
+    downloadCsvFile(rosterCache.fileBase, '-shifts', lines);
   }
 
   function wireRosterTable(wrap) {
@@ -308,11 +482,18 @@
         paintRosterTable(wrap);
       });
     });
-    var dlBtn = wrap.querySelector('[data-timecards-download]');
-    if (dlBtn) {
-      dlBtn.addEventListener('click', function (ev) {
+    var dlSummary = wrap.querySelector('[data-timecards-download-summary]');
+    if (dlSummary) {
+      dlSummary.addEventListener('click', function (ev) {
         ev.stopPropagation();
         downloadRosterSpreadsheet();
+      });
+    }
+    var dlShifts = wrap.querySelector('[data-timecards-download-shifts]');
+    if (dlShifts) {
+      dlShifts.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        downloadShiftDetailSpreadsheet();
       });
     }
   }
@@ -320,14 +501,18 @@
   function paintRosterTable(wrap) {
     if (!rosterCache) return;
     var sorted = sortedRosterRows(rosterCache.rows);
+    var totals = computeRosterTotals(sorted);
     var body = sorted.map(renderRosterRowHtml).join('');
     wrap.innerHTML =
       '<div class="timecards-roster-toolbar">' +
       '<p class="timecards-week-label"><strong>Pay week:</strong> ' +
       d().escapeHtml(rosterCache.weekLabel) +
       '</p>' +
-      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download>Download CSV</button>' +
-      '</div>' +
+      '<div class="timecards-download-group">' +
+      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-summary>Summary CSV</button>' +
+      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-shifts>Shifts CSV</button>' +
+      '</div></div>' +
+      renderGrandTotalsHtml(totals) +
       '<div class="timecards-table-wrap"><table class="timecards-table timecards-table--roster">' +
       '<thead><tr>' +
       rosterSortHeader('name', 'Name') +
@@ -453,11 +638,29 @@
     );
   }
 
+  function formatTimecardsLoadError(reason) {
+    if (reason === 'no_session') {
+      return 'Your sign-in expired. Tap Sign Out (top right), then sign in again as Martin Long or Ongi Management.';
+    }
+    if (reason === 'no_client') {
+      return 'Timecards are not available — cloud sign-in is not set up on this site.';
+    }
+    return reason || 'Could not load timecards.';
+  }
+
+  async function ensureSupabaseSession(sb) {
+    var sess = await sb.auth.getSession();
+    if (sess.data && sess.data.session) return sess.data.session;
+    var refreshed = await sb.auth.refreshSession();
+    if (refreshed.data && refreshed.data.session) return refreshed.data.session;
+    return null;
+  }
+
   async function loadWeekEntries() {
     if (!d().gmSupabaseReadyNow()) return { ok: false, reason: 'no_client' };
     var sb = global.gmSupabase;
-    var sess = await sb.auth.getSession();
-    if (!sess.data || !sess.data.session) return { ok: false, reason: 'no_session' };
+    var session = await ensureSupabaseSession(sb);
+    if (!session) return { ok: false, reason: 'no_session' };
     var bounds = payWeekBounds();
     var sel =
       'id, employee_id, clock_in_at, clock_out_at, break_minutes, schedule_shift_id, edit_history, updated_at';
@@ -483,14 +686,19 @@
   function aggregateEmployeeWeek(emp) {
     var shifts = buildShiftsForEmployeeInWeek(emp);
     var schedMins = 0;
-    var recMins = 0;
+    var regMins = 0;
+    var otMins = 0;
     var needsReview = false;
     var open = false;
     shifts.forEach(function (row) {
-      schedMins += scheduledPaidMinutes(row.shift);
+      var sched = scheduledPaidMinutes(row.shift);
+      schedMins += sched;
       var entry = findEntryForShift(emp.id, row.shift.id, row.iso);
       if (entry) {
-        recMins += recordedPaidMinutes(entry);
+        var rec = recordedPaidMinutes(entry);
+        var split = shiftRegularOvertimeMinutes(sched, rec);
+        regMins += split.regMins;
+        otMins += split.otMins;
         var st = shiftStatusLabel(row.shift, entry);
         if (st === 'Review') needsReview = true;
         if (st === 'Open') open = true;
@@ -498,10 +706,16 @@
         needsReview = true;
       }
     });
+    var pay = payFromRegOtMinutes(emp, regMins, otMins);
     var status = open ? 'Open' : needsReview ? 'Review' : 'OK';
     return {
       schedMins: schedMins,
-      paidMins: recMins,
+      regMins: regMins,
+      otMins: otMins,
+      totalMins: regMins + otMins,
+      regPay: pay.regPay,
+      otPay: pay.otPay,
+      totalPay: pay.totalPay,
       status: status,
       shiftCount: shifts.length,
     };
@@ -524,7 +738,9 @@
     loadWeekEntries().then(function (loadRes) {
       if (!loadRes.ok) {
         wrap.innerHTML =
-          '<p class="calendar-hint">' + d().escapeHtml(loadRes.reason || 'Could not load.') + '</p>';
+          '<p class="calendar-hint">' +
+          d().escapeHtml(formatTimecardsLoadError(loadRes.reason)) +
+          '</p>';
         return;
       }
       var bounds = payWeekBounds();
@@ -542,6 +758,7 @@
         weekLabel: weekLabel,
         fileBase: 'timecards-' + isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end),
         rows: emps.map(buildRosterRowData),
+        shiftRows: buildAllShiftDetailRows(emps),
       };
       paintRosterTable(wrap);
     });

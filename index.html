@@ -6,20 +6,7 @@
   <title>Red Poke Scheduler</title>
   <link rel="stylesheet" href="styles.css" />
   <script>
-    (function () {
-      try {
-        var s = sessionStorage.getItem('gm-callout-session');
-        if (s === 'manager' || s === '1') {
-          document.documentElement.classList.add('authed', 'manager-app');
-        } else if (s === 'employee') {
-          document.documentElement.classList.add('authed', 'employee-app');
-        } else if (s === 'timeclock') {
-          document.documentElement.classList.add('authed', 'timeclock-app');
-        }
-      } catch (e) {
-        /* ignore */
-      }
-    })();
+    /* Authed shell is applied in app.js after Supabase session is verified (avoids a blocking login overlay). */
   </script>
 </head>
 <body>
@@ -328,14 +315,45 @@
             <div class="schedule-toolbar-left">
               <span class="employee-filter-label" id="scheduleWeekChipsLabel">Week</span>
               <div
-                class="employee-filter-chips"
-                id="scheduleWeekChips"
+                class="schedule-week-nav"
+                id="scheduleWeekNav"
                 role="group"
                 aria-labelledby="scheduleWeekChipsLabel"
               >
-                <button type="button" class="filter-chip active" data-schedule-week="0">Week 1</button>
-                <button type="button" class="filter-chip" data-schedule-week="1">Week 2</button>
-                <button type="button" class="filter-chip" data-schedule-week="2">Week 3</button>
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-btn"
+                  id="scheduleWeekNavPrev"
+                  data-schedule-week-step="-1"
+                  aria-label="Previous week"
+                >
+                  ‹
+                </button>
+                <span class="schedule-week-nav-label" id="scheduleWeekNavLabel">—</span>
+                <span class="schedule-week-nav-badge" id="scheduleWeekNavBadge" hidden>This week</span>
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-btn"
+                  id="scheduleWeekNavNext"
+                  data-schedule-week-step="1"
+                  aria-label="Next week"
+                >
+                  ›
+                </button>
+                <select
+                  class="schedule-week-nav-jump"
+                  id="scheduleWeekNavJump"
+                  aria-label="Jump to week"
+                  title="Jump to week"
+                ></select>
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-today"
+                  id="scheduleWeekNavToday"
+                  hidden
+                >
+                  This week
+                </button>
               </div>
             </div>
             <div class="schedule-toolbar-actions">
@@ -697,7 +715,7 @@
 
       <!-- Screen 10: Timecards roster -->
       <section class="screen" id="screen-timecards" data-screen="10">
-        <p class="calendar-hint timecards-hint">Pay week totals use rounded clock times minus unpaid breaks.</p>
+        <p class="calendar-hint timecards-hint">Pay week totals use rounded punch times minus unpaid breaks.</p>
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
       </section>
 
@@ -1177,6 +1195,9 @@
         if (role === 'employee') root.classList.add('employee-app');
         else if (role === 'timeclock') root.classList.add('timeclock-app');
         else root.classList.add('manager-app');
+        if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+          window.gmCalloutSetLoginGateOpen(false);
+        }
       }
 
       async function finishPortalLogin(role, displayName) {

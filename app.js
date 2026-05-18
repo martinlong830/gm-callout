@@ -461,8 +461,15 @@
     return g;
   }
 
-  const SCHEDULE_VIEW_WEEK_COUNT = 3;
-  let scheduleCalendarWeekIndex = 0;
+  /** Weeks before the current Mon–Sun block shown in the schedule navigator. */
+  const SCHEDULE_PAST_WEEK_COUNT = 12;
+  /** Weeks after the current block (not counting the current week). */
+  const SCHEDULE_FUTURE_WEEK_COUNT = 2;
+  const SCHEDULE_VIEW_WEEK_COUNT = SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
+  /** Index in WEEK_META for this calendar week; also the replication template week. */
+  const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
+  const SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY = 'gm_schedule_past_weeks_migrated_v1';
+  let scheduleCalendarWeekIndex = SCHEDULE_TEMPLATE_WEEK_INDEX;
 
   function getThisMondayDate() {
     const now = new Date();
@@ -566,7 +573,16 @@
     return out;
   }
 
-  const WEEK_META = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getThisMondayDate());
+  function getScheduleAnchorMondayDate() {
+    var mon = getThisMondayDate();
+    return new Date(
+      mon.getFullYear(),
+      mon.getMonth(),
+      mon.getDate() - SCHEDULE_PAST_WEEK_COUNT * 7
+    );
+  }
+
+  const WEEK_META = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
   const ALL_WEEK_DAYS = WEEK_META.map(function (m) {
     return m.label;
   });
@@ -1042,7 +1058,9 @@
     var sched = row.schedule_assignments;
     if (scheduleAssignmentsStoreIsPopulated(sched)) {
       try {
-        var mergedSched = mergeAssignmentStoreWithShell(assignmentStoreShell(), sched);
+        var mergedSched = migrateScheduleAssignmentsForPastWeeks(
+          mergeAssignmentStoreWithShell(assignmentStoreShell(), sched)
+        ).store;
         if (isMgr) {
           restaurantsList.forEach(function (r) {
             if (!mergedSched[r.id]) mergedSched[r.id] = {};
@@ -1687,6 +1705,59 @@
     return true;
   }
 
+  function migrateScheduleAssignmentsForPastWeeks(store) {
+    if (!store || typeof store !== 'object') return { store: store, changed: false };
+    try {
+      if (localStorage.getItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY) === '1') {
+        return { store: store, changed: false };
+      }
+    } catch (eFlag) {
+      /* ignore */
+    }
+    var offset = SCHEDULE_PAST_WEEK_COUNT * 7;
+    var hasOldLayout = false;
+    var hasNewLayout = false;
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        if (p.globalDayIdx >= offset) hasNewLayout = true;
+        else hasOldLayout = true;
+      });
+    });
+    if (hasNewLayout || !hasOldLayout) {
+      try {
+        localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
+      } catch (eDone) {
+        /* ignore */
+      }
+      return { store: store, changed: false };
+    }
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      var next = {};
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) {
+          next[shiftId] = rs[shiftId];
+          return;
+        }
+        var newId = 'shift-' + (p.globalDayIdx + offset) + '-' + p.roleIdx + '-' + p.trIdx;
+        next[newId] = rs[shiftId];
+      });
+      store[r.id] = next;
+    });
+    try {
+      localStorage.setItem(SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY, '1');
+    } catch (eSaveFlag) {
+      /* ignore */
+    }
+    return { store: store, changed: true };
+  }
+
   function loadScheduleAssignmentsStore() {
     try {
       var v3raw = localStorage.getItem(SCHEDULE_ASSIGN_KEY);
@@ -1700,7 +1771,15 @@
               /* ignore */
             }
           }
-          return mergeAssignmentStoreWithShell(assignmentStoreShell(), p);
+          var mig = migrateScheduleAssignmentsForPastWeeks(p);
+          if (mig.changed) {
+            try {
+              localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mig.store));
+            } catch (eMigSave) {
+              /* ignore */
+            }
+          }
+          return mergeAssignmentStoreWithShell(assignmentStoreShell(), mig.store);
         }
       }
       var v2raw = localStorage.getItem(SCHEDULE_ASSIGN_LEGACY_V2);
@@ -2024,32 +2103,58 @@
     return true;
   }
 
-  function syncScheduleWeekChips() {
-    var wrap = document.getElementById('scheduleWeekChips');
-    if (!wrap) return;
-    wrap.querySelectorAll('[data-schedule-week]').forEach(function (b) {
-      var w = parseInt(b.getAttribute('data-schedule-week'), 10);
-      b.classList.toggle('active', w === scheduleCalendarWeekIndex);
-    });
+  function formatScheduleWeekRangeLabel(weekIndex) {
+    var i0 = weekIndex * 7;
+    var m0 = WEEK_META[i0];
+    var m6 = WEEK_META[Math.min(i0 + 6, WEEK_META.length - 1)];
+    if (!m0 || !m6) return 'Week';
+    var d0 = m0.label.replace(/^[A-Za-z]+\s+/, '');
+    var d6 = m6.label.replace(/^[A-Za-z]+\s+/, '');
+    return d0 + ' – ' + d6;
   }
 
-  function updateScheduleWeekChipLabels() {
-    var wrap = document.getElementById('scheduleWeekChips');
-    if (!wrap) return;
-    wrap.querySelectorAll('[data-schedule-week]').forEach(function (b) {
-      var w = parseInt(b.getAttribute('data-schedule-week'), 10);
-      if (isNaN(w) || w < 0) return;
-      var i0 = w * 7;
-      var m0 = WEEK_META[i0];
-      var m6 = WEEK_META[Math.min(i0 + 6, WEEK_META.length - 1)];
-      if (m0 && m6) {
-        var d0 = m0.label.replace(/^[A-Za-z]+\s+/, '');
-        var d6 = m6.label.replace(/^[A-Za-z]+\s+/, '');
-        b.textContent = 'Week ' + (w + 1) + ' (' + d0 + ' – ' + d6 + ')';
-      } else {
-        b.textContent = 'Week ' + (w + 1);
+  function setScheduleCalendarWeekIndex(w) {
+    if (isNaN(w) || w < 0 || w >= SCHEDULE_VIEW_WEEK_COUNT) return;
+    scheduleCalendarWeekIndex = w;
+    updateScheduleWeekNav();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+  }
+
+  function updateScheduleWeekNav() {
+    var label = document.getElementById('scheduleWeekNavLabel');
+    var badge = document.getElementById('scheduleWeekNavBadge');
+    var prev = document.getElementById('scheduleWeekNavPrev');
+    var next = document.getElementById('scheduleWeekNavNext');
+    var today = document.getElementById('scheduleWeekNavToday');
+    var jump = document.getElementById('scheduleWeekNavJump');
+    var isCurrent = scheduleCalendarWeekIndex === SCHEDULE_TEMPLATE_WEEK_INDEX;
+    if (label) label.textContent = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
+    if (badge) badge.hidden = !isCurrent;
+    if (prev) prev.disabled = scheduleCalendarWeekIndex <= 0;
+    if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (today) today.hidden = isCurrent;
+    if (jump && jump.value !== String(scheduleCalendarWeekIndex)) {
+      jump.value = String(scheduleCalendarWeekIndex);
+    }
+  }
+
+  function initScheduleWeekNav() {
+    var jump = document.getElementById('scheduleWeekNavJump');
+    if (jump && !jump.options.length) {
+      var html = '';
+      for (var w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+        var range = formatScheduleWeekRangeLabel(w);
+        var suffix = w === SCHEDULE_TEMPLATE_WEEK_INDEX ? ' (this week)' : '';
+        html += '<option value="' + w + '">' + range + suffix + '</option>';
       }
-    });
+      jump.innerHTML = html;
+      jump.addEventListener('change', function () {
+        var wi = parseInt(jump.value, 10);
+        if (!isNaN(wi)) setScheduleCalendarWeekIndex(wi);
+      });
+    }
+    updateScheduleWeekNav();
   }
 
   /** Assignment value: `['Name']` legacy, or `{ workers, break?, hours?, timeLabel? }` from FOH sheet. */
@@ -2081,15 +2186,17 @@
     return JSON.parse(JSON.stringify(normalizeScheduleAssignment(val)));
   }
 
-  /** Week 2+ uses same Mon–Sun pattern as week 1 (shift-0..6 → shift-7..13, etc.). */
+  /** Future weeks inherit the current week's Mon–Sun pattern when not overridden. */
   function lookupScheduleAssignment(stored, shiftId) {
     if (stored[shiftId] != null) {
       return normalizeScheduleAssignment(stored[shiftId]);
     }
     var p = parseShiftIdParts(shiftId);
-    if (!p || p.globalDayIdx < 7) return null;
+    if (!p) return null;
+    var tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+    if (p.globalDayIdx < tplStart + 7) return null;
     var dayInWeek = p.globalDayIdx % 7;
-    var templateId = 'shift-' + dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
+    var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
     if (stored[templateId] == null) return null;
     return normalizeScheduleAssignment(stored[templateId]);
   }
@@ -2097,22 +2204,24 @@
   function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount) {
     weekCount = weekCount || SCHEDULE_VIEW_WEEK_COUNT;
     if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+    var tplStart = tpl * 7;
     var changed = false;
     Object.keys(restAssignments).forEach(function (shiftId) {
       var p = parseShiftIdParts(shiftId);
       if (!p) return;
-      if (p.globalDayIdx >= 7 && p.globalDayIdx < weekCount * 7) {
+      if (p.globalDayIdx >= tplStart + 7 && p.globalDayIdx < weekCount * 7) {
         delete restAssignments[shiftId];
         changed = true;
       }
     });
-    for (var w = 1; w < weekCount; w += 1) {
+    for (var w = tpl + 1; w < weekCount; w += 1) {
       var weekStart = w * 7;
       for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
         for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
           var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role);
           for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
-            var templateId = 'shift-' + dayInWeek + '-' + roleIdx + '-' + trIdx;
+            var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
             var targetId = 'shift-' + (weekStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
             if (restAssignments[templateId] == null) continue;
             restAssignments[targetId] = cloneScheduleAssignment(restAssignments[templateId]);
@@ -3232,7 +3341,7 @@
       num === 1 || num === 4 || num === 5 || num === 8 || num === 9 || num === 10;
     if (num === 1) {
       updateRestaurantSwitcherUI();
-      syncScheduleWeekChips();
+      updateScheduleWeekNav();
       populateScheduleTemplateSelect();
     }
     if (num === 5) {
@@ -4732,15 +4841,14 @@
   var screenScheduleEl = document.getElementById('screen-schedule');
   if (screenScheduleEl) {
     screenScheduleEl.addEventListener('click', function (e) {
-      var wb = e.target.closest('[data-schedule-week]');
-      if (wb) {
-        var w = parseInt(wb.getAttribute('data-schedule-week'), 10);
-        if (!isNaN(w) && w >= 0 && w < SCHEDULE_VIEW_WEEK_COUNT) {
-          scheduleCalendarWeekIndex = w;
-          syncScheduleWeekChips();
-          renderCalendar();
-          if (scheduleBody) renderSchedule();
-        }
+      var stepBtn = e.target.closest('[data-schedule-week-step]');
+      if (stepBtn && !stepBtn.disabled) {
+        var step = parseInt(stepBtn.getAttribute('data-schedule-week-step'), 10);
+        if (!isNaN(step)) setScheduleCalendarWeekIndex(scheduleCalendarWeekIndex + step);
+        return;
+      }
+      if (e.target.id === 'scheduleWeekNavToday') {
+        setScheduleCalendarWeekIndex(SCHEDULE_TEMPLATE_WEEK_INDEX);
         return;
       }
       var rb = e.target.closest('[data-restaurant-id]');
@@ -5649,8 +5757,7 @@
   syncSlotLocationFilterChips();
   renderEmployeeRestaurantFilterChips();
   syncEmployeeFilterControls();
-  updateScheduleWeekChipLabels();
-  syncScheduleWeekChips();
+  initScheduleWeekNav();
   populateScheduleTemplateSelect();
   populateRemoveRestaurantSelect();
   renderEmployeeLocationSelectOptions('both');
@@ -5987,22 +6094,28 @@
     getAvailabilityWeekOptions: function () {
       var todayIso = localTodayISO();
       var out = [];
-      for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      for (var wi = SCHEDULE_TEMPLATE_WEEK_INDEX; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
         var startMeta = WEEK_META[wi * 7];
         if (!startMeta) continue;
         if (String(startMeta.iso) < String(todayIso)) continue;
-        var prefix = out.length === 0 ? 'This week' : out.length === 1 ? 'Next week' : 'Week ' + (out.length + 1);
+        var prefix =
+          wi === SCHEDULE_TEMPLATE_WEEK_INDEX
+            ? 'This week'
+            : wi === SCHEDULE_TEMPLATE_WEEK_INDEX + 1
+              ? 'Next week'
+              : 'Week ' + (wi - SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
         out.push({
           weekIndex: wi,
           startIso: startMeta.iso,
           label: prefix + ' (' + startMeta.label + ')',
         });
       }
-      if (!out.length && WEEK_META[0]) {
+      var fallbackMeta = WEEK_META[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
+      if (!out.length && fallbackMeta) {
         out.push({
-          weekIndex: 0,
-          startIso: WEEK_META[0].iso,
-          label: 'This week (' + WEEK_META[0].label + ')',
+          weekIndex: SCHEDULE_TEMPLATE_WEEK_INDEX,
+          startIso: fallbackMeta.iso,
+          label: 'This week (' + fallbackMeta.label + ')',
         });
       }
       return out;
@@ -6099,11 +6212,97 @@
     },
   };
 
+  function gmCalloutSetLoginGateOpen(isOpen) {
+    var loginEl = document.getElementById('login-screen');
+    if (!loginEl) return;
+    if (isOpen) {
+      loginEl.removeAttribute('aria-hidden');
+      loginEl.removeAttribute('inert');
+    } else {
+      loginEl.setAttribute('aria-hidden', 'true');
+      loginEl.setAttribute('inert', '');
+    }
+  }
+
+  function gmCalloutReturnToLogin() {
+    var root = document.documentElement;
+    if (!root.classList.contains('authed')) {
+      gmCalloutSetLoginGateOpen(true);
+      return;
+    }
+    if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
+      window.gmSupabase.auth.signOut().catch(function () {
+        /* ignore */
+      });
+    }
+    try {
+      sessionStorage.removeItem('gm-callout-session');
+      sessionStorage.removeItem('gm-callout-employee-display-name');
+    } catch (_eLogin) {
+      /* ignore */
+    }
+    root.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
+    gmCalloutSetLoginGateOpen(true);
+  }
+
+  async function gmCalloutRestoreAuthedShellFromSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+      gmCalloutReturnToLogin();
+      return false;
+    }
+    var session = await gmCalloutEnsureSupabaseSession(window.gmSupabase);
+    if (!session) {
+      gmCalloutReturnToLogin();
+      return false;
+    }
+    var profRes = await window.gmSupabase
+      .from('profiles')
+      .select('role, display_name')
+      .eq('id', session.user.id)
+      .maybeSingle();
+    var role = (profRes.data && profRes.data.role) || 'manager';
+    if (role !== 'manager' && role !== 'employee' && role !== 'timeclock') {
+      role = 'employee';
+    }
+    try {
+      sessionStorage.setItem('gm-callout-session', role);
+      if (role === 'employee' && profRes.data && profRes.data.display_name) {
+        sessionStorage.setItem(
+          'gm-callout-employee-display-name',
+          profRes.data.display_name
+        );
+      }
+    } catch (_eStore) {
+      /* ignore */
+    }
+    var root = document.documentElement;
+    root.classList.add('authed');
+    root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
+    if (role === 'employee') {
+      root.classList.add('employee-app');
+    } else if (role === 'timeclock') {
+      root.classList.add('timeclock-app');
+    } else {
+      root.classList.add('manager-app');
+    }
+    gmCalloutSetLoginGateOpen(false);
+    return true;
+  }
+
+  async function gmCalloutEnsureSupabaseSession(sb) {
+    var sessRes = await sb.auth.getSession();
+    if (sessRes.data && sessRes.data.session) return sessRes.data.session;
+    var refreshed = await sb.auth.refreshSession();
+    if (refreshed.data && refreshed.data.session) return refreshed.data.session;
+    return null;
+  }
+
   async function gmCalloutSupabaseHydrateFromRemote() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false, reason: 'disabled' };
     var sb = window.gmSupabase;
-    var sessRes = await sb.auth.getSession();
-    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var session = await gmCalloutEnsureSupabaseSession(sb);
+    if (!session) return { ok: false, reason: 'no_session' };
+    var sessRes = { data: { session: session } };
     var reqRes;
     var empRes;
     var profRes;
@@ -6261,6 +6460,7 @@
     return { ok: true };
   }
   window.gmCalloutSupabaseHydrateFromRemote = gmCalloutSupabaseHydrateFromRemote;
+  window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
   window.gmCalloutQueueEmployeeChatCloudSave = queueEmployeeChatCloudSave;
 
   function initGmCalloutTimecardsModule() {
@@ -6293,11 +6493,37 @@
   (async function () {
     if (GM_SUPABASE_DATA) {
       try {
-        await gmCalloutSupabaseHydrateFromRemote();
+        var restored = await gmCalloutRestoreAuthedShellFromSupabase();
+        if (restored) {
+          await gmCalloutSupabaseHydrateFromRemote();
+        }
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
       }
+    } else {
+      gmCalloutSetLoginGateOpen(true);
     }
     showScreen(1);
   })();
+
+  if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
+    window.gmSupabase.auth.onAuthStateChange(function (event, session) {
+      if (event === 'SIGNED_OUT') {
+        if (document.documentElement.classList.contains('authed')) {
+          gmCalloutReturnToLogin();
+        }
+        return;
+      }
+      if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED')) {
+        gmCalloutRestoreAuthedShellFromSupabase()
+          .then(function (ok) {
+            if (ok) return gmCalloutSupabaseHydrateFromRemote();
+            return null;
+          })
+          .catch(function (authErr) {
+            console.warn('gm-callout: auth shell', authErr);
+          });
+      }
+    });
+  }
 })();
