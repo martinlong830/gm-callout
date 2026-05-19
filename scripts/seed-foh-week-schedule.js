@@ -201,7 +201,19 @@ async function main() {
   console.log("Hard-refresh Schedule → This week.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  FOH_ROWS,
+  BARTENDER_DRAFT,
+  BARTENDER_ROLE_IDX,
+  RESTAURANT_ID,
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
+  buildAssignmentsFromRows,
+  clearWeekBartenderAssignments,
+};

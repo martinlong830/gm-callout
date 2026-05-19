@@ -7,6 +7,7 @@
 
   var deps = null;
   var weekEntries = [];
+  var timecardSchema = { breakMinutes: false, scheduleShiftId: false, editHistory: false };
   var timecardState = { employeeId: null, shiftId: null, shiftRow: null, entryId: null };
   var rosterCache = null;
   var rosterSort = { col: 'name', dir: 'asc' };
@@ -17,11 +18,11 @@
     'scheduled',
     'regular',
     'overtime',
-    'total',
     'vl',
     'sl',
     'soh',
     'sohPay',
+    'total',
     'status',
   ];
 
@@ -74,9 +75,18 @@
     return 0;
   }
 
-  function recordedPaidMinutes(entry) {
+  function shiftStartForRow(shiftRow) {
+    if (!shiftRow || !shiftRow.iso || !shiftRow.shift) return null;
+    return d().scheduledShiftStartAt(shiftRow.iso, shiftRow.shift.start);
+  }
+
+  function recordedPaidMinutes(entry, shiftRowOpt) {
     if (!entry) return 0;
-    var gross = d().punchShiftRoundedMinutes(entry.clock_in_at, entry.clock_out_at);
+    var gross = d().punchShiftRoundedMinutes(
+      entry.clock_in_at,
+      entry.clock_out_at,
+      shiftRowOpt ? shiftStartForRow(shiftRowOpt) : null
+    );
     var br = entry.break_minutes != null ? Number(entry.break_minutes) : 0;
     return Math.max(0, gross - (Number.isNaN(br) ? 0 : br));
   }
@@ -131,6 +141,33 @@
     if (!emp || emp.hourlyRate == null || Number.isNaN(Number(emp.hourlyRate))) return null;
     var r = Number(emp.hourlyRate);
     return r >= 0 ? r : null;
+  }
+
+  function leavePayFromHours(emp, hours) {
+    var h = Number(hours);
+    if (!h || h <= 0) return 0;
+    var rate = employeeHourlyRate(emp);
+    if (rate == null) return null;
+    return h * rate;
+  }
+
+  function rosterGrandTotalPay(row) {
+    if (row.regPay == null && row.totalMins > 0) return null;
+    if (row.otPay == null && row.otMins > 0) return null;
+    if (row.vlPay == null && row.vlHours > 0) return null;
+    if (row.slPay == null && row.slHours > 0) return null;
+    if (row.sohPay == null && row.sohCount > 0) return null;
+    return (
+      (row.regPay || 0) +
+      (row.otPay || 0) +
+      (row.vlPay || 0) +
+      (row.slPay || 0) +
+      (row.sohPay || 0)
+    );
+  }
+
+  function rosterGrandTotalMinutes(row) {
+    return row.totalMins + Math.round((row.vlHours || 0) * 60) + Math.round((row.slHours || 0) * 60);
   }
 
   function formatPayAmount(amount) {
@@ -405,7 +442,7 @@
     var agg = aggregateEmployeeWeek(emp);
     var extras = getEmployeeWeekExtras(emp);
     var soh = computeSpreadOfHours(emp);
-    return {
+    var row = {
       emp: emp,
       name: d().employeeDisplayName(emp),
       deptRank: rosterDeptRank(emp),
@@ -419,6 +456,8 @@
       totalPay: agg.totalPay,
       vlHours: extras.vl,
       slHours: extras.sl,
+      vlPay: leavePayFromHours(emp, extras.vl),
+      slPay: leavePayFromHours(emp, extras.sl),
       sohCount: soh.count,
       sohDates: soh.dates,
       sohDatesLabel: formatSoHDatesList(soh.dates),
@@ -426,16 +465,17 @@
       status: agg.status,
       statusRank: statusSortRank(agg.status),
     };
+    row.grandTotalPay = rosterGrandTotalPay(row);
+    return row;
   }
 
   function buildShiftDetailRow(emp, row) {
     var s = row.shift;
     var schedMins = scheduledPaidMinutes(s);
-    var entry = findEntryForShift(emp.id, s.id, row.iso);
-    var recordedMins = entry ? recordedPaidMinutes(entry) : 0;
+    var recordedMins = dailyRecordedMinutesForEmployee(emp, row.iso);
     var split = shiftRegularOvertimeMinutes(schedMins, recordedMins);
     var pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
-    var st = shiftStatusLabel(s, entry);
+    var st = shiftStatusLabelForDay(s, emp, row.iso);
     return {
       emp: emp,
       name: d().employeeDisplayName(emp),
@@ -485,10 +525,14 @@
       totalPay: 0,
       vlHours: 0,
       slHours: 0,
+      vlPay: 0,
+      slPay: 0,
       sohCount: 0,
       sohPay: 0,
+      grandTotalPay: 0,
       hasPay: true,
       hasSohPay: true,
+      hasGrandTotal: true,
       headcount: rows.length,
     };
     rows.forEach(function (r) {
@@ -506,8 +550,14 @@
         t.otPay += r.otPay;
         t.totalPay += r.totalPay;
       }
+      if (r.vlPay == null && r.vlHours > 0) t.hasGrandTotal = false;
+      else t.vlPay += r.vlPay || 0;
+      if (r.slPay == null && r.slHours > 0) t.hasGrandTotal = false;
+      else t.slPay += r.slPay || 0;
       if (r.sohPay == null) t.hasSohPay = false;
       else t.sohPay += r.sohPay;
+      if (r.grandTotalPay == null) t.hasGrandTotal = false;
+      else t.grandTotalPay += r.grandTotalPay;
     });
     return t;
   }
@@ -515,7 +565,9 @@
   function renderGrandTotalsHtml(totals) {
     var payReg = totals.hasPay ? formatPayAmount(totals.regPay) : '—';
     var payOt = totals.hasPay ? formatPayAmount(totals.otPay) : '—';
-    var payTotal = totals.hasPay ? formatPayAmount(totals.totalPay) : '—';
+    var payTotal = totals.hasGrandTotal ? formatPayAmount(totals.grandTotalPay) : '—';
+    var allPaidMins =
+      totals.totalMins + Math.round(totals.vlHours * 60) + Math.round(totals.slHours * 60);
     return (
       '<section class="timecards-grand-totals" aria-label="Pay week grand totals">' +
       '<h3 class="timecards-grand-totals-title">Grand totals</h3>' +
@@ -539,21 +591,27 @@
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(payOt) +
       '</span></div>' +
-      '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">Total</span>' +
-      '<span class="timecards-total-value">' +
-      d().escapeHtml(decimalHoursFromMinutes(totals.totalMins) + 'h') +
-      '</span><span class="timecards-total-pay">' +
-      d().escapeHtml(payTotal) +
-      '</span></div>' +
       '<div class="timecards-total-card"><span class="timecards-total-label">VL / SL</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(totals.vlHours * 60) + 'h / ' + decimalHoursFromMinutes(totals.slHours * 60) + 'h') +
+      '</span><span class="timecards-total-pay">' +
+      d().escapeHtml(
+        totals.hasGrandTotal
+          ? formatPayAmount(totals.vlPay) + ' / ' + formatPayAmount(totals.slPay)
+          : '—'
+      ) +
       '</span></div>' +
       '<div class="timecards-total-card"><span class="timecards-total-label">SoH</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(String(totals.sohCount)) +
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(totals.hasSohPay ? formatPayAmount(totals.sohPay) : '—') +
+      '</span></div>' +
+      '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">Total</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(decimalHoursFromMinutes(allPaidMins) + 'h') +
+      '</span><span class="timecards-total-pay">' +
+      d().escapeHtml(payTotal) +
       '</span></div>' +
       '</div>' +
       '</section>'
@@ -568,7 +626,7 @@
     else if (col === 'scheduled') cmp = a.schedMins - b.schedMins;
     else if (col === 'regular') cmp = a.regMins - b.regMins;
     else if (col === 'overtime') cmp = a.otMins - b.otMins;
-    else if (col === 'total') cmp = a.totalMins - b.totalMins;
+    else if (col === 'total') cmp = (a.grandTotalPay || 0) - (b.grandTotalPay || 0);
     else if (col === 'vl') cmp = a.vlHours - b.vlHours;
     else if (col === 'sl') cmp = a.slHours - b.slHours;
     else if (col === 'soh') cmp = a.sohCount - b.sohCount;
@@ -638,7 +696,6 @@
       'h</td>' +
       rosterHoursCell(row.regMins, row.regPay) +
       rosterHoursCell(row.otMins, row.otPay) +
-      rosterHoursCell(row.totalMins, row.totalPay) +
       rosterLeaveHoursCell(row.vlHours) +
       rosterLeaveHoursCell(row.slHours) +
       '<td class="timecards-num">' +
@@ -650,6 +707,7 @@
       '<td class="timecards-num">' +
       d().escapeHtml(row.sohPay != null ? formatPayAmount(row.sohPay) : '—') +
       '</td>' +
+      rosterHoursCell(rosterGrandTotalMinutes(row), row.grandTotalPay) +
       '<td><span class="timecards-status ' +
       statusClass(row.status) +
       '">' +
@@ -694,13 +752,14 @@
       'Regular pay',
       'Overtime (hrs)',
       'Overtime pay',
-      'Total (hrs)',
-      'Total pay',
       'VL (hrs)',
+      'VL pay',
       'SL (hrs)',
+      'SL pay',
       'SoH count',
       'SoH dates',
       'SoH pay',
+      'Total pay',
       'Status',
       'Hourly rate',
     ];
@@ -716,13 +775,14 @@
           payCsv(row.regPay),
           decimalHoursFromMinutes(row.otMins),
           payCsv(row.otPay),
-          decimalHoursFromMinutes(row.totalMins),
-          payCsv(row.totalPay),
           decimalHoursFromMinutes(row.vlHours * 60),
+          payCsv(row.vlPay),
           decimalHoursFromMinutes(row.slHours * 60),
+          payCsv(row.slPay),
           String(row.sohCount),
           row.sohDatesLabel,
           payCsv(row.sohPay),
+          payCsv(row.grandTotalPay),
           row.status,
           rate != null ? rate.toFixed(2) : '',
         ]
@@ -741,13 +801,14 @@
           payCsv(totals.regPay),
           decimalHoursFromMinutes(totals.otMins),
           payCsv(totals.otPay),
-          decimalHoursFromMinutes(totals.totalMins),
-          payCsv(totals.totalPay),
           decimalHoursFromMinutes(totals.vlHours * 60),
+          payCsv(totals.hasGrandTotal ? totals.vlPay : null),
           decimalHoursFromMinutes(totals.slHours * 60),
+          payCsv(totals.hasGrandTotal ? totals.slPay : null),
           String(totals.sohCount),
           '',
           payCsv(totals.hasSohPay ? totals.sohPay : null),
+          payCsv(totals.hasGrandTotal ? totals.grandTotalPay : null),
           '',
           '',
         ]
@@ -870,12 +931,12 @@
       rosterSortHeader('scheduled', 'Scheduled') +
       rosterSortHeader('regular', 'Regular') +
       rosterSortHeader('overtime', 'Overtime') +
-      rosterSortHeader('total', 'Total') +
       rosterSortHeader('vl', 'VL') +
       rosterSortHeader('sl', 'SL') +
       rosterSortHeader('soh', 'SoH') +
       '<th scope="col">SoH dates</th>' +
       rosterSortHeader('sohPay', 'SoH pay') +
+      rosterSortHeader('total', 'Total') +
       rosterSortHeader('status', 'Status') +
       '</tr></thead><tbody>' +
       body +
@@ -925,11 +986,11 @@
     return dt.toISOString();
   }
 
-  function shiftStatusLabel(shift, entry) {
+  function shiftStatusLabel(shift, entry, shiftRowOpt) {
     if (!entry) return 'No punch';
-    if (!entry.clock_out_at) return 'Open';
+    if (isEntryOpen(entry)) return 'Open';
     var sched = scheduledPaidMinutes(shift);
-    var rec = recordedPaidMinutes(entry);
+    var rec = recordedPaidMinutes(entry, shiftRowOpt);
     if (Math.abs(sched - rec) <= 15) return 'OK';
     return 'Review';
   }
@@ -975,22 +1036,214 @@
       });
   }
 
+  function isEntryOpen(entry) {
+    return !!(entry && (entry.clock_out_at == null || entry.clock_out_at === ''));
+  }
+
+  function punchDayIso(entry) {
+    if (!entry || !entry.clock_in_at) return '';
+    try {
+      return isoFromDate(new Date(entry.clock_in_at));
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function findOpenEntryForEmployee(empId) {
+    return (
+      weekEntries.find(function (e) {
+        return e.employee_id === empId && isEntryOpen(e);
+      }) || null
+    );
+  }
+
+  /** All punch rows for one calendar day (clock-in order). */
+  function findEntriesForDay(empId, shiftIso) {
+    if (!shiftIso) return [];
+    return weekEntries
+      .filter(function (e) {
+        return e.employee_id === empId && punchDayIso(e) === shiftIso;
+      })
+      .sort(function (a, b) {
+        return String(a.clock_in_at).localeCompare(String(b.clock_in_at));
+      });
+  }
+
+  function formatPunchClock(iso) {
+    if (!iso) return '—';
+    try {
+      var dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return '—';
+      if (d().formatRoundedClockTime) {
+        return d().formatRoundedClockTime(dt);
+      }
+      return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch (_e) {
+      return '—';
+    }
+  }
+
+  var HISTORY_FIELD_LABELS = {
+    clock_in_at: 'Clock in',
+    clock_out_at: 'Clock out',
+    break_minutes: 'Break',
+  };
+
+  function formatHistoryWhen(iso) {
+    if (!iso) return '';
+    try {
+      var dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return '';
+      return dt.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function formatHistoryValue(key, val) {
+    if (val == null || val === '') return '—';
+    if (key === 'clock_in_at' || key === 'clock_out_at') {
+      return formatPunchClock(val);
+    }
+    if (key === 'break_minutes') {
+      var n = Number(val);
+      if (Number.isNaN(n)) return String(val);
+      return n + ' min';
+    }
+    return String(val);
+  }
+
+  function formatHistoryChangeLine(key, change) {
+    if (!change || typeof change !== 'object') return '';
+    var label = HISTORY_FIELD_LABELS[key] || String(key).replace(/_/g, ' ');
+    var from = formatHistoryValue(key, change.from);
+    var to = formatHistoryValue(key, change.to);
+    if (from === '—' && to !== '—') {
+      return label + ' set to ' + to;
+    }
+    if (from !== '—' && to === '—') {
+      return label + ' cleared (was ' + from + ')';
+    }
+    if (from === to) {
+      return label + ': ' + from;
+    }
+    return label + ': ' + from + ' → ' + to;
+  }
+
+  function renderEditHistoryHtml(history) {
+    if (!Array.isArray(history) || !history.length) {
+      return '<li class="timecards-history-item timecards-empty">No edits for this punch yet.</li>';
+    }
+    return history
+      .slice()
+      .reverse()
+      .map(function (h) {
+        var when = formatHistoryWhen(h.at);
+        var lines = [];
+        if (h.changes && typeof h.changes === 'object') {
+          Object.keys(h.changes).forEach(function (k) {
+            var line = formatHistoryChangeLine(k, h.changes[k]);
+            if (line) lines.push(line);
+          });
+        }
+        var changesHtml = lines.length
+          ? '<ul class="timecards-history-changes">' +
+            lines
+              .map(function (line) {
+                return '<li>' + d().escapeHtml(line) + '</li>';
+              })
+              .join('') +
+            '</ul>'
+          : '<p class="timecards-history-summary">Updated</p>';
+        return (
+          '<li class="timecards-history-item">' +
+          (when
+            ? '<span class="timecards-history-when">' + d().escapeHtml(when) + '</span>'
+            : '') +
+          changesHtml +
+          '</li>'
+        );
+      })
+      .join('');
+  }
+
+  function shiftStatusLabelForDay(shift, emp, shiftIso) {
+    var entries = findEntriesForDay(emp.id, shiftIso);
+    var todayIso = isoFromDate(new Date());
+    if (!entries.length) {
+      return shiftIso > todayIso ? 'No punch' : 'No punch';
+    }
+    if (entries.some(function (e) {
+      return isEntryOpen(e);
+    })) {
+      return 'Open';
+    }
+    var sched = scheduledPaidMinutes(shift);
+    var rec = dailyRecordedMinutesForEmployee(emp, shiftIso);
+    if (Math.abs(sched - rec) <= 15) return 'OK';
+    return 'Review';
+  }
+
+  /** Match punch to a specific scheduled shift row (list / status). Never reuse one open punch for every shift. */
   function findEntryForShift(empId, shiftId, shiftIso) {
     var linked = weekEntries.filter(function (e) {
       return e.employee_id === empId && e.schedule_shift_id === shiftId;
     });
-    if (linked.length) return linked[0];
-    return (
-      weekEntries.find(function (e) {
-        if (e.employee_id !== empId || !e.clock_in_at) return false;
-        try {
-          var day = isoFromDate(new Date(e.clock_in_at));
-          return day === shiftIso;
-        } catch (_e) {
-          return false;
-        }
-      }) || null
-    );
+    if (linked.length) {
+      var closedLinked = linked.filter(function (e) {
+        return !isEntryOpen(e);
+      });
+      if (closedLinked.length) {
+        closedLinked.sort(function (a, b) {
+          return String(b.clock_in_at).localeCompare(String(a.clock_in_at));
+        });
+        return closedLinked[0];
+      }
+      return linked[linked.length - 1];
+    }
+    var onDay = weekEntries.filter(function (e) {
+      return e.employee_id === empId && punchDayIso(e) === shiftIso;
+    });
+    if (onDay.length) {
+      onDay.sort(function (a, b) {
+        return String(b.clock_in_at).localeCompare(String(a.clock_in_at));
+      });
+      return onDay[0];
+    }
+    return null;
+  }
+
+  /** Resolve punch for edit/save (prefer open punch for this employee when ending a shift). */
+  function findEntryForSave(empId, shiftId, shiftIso) {
+    var forShift = findEntryForShift(empId, shiftId, shiftIso);
+    var open = findOpenEntryForEmployee(empId);
+    if (open) {
+      if (!forShift || forShift.id === open.id) return open;
+      if (punchDayIso(open) === shiftIso) return open;
+    }
+    return forShift || open;
+  }
+
+  function mergeWeekEntriesById(primary, extra) {
+    var byId = {};
+    (primary || []).forEach(function (e) {
+      if (e && e.id) byId[e.id] = e;
+    });
+    (extra || []).forEach(function (e) {
+      if (e && e.id && !byId[e.id]) byId[e.id] = e;
+    });
+    return Object.keys(byId)
+      .map(function (k) {
+        return byId[k];
+      })
+      .sort(function (a, b) {
+        return String(a.clock_in_at).localeCompare(String(b.clock_in_at));
+      });
   }
 
   function formatTimecardsLoadError(reason) {
@@ -1035,6 +1288,27 @@
     }
     if (res.error) return { ok: false, reason: res.error.message };
     weekEntries = res.data || [];
+    timecardSchema.breakMinutes = !!(
+      weekEntries.length && weekEntries[0].break_minutes !== undefined
+    );
+    timecardSchema.scheduleShiftId = !!(
+      weekEntries.length && weekEntries[0].schedule_shift_id !== undefined
+    );
+    timecardSchema.editHistory = !!(
+      weekEntries.length && weekEntries[0].edit_history !== undefined
+    );
+    var openSel = sel;
+    if (!timecardSchema.breakMinutes) {
+      openSel = 'id, employee_id, clock_in_at, clock_out_at, updated_at';
+    }
+    var openRes = await sb
+      .from('time_clock_entries')
+      .select(openSel)
+      .is('clock_out_at', null)
+      .lt('clock_in_at', bounds.end.toISOString());
+    if (!openRes.error && openRes.data && openRes.data.length) {
+      weekEntries = mergeWeekEntriesById(weekEntries, openRes.data);
+    }
     return { ok: true };
   }
 
@@ -1048,13 +1322,13 @@
     shifts.forEach(function (row) {
       var sched = scheduledPaidMinutes(row.shift);
       schedMins += sched;
-      var entry = findEntryForShift(emp.id, row.shift.id, row.iso);
-      if (entry) {
-        var rec = recordedPaidMinutes(entry);
+      var dayEntries = findEntriesForDay(emp.id, row.iso);
+      if (dayEntries.length) {
+        var rec = dailyRecordedMinutesForEmployee(emp, row.iso);
         var split = shiftRegularOvertimeMinutes(sched, rec);
         regMins += split.regMins;
         otMins += split.otMins;
-        var st = shiftStatusLabel(row.shift, entry);
+        var st = shiftStatusLabelForDay(row.shift, emp, row.iso);
         if (st === 'Review') needsReview = true;
         if (st === 'Open') open = true;
       } else if (row.iso <= isoFromDate(new Date())) {
@@ -1186,13 +1460,14 @@
     tbody.innerHTML = rows
       .map(function (row) {
         var s = row.shift;
-        var entry = findEntryForShift(emp.id, s.id, row.iso);
+        var dayEntries = findEntriesForDay(emp.id, row.iso);
         var schedH = decimalHoursFromMinutes(scheduledPaidMinutes(s)) + 'h';
-        var recH = entry
-          ? decimalHoursFromMinutes(recordedPaidMinutes(entry)) + 'h'
-          : '—';
-        var st = shiftStatusLabel(s, entry);
         var dayMins = dailyRecordedMinutesForEmployee(emp, row.iso);
+        var recH = dayMins ? decimalHoursFromMinutes(roundToNearest5Minutes(dayMins)) + 'h' : '—';
+        if (dayEntries.length > 1) {
+          recH += ' · ' + dayEntries.length + ' punches';
+        }
+        var st = shiftStatusLabelForDay(s, emp, row.iso);
         var dayRounded = roundToNearest5Minutes(dayMins);
         var sohDay = isSoHDateForEmployee(emp, row.iso);
         var when =
@@ -1240,22 +1515,73 @@
     });
   }
 
+  function pickDefaultEntryIdForDay(dayEntries) {
+    if (!dayEntries || !dayEntries.length) return null;
+    var open = dayEntries.filter(function (e) {
+      return isEntryOpen(e);
+    });
+    if (open.length) return open[open.length - 1].id;
+    return dayEntries[dayEntries.length - 1].id;
+  }
+
+  function entryById(entryId) {
+    if (!entryId) return null;
+    return (
+      weekEntries.find(function (e) {
+        return e.id === entryId;
+      }) || null
+    );
+  }
+
   function openShift(emp, shiftRow) {
     timecardState.employeeId = emp.id;
     timecardState.shiftId = shiftRow.shift.id;
     timecardState.shiftRow = shiftRow;
-    var entry = findEntryForShift(emp.id, shiftRow.shift.id, shiftRow.iso);
-    timecardState.entryId = entry ? entry.id : null;
+    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso);
+    timecardState.entryId = pickDefaultEntryIdForDay(dayEntries);
     var s = shiftRow.shift;
     d().setTimecardTitle(
       12,
       s.day + ' · ' + (s.timeLabel || d().redPokeShiftTimeLabel(s.start, s.end))
     );
-    renderShiftDetail(emp, shiftRow, entry);
+    renderShiftDetail(emp, shiftRow);
     d().showScreen(12);
   }
 
-  function renderShiftDetail(emp, shiftRow, entry) {
+  function loadPunchIntoForm(entry, shiftRow, schedBreak) {
+    var inEl = document.getElementById('tcClockIn');
+    var outEl = document.getElementById('tcClockOut');
+    var brEl = document.getElementById('tcBreakMin');
+    var idEl = document.getElementById('tcEditingEntryId');
+    timecardState.entryId = entry && entry.id ? entry.id : null;
+    if (idEl) idEl.value = timecardState.entryId || '';
+    if (inEl) {
+      inEl.value = entry && entry.clock_in_at ? dateToDatetimeLocalValue(entry.clock_in_at) : '';
+    }
+    if (outEl) {
+      outEl.value = entry && entry.clock_out_at ? dateToDatetimeLocalValue(entry.clock_out_at) : '';
+    }
+    if (brEl) {
+      brEl.value =
+        entry && entry.break_minutes != null
+          ? String(entry.break_minutes)
+          : String(schedBreak || 0);
+    }
+    var isOpen = isEntryOpen(entry);
+    var endNowBtn = document.getElementById('tcEndShiftNow');
+    if (endNowBtn) endNowBtn.hidden = !isOpen;
+    var formTitle = document.getElementById('timecardsEditPunchTitle');
+    if (formTitle) {
+      formTitle.textContent = entry
+        ? isOpen
+          ? 'Edit open punch'
+          : 'Edit punch'
+        : 'Add punch';
+    }
+    updateRecordedPreview();
+  }
+
+  function renderShiftDetail(emp, shiftRow) {
     var el = document.getElementById('timecardsShiftDetail');
     if (!el) return;
     var s = shiftRow.shift;
@@ -1266,40 +1592,46 @@
     var dayRounded = roundToNearest5Minutes(dayMins);
     var soh = computeSpreadOfHours(emp);
     var sohDay = isSoHDateForEmployee(emp, shiftRow.iso);
-    var inVal = entry && entry.clock_in_at ? dateToDatetimeLocalValue(entry.clock_in_at) : '';
-    var outVal = entry && entry.clock_out_at ? dateToDatetimeLocalValue(entry.clock_out_at) : '';
-    var breakVal =
-      entry && entry.break_minutes != null ? String(entry.break_minutes) : String(schedBreak);
-    var history = (entry && entry.edit_history) || [];
+    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso);
+    var editingEntry = entryById(timecardState.entryId);
+    var history = (editingEntry && editingEntry.edit_history) || [];
     if (!Array.isArray(history)) history = [];
-    var histHtml = history.length
-      ? history
-          .slice()
-          .reverse()
-          .map(function (h) {
-            var when = h.at
-              ? new Date(h.at).toLocaleString(undefined, {
-                  dateStyle: 'short',
-                  timeStyle: 'short',
-                })
+    var histHtml = renderEditHistoryHtml(history);
+
+    var punchListHtml = dayEntries.length
+      ? dayEntries
+          .map(function (punch, idx) {
+            var paid = recordedPaidMinutes(punch, shiftRow);
+            var active = punch.id === timecardState.entryId;
+            var openTag = isEntryOpen(punch)
+              ? ' <span class="timecards-punch-open-tag">Open</span>'
               : '';
-            var parts = [];
-            if (h.changes && typeof h.changes === 'object') {
-              Object.keys(h.changes).forEach(function (k) {
-                var c = h.changes[k];
-                parts.push(k + ': ' + (c.from || '—') + ' → ' + (c.to || '—'));
-              });
-            }
             return (
-              '<li class="timecards-history-item"><span class="timecards-history-when">' +
-              d().escapeHtml(when) +
+              '<li class="timecards-punch-item' +
+              (active ? ' timecards-punch-item--active' : '') +
+              '">' +
+              '<button type="button" class="timecards-punch-select" data-timecard-punch-id="' +
+              d().escapeHtml(punch.id) +
+              '">' +
+              '<span class="timecards-punch-num">#' +
+              (idx + 1) +
               '</span> ' +
-              d().escapeHtml(parts.join(' · ') || 'Updated') +
-              '</li>'
+              '<span class="timecards-punch-times">' +
+              d().escapeHtml(formatPunchClock(punch.clock_in_at)) +
+              ' – ' +
+              d().escapeHtml(
+                isEntryOpen(punch) ? 'still in' : formatPunchClock(punch.clock_out_at)
+              ) +
+              '</span>' +
+              openTag +
+              '<span class="timecards-punch-paid">' +
+              d().escapeHtml(decimalHoursFromMinutes(paid) + 'h paid') +
+              '</span>' +
+              '</button></li>'
             );
           })
           .join('')
-      : '<li class="timecards-history-item timecards-empty">No edits yet.</li>';
+      : '<li class="timecards-punch-item timecards-empty">No punches recorded this day yet.</li>';
 
     el.innerHTML =
       '<div class="timecards-detail-grid">' +
@@ -1344,23 +1676,31 @@
       d().escapeHtml(soh.hasRate ? formatPayAmount(soh.pay) : '—') +
       '</dd></div>' +
       '</dl></section>' +
-      '<section class="timecards-detail-card">' +
-      '<h3 class="emp-form-subtitle">Recorded</h3>' +
-      '<form id="timecardsShiftForm" class="timecards-edit-form">' +
+      '<section class="timecards-detail-card timecards-detail-card--punches">' +
+      '<h3 class="emp-form-subtitle">Punches this day</h3>' +
+      '<p class="calendar-hint">One scheduled shift per day. Multiple clock-in/out pairs are summed for pay.</p>' +
+      '<ul class="timecards-punch-list" id="timecardsPunchList">' +
+      punchListHtml +
+      '</ul>' +
+      '<p class="timecards-day-total"><strong>Day total:</strong> ' +
+      d().escapeHtml(dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—') +
+      (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '') +
+      '</p>' +
+      '<h3 class="emp-form-subtitle" id="timecardsEditPunchTitle">Edit punch</h3>' +
+      '<form id="timecardsShiftForm" class="timecards-edit-form" novalidate>' +
+      '<input type="hidden" id="tcEditingEntryId" value="" />' +
       '<label class="form-field form-field-block"><span class="form-label">Clock in</span>' +
-      '<input type="datetime-local" id="tcClockIn" class="timecards-input" value="' +
-      d().escapeHtml(inVal) +
-      '" /></label>' +
+      '<input type="datetime-local" id="tcClockIn" class="timecards-input" /></label>' +
       '<label class="form-field form-field-block"><span class="form-label">Clock out</span>' +
-      '<input type="datetime-local" id="tcClockOut" class="timecards-input" value="' +
-      d().escapeHtml(outVal) +
-      '" /></label>' +
+      '<input type="datetime-local" id="tcClockOut" class="timecards-input" /></label>' +
       '<label class="form-field form-field-block"><span class="form-label">Break (minutes, unpaid)</span>' +
-      '<input type="number" id="tcBreakMin" class="timecards-input" min="0" step="5" value="' +
-      d().escapeHtml(breakVal) +
-      '" /></label>' +
+      '<input type="number" id="tcBreakMin" class="timecards-input" min="0" step="5" value="0" /></label>' +
+      '<p class="calendar-hint" id="timecardsPunchFormHint">Closed punches: early clock-in moves to shift start; other times round to 5 minutes.</p>' +
+      '<button type="button" class="btn btn-secondary btn-block" id="tcEndShiftNow">End punch now</button>' +
       '<p class="calendar-hint" id="timecardsRecordedPreview"></p>' +
-      '<button type="submit" class="btn btn-primary btn-block">Save timecard</button>' +
+      '<p class="calendar-hint" id="timecardsSaveStatus" hidden></p>' +
+      '<button type="submit" class="btn btn-primary btn-block" id="tcSaveTimecardBtn">Save punch</button>' +
+      '<button type="button" class="btn btn-secondary btn-block" id="tcAddPunchBtn">Add another punch</button>' +
       '</form></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">Edit history</h3>' +
@@ -1368,17 +1708,51 @@
       histHtml +
       '</ul></section></div>';
 
-    updateRecordedPreview();
+    loadPunchIntoForm(editingEntry, shiftRow, schedBreak);
     var form = document.getElementById('timecardsShiftForm');
     if (form) {
       form.onsubmit = function (ev) {
         ev.preventDefault();
-        saveShiftDetail(emp, shiftRow, entry);
+        void saveShiftDetail(emp, shiftRow);
       };
     }
     ['tcClockIn', 'tcClockOut', 'tcBreakMin'].forEach(function (id) {
       var inp = document.getElementById(id);
       if (inp) inp.addEventListener('input', updateRecordedPreview);
+    });
+    var endNowBtn = document.getElementById('tcEndShiftNow');
+    if (endNowBtn) {
+      endNowBtn.addEventListener('click', function () {
+        var outInp = document.getElementById('tcClockOut');
+        if (outInp) outInp.value = dateToDatetimeLocalValue(new Date());
+        updateRecordedPreview();
+      });
+    }
+    var addBtn = document.getElementById('tcAddPunchBtn');
+    if (addBtn) {
+      addBtn.addEventListener('click', function () {
+        timecardState.entryId = null;
+        loadPunchIntoForm(null, shiftRow, schedBreak);
+        el.querySelectorAll('.timecards-punch-item').forEach(function (li) {
+          li.classList.remove('timecards-punch-item--active');
+        });
+        setSaveStatus('', false);
+      });
+    }
+    el.querySelectorAll('[data-timecard-punch-id]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var pid = btn.getAttribute('data-timecard-punch-id');
+        timecardState.entryId = pid;
+        loadPunchIntoForm(entryById(pid), shiftRow, schedBreak);
+        el.querySelectorAll('.timecards-punch-item').forEach(function (li) {
+          var bid = li.querySelector('[data-timecard-punch-id]');
+          li.classList.toggle(
+            'timecards-punch-item--active',
+            bid && bid.getAttribute('data-timecard-punch-id') === pid
+          );
+        });
+        setSaveStatus('', false);
+      });
     });
     wireEmployeeExtrasInputs(el, emp);
   }
@@ -1394,7 +1768,7 @@
       return;
     }
     var fake = { clock_in_at: inIso, clock_out_at: outIso, break_minutes: br };
-    var paid = recordedPaidMinutes(fake);
+    var paid = recordedPaidMinutes(fake, timecardState.shiftRow);
     prev.textContent =
       'Paid time (rounded, after break): ' +
       decimalHoursFromMinutes(paid) +
@@ -1402,15 +1776,129 @@
       (!outIso ? ' · shift still open' : '');
   }
 
-  async function saveShiftDetail(emp, shiftRow, priorEntry) {
-    if (!d().gmSupabaseReadyNow()) return;
+  async function resolveOpenEntryId(sb, employeeId) {
+    var res = await sb
+      .from('time_clock_entries')
+      .select('id')
+      .eq('employee_id', employeeId)
+      .is('clock_out_at', null)
+      .order('clock_in_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (res.error || !res.data || !res.data.id) return null;
+    return res.data.id;
+  }
+
+  function buildTimeClockUpdatePayload(payload) {
+    var slim = {
+      clock_in_at: payload.clock_in_at,
+      clock_out_at: payload.clock_out_at,
+    };
+    if (timecardSchema.breakMinutes && payload.break_minutes != null) {
+      slim.break_minutes = payload.break_minutes;
+    }
+    if (timecardSchema.scheduleShiftId && payload.schedule_shift_id != null) {
+      slim.schedule_shift_id = payload.schedule_shift_id;
+    }
+    if (timecardSchema.editHistory && payload.edit_history != null) {
+      slim.edit_history = payload.edit_history;
+    }
+    return slim;
+  }
+
+  async function applyTimeClockUpdate(sb, entryId, payload) {
+    var up = await sb
+      .from('time_clock_entries')
+      .update(buildTimeClockUpdatePayload(payload))
+      .eq('id', entryId)
+      .select('id');
+    if (up.error && /edit_history|break_minutes|schedule_shift_id|column/i.test(up.error.message || '')) {
+      up = await sb
+        .from('time_clock_entries')
+        .update({
+          clock_in_at: payload.clock_in_at,
+          clock_out_at: payload.clock_out_at,
+        })
+        .eq('id', entryId)
+        .select('id');
+    }
+    if (up.error) return { ok: false, error: up.error };
+    if (up.data && up.data.length) return { ok: true };
+    return { ok: false, error: { message: 'No matching punch row in the database.' } };
+  }
+
+  function setSaveStatus(msg, isErr) {
+    var el = document.getElementById('timecardsSaveStatus');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.hidden = !msg;
+    el.classList.toggle('timecards-save-status--err', !!isErr);
+  }
+
+  async function saveShiftDetail(emp, shiftRow) {
+    if (!d().gmSupabaseReadyNow()) {
+      alert('Timecards need cloud sign-in. Sign out and sign in again as a manager.');
+      return;
+    }
     var sb = global.gmSupabase;
-    var inIso = datetimeLocalToIso(document.getElementById('tcClockIn').value);
-    var outIso = datetimeLocalToIso(document.getElementById('tcClockOut').value);
-    var br = parseInt(document.getElementById('tcBreakMin').value, 10) || 0;
+    var inEl = document.getElementById('tcClockIn');
+    var outEl = document.getElementById('tcClockOut');
+    var brEl = document.getElementById('tcBreakMin');
+    var saveBtn = document.getElementById('tcSaveTimecardBtn');
+    if (!inEl || !outEl || !brEl) {
+      alert('Timecard form did not load. Go back and open the shift again.');
+      return;
+    }
+    var inIso = datetimeLocalToIso(inEl.value);
+    var outIso = datetimeLocalToIso(outEl.value);
+    var br = parseInt(brEl.value, 10) || 0;
+    setSaveStatus('Saving…', false);
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+    await loadWeekEntries();
+    var editingId = timecardState.entryId;
+    var idEl = document.getElementById('tcEditingEntryId');
+    if (idEl && idEl.value) editingId = idEl.value;
+    var priorEntry = editingId ? entryById(editingId) : null;
+    var employeeUuid = (priorEntry && priorEntry.employee_id) || emp.id;
     if (!inIso) {
       alert('Clock in is required.');
       return;
+    }
+    var now = new Date();
+    var inDate = new Date(inIso);
+    if (Number.isNaN(inDate.getTime())) {
+      alert('Clock in time is invalid.');
+      return;
+    }
+    if (inDate.getTime() > now.getTime()) {
+      alert('Clock in cannot be in the future.');
+      return;
+    }
+    if (outIso) {
+      var outDate = new Date(outIso);
+      if (Number.isNaN(outDate.getTime())) {
+        alert('Clock out time is invalid.');
+        return;
+      }
+      if (outDate.getTime() > now.getTime()) {
+        alert('Clock out cannot be in the future.');
+        return;
+      }
+      if (outDate.getTime() < inDate.getTime()) {
+        alert('Clock out must be after clock in.');
+        return;
+      }
+      if (d().normalizePunchTimesForShift) {
+        var norm = d().normalizePunchTimesForShift(
+          inIso,
+          outIso,
+          shiftRow.iso,
+          shiftRow.shift.start
+        );
+        inIso = norm.clockInAt;
+        outIso = norm.clockOutAt;
+      }
     }
     var changes = {};
     var row = {
@@ -1420,39 +1908,138 @@
       break_minutes: br,
       schedule_shift_id: shiftRow.shift.id,
     };
+    var hist = [];
     if (priorEntry) {
-      row.id = priorEntry.id;
       if (priorEntry.clock_in_at !== inIso) {
         changes.clock_in_at = { from: priorEntry.clock_in_at, to: inIso };
       }
-      if (priorEntry.clock_out_at !== outIso) {
-        changes.clock_out_at = { from: priorEntry.clock_out_at, to: outIso };
+      var prevOut = priorEntry.clock_out_at || null;
+      if (prevOut !== outIso) {
+        changes.clock_out_at = { from: prevOut, to: outIso };
       }
-      if (Number(priorEntry.break_minutes) !== br) {
+      if (Number(priorEntry.break_minutes || 0) !== br) {
         changes.break_minutes = { from: priorEntry.break_minutes, to: br };
       }
-      var hist = Array.isArray(priorEntry.edit_history) ? priorEntry.edit_history.slice() : [];
-      if (Object.keys(changes).length) {
-        hist.push({ at: new Date().toISOString(), by: 'manager', changes: changes });
+      if (Array.isArray(priorEntry.edit_history)) {
+        hist = priorEntry.edit_history.slice();
+      } else if (typeof priorEntry.edit_history === 'string' && priorEntry.edit_history) {
+        try {
+          var parsedHist = JSON.parse(priorEntry.edit_history);
+          if (Array.isArray(parsedHist)) hist = parsedHist;
+        } catch (_histParse) {
+          /* ignore */
+        }
       }
-      row.edit_history = hist;
-      var up = await sb.from('time_clock_entries').update(row).eq('id', priorEntry.id).select('*').maybeSingle();
-      if (up.error) {
-        alert(up.error.message || 'Save failed.');
+    }
+    if (Object.keys(changes).length) {
+      hist.push({ at: new Date().toISOString(), by: 'manager', changes: changes });
+    }
+    row.edit_history = hist;
+
+    if (!editingId) {
+      var insRow = {
+        employee_id: row.employee_id,
+        clock_in_at: row.clock_in_at,
+        clock_out_at: row.clock_out_at,
+      };
+      if (timecardSchema.breakMinutes) insRow.break_minutes = row.break_minutes;
+      if (timecardSchema.scheduleShiftId) insRow.schedule_shift_id = row.schedule_shift_id;
+      if (timecardSchema.editHistory) insRow.edit_history = row.edit_history;
+      var insOnly = await sb.from('time_clock_entries').insert(insRow).select('id').maybeSingle();
+      if (insOnly.error) {
+        alert(insOnly.error.message || 'Save failed.');
+        setSaveStatus(insOnly.error.message || 'Save failed.', true);
         return;
       }
+      timecardState.entryId = insOnly.data && insOnly.data.id ? insOnly.data.id : null;
     } else {
-      row.edit_history = [];
-      var ins = await sb.from('time_clock_entries').insert(row).select('*').maybeSingle();
-      if (ins.error) {
-        alert(ins.error.message || 'Save failed.');
-        return;
+    var rpcArgs = {
+      p_entry_id: editingId,
+      p_employee_id: employeeUuid,
+      p_clock_in_at: inIso,
+      p_clock_out_at: outIso,
+    };
+    if (timecardSchema.breakMinutes) rpcArgs.p_break_minutes = br;
+    if (timecardSchema.scheduleShiftId) rpcArgs.p_schedule_shift_id = row.schedule_shift_id;
+    if (timecardSchema.editHistory) rpcArgs.p_edit_history = row.edit_history;
+    var rpcRes = await sb.rpc('manager_save_time_clock_entry', rpcArgs);
+
+    if (
+      rpcRes.error &&
+      /manager_save_time_clock_entry|schema cache|function/i.test(rpcRes.error.message || '')
+    ) {
+      if (priorEntry && priorEntry.id) {
+        var updatePayload = {
+          clock_in_at: row.clock_in_at,
+          clock_out_at: row.clock_out_at,
+          break_minutes: row.break_minutes,
+          schedule_shift_id: row.schedule_shift_id,
+          edit_history: row.edit_history,
+        };
+        var entryId = priorEntry.id;
+        if (!entryId) {
+          entryId = await resolveOpenEntryId(sb, employeeUuid);
+        }
+        if (!entryId) {
+          alert('Could not find this punch in the database. Refresh and try again.');
+          setSaveStatus('Punch not found.', true);
+          return;
+        }
+        var upRes = await applyTimeClockUpdate(sb, entryId, updatePayload);
+        if (!upRes.ok) {
+          var openId = await resolveOpenEntryId(sb, employeeUuid);
+          if (openId && openId !== entryId) {
+            upRes = await applyTimeClockUpdate(sb, openId, updatePayload);
+          }
+        }
+        if (!upRes.ok) {
+          alert((upRes.error && upRes.error.message) || 'Save failed.');
+          setSaveStatus((upRes.error && upRes.error.message) || 'Save failed.', true);
+          return;
+        }
+      } else {
+        var insRow = {
+          employee_id: row.employee_id,
+          clock_in_at: row.clock_in_at,
+          clock_out_at: row.clock_out_at,
+        };
+        if (timecardSchema.breakMinutes) insRow.break_minutes = row.break_minutes;
+        if (timecardSchema.scheduleShiftId) insRow.schedule_shift_id = row.schedule_shift_id;
+        if (timecardSchema.editHistory) insRow.edit_history = hist;
+        var ins = await sb.from('time_clock_entries').insert(insRow).select('id').maybeSingle();
+        if (ins.error) {
+          alert(ins.error.message || 'Save failed.');
+          setSaveStatus(ins.error.message || 'Save failed.', true);
+          return;
+        }
       }
-      priorEntry = ins.data;
+    } else if (rpcRes.error) {
+      alert(rpcRes.error.message || 'Save failed.');
+      setSaveStatus(rpcRes.error.message || 'Save failed.', true);
+      return;
+    } else if (!rpcRes.data || rpcRes.data.ok !== true) {
+      var rpcErr =
+        (rpcRes.data && rpcRes.data.error === 'unknown_employee'
+          ? 'Employee not found in cloud roster. Refresh Team, then try again.'
+          : null) ||
+        (rpcRes.data && rpcRes.data.error) ||
+        'Save failed.';
+      alert(String(rpcErr));
+      setSaveStatus(String(rpcErr), true);
+      return;
+    }
     }
     await loadWeekEntries();
+    setSaveStatus('Saved.', false);
     openShift(emp, shiftRow);
     renderEmployeeShifts(emp);
+    } catch (ex) {
+      var errMsg = (ex && ex.message) || 'Save failed.';
+      alert(errMsg);
+      setSaveStatus(errMsg, true);
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
   }
 
   function handleBack(fromScreen) {
@@ -1478,8 +2065,26 @@
     return false;
   }
 
+  function bindTimecardsBackButtons() {
+    var backToRoster = document.getElementById('timecardsBackToRoster');
+    if (backToRoster && !backToRoster.dataset.bound) {
+      backToRoster.dataset.bound = '1';
+      backToRoster.addEventListener('click', function () {
+        handleBack(11);
+      });
+    }
+    var backToShifts = document.getElementById('timecardsBackToShifts');
+    if (backToShifts && !backToShifts.dataset.bound) {
+      backToShifts.dataset.bound = '1';
+      backToShifts.addEventListener('click', function () {
+        handleBack(12);
+      });
+    }
+  }
+
   function init(dependencies) {
     deps = dependencies;
+    bindTimecardsBackButtons();
   }
 
   global.gmCalloutTimecards = {

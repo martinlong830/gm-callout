@@ -220,7 +220,7 @@
       <div id="timeclockLoginPanel" hidden>
         <p class="login-subtitle">Time clock device</p>
         <p class="login-hint">
-          Sign in with your <strong>device name</strong> and password (no email needed). Staff use their <strong>6-digit PIN</strong> on the next screen.
+          Sign in with your <strong>device name</strong> and password (no email needed). Staff use their <strong>4-digit PIN</strong> on the next screen.
         </p>
         <form id="timeclockLoginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
@@ -284,7 +284,7 @@
   <div class="app">
     <div class="app-top">
       <header class="header">
-        <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden></button>
+        <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden>←</button>
         <img
           class="header-logo"
           src="assets/red-poke-logo.png"
@@ -625,10 +625,23 @@
           <div class="form-field form-field-block" id="empClockPinBlock" hidden>
             <span class="form-label">Time clock PIN</span>
             <div class="emp-clock-pin-row">
-              <span class="emp-clock-pin-value" id="empClockPinDisplay">------</span>
-              <button type="button" class="btn btn-secondary" id="empRegeneratePinBtn">New PIN</button>
+              <span class="emp-clock-pin-value" id="empClockPinDisplay">----</span>
+              <button type="button" class="btn btn-secondary" id="empRegeneratePinBtn">Random PIN</button>
             </div>
-            <p class="calendar-hint">Share this 6-digit PIN with the employee for the shared time clock tablet.</p>
+            <div class="emp-clock-pin-row emp-clock-pin-row--set">
+              <input
+                type="text"
+                id="empClockPinInput"
+                class="emp-clock-pin-input"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                maxlength="4"
+                placeholder="Custom 4-digit PIN"
+                autocomplete="off"
+              />
+              <button type="button" class="btn btn-secondary" id="empSavePinBtn">Save PIN</button>
+            </div>
+            <p class="calendar-hint">Share this 4-digit PIN with the employee for the shared time clock tablet.</p>
           </div>
 
               <div id="empProfilePanel" class="emp-profile-extra" hidden>
@@ -715,12 +728,16 @@
 
       <!-- Screen 10: Timecards roster -->
       <section class="screen" id="screen-timecards" data-screen="10">
-        <p class="calendar-hint timecards-hint">Pay week totals use 5-min rounded punches minus breaks. SoH = 1 hr premium per day over 10h (5-min rounded). VL/SL come from approved time off (editable per employee). Roster order: FOH → BOH → Delivery.</p>
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
       </section>
 
       <!-- Screen 11: Employee timecard shifts -->
       <section class="screen" id="screen-timecards-employee" data-screen="11">
+        <div class="timecards-screen-nav">
+          <button type="button" class="timecards-back-btn" id="timecardsBackToRoster" aria-label="Back to timecards roster">
+            ← Back to timecards
+          </button>
+        </div>
         <p class="calendar-hint" id="timecardsEmployeeWeekLabel"></p>
         <div id="timecardsEmployeeSummary" class="timecards-employee-summary-mount"></div>
         <div class="timecards-table-wrap">
@@ -742,6 +759,11 @@
 
       <!-- Screen 12: Shift timecard detail -->
       <section class="screen" id="screen-timecards-shift" data-screen="12">
+        <div class="timecards-screen-nav">
+          <button type="button" class="timecards-back-btn" id="timecardsBackToShifts" aria-label="Back to employee shifts">
+            ← Back to shifts
+          </button>
+        </div>
         <div id="timecardsShiftDetail" class="timecards-shift-detail"></div>
       </section>
     </main>
@@ -758,9 +780,31 @@
     </div>
     <main class="main timeclock-main">
       <span class="timeclock-device-label" id="timeclockDeviceLabel"></span>
-      <p class="timeclock-intro">Enter your 6-digit PIN to clock in or out.</p>
-      <div class="timeclock-pin-display" id="timeclockPinDisplay" aria-live="polite">○○○○○○</div>
+      <div class="timeclock-mode-toggle" role="group" aria-label="Punch type">
+        <button type="button" class="timeclock-mode-btn timeclock-mode-btn--active" id="timeclockModeIn" data-tc-mode="in">
+          Clock in
+        </button>
+        <button type="button" class="timeclock-mode-btn" id="timeclockModeOut" data-tc-mode="out">Clock out</button>
+      </div>
+      <p class="timeclock-intro" id="timeclockIntro">Enter your 4-digit PIN, then confirm.</p>
+      <input
+        type="tel"
+        id="timeclockPinInput"
+        class="timeclock-pin-hidden-input"
+        inputmode="numeric"
+        pattern="[0-9]*"
+        maxlength="4"
+        autocomplete="off"
+        aria-label="PIN entry"
+      />
+      <div class="timeclock-pin-display" id="timeclockPinDisplay" aria-live="polite">○○○○</div>
       <p class="timeclock-status" id="timeclockStatus" hidden></p>
+      <div class="timeclock-confirm" id="timeclockConfirm" hidden>
+        <p class="timeclock-confirm-name" id="timeclockConfirmName"></p>
+        <p class="timeclock-confirm-hint" id="timeclockConfirmHint"></p>
+        <button type="button" class="btn btn-primary btn-block" id="timeclockConfirmBtn">Confirm</button>
+        <button type="button" class="btn btn-secondary btn-block" id="timeclockCancelBtn">Cancel</button>
+      </div>
       <div class="timeclock-pad" id="timeclockPinPad">
         <button type="button" class="timeclock-pad-btn" data-tc-digit="1">1</button>
         <button type="button" class="timeclock-pad-btn" data-tc-digit="2">2</button>

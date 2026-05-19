@@ -3605,6 +3605,197 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-variant-numeric: tabular-nums;
 }
 
+.emp-clock-pin-row--set {
+  margin-top: 10px;
+}
+
+.emp-clock-pin-input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeclock-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-width: 320px;
+  margin: 0 auto var(--space-block);
+}
+
+.timeclock-mode-btn {
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.timeclock-mode-btn--active {
+  border-color: var(--accent);
+  background: var(--accent-soft, #fef2f2);
+  color: var(--accent);
+}
+
+.timeclock-pin-hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.timeclock-confirm {
+  max-width: 320px;
+  margin: 0 auto var(--space-block);
+  text-align: center;
+}
+
+.timeclock-confirm-name {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.timeclock-confirm-hint {
+  margin: 0 0 var(--space-block);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.timecards-save-status--err {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.timecards-punch-list {
+  list-style: none;
+  margin: 0 0 var(--space-block);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.timecards-punch-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.timecards-punch-item:last-child {
+  border-bottom: none;
+}
+
+.timecards-punch-item--active {
+  background: var(--accent-soft, #fef2f2);
+}
+
+.timecards-punch-select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.timecards-punch-select:hover,
+.timecards-punch-select:focus-visible {
+  background: var(--hover-fill);
+  outline: none;
+}
+
+.timecards-punch-num {
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 1.5rem;
+}
+
+.timecards-punch-times {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.timecards-punch-open-tag {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #047857;
+}
+
+.timecards-punch-paid {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.timecards-day-total {
+  margin: 0 0 var(--space-block);
+  font-size: 0.95rem;
+}
+
+.timecards-detail-card--punches .timecards-edit-form {
+  margin-top: var(--space-tight);
+}
+
+.timecards-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timecards-history-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timecards-history-item:last-child {
+  border-bottom: none;
+}
+
+.timecards-history-item.timecards-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.timecards-history-when {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.timecards-history-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timecards-history-changes li {
+  font-size: 0.95rem;
+  line-height: 1.45;
+  padding: 2px 0;
+}
+
+.timecards-history-summary {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
 
 .timeclock-log-list {
   list-style: none;
@@ -3698,6 +3889,30 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 /* --- Manager Timecards --- */
+.timecards-screen-nav {
+  margin-bottom: var(--space-block);
+}
+
+.timecards-back-btn {
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.timecards-back-btn:hover,
+.timecards-back-btn:focus-visible {
+  background: var(--hover-fill);
+  outline: 1px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .timecards-hint {
   margin-bottom: 10px;
 }
@@ -3983,27 +4198,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font: inherit;
-}
-
-.timecards-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.timecards-history-item {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-.timecards-history-item:last-child {
-  border-bottom: none;
-}
-
-.timecards-history-when {
-  color: var(--text-muted);
 }
 
 .timecards-table--wide {

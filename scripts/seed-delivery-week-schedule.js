@@ -185,7 +185,18 @@ async function main() {
   console.log("Hard-refresh Schedule → Week 1.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  DELIVERY_ROWS,
+  SERVER_DRAFT,
+  SERVER_ROLE_IDX,
+  RESTAURANT_ID,
+  buildAssignmentsFromRows,
+  clearWeekServerAssignments,
+};

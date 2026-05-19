@@ -499,12 +499,53 @@
     return r.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
   }
 
-  function punchShiftRoundedMinutes(clockInAt, clockOutAt) {
+  function scheduledShiftStartAt(isoDate, startTime) {
+    if (!isoDate || !startTime) return null;
+    var parts = String(startTime).split(':');
+    var y = parseInt(String(isoDate).slice(0, 4), 10);
+    var mo = parseInt(String(isoDate).slice(5, 7), 10) - 1;
+    var da = parseInt(String(isoDate).slice(8, 10), 10);
+    if (Number.isNaN(y) || Number.isNaN(mo) || Number.isNaN(da)) return null;
+    var d = new Date(y, mo, da, parseInt(parts[0], 10) || 0, parseInt(parts[1], 10) || 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /** When a punch is closed: floor early clock-in to shift start, else 5-min round; round clock-out. */
+  function normalizePunchTimesForShift(clockInIso, clockOutIso, shiftIso, shiftStartTime) {
+    var out = { clockInAt: clockInIso, clockOutAt: clockOutIso };
+    if (!clockInIso || !clockOutIso) return out;
+    var start = scheduledShiftStartAt(shiftIso, shiftStartTime);
+    var inD = new Date(clockInIso);
+    if (Number.isNaN(inD.getTime())) return out;
+    var rin = roundDateToNearest5Minutes(inD);
+    if (rin && start && rin.getTime() < start.getTime()) {
+      out.clockInAt = start.toISOString();
+    } else if (rin) {
+      out.clockInAt = rin.toISOString();
+    }
+    var outD = new Date(clockOutIso);
+    if (!Number.isNaN(outD.getTime())) {
+      var rout = roundDateToNearest5Minutes(outD);
+      if (rout) out.clockOutAt = rout.toISOString();
+    }
+    return out;
+  }
+
+  function punchShiftRoundedMinutes(clockInAt, clockOutAt, shiftStartAtOpt) {
     var inD = clockInAt ? new Date(clockInAt) : null;
     if (!inD || Number.isNaN(inD.getTime())) return 0;
     var outD = clockOutAt ? new Date(clockOutAt) : new Date();
     if (Number.isNaN(outD.getTime())) outD = new Date();
     var rin = roundDateToNearest5Minutes(inD);
+    var shiftStart =
+      shiftStartAtOpt instanceof Date
+        ? shiftStartAtOpt
+        : shiftStartAtOpt
+          ? new Date(shiftStartAtOpt)
+          : null;
+    if (shiftStart && !Number.isNaN(shiftStart.getTime()) && rin && rin.getTime() < shiftStart.getTime()) {
+      rin = roundDateToNearest5Minutes(shiftStart);
+    }
     var rout = roundDateToNearest5Minutes(outD);
     if (!rin || !rout) return 0;
     return Math.max(0, Math.round((rout.getTime() - rin.getTime()) / 60000));
@@ -814,6 +855,32 @@
   }
 
   window.gmCalloutAssignEmployeeClockPin = assignClockPinRemote;
+
+  async function setEmployeeClockPinRemote(employeeId, pinInput) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !isUuidCloudId(employeeId)) {
+      return { ok: false, message: 'Cloud roster required to set a PIN.' };
+    }
+    var pin = String(pinInput || '').replace(/\D/g, '');
+    if (pin.length !== 6) {
+      return { ok: false, message: 'PIN must be exactly 4 digits.' };
+    }
+    var res = await window.gmSupabase.rpc('set_employee_clock_pin', {
+      p_employee_id: employeeId,
+      pin_input: pin,
+    });
+    if (res.error) {
+      return { ok: false, message: res.error.message || String(res.error) };
+    }
+    pin = res.data != null ? String(res.data) : pin;
+    var emp = employees.find(function (e) {
+      return e.id === employeeId;
+    });
+    if (emp) emp.clockPin = pin;
+    saveEmployees();
+    return { ok: true, pin: pin };
+  }
+
+  window.gmCalloutSetEmployeeClockPin = setEmployeeClockPinRemote;
 
   async function assignAllClockPinsRemote() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
@@ -2377,22 +2444,14 @@
     });
   }
 
-  /** Fuzzy match for roster names (schedule assignments, requests, callouts). */
-  function workerNamesMatch(a, b) {
-    var wc = String(a || '').trim().toLowerCase();
-    var target = String(b || '').trim().toLowerCase();
-    if (!wc || !target) return false;
-    if (wc === target) return true;
-    var wa = wc.split(/\s+/).filter(Boolean);
-    var ta = target.split(/\s+/).filter(Boolean);
-    if (!wa.length || !ta.length) return false;
-    if (wa[0] !== ta[0]) return false;
-    if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
-    var wl = wa[wa.length - 1].replace(/\.$/, '');
-    var tl = ta[ta.length - 1].replace(/\.$/, '');
-    if (wl === tl) return true;
-    if (wl.length && tl.length && wl[0] === tl[0]) return true;
-    return false;
+  function pushEmployeeScheduleAlias(emp, label) {
+    if (!emp || !label || label === 'Unassigned') return;
+    if (workerNamesMatch(label, employeeDisplayName(emp))) return;
+    if (!emp.meta || typeof emp.meta !== 'object') emp.meta = {};
+    if (!Array.isArray(emp.meta.scheduleAliases)) emp.meta.scheduleAliases = [];
+    if (emp.meta.scheduleAliases.indexOf(label) === -1) {
+      emp.meta.scheduleAliases.push(label);
+    }
   }
 
   function renameWorkerInScheduleAssignmentStore(oldName, newName) {
@@ -2421,6 +2480,24 @@
     });
     if (changed) saveScheduleAssignmentsStore(store);
     return changed;
+  }
+
+  /** Fuzzy match for roster names (schedule assignments, requests, callouts). */
+  function workerNamesMatch(a, b) {
+    var wc = String(a || '').trim().toLowerCase();
+    var target = String(b || '').trim().toLowerCase();
+    if (!wc || !target) return false;
+    if (wc === target) return true;
+    var wa = wc.split(/\s+/).filter(Boolean);
+    var ta = target.split(/\s+/).filter(Boolean);
+    if (!wa.length || !ta.length) return false;
+    if (wa[0] !== ta[0]) return false;
+    if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
+    var wl = wa[wa.length - 1].replace(/\.$/, '');
+    var tl = ta[ta.length - 1].replace(/\.$/, '');
+    if (wl === tl) return true;
+    if (wl.length && tl.length && wl[0] === tl[0]) return true;
+    return false;
   }
 
   function renameWorkerInStaffRequests(oldName, newName) {
@@ -2494,9 +2571,10 @@
     return changed;
   }
 
-  /** Keep schedule, requests, and callout logs in sync when a roster name changes. */
-  function propagateEmployeeRename(oldName, newName) {
+  /** Team renames update schedule cells that used the previous display name (exact/fuzzy), plus requests/callouts. */
+  function propagateEmployeeRename(oldName, newName, emp) {
     if (!oldName || !newName || workerNamesMatch(oldName, newName)) return;
+    if (emp) pushEmployeeScheduleAlias(emp, oldName);
     renameWorkerInScheduleAssignmentStore(oldName, newName);
     renameWorkerInStaffRequests(oldName, newName);
     renameWorkerInCalloutHistory(oldName, newName);
@@ -4352,7 +4430,7 @@
     }).length;
     generateAllPinsBtn.disabled = !missing;
     generateAllPinsBtn.title = missing
-      ? 'Assign a 6-digit PIN to each team member who does not have one yet'
+      ? 'Assign a 4-digit PIN to each team member who does not have one yet'
       : 'All cloud team members already have PINs';
   }
 
@@ -4777,6 +4855,8 @@
 
   const empClockPinBlock = document.getElementById('empClockPinBlock');
   const empClockPinDisplay = document.getElementById('empClockPinDisplay');
+  const empClockPinInput = document.getElementById('empClockPinInput');
+  const empSavePinBtn = document.getElementById('empSavePinBtn');
   const empRegeneratePinBtn = document.getElementById('empRegeneratePinBtn');
   const empHourlyRate = document.getElementById('empHourlyRate');
   const empProfilePanel = document.getElementById('empProfilePanel');
@@ -4972,8 +5052,9 @@
     }
     if (empClockPinDisplay) {
       empClockPinDisplay.textContent =
-        emp && emp.clockPin ? String(emp.clockPin) : '------';
+        emp && emp.clockPin ? String(emp.clockPin) : '----';
     }
+    if (empClockPinInput) empClockPinInput.value = '';
     if (empUsualRestaurant) {
       var urPref = emp && emp.usualRestaurant ? emp.usualRestaurant : 'both';
       renderEmployeeLocationSelectOptions(urPref);
@@ -5056,8 +5137,12 @@
         return String(name || '').toLowerCase().indexOf(q) !== -1;
       });
     }
+    /* Only list people on Team now; calendar may still show an older label until you edit that cell. */
     currentNames.forEach(function (mn) {
-      if (mn && pool.indexOf(mn) === -1) pool.push(mn);
+      var emp = employeeByDisplayName(mn);
+      if (!emp) return;
+      var canon = employeeDisplayName(emp);
+      if (canon && pool.indexOf(canon) === -1) pool.push(canon);
     });
     return pool;
   }
@@ -5707,6 +5792,29 @@
     });
   }
 
+  if (empSavePinBtn) {
+    empSavePinBtn.addEventListener('click', function () {
+      if (!editingEmployeeId || !empClockPinInput) return;
+      var pin = String(empClockPinInput.value || '').replace(/\D/g, '');
+      if (pin.length !== 6) {
+        window.alert('Enter a 4-digit PIN.');
+        return;
+      }
+      empSavePinBtn.disabled = true;
+      (async function () {
+        var res = await setEmployeeClockPinRemote(editingEmployeeId, pin);
+        empSavePinBtn.disabled = false;
+        if (!res.ok) {
+          window.alert(res.message || 'Could not save PIN.');
+          return;
+        }
+        if (empClockPinDisplay) empClockPinDisplay.textContent = res.pin || '----';
+        empClockPinInput.value = '';
+        renderEmployeeList();
+      })();
+    });
+  }
+
   if (empRegeneratePinBtn) {
     empRegeneratePinBtn.addEventListener('click', function () {
       if (!editingEmployeeId) return;
@@ -5718,7 +5826,8 @@
           window.alert(res.message || 'Could not assign PIN.');
           return;
         }
-        if (empClockPinDisplay) empClockPinDisplay.textContent = res.pin || '------';
+        if (empClockPinDisplay) empClockPinDisplay.textContent = res.pin || '----';
+        if (empClockPinInput) empClockPinInput.value = '';
         renderEmployeeList();
       })();
     });
@@ -5735,7 +5844,7 @@
       }
       if (
         !window.confirm(
-          'Assign a new 6-digit PIN to ' +
+          'Assign a new 4-digit PIN to ' +
             missing.length +
             ' team member' +
             (missing.length === 1 ? '' : 's') +
@@ -5822,14 +5931,14 @@
         employees.push(rec);
       }
       var newDisplayName = employeeDisplayName(rec);
-      if (previousDisplayName) {
-        propagateEmployeeRename(previousDisplayName, newDisplayName);
+      if (previousDisplayName && !workerNamesMatch(previousDisplayName, newDisplayName)) {
+        propagateEmployeeRename(previousDisplayName, newDisplayName, rec);
+        renderCalendar();
+        if (scheduleBody) renderSchedule();
       }
       editingEmployeeId = null;
       saveEmployees();
       rebuildEmployeeDerivedData();
-      renderCalendar();
-      if (scheduleBody) renderSchedule();
       renderEmployeeList();
       if (currentScreen === 8) renderRequestsList();
       if (currentScreen === 10 && window.gmCalloutTimecards) {
@@ -6662,6 +6771,10 @@
       WEEK_META: WEEK_META,
       getPayWeekBounds: getPayWeekBounds,
       punchShiftRoundedMinutes: punchShiftRoundedMinutes,
+      formatRoundedClockTime: formatRoundedClockTime,
+      scheduledShiftStartAt: scheduledShiftStartAt,
+      normalizePunchTimesForShift: normalizePunchTimesForShift,
+      roundDateToNearest5Minutes: roundDateToNearest5Minutes,
       formatDurationHoursMinutes: formatDurationHoursMinutes,
       redPokeShiftHoursDecimal: redPokeShiftHoursDecimal,
       redPokeShiftTimeLabel: redPokeShiftTimeLabel,
