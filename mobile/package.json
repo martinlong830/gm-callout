@@ -7,13 +7,20 @@
     "start:tunnel": "expo start --tunnel",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "build:ios": "eas build --platform ios --profile production",
+    "build:ios:preview": "eas build --platform ios --profile preview",
+    "submit:ios": "eas submit --platform ios --profile production --latest",
+    "credentials:ios": "eas credentials --platform ios",
+    "validate:store": "node scripts/validate-appstore.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/datetimepicker": "8.4.4",
     "@supabase/supabase-js": "^2.105.1",
     "expo": "~54.0.33",
+    "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.13",
     "expo-linking": "~8.0.12",
     "expo-router": "~6.0.23",

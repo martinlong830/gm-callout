@@ -325,6 +325,18 @@
   /** When true, roster + staff requests load/save via Supabase (see gmCalloutSupabaseHydrateFromRemote). */
   const GM_SUPABASE_DATA = typeof window !== 'undefined' && !!window.gmSupabaseEnabled;
 
+  function gmCalloutCurrentSessionRole() {
+    try {
+      return sessionStorage.getItem('gm-callout-session') || '';
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function gmCalloutIsTimeclockKiosk() {
+    return gmCalloutCurrentSessionRole() === 'timeclock';
+  }
+
   /** Single-store: Red Poke 598 9th Ave only (no second location in-app for now). */
   function defaultRestaurants() {
     return [{ id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' }];
@@ -644,9 +656,9 @@
   /** Front of House (Bartender) — matches FOH schedule sheet. */
   const TEAM_ROSTER_BARTENDER = [
     'MARK ONG',
-    'SIED SUMOG - OY',
-    'ANGELYN GELLA',
-    'JONG SARDUA',
+    'CHARLES JAKOB ZACANI',
+    'MAEVE WILLIAMS',
+    'JON ARELLANO',
     'EUGENE VILLARRUZ',
   ];
   const TEAM_ROSTER_KITCHEN = [
@@ -861,7 +873,7 @@
       return { ok: false, message: 'Cloud roster required to set a PIN.' };
     }
     var pin = String(pinInput || '').replace(/\D/g, '');
-    if (pin.length !== 6) {
+    if (pin.length !== 4) {
       return { ok: false, message: 'PIN must be exactly 4 digits.' };
     }
     var res = await window.gmSupabase.rpc('set_employee_clock_pin', {
@@ -2945,22 +2957,7 @@
     });
   }
 
-  let history = [
-    (function () {
-      const shift = findShiftByWeekdayKey('Sat', 'Bartender', '16:00', '22:00');
-      return shift
-        ? {
-            shift: shift,
-            status: 'pending',
-            acceptedBy: null,
-            notified: ['Mia K.', 'Noah J.', 'Rosa H.'],
-            noResponse: ['Mia K.', 'Noah J.', 'Rosa H.'],
-            contactMethod: 'call',
-            originalWorkers: (shift.workers || [shift.worker]).filter(Boolean),
-          }
-        : null;
-    })(),
-  ].filter(Boolean);
+  let history = [];
 
   function buildCalloutHistoryPayload() {
     return history
@@ -5048,7 +5045,9 @@
     if (empStaffType) empStaffType.value = emp ? emp.staffType : 'Kitchen';
     if (empPhone) empPhone.value = emp ? emp.phone || '' : '';
     if (empClockPinBlock) {
-      empClockPinBlock.hidden = !(GM_SUPABASE_DATA && editingEmployeeId);
+      empClockPinBlock.hidden = !(
+        GM_SUPABASE_DATA && editingEmployeeId && isUuidCloudId(editingEmployeeId)
+      );
     }
     if (empClockPinDisplay) {
       empClockPinDisplay.textContent =
@@ -5796,7 +5795,7 @@
     empSavePinBtn.addEventListener('click', function () {
       if (!editingEmployeeId || !empClockPinInput) return;
       var pin = String(empClockPinInput.value || '').replace(/\D/g, '');
-      if (pin.length !== 6) {
+      if (pin.length !== 4) {
         window.alert('Enter a 4-digit PIN.');
         return;
       }
@@ -6589,6 +6588,7 @@
 
   async function gmCalloutSupabaseHydrateFromRemote() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false, reason: 'disabled' };
+    if (gmCalloutIsTimeclockKiosk()) return { ok: true, skipped: 'timeclock' };
     var sb = window.gmSupabase;
     var session = await gmCalloutEnsureSupabaseSession(sb);
     if (!session) return { ok: false, reason: 'no_session' };
@@ -6794,7 +6794,7 @@
     if (GM_SUPABASE_DATA) {
       try {
         var restored = await gmCalloutRestoreAuthedShellFromSupabase();
-        if (restored) {
+        if (restored && !gmCalloutIsTimeclockKiosk()) {
           await gmCalloutSupabaseHydrateFromRemote();
         }
       } catch (hydrErr) {
@@ -6803,7 +6803,7 @@
     } else {
       gmCalloutSetLoginGateOpen(true);
     }
-    showScreen(1);
+    if (!gmCalloutIsTimeclockKiosk()) showScreen(1);
   })();
 
   if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
@@ -6817,8 +6817,14 @@
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED')) {
         gmCalloutRestoreAuthedShellFromSupabase()
           .then(function (ok) {
-            if (ok) return gmCalloutSupabaseHydrateFromRemote();
-            return null;
+            if (!ok) return null;
+            if (gmCalloutIsTimeclockKiosk()) {
+              if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+                window.gmCalloutTimeclockBootstrap();
+              }
+              return null;
+            }
+            return gmCalloutSupabaseHydrateFromRemote();
           })
           .catch(function (authErr) {
             console.warn('gm-callout: auth shell', authErr);

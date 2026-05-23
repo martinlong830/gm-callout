@@ -3621,8 +3621,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-  max-width: 320px;
+  max-width: 360px;
   margin: 0 auto var(--space-block);
+}
+
+.timeclock-mode-btn--break {
+  font-size: 0.9rem;
 }
 
 .timeclock-mode-btn {
@@ -3727,6 +3731,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-punch-times {
   flex: 1 1 auto;
   font-weight: 600;
+}
+
+.timecards-punch-break {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .timecards-punch-open-tag {
@@ -3976,6 +3989,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 }
 
+@media (min-width: 960px) {
+  .timecards-grand-totals-grid {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+
 .timecards-total-card {
   padding: 10px 12px;
   border-radius: var(--radius-sm);
@@ -3986,6 +4005,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-total-card--emph {
   background: #eff6ff;
   border-color: #bfdbfe;
+}
+
+.timecards-total-card--pay {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.timecards-total-card--pay .timecards-total-value {
+  color: #047857;
 }
 
 .timecards-total-label {
@@ -4010,6 +4038,38 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
+}
+
+.timecards-total-pay--emph {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.timecards-grand-totals-payroll {
+  margin: 0 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timecards-grand-totals-payroll-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.timecards-grand-totals-payroll-value {
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.timecards-summary-stat--pay .timecards-summary-value {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.timecards-pay-cell {
+  white-space: nowrap;
 }
 
 .timecards-sort-btn {
@@ -4200,8 +4260,30 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font: inherit;
 }
 
+.timecards-datetime-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timecards-input--date {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.timecards-input--time {
+  flex: 0 1 7rem;
+  min-width: 0;
+}
+
+.timecards-field-optional {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
 .timecards-table--wide {
-  min-width: 960px;
+  min-width: 1040px;
 }
 
 .timecards-extra-cell {

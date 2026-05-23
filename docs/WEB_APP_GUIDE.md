@@ -86,6 +86,7 @@ The wall tablet is not signed in as an employee.
 2. Sign in with name **`iPad`** and password **`redpoke`**.
 3. Leave the tablet on the punch screen. Staff only enter their **6-digit PIN** (see list at the end of this guide).
 4. First PIN entry of the day = **clock in**. Second entry = **clock out**.
+5. **Breaks:** tap **Start break** or **End break**, enter PIN, and confirm. Break times appear in Timecards for managers.
 
 ---
 

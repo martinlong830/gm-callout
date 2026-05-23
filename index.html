@@ -748,7 +748,10 @@
                 <th scope="col">Shift</th>
                 <th scope="col">Scheduled</th>
                 <th scope="col">Recorded</th>
+                <th scope="col">Break</th>
                 <th scope="col">Day total</th>
+                <th scope="col">Pay</th>
+                <th scope="col">Pay/hr</th>
                 <th scope="col">Status</th>
               </tr>
             </thead>
@@ -785,6 +788,12 @@
           Clock in
         </button>
         <button type="button" class="timeclock-mode-btn" id="timeclockModeOut" data-tc-mode="out">Clock out</button>
+        <button type="button" class="timeclock-mode-btn" id="timeclockModeBreakStart" data-tc-mode="break_start">
+          Start break
+        </button>
+        <button type="button" class="timeclock-mode-btn" id="timeclockModeBreakEnd" data-tc-mode="break_end">
+          End break
+        </button>
       </div>
       <p class="timeclock-intro" id="timeclockIntro">Enter your 4-digit PIN, then confirm.</p>
       <input

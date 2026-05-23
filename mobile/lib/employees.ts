@@ -7,6 +7,7 @@ export type EmployeeRow = {
   staffType: string;
   phone: string;
   usualRestaurant: string;
+  hourlyRate?: number;
   weeklyGrid: Record<string, unknown>;
   meta?: Record<string, unknown>;
 };
@@ -14,6 +15,10 @@ export type EmployeeRow = {
 export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | null {
   if (!row?.id) return null;
   const ur = (row.usual_restaurant as string) || 'rp-9';
+  let hourlyRate: number | undefined;
+  if (row.hourly_rate != null && !Number.isNaN(Number(row.hourly_rate))) {
+    hourlyRate = Math.round(Number(row.hourly_rate) * 100) / 100;
+  }
   return {
     id: String(row.id),
     authUserId: row.auth_user_id ? String(row.auth_user_id) : undefined,
@@ -23,6 +28,7 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     staffType: String(row.staff_type ?? 'Kitchen'),
     phone: String(row.phone ?? ''),
     usualRestaurant: ur === 'both' ? 'both' : ur,
+    hourlyRate,
     weeklyGrid: (row.weekly_grid as Record<string, unknown>) ?? {},
     meta: (row.meta as Record<string, unknown>) ?? {},
   };

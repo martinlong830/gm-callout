@@ -57,6 +57,16 @@ export default function ManagerLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="timecards"
+        options={{
+          title: 'Timecards',
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="time-outline" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

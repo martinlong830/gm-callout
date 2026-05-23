@@ -27,10 +27,76 @@
   var cancelBtn = document.getElementById('timeclockCancelBtn');
   var modeInBtn = document.getElementById('timeclockModeIn');
   var modeOutBtn = document.getElementById('timeclockModeOut');
+  var modeBreakStartBtn = document.getElementById('timeclockModeBreakStart');
+  var modeBreakEndBtn = document.getElementById('timeclockModeBreakEnd');
   var enterBlockEls = [];
+  var uiBound = false;
+  var focusBound = false;
+  var busySince = 0;
+  var watchdogTimer = null;
+  var RPC_TIMEOUT_MS = 15000;
+  var BUSY_STUCK_MS = 20000;
+
+  var MODE_LABELS = {
+    in: 'Clock in',
+    out: 'Clock out',
+    break_start: 'Start break',
+    break_end: 'End break',
+  };
 
   function sb() {
     return window.gmSupabase;
+  }
+
+  function setBusy(next) {
+    busy = !!next;
+    busySince = busy ? Date.now() : 0;
+  }
+
+  function unlockIfStuck(forceMsg) {
+    if (!busy) return false;
+    if (Date.now() - busySince < BUSY_STUCK_MS) return false;
+    setBusy(false);
+    if (confirmBtn) confirmBtn.disabled = false;
+    resetToEnter();
+    if (forceMsg) setStatus(forceMsg, 'err');
+    return true;
+  }
+
+  function rpcWithTimeout(client, fn, args) {
+    return Promise.race([
+      client.rpc(fn, args),
+      new Promise(function (_resolve, reject) {
+        setTimeout(function () {
+          reject(new Error('Request timed out. Tap Clear and try again.'));
+        }, RPC_TIMEOUT_MS);
+      }),
+    ]);
+  }
+
+  function armHiddenInputForEntry() {
+    if (!hiddenInputEl || phase !== 'enter') return;
+    hiddenInputEl.removeAttribute('readonly');
+    try {
+      hiddenInputEl.focus({ preventScroll: true });
+    } catch (_e) {
+      hiddenInputEl.focus();
+    }
+  }
+
+  function disarmHiddenInput() {
+    if (!hiddenInputEl) return;
+    hiddenInputEl.setAttribute('readonly', 'readonly');
+    hiddenInputEl.blur();
+  }
+
+  function startWatchdog() {
+    if (watchdogTimer) return;
+    watchdogTimer = setInterval(function () {
+      var app = document.getElementById('appTimeclock');
+      if (!app || app.hidden) return;
+      unlockIfStuck('Connection timed out. Tap Clear and try again.');
+    }, 5000);
   }
 
   function setStatus(msg, kind) {
@@ -56,19 +122,23 @@
 
   function syncIntro() {
     if (!introEl) return;
-    introEl.textContent =
-      punchMode === 'out'
-        ? 'Enter PIN, then confirm clock out.'
-        : 'Enter PIN, then confirm clock in.';
+    if (punchMode === 'out') {
+      introEl.textContent = 'Enter PIN, then confirm clock out.';
+    } else if (punchMode === 'break_start') {
+      introEl.textContent = 'Enter PIN, then confirm break start.';
+    } else if (punchMode === 'break_end') {
+      introEl.textContent = 'Enter PIN, then confirm break end.';
+    } else {
+      introEl.textContent = 'Enter PIN, then confirm clock in.';
+    }
   }
 
   function syncModeButtons() {
-    if (modeInBtn) {
-      modeInBtn.classList.toggle('timeclock-mode-btn--active', punchMode === 'in');
-    }
-    if (modeOutBtn) {
-      modeOutBtn.classList.toggle('timeclock-mode-btn--active', punchMode === 'out');
-    }
+    var modes = ['in', 'out', 'break_start', 'break_end'];
+    var btns = [modeInBtn, modeOutBtn, modeBreakStartBtn, modeBreakEndBtn];
+    btns.forEach(function (btn, i) {
+      if (btn) btn.classList.toggle('timeclock-mode-btn--active', punchMode === modes[i]);
+    });
   }
 
   function setEnterUiVisible(show) {
@@ -94,11 +164,17 @@
     setEnterUiVisible(true);
     syncIntro();
     updateConfirmButton();
+    if (confirmBtn) confirmBtn.disabled = false;
+    setBusy(false);
+    if (phase === 'enter') armHiddenInputForEntry();
   }
 
   function setPunchMode(mode) {
     if (busy || phase === 'confirm') return;
-    punchMode = mode === 'out' ? 'out' : 'in';
+    if (mode === 'out') punchMode = 'out';
+    else if (mode === 'break_start') punchMode = 'break_start';
+    else if (mode === 'break_end') punchMode = 'break_end';
+    else punchMode = 'in';
     syncModeButtons();
     syncIntro();
     updateConfirmButton();
@@ -106,7 +182,7 @@
 
   function updateConfirmButton() {
     if (!confirmBtn) return;
-    confirmBtn.textContent = punchMode === 'out' ? 'Clock out' : 'Clock in';
+    confirmBtn.textContent = MODE_LABELS[punchMode] || 'Confirm';
   }
 
   function appendDigit(d) {
@@ -138,10 +214,10 @@
       clearPinSoon(4000);
       return;
     }
-    busy = true;
+    setBusy(true);
     setStatus('Checking PIN…', null);
     try {
-      var res = await client.rpc('timeclock_lookup_pin', { pin_input: pinBuffer });
+      var res = await rpcWithTimeout(client, 'timeclock_lookup_pin', { pin_input: pinBuffer });
       if (res.error) {
         setStatus(res.error.message || 'Could not verify PIN.', 'err');
         clearPinSoon(4000);
@@ -161,17 +237,26 @@
       }
       pendingLookup = data;
       phase = 'confirm';
+      disarmHiddenInput();
       setEnterUiVisible(false);
       var name = String(data.display_name || 'Employee').trim();
       if (confirmNameEl) confirmNameEl.textContent = name;
       if (confirmHintEl) {
         if (punchMode === 'in' && data.is_clocked_in) {
-          confirmHintEl.textContent = 'Already clocked in. Switch to Clock out if leaving.';
+          confirmHintEl.textContent = 'Already clocked in. Switch to Clock out or break.';
         } else if (punchMode === 'out' && !data.is_clocked_in) {
           confirmHintEl.textContent = 'Not clocked in. Switch to Clock in if starting a shift.';
+        } else if (punchMode === 'break_start' && !data.is_clocked_in) {
+          confirmHintEl.textContent = 'Not clocked in. Clock in before starting a break.';
+        } else if (punchMode === 'break_start' && data.on_break) {
+          confirmHintEl.textContent = 'Already on break. Switch to End break when returning.';
+        } else if (punchMode === 'break_end' && !data.is_clocked_in) {
+          confirmHintEl.textContent = 'Not clocked in.';
+        } else if (punchMode === 'break_end' && !data.on_break) {
+          confirmHintEl.textContent = 'Not on break. Switch to Start break first.';
         } else {
           confirmHintEl.textContent =
-            punchMode === 'out' ? 'Tap Clock out to record your punch.' : 'Tap Clock in to record your punch.';
+            'Tap ' + (MODE_LABELS[punchMode] || 'Confirm') + ' to record your punch.';
         }
       }
       updateConfirmButton();
@@ -180,7 +265,7 @@
       setStatus((ex && ex.message) || 'Network error.', 'err');
       clearPinSoon(4000);
     } finally {
-      busy = false;
+      setBusy(false);
     }
   }
 
@@ -191,11 +276,11 @@
       setStatus('Supabase is not configured.', 'err');
       return;
     }
-    busy = true;
+    setBusy(true);
     if (confirmBtn) confirmBtn.disabled = true;
     setStatus('Saving…', null);
     try {
-      var res = await client.rpc('timeclock_punch_with_action', {
+      var res = await rpcWithTimeout(client, 'timeclock_punch_with_action', {
         pin_input: pinBuffer,
         punch_action: punchMode,
       });
@@ -203,7 +288,7 @@
         res.error &&
         /timeclock_punch_with_action|schema cache|function/i.test(res.error.message || '')
       ) {
-        res = await client.rpc('timeclock_punch', { pin_input: pinBuffer });
+        res = await rpcWithTimeout(client, 'timeclock_punch', { pin_input: pinBuffer });
       }
       if (res.error) {
         setStatus(res.error.message || 'Punch failed.', 'err');
@@ -216,6 +301,10 @@
           errMsg = (data.display_name || 'Employee') + ' is already clocked in.';
         } else if (data && data.error === 'not_in') {
           errMsg = (data.display_name || 'Employee') + ' is not clocked in.';
+        } else if (data && data.error === 'already_on_break') {
+          errMsg = (data.display_name || 'Employee') + ' is already on break.';
+        } else if (data && data.error === 'not_on_break') {
+          errMsg = (data.display_name || 'Employee') + ' is not on break.';
         } else if (data && data.error === 'unknown_pin') {
           errMsg = 'PIN not recognized.';
         } else if (data && data.error === 'invalid_pin') {
@@ -225,7 +314,14 @@
         return;
       }
       var name = String(data.display_name || 'Employee').trim();
-      var verb = data.action === 'out' ? 'Clocked out' : 'Clocked in';
+      var verb =
+        data.action === 'out'
+          ? 'Clocked out'
+          : data.action === 'break_start'
+            ? 'Break started'
+            : data.action === 'break_end'
+              ? 'Break ended'
+              : 'Clocked in';
       setStatus(verb + ' — ' + name, 'ok');
       prependRecent(name, verb, data.at);
       pinBuffer = '';
@@ -237,7 +333,7 @@
     } catch (ex) {
       setStatus((ex && ex.message) || 'Network error.', 'err');
     } finally {
-      busy = false;
+      setBusy(false);
       if (confirmBtn) confirmBtn.disabled = false;
     }
   }
@@ -265,17 +361,25 @@
     padEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-tc-digit]');
       if (btn) {
+        armHiddenInputForEntry();
         appendDigit(btn.getAttribute('data-tc-digit'));
-        return;
-      }
-      if (e.target.closest('#timeclockBackspace')) {
-        backspacePin();
-        return;
-      }
-      if (e.target.closest('#timeclockClear')) {
-        clearPin();
       }
     });
+  }
+
+  function bindPadActions() {
+    var clearBtn = document.getElementById('timeclockClear');
+    var backspaceBtn = document.getElementById('timeclockBackspace');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function () {
+        clearPin();
+      });
+    }
+    if (backspaceBtn) {
+      backspaceBtn.addEventListener('click', function () {
+        backspacePin();
+      });
+    }
   }
 
   function bindModeToggle() {
@@ -287,6 +391,16 @@
     if (modeOutBtn) {
       modeOutBtn.addEventListener('click', function () {
         setPunchMode('out');
+      });
+    }
+    if (modeBreakStartBtn) {
+      modeBreakStartBtn.addEventListener('click', function () {
+        setPunchMode('break_start');
+      });
+    }
+    if (modeBreakEndBtn) {
+      modeBreakEndBtn.addEventListener('click', function () {
+        setPunchMode('break_end');
       });
     }
   }
@@ -308,6 +422,7 @@
     document.addEventListener('keydown', function (e) {
       var app = document.getElementById('appTimeclock');
       if (!app || app.hidden) return;
+      if (unlockIfStuck()) return;
       if (busy) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (phase === 'confirm') {
@@ -337,6 +452,7 @@
     });
 
     if (hiddenInputEl) {
+      hiddenInputEl.setAttribute('readonly', 'readonly');
       hiddenInputEl.addEventListener('input', function () {
         if (busy || phase === 'confirm') return;
         var digits = String(hiddenInputEl.value || '').replace(/\D/g, '').slice(0, PIN_LEN);
@@ -352,8 +468,23 @@
 
     if (displayEl) {
       displayEl.addEventListener('click', function () {
-        if (hiddenInputEl && phase === 'enter') hiddenInputEl.focus();
+        if (phase === 'enter') armHiddenInputForEntry();
       });
+    }
+
+    if (!focusBound) {
+      focusBound = true;
+      document.addEventListener('visibilitychange', function () {
+        var app = document.getElementById('appTimeclock');
+        if (!app || app.hidden) return;
+        if (document.visibilityState === 'visible') {
+          unlockIfStuck('Screen was idle. Tap Clear if the keypad does not respond.');
+          if (phase === 'enter') armHiddenInputForEntry();
+        } else {
+          disarmHiddenInput();
+        }
+      });
+      window.addEventListener('pagehide', disarmHiddenInput);
     }
   }
 
@@ -377,8 +508,9 @@
   }
 
   window.gmCalloutTimeclockBootstrap = function () {
+    if (resetTimer) clearTimeout(resetTimer);
     pinBuffer = '';
-    busy = false;
+    setBusy(false);
     punchMode = 'in';
     phase = 'enter';
     pendingLookup = null;
@@ -396,11 +528,19 @@
     updateConfirmButton();
     setEnterUiVisible(true);
     setStatus('', null);
-    bindPad();
-    bindModeToggle();
-    bindConfirm();
-    bindKeyboard();
+    if (!uiBound) {
+      bindPad();
+      bindPadActions();
+      bindModeToggle();
+      bindConfirm();
+      bindKeyboard();
+      startWatchdog();
+      uiBound = true;
+    }
     void loadDeviceLabel();
-    if (hiddenInputEl) hiddenInputEl.focus();
+    if (hiddenInputEl) {
+      hiddenInputEl.setAttribute('readonly', 'readonly');
+      if (phase === 'enter') armHiddenInputForEntry();
+    }
   };
 })();

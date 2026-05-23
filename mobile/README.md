@@ -69,8 +69,21 @@ Use **`npm install --legacy-peer-deps`** in this folder if `npm install` errors 
 ## Project identity
 
 - App display name: **Red Poke Scheduler**
-- Expo slug: `gm-callout` (change in `app.json` if you publish under another name)
+- Expo slug: `gm-callout` (change in `app.config.ts` if you publish under another name)
 
-## Store builds
+## App Store / TestFlight
 
-When you’re ready for TestFlight / Play Internal testing, use [EAS Build](https://docs.expo.dev/build/introduction/) (`npm install -g eas-cli`, `eas build`).
+Full checklist: **[../docs/APP_STORE.md](../docs/APP_STORE.md)** (bundle ID `com.redpoke.scheduler`).
+
+```bash
+cd mobile
+npm install
+npm run validate:store
+eas login
+eas init
+# Set EAS secrets (Supabase + production HTTPS web URL) — see APP_STORE.md
+npm run build:ios
+npm run submit:ios
+```
+
+Privacy policy: host **`../privacy.html`** at `https://your-domain/privacy.html` (see **[../docs/APP_STORE_CONNECT.md](../docs/APP_STORE_CONNECT.md)** for listing copy).
