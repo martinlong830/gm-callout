@@ -40,7 +40,7 @@ function cell(start, end, breakText, hours) {
   };
 }
 
-/** Mon–Sun; null = DAY-OFF. Matches FOH screenshot (Apr 11–17 pattern). */
+/** Mon–Sun; null = DAY-OFF. Row order matches app.js TEAM_ROSTER_BARTENDER (trIdx 0–4). */
 const FOH_ROWS = [
   {
     name: "MARK ONG",
@@ -55,7 +55,7 @@ const FOH_ROWS = [
     ],
   },
   {
-    name: "SIED SUMOG - OY",
+    name: "CHARLES JAKOB ZACANI",
     week: [
       null,
       cell("10:30", "19:30", "(3:00PM BREAK TIME)", "9.00"),
@@ -67,7 +67,7 @@ const FOH_ROWS = [
     ],
   },
   {
-    name: "ANGELYN GELLA",
+    name: "MAEVE WILLIAMS",
     week: [
       cell("10:30", "20:30", "(3:00PM BREAK TIME)", "10.00"),
       cell("11:30", "21:30", "(3:30PM BREAK TIME)", "10.00"),
@@ -79,7 +79,7 @@ const FOH_ROWS = [
     ],
   },
   {
-    name: "JONG SARDUA",
+    name: "JON ARELLANO",
     week: [
       null,
       cell("13:00", "20:30", "(3:00PM BREAK TIME)", "7.50"),

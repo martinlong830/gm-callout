@@ -77,11 +77,27 @@ export type SavePunchInput = {
   priorEntry: TimeClockEntry | null;
 };
 
-export async function saveManagerPunch(
+function managerSaveErrorMessage(rpcRes: {
+  error?: { message?: string } | null;
+  data?: { ok?: boolean; error?: string } | null;
+}): string {
+  const msg = rpcRes.error?.message || '';
+  if (/row-level security|violates row-level security/i.test(msg)) {
+    return 'Save blocked by database permissions. Sign in as a manager and apply the latest Supabase migrations.';
+  }
+  if (rpcRes.data?.error === 'unknown_employee') {
+    return 'Employee not found in cloud roster.';
+  }
+  if (rpcRes.data?.error) return String(rpcRes.data.error);
+  return msg || 'Save failed.';
+}
+
+async function callManagerSaveRpc(
   sb: SupabaseClient,
   schema: TimecardSchema,
-  input: SavePunchInput
-): Promise<{ ok: true; entryId: string | null } | { ok: false; message: string }> {
+  input: SavePunchInput,
+  editHistory: unknown[]
+) {
   const {
     employeeId,
     shiftId,
@@ -91,6 +107,49 @@ export async function saveManagerPunch(
     breakEndIso,
     breakMinutes,
     editingId,
+  } = input;
+
+  const base: Record<string, unknown> = {
+    p_entry_id: editingId || null,
+    p_employee_id: employeeId,
+    p_clock_in_at: clockInIso,
+    p_clock_out_at: clockOutIso,
+  };
+  const fullArgs = { ...base };
+  if (schema.breakMinutes) fullArgs.p_break_minutes = breakMinutes;
+  if (schema.breakTimes) {
+    fullArgs.p_break_start_at = breakStartIso;
+    fullArgs.p_break_end_at = breakEndIso;
+  }
+  if (schema.scheduleShiftId) fullArgs.p_schedule_shift_id = shiftId;
+  if (schema.editHistory) fullArgs.p_edit_history = editHistory;
+
+  let res = await sb.rpc('manager_save_time_clock_entry', fullArgs);
+  if (res.error) {
+    const msg = res.error.message || '';
+    if (/42883|function|schema cache|Could not find|break_start|argument/i.test(msg)) {
+      res = await sb.rpc('manager_save_time_clock_entry', {
+        ...base,
+        p_break_minutes: breakMinutes,
+        p_schedule_shift_id: shiftId,
+        p_edit_history: editHistory,
+      });
+    }
+  }
+  return res;
+}
+
+export async function saveManagerPunch(
+  sb: SupabaseClient,
+  schema: TimecardSchema,
+  input: SavePunchInput
+): Promise<{ ok: true; entryId: string | null } | { ok: false; message: string }> {
+  const {
+    clockInIso,
+    clockOutIso,
+    breakStartIso,
+    breakEndIso,
+    breakMinutes,
     priorEntry,
   } = input;
   const hist: unknown[] = [];
@@ -122,66 +181,13 @@ export async function saveManagerPunch(
     hist.push({ at: new Date().toISOString(), by: 'manager', changes });
   }
 
-  if (!editingId) {
-    const insRow: Record<string, unknown> = {
-      employee_id: employeeId,
-      clock_in_at: clockInIso,
-      clock_out_at: clockOutIso,
-    };
-    if (schema.breakMinutes) insRow.break_minutes = breakMinutes;
-    if (schema.breakTimes) {
-      insRow.break_start_at = breakStartIso;
-      insRow.break_end_at = breakEndIso;
-    }
-    if (schema.scheduleShiftId) insRow.schedule_shift_id = shiftId;
-    if (schema.editHistory) insRow.edit_history = hist;
-    const ins = await sb.from('time_clock_entries').insert(insRow).select('id').maybeSingle();
-    if (ins.error) return { ok: false, message: ins.error.message };
-    return { ok: true, entryId: ins.data?.id ? String(ins.data.id) : null };
+  const rpcRes = await callManagerSaveRpc(sb, schema, input, hist);
+  if (rpcRes.error) {
+    return { ok: false, message: managerSaveErrorMessage(rpcRes) };
   }
-
-  const rpcArgs: Record<string, unknown> = {
-    p_entry_id: editingId,
-    p_employee_id: employeeId,
-    p_clock_in_at: clockInIso,
-    p_clock_out_at: clockOutIso,
-  };
-  if (schema.breakMinutes) rpcArgs.p_break_minutes = breakMinutes;
-  if (schema.breakTimes) {
-    rpcArgs.p_break_start_at = breakStartIso;
-    rpcArgs.p_break_end_at = breakEndIso;
-  }
-  if (schema.scheduleShiftId) rpcArgs.p_schedule_shift_id = shiftId;
-  if (schema.editHistory) rpcArgs.p_edit_history = hist;
-
-  const rpcRes = await sb.rpc('manager_save_time_clock_entry', rpcArgs);
-  if (
-    rpcRes.error &&
-    /manager_save_time_clock_entry|schema cache|function/i.test(rpcRes.error.message || '')
-  ) {
-    const payload: Record<string, unknown> = {
-      clock_in_at: clockInIso,
-      clock_out_at: clockOutIso,
-    };
-    if (schema.breakMinutes) payload.break_minutes = breakMinutes;
-    if (schema.breakTimes) {
-      payload.break_start_at = breakStartIso;
-      payload.break_end_at = breakEndIso;
-    }
-    if (schema.scheduleShiftId) payload.schedule_shift_id = shiftId;
-    if (schema.editHistory) payload.edit_history = hist;
-    const up = await sb.from('time_clock_entries').update(payload).eq('id', editingId).select('id');
-    if (up.error) return { ok: false, message: up.error.message };
-    return { ok: true, entryId: editingId };
-  }
-  if (rpcRes.error) return { ok: false, message: rpcRes.error.message };
-  const data = rpcRes.data as { ok?: boolean; error?: string } | null;
+  const data = rpcRes.data as { ok?: boolean; error?: string; id?: string } | null;
   if (!data?.ok) {
-    const err =
-      data?.error === 'unknown_employee'
-        ? 'Employee not found in cloud roster.'
-        : data?.error || 'Save failed.';
-    return { ok: false, message: String(err) };
+    return { ok: false, message: managerSaveErrorMessage(rpcRes) };
   }
-  return { ok: true, entryId: editingId };
+  return { ok: true, entryId: data.id ? String(data.id) : input.editingId };
 }

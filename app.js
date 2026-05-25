@@ -675,6 +675,23 @@
     'ABEL LUJAN',
   ];
 
+  var TIP_POINT_PRESETS = [
+    { first: 'MARK', last: 'ONG', tipPoint: 5 },
+    { first: 'CHARLES JAKOB', last: 'ZACANI', tipPoint: 3 },
+    { first: 'EUGENE', last: 'VILLARRUZ', tipPoint: 3 },
+    { first: 'MAEVE', last: 'WILLIAMS', tipPoint: 2 },
+    { first: 'JON', last: 'ARELLANO', tipPoint: 2 },
+    { first: 'BALTAZAR', last: 'LUCAS', tipPoint: 4 },
+    { first: 'ENRIQUE', last: 'CUMES', tipPoint: 3 },
+    { first: 'ARMANDO', last: 'CUMES', tipPoint: 2 },
+    { first: 'BERNABE', last: 'DE LEON', tipPoint: 2 },
+    { first: 'ZEFERINO', last: 'FLORES', tipPoint: 2 },
+    { first: 'IRINEO', last: 'PINEDA', tipPoint: 1.5 },
+    { first: 'JUAN', last: 'SALVATIERRA', tipPoint: 0 },
+    { first: 'NATALIO', last: 'DE LA CRUZ', tipPoint: 0 },
+    { first: 'ABEL', last: 'LUJAN', tipPoint: 0 },
+  ];
+
   /** Preset hourly wages (applied when rate is unset; fuzzy match on roster names). */
   var HOURLY_RATE_PRESETS = [
     { first: 'MARK', last: 'ONG', rate: 22 },
@@ -735,6 +752,43 @@
 
   function applyHourlyRatePresetsToAllEmployees() {
     employees.forEach(applyHourlyRatePresetIfMissing);
+  }
+
+  function tipPointPresetForEmployee(emp) {
+    if (!emp) return null;
+    var fn = normNameKey(emp.firstName);
+    var ln = normNameKey(emp.lastName);
+    var dn = normNameKey(employeeDisplayName(emp));
+    for (var i = 0; i < TIP_POINT_PRESETS.length; i += 1) {
+      var p = TIP_POINT_PRESETS[i];
+      var pf = normNameKey(p.first);
+      var pl = normNameKey(p.last);
+      if (fn === pf && ln === pl) return p.tipPoint;
+      if (dn === pf + ' ' + pl) return p.tipPoint;
+      if (nameFirstToken(fn) === nameFirstToken(pf) && nameLastToken(ln) === nameLastToken(pl)) {
+        return p.tipPoint;
+      }
+      if (nameFirstToken(dn) === nameFirstToken(pf) && nameLastToken(dn) === nameLastToken(pl)) {
+        return p.tipPoint;
+      }
+    }
+    return null;
+  }
+
+  function normalizeTipPointValue(n) {
+    if (n == null || n === '' || Number.isNaN(Number(n))) return null;
+    var v = Math.max(0, Number(n));
+    return Math.round(v * 10) / 10;
+  }
+
+  function applyTipPointPresetIfMissing(emp) {
+    if (!emp || emp.tipPoint != null) return;
+    var preset = tipPointPresetForEmployee(emp);
+    if (preset != null) emp.tipPoint = preset;
+  }
+
+  function applyTipPointPresetsToAllEmployees() {
+    employees.forEach(applyTipPointPresetIfMissing);
   }
 
   const LEGACY_KITCHEN = TEAM_ROSTER_KITCHEN;
@@ -844,6 +898,10 @@
     if (emp.clockPin) row.clock_pin = String(emp.clockPin);
     if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
       row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
+    }
+    if (emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {
+      row.meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
+      row.meta.tipPoint = normalizeTipPointValue(emp.tipPoint);
     }
     return row;
   }
@@ -1156,6 +1214,9 @@
             }
           });
         }
+        if (backfillScheduleAssignmentBreakHours(mergedSched)) {
+          schedChanged = true;
+        }
         localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
         if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
       } catch (_s) {
@@ -1299,6 +1360,95 @@
       h = Math.imul(h, 16777619);
     }
     return h >>> 0;
+  }
+
+  function scheduleBreakIsHashPlaceholder(shift, breakText) {
+    if (!shift || !breakText) return false;
+    return (
+      breakText ===
+      redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day)
+    );
+  }
+
+  /** Sheet hours when set; otherwise gross hours from shift times (ignore empty strings). */
+  function scheduleAssignedHoursString(shift) {
+    if (!shift) return '';
+    var h = shift.redPokeHours;
+    if (h != null && String(h).trim() !== '') return String(h);
+    return redPokeShiftHoursDecimal(shift.start, shift.end);
+  }
+
+  /** Calendar-style slot lines (assigned break/office + sheet fallback). */
+  function scheduleSlotDisplayLines(shift, role, dayStr) {
+    if (!shift) return { time: '', break: '', hours: '' };
+    var time = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
+    var br =
+      shift.redPokeBreak ||
+      redPokeBreakAnnotation(shift.start, shift.end, role || shift.role, dayStr || shift.day);
+    return { time: time, break: br, hours: scheduleAssignedHoursString(shift) };
+  }
+
+  /** Exact multi-line text shown in a manager calendar shift cell (export only). */
+  function scheduleCalendarCellText(shift, role, dayStr) {
+    var L = scheduleSlotDisplayLines(shift, role, dayStr);
+    return L.time + '\n' + (L.break || '') + '\n' + (L.hrs || '');
+  }
+
+  function weekIndexForPayWeekStartIso(mondayIso) {
+    if (!mondayIso) return scheduleCalendarWeekIndex;
+    for (var w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+      var m0 = WEEK_META[w * 7];
+      if (m0 && m0.iso === mondayIso) return w;
+    }
+    var hit = WEEK_META.find(function (meta) {
+      return meta.iso === mondayIso;
+    });
+    if (hit && hit.weekIndex != null) return hit.weekIndex;
+    return SCHEDULE_TEMPLATE_WEEK_INDEX;
+  }
+
+  /** Schedule rows for a pay week, built like the on-screen calendar (does not change the visible week). */
+  function buildScheduleSnapshotForPayWeek(weekIndex) {
+    var prevRest = currentRestaurantId;
+    var prevWeek = scheduleCalendarWeekIndex;
+    var rows = [];
+    var useRp9 = restaurantsList.some(function (r) {
+      return r.id === 'rp-9';
+    });
+    try {
+      if (useRp9) currentRestaurantId = 'rp-9';
+      scheduleCalendarWeekIndex = weekIndex;
+      rebuildSchedule();
+      var visible = {};
+      getVisibleWeekDays().forEach(function (day) {
+        visible[day] = true;
+      });
+      SCHEDULE.forEach(function (s) {
+        if (!visible[s.day]) return;
+        rows.push({
+          id: s.id,
+          day: s.day,
+          trIdx: s.trIdx,
+          role: s.role,
+          roleClass: s.roleClass,
+          groupLabel: s.groupLabel,
+          start: s.start,
+          end: s.end,
+          slotKey: s.slotKey,
+          timeLabel: s.timeLabel,
+          redPokeBreak: s.redPokeBreak,
+          redPokeHours: s.redPokeHours,
+          workers: (s.workers || []).slice(),
+        });
+      });
+    } finally {
+      currentRestaurantId = prevRest;
+      scheduleCalendarWeekIndex = prevWeek;
+      rebuildSchedule();
+      if (calendarGrid) renderCalendar();
+      if (scheduleBody) renderSchedule();
+    }
+    return rows;
   }
 
   /** Break / office line text in the style of the Red Poke draft PDF. */
@@ -1628,7 +1778,13 @@
     } else if (e.hourly_rate != null && !Number.isNaN(Number(e.hourly_rate))) {
       out.hourlyRate = Math.round(Number(e.hourly_rate) * 100) / 100;
     }
+    if (e.tipPoint != null && !Number.isNaN(Number(e.tipPoint))) {
+      out.tipPoint = normalizeTipPointValue(e.tipPoint);
+    } else if (e.meta && e.meta.tipPoint != null && !Number.isNaN(Number(e.meta.tipPoint))) {
+      out.tipPoint = normalizeTipPointValue(e.meta.tipPoint);
+    }
     applyHourlyRatePresetIfMissing(out);
+    applyTipPointPresetIfMissing(out);
     return out;
   }
 
@@ -1658,6 +1814,29 @@
 
   let employees = loadEmployees();
   applyHourlyRatePresetsToAllEmployees();
+  applyTipPointPresetsToAllEmployees();
+
+  const empLeaveBalanceMount = document.getElementById('empLeaveBalanceMount');
+
+  function gmLeave() {
+    return window.gmEmployeeLeave || null;
+  }
+
+  function ensureEmpLeaveBalance(emp) {
+    var L = gmLeave();
+    if (!L || !emp) return null;
+    L.ensureEmployeeLeaveBalance(emp, employeeDisplayName);
+    return L.normalizeBalance(emp.meta.leaveBalance);
+  }
+
+  function seedAllEmployeeLeaveBalances() {
+    var L = gmLeave();
+    if (!L) return;
+    var n = L.applySeedsToEmployees(employees, employeeDisplayName);
+    if (n > 0) saveEmployees();
+  }
+
+  seedAllEmployeeLeaveBalances();
 
   let EMPLOYEE_POOLS = { Kitchen: [], Bartender: [], Server: [] };
   let SCHEDULE = [];
@@ -2281,32 +2460,72 @@
     return JSON.parse(JSON.stringify(normalizeScheduleAssignment(val)));
   }
 
-  /** Future weeks inherit the current week's Mon–Sun pattern when not overridden. */
-  function lookupScheduleAssignment(stored, shiftId) {
-    if (stored[shiftId] != null) {
-      return normalizeScheduleAssignment(stored[shiftId]);
-    }
+  /** Mon–Sun pattern from the template ("this") week — used for all calendar weeks. */
+  function lookupScheduleAssignmentPattern(stored, shiftId) {
     var p = parseShiftIdParts(shiftId);
     if (!p) return null;
     var tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
-    if (p.globalDayIdx >= tplStart && p.globalDayIdx < tplStart + 7) {
-      var legacyId = 'shift-' + (p.globalDayIdx - tplStart) + '-' + p.roleIdx + '-' + p.trIdx;
-      if (stored[legacyId] != null) {
-        return normalizeScheduleAssignment(stored[legacyId]);
-      }
-      return null;
-    }
-    if (p.globalDayIdx < tplStart + 7) return null;
     var dayInWeek = p.globalDayIdx % 7;
-    var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
-    if (stored[templateId] == null) {
-      var legacyTplId = 'shift-' + dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
-      if (stored[legacyTplId] != null) {
-        return normalizeScheduleAssignment(stored[legacyTplId]);
+    if (p.globalDayIdx >= tplStart && p.globalDayIdx < tplStart + 7) {
+      var legacyInTpl = 'shift-' + dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
+      if (stored[legacyInTpl] != null) {
+        return normalizeScheduleAssignment(stored[legacyInTpl]);
       }
-      return null;
     }
-    return normalizeScheduleAssignment(stored[templateId]);
+    var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
+    if (stored[templateId] != null) {
+      return normalizeScheduleAssignment(stored[templateId]);
+    }
+    var legacyTplId = 'shift-' + dayInWeek + '-' + p.roleIdx + '-' + p.trIdx;
+    if (stored[legacyTplId] != null) {
+      return normalizeScheduleAssignment(stored[legacyTplId]);
+    }
+    return null;
+  }
+
+  function mergeScheduleAssignmentEntries(direct, pattern) {
+    if (!direct && !pattern) return null;
+    if (!pattern) return direct;
+    if (!direct) return pattern;
+    var out = {
+      workers: direct.workers,
+    };
+    if (direct.break || pattern.break) out.break = direct.break || pattern.break;
+    if (direct.hours != null && direct.hours !== '') out.hours = direct.hours;
+    else if (pattern.hours != null && pattern.hours !== '') out.hours = pattern.hours;
+    if (direct.timeLabel || pattern.timeLabel) out.timeLabel = direct.timeLabel || pattern.timeLabel;
+    return out;
+  }
+
+  /** Per-shift assignment; inherits break/hours/time from template week when missing. */
+  function lookupScheduleAssignment(stored, shiftId) {
+    var direct =
+      stored[shiftId] != null ? normalizeScheduleAssignment(stored[shiftId]) : null;
+    var pattern = lookupScheduleAssignmentPattern(stored, shiftId);
+    return mergeScheduleAssignmentEntries(direct, pattern);
+  }
+
+  /** Fill missing break/hours on worker-only assignment rows from the template week pattern. */
+  function backfillScheduleAssignmentBreakHours(store) {
+    if (!store || typeof store !== 'object') return false;
+    var changed = false;
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach(function (shiftId) {
+        var raw = rs[shiftId];
+        var prev = normalizeScheduleAssignment(raw);
+        var merged = lookupScheduleAssignment(rs, shiftId);
+        if (!merged) return;
+        var needsBreak = merged.break && !prev.break;
+        var needsHours = merged.hours != null && merged.hours !== '' && !prev.hours;
+        var needsTime = merged.timeLabel && !prev.timeLabel;
+        if (!needsBreak && !needsHours && !needsTime) return;
+        rs[shiftId] = mergeScheduleAssignmentEntries(prev, merged);
+        changed = true;
+      });
+    });
+    return changed;
   }
 
   function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount) {
@@ -2375,12 +2594,19 @@
         var one = s.worker || 'Unassigned';
         list = one && one !== 'Unassigned' ? [one] : ['Unassigned'];
       }
-      var entry = normalizeScheduleAssignment(store[currentRestaurantId][s.id]);
+      var rs = store[currentRestaurantId];
+      var entry = lookupScheduleAssignment(rs, s.id);
+      if (!entry) entry = normalizeScheduleAssignment(rs[s.id]);
+      else entry = cloneScheduleAssignment(entry);
       entry.workers = list.slice();
-      if (s.redPokeBreak) entry.break = s.redPokeBreak;
-      if (s.redPokeHours != null && s.redPokeHours !== '') entry.hours = String(s.redPokeHours);
+      if (s.redPokeBreak && !scheduleBreakIsHashPlaceholder(s, s.redPokeBreak)) {
+        entry.break = s.redPokeBreak;
+      }
+      if (s.redPokeHours != null && s.redPokeHours !== '') {
+        entry.hours = String(s.redPokeHours);
+      }
       if (s.timeLabel) entry.timeLabel = s.timeLabel;
-      store[currentRestaurantId][s.id] = entry;
+      rs[s.id] = entry;
     });
     saveScheduleAssignmentsStore(store);
   }
@@ -2390,15 +2616,19 @@
     SCHEDULE.forEach(function (s) {
       var entry = lookupScheduleAssignment(stored, s.id);
       if (!entry) return;
+      if (entry.break) s.redPokeBreak = entry.break;
+      if (entry.hours != null && String(entry.hours).trim() !== '') {
+        s.redPokeHours = entry.hours;
+      } else {
+        delete s.redPokeHours;
+      }
+      if (entry.timeLabel) s.timeLabel = entry.timeLabel;
       var list = entry.workers.filter(function (n) {
         return n && n !== 'Unassigned';
       });
       if (!list.length) return;
       s.workers = list.slice();
       s.worker = s.workers[0];
-      if (entry.break) s.redPokeBreak = entry.break;
-      if (entry.hours != null && entry.hours !== '') s.redPokeHours = entry.hours;
-      if (entry.timeLabel) s.timeLabel = entry.timeLabel;
     });
   }
 
@@ -2609,6 +2839,7 @@
             restaurantId: rid,
             restaurantName: rname,
             day: s.day,
+            trIdx: s.trIdx,
             role: s.role,
             roleClass: s.roleClass,
             groupLabel: s.groupLabel,
@@ -2959,6 +3190,56 @@
 
   let history = [];
 
+  /** Legacy in-app demo rows (removed from seed; may still exist in team_state). */
+  function isLegacySeededCalloutEntry(entry) {
+    if (!entry) return false;
+    var notified = entry.notified || [];
+    var noResp = entry.noResponse || [];
+    var accepted = entry.acceptedBy && entry.acceptedBy.name;
+    function hasName(name) {
+      return notified.some(function (n) {
+        return n && workerNamesMatch(n, name);
+      });
+    }
+    function noRespHas(name) {
+      return noResp.some(function (n) {
+        return n && workerNamesMatch(n, name);
+      });
+    }
+    if (
+      hasName('Alex R.') &&
+      hasName('Taylor P.') &&
+      hasName('Riley C.') &&
+      accepted &&
+      workerNamesMatch(accepted, 'Taylor P.') &&
+      noRespHas('Alex R.') &&
+      noRespHas('Riley C.')
+    ) {
+      return true;
+    }
+    if (
+      hasName('Mia K.') &&
+      hasName('Noah J.') &&
+      hasName('Rosa H.') &&
+      notified.length === 3 &&
+      !accepted
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function stripLegacySeededCalloutEntries() {
+    var removed = 0;
+    for (var i = history.length - 1; i >= 0; i -= 1) {
+      if (isLegacySeededCalloutEntry(history[i])) {
+        history.splice(i, 1);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   function buildCalloutHistoryPayload() {
     return history
       .map(function (item) {
@@ -3005,9 +3286,11 @@
       }
       return;
     }
+    var remoteHadLegacyDemo = arr.some(isLegacySeededCalloutEntry);
     history.length = 0;
     arr.forEach(function (entry) {
       if (!entry || !entry.shift || typeof entry.shift !== 'object') return;
+      if (isLegacySeededCalloutEntry(entry)) return;
       history.push({
         shift: entry.shift,
         status: entry.status || 'pending',
@@ -3021,10 +3304,14 @@
         voiceConfirmed: !!entry.voiceConfirmed,
       });
     });
+    stripLegacySeededCalloutEntries();
     try {
       localStorage.setItem(CALLOUT_HISTORY_KEY, JSON.stringify(buildCalloutHistoryPayload()));
     } catch (_h) {
       /* ignore */
+    }
+    if (remoteHadLegacyDemo && isMgr) {
+      persistCalloutHistoryLocalAndSync();
     }
   }
 
@@ -3656,7 +3943,7 @@
     }).map(function (row) {
       var tl = row.timeLabel || redPokeShiftTimeLabel(row.start, row.end);
       var br = row.redPokeBreak || '';
-      var hrs = row.redPokeHours != null ? String(row.redPokeHours) : '';
+      var hrs = scheduleAssignedHoursString(row);
       return (
         '<tr>' +
         '<td>' +
@@ -3813,8 +4100,7 @@
           const rpTime = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
           const rpBreak =
             shift.redPokeBreak || redPokeBreakAnnotation(shift.start, shift.end, rd.role, dayStr);
-          const rpHrs =
-            shift.redPokeHours != null ? String(shift.redPokeHours) : redPokeShiftHoursDecimal(shift.start, shift.end);
+          const rpHrs = scheduleAssignedHoursString(shift);
           const workerPills = workers.slice(0, 4).map(function (wname, wi) {
             const canDrag = wname && wname !== 'Unassigned';
             const dragAttr = canDrag ? 'draggable="true" ' : 'draggable="false" ';
@@ -4181,14 +4467,36 @@
     });
   }
 
+  function rosterNamesForStaffType(staffType) {
+    if (staffType === 'Bartender') return TEAM_ROSTER_BARTENDER;
+    if (staffType === 'Kitchen') return TEAM_ROSTER_KITCHEN;
+    if (staffType === 'Server') return TEAM_ROSTER_SERVER;
+    return [];
+  }
+
+  function employeeMatchesRosterName(emp, rosterName) {
+    var a = normNameKey(employeeDisplayName(emp));
+    var b = normNameKey(rosterName);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return nameFirstToken(a) === nameFirstToken(b) && nameLastToken(a) === nameLastToken(b);
+  }
+
+  function scheduleRosterIndexInGroup(emp) {
+    var order = rosterNamesForStaffType(emp.staffType);
+    for (var i = 0; i < order.length; i += 1) {
+      if (employeeMatchesRosterName(emp, order[i])) return i;
+    }
+    return 1000;
+  }
+
   function sortEmployeesInGroup(a, b) {
-    const la = (a.lastName || '').toLowerCase();
-    const lb = (b.lastName || '').toLowerCase();
-    if (la !== lb) return la < lb ? -1 : la > lb ? 1 : 0;
-    const fa = (a.firstName || '').toLowerCase();
-    const fb = (b.firstName || '').toLowerCase();
-    if (fa !== fb) return fa < fb ? -1 : fa > fb ? 1 : 0;
-    return 0;
+    var ia = scheduleRosterIndexInGroup(a);
+    var ib = scheduleRosterIndexInGroup(b);
+    if (ia !== ib) return ia - ib;
+    return employeeDisplayName(a).localeCompare(employeeDisplayName(b), undefined, {
+      sensitivity: 'base',
+    });
   }
 
   function employeeSearchHaystack(emp) {
@@ -4431,6 +4739,397 @@
       : 'All cloud team members already have PINs';
   }
 
+  function leaveDatesSummaryText(entries, L) {
+    var list = entries || [];
+    if (!list.length) return 'No dates recorded';
+    var hrs = L.sumEntryHours(list);
+    return (
+      list.length +
+      (list.length === 1 ? ' date' : ' dates') +
+      ' · ' +
+      L.formatHours(hrs) +
+      ' hrs used'
+    );
+  }
+
+  function renderLeaveDateRow(kind, e, i, L) {
+    return (
+      '<li class="emp-leave-date-row" data-leave-row="' +
+      escapeHtml(kind) +
+      '">' +
+      '<label class="emp-leave-date-field">' +
+      '<span class="emp-leave-date-field-label">Date</span>' +
+      '<input type="date" class="emp-leave-date" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" data-leave-idx="' +
+      i +
+      '" value="' +
+      escapeHtml(e.date || '') +
+      '" />' +
+      '</label>' +
+      '<label class="emp-leave-date-field emp-leave-date-field--hours">' +
+      '<span class="emp-leave-date-field-label">Hours</span>' +
+      '<input type="number" class="emp-leave-hours" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" data-leave-idx="' +
+      i +
+      '" min="0" step="0.5" value="' +
+      escapeHtml(L.formatHours(e.hours)) +
+      '" />' +
+      '</label>' +
+      '<button type="button" class="btn btn-ghost btn-sm emp-leave-remove" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" data-leave-idx="' +
+      i +
+      '" aria-label="Remove date">Remove</button>' +
+      '</li>'
+    );
+  }
+
+  function refreshLeaveDatesSummaries() {
+    if (!empLeaveBalanceMount) return;
+    var L = gmLeave();
+    if (!L) return;
+    empLeaveBalanceMount.querySelectorAll('.emp-leave-dates-details').forEach(function (details) {
+      var kind = details.getAttribute('data-leave-kind');
+      var list = details.querySelector('.emp-leave-date-list');
+      if (!list || !kind) return;
+      var entries = [];
+      list.querySelectorAll('.emp-leave-date-row').forEach(function (row) {
+        var dateInp = row.querySelector('.emp-leave-date');
+        var hrsInp = row.querySelector('.emp-leave-hours');
+        var dateVal = dateInp ? String(dateInp.value || '').trim() : '';
+        if (!dateVal) return;
+        entries.push({
+          date: dateVal,
+          hours: Math.max(0, parseFloat(hrsInp && hrsInp.value ? hrsInp.value : L.HOURS_PER_DAY) || 0),
+        });
+      });
+      var summary = details.querySelector('.emp-leave-dates-summary');
+      if (summary) summary.textContent = leaveDatesSummaryText(entries, L);
+    });
+  }
+
+  function leaveDatesInRange(startIso, endIso) {
+    if (!startIso || !endIso) return [];
+    var start = new Date(startIso + 'T12:00:00');
+    var end = new Date(endIso + 'T12:00:00');
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+    if (start > end) {
+      var tmp = start;
+      start = end;
+      end = tmp;
+    }
+    var out = [];
+    var cur = new Date(start.getTime());
+    while (cur <= end) {
+      out.push(
+        cur.getFullYear() +
+          '-' +
+          String(cur.getMonth() + 1).padStart(2, '0') +
+          '-' +
+          String(cur.getDate()).padStart(2, '0')
+      );
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+
+  function appendLeaveDateRow(list, kind, dateIso, hours, L) {
+    if (!list || !dateIso) return;
+    var idx = list.querySelectorAll('.emp-leave-date-row').length;
+    var li = document.createElement('li');
+    li.className = 'emp-leave-date-row';
+    li.setAttribute('data-leave-row', kind);
+    li.innerHTML =
+      '<label class="emp-leave-date-field">' +
+      '<span class="emp-leave-date-field-label">Date</span>' +
+      '<input type="date" class="emp-leave-date" data-leave-kind="' +
+      kind +
+      '" data-leave-idx="' +
+      idx +
+      '" value="' +
+      escapeHtml(dateIso) +
+      '" />' +
+      '</label>' +
+      '<label class="emp-leave-date-field emp-leave-date-field--hours">' +
+      '<span class="emp-leave-date-field-label">Hours</span>' +
+      '<input type="number" class="emp-leave-hours" data-leave-kind="' +
+      kind +
+      '" data-leave-idx="' +
+      idx +
+      '" min="0" step="0.5" value="' +
+      escapeHtml(L.formatHours(hours)) +
+      '" />' +
+      '</label>' +
+      '<button type="button" class="btn btn-ghost btn-sm emp-leave-remove" data-leave-kind="' +
+      kind +
+      '" data-leave-idx="' +
+      idx +
+      '" aria-label="Remove date">Remove</button>';
+    list.appendChild(li);
+  }
+
+  function leaveRangeAddHtml(kind) {
+    return (
+      '<div class="emp-leave-range-add" data-leave-kind="' +
+      escapeHtml(kind) +
+      '">' +
+      '<div class="emp-leave-range-grid">' +
+      '<label class="emp-leave-range-field">' +
+      '<span class="emp-leave-date-field-label">Start</span>' +
+      '<input type="date" class="emp-leave-range-start" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" />' +
+      '</label>' +
+      '<label class="emp-leave-range-field">' +
+      '<span class="emp-leave-date-field-label">End</span>' +
+      '<input type="date" class="emp-leave-range-end" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" />' +
+      '</label>' +
+      '<label class="emp-leave-range-field emp-leave-range-hours-field">' +
+      '<span class="emp-leave-date-field-label">Hours/day</span>' +
+      '<input type="number" class="emp-leave-range-hours" data-leave-kind="' +
+      escapeHtml(kind) +
+      '" min="0" step="0.5" value="8" />' +
+      '</label>' +
+      '</div>' +
+      '<button type="button" class="btn btn-secondary btn-sm emp-leave-add-range" data-leave-kind="' +
+      escapeHtml(kind) +
+      '">Add days</button>' +
+      '</div>'
+    );
+  }
+
+  function wireLeaveRangeAddButtons() {
+    if (!empLeaveBalanceMount) return;
+    var L = gmLeave();
+    if (!L) return;
+    empLeaveBalanceMount.querySelectorAll('.emp-leave-add-range').forEach(function (btn) {
+      btn.onclick = function () {
+        var kind = btn.getAttribute('data-leave-kind');
+        if (!kind) return;
+        var wrap = btn.closest('.emp-leave-range-add');
+        var startInp = wrap ? wrap.querySelector('.emp-leave-range-start') : null;
+        var endInp = wrap ? wrap.querySelector('.emp-leave-range-end') : null;
+        var hrsInp = wrap ? wrap.querySelector('.emp-leave-range-hours') : null;
+        var startIso = startInp ? String(startInp.value || '').trim() : '';
+        var endIso = endInp ? String(endInp.value || '').trim() : '';
+        if (!startIso) {
+          if (startInp) startInp.focus();
+          return;
+        }
+        if (!endIso) endIso = startIso;
+        var hours = Math.max(
+          0,
+          parseFloat(hrsInp && hrsInp.value ? hrsInp.value : L.HOURS_PER_DAY) || L.HOURS_PER_DAY
+        );
+        var list = empLeaveBalanceMount.querySelector(
+          '.emp-leave-date-list[data-leave-kind="' + kind + '"]'
+        );
+        var details = empLeaveBalanceMount.querySelector(
+          '.emp-leave-dates-details[data-leave-kind="' + kind + '"]'
+        );
+        if (!list) return;
+        var existing = Object.create(null);
+        list.querySelectorAll('.emp-leave-date-row').forEach(function (row) {
+          var dateInp = row.querySelector('.emp-leave-date');
+          var dateVal = dateInp ? String(dateInp.value || '').trim() : '';
+          if (dateVal) existing[dateVal] = row;
+        });
+        leaveDatesInRange(startIso, endIso).forEach(function (dateIso) {
+          if (existing[dateIso]) {
+            var hrsEl = existing[dateIso].querySelector('.emp-leave-hours');
+            if (hrsEl) hrsEl.value = L.formatHours(hours);
+            return;
+          }
+          appendLeaveDateRow(list, kind, dateIso, hours, L);
+        });
+        if (details) details.open = true;
+        if (startInp) startInp.value = '';
+        if (endInp) endInp.value = '';
+        wireLeaveEditorInteractions();
+      };
+    });
+  }
+
+  function renderEmployeeLeaveEditor(emp) {
+    if (!empLeaveBalanceMount) return;
+    var L = gmLeave();
+    if (!L) {
+      empLeaveBalanceMount.innerHTML =
+        '<p class="calendar-hint">Leave tracking is unavailable.</p>';
+      return;
+    }
+    var bal = emp ? ensureEmpLeaveBalance(emp) : L.defaultBalance();
+    var c = L.computeBalance(bal);
+    var vac = bal.vacation;
+    var sick = bal.sick;
+
+    function block(kind, title, side, extraFieldsHtml) {
+      var computed = kind === 'vacation' ? c.vacation : c.sick;
+      var allowH =
+        side.allowanceHours != null
+          ? side.allowanceHours
+          : (side.allowanceDays || 0) * L.HOURS_PER_DAY;
+      var entryRows = (side.entries || [])
+        .map(function (e, i) {
+          return renderLeaveDateRow(kind, e, i, L);
+        })
+        .join('');
+      return (
+        '<div class="emp-leave-block" data-leave-block="' +
+        escapeHtml(kind) +
+        '">' +
+        '<h4 class="emp-leave-block-title">' +
+        escapeHtml(title) +
+        '</h4>' +
+        '<p class="emp-leave-summary">' +
+        '<span class="emp-leave-summary-used">' +
+        escapeHtml(String(computed.usedDays)) +
+        ' / ' +
+        escapeHtml(String(computed.allowanceDays)) +
+        ' days used</span>' +
+        '<span class="emp-leave-summary-sep" aria-hidden="true">·</span>' +
+        '<span class="emp-leave-summary-hrs">' +
+        escapeHtml(L.formatHours(computed.usedHours)) +
+        ' / ' +
+        escapeHtml(L.formatHours(computed.allowanceHours)) +
+        ' hrs</span>' +
+        (computed.remainingHours != null && kind === 'sick' && sick.hoursRemaining != null
+          ? '<span class="emp-leave-summary-sep" aria-hidden="true">·</span><span class="emp-leave-summary-rem">' +
+            escapeHtml(L.formatHours(computed.remainingHours)) +
+            ' hrs left</span>'
+          : '') +
+        '</p>' +
+        '<div class="emp-leave-allow-grid">' +
+        '<label class="form-field emp-leave-field">' +
+        '<span class="form-label">Allowance (days)</span>' +
+        '<input type="number" class="emp-leave-allow-days" data-leave-kind="' +
+        escapeHtml(kind) +
+        '" min="0" step="1" inputmode="numeric" value="' +
+        escapeHtml(String(side.allowanceDays)) +
+        '" />' +
+        '</label>' +
+        '<label class="form-field emp-leave-field">' +
+        '<span class="form-label">Allowance (hours)</span>' +
+        '<input type="number" class="emp-leave-allow-hours" data-leave-kind="' +
+        escapeHtml(kind) +
+        '" min="0" step="0.5" inputmode="decimal" value="' +
+        escapeHtml(L.formatHours(allowH)) +
+        '" />' +
+        '</label>' +
+        '</div>' +
+        extraFieldsHtml +
+        '<details class="emp-leave-dates-details" data-leave-kind="' +
+        escapeHtml(kind) +
+        '">' +
+        '<summary class="emp-leave-dates-summary">' +
+        escapeHtml(leaveDatesSummaryText(side.entries, L)) +
+        '</summary>' +
+        '<div class="emp-leave-dates-panel">' +
+        '<ul class="emp-leave-date-list" data-leave-kind="' +
+        escapeHtml(kind) +
+        '">' +
+        entryRows +
+        '</ul>' +
+        leaveRangeAddHtml(kind) +
+        '</div>' +
+        '</details>' +
+        '</div>'
+      );
+    }
+
+    empLeaveBalanceMount.innerHTML =
+      block('vacation', 'Vacation', vac, '') +
+      block(
+        'sick',
+        'Sick',
+        sick,
+        '<label class="form-field form-field-block emp-leave-note-field">' +
+          '<span class="form-label">Note</span>' +
+          '<textarea class="emp-leave-sick-note" rows="2" placeholder="Optional note">' +
+          escapeHtml(sick.note || '') +
+          '</textarea></label>'
+      );
+
+    wireLeaveRangeAddButtons();
+    wireLeaveEditorInteractions();
+  }
+
+  function wireLeaveEditorInteractions() {
+    if (!empLeaveBalanceMount) return;
+    empLeaveBalanceMount.querySelectorAll('.emp-leave-remove').forEach(function (btn) {
+      btn.onclick = function () {
+        var row = btn.closest('.emp-leave-date-row');
+        if (row) row.remove();
+        refreshLeaveDatesSummaries();
+      };
+    });
+    empLeaveBalanceMount.querySelectorAll('.emp-leave-date, .emp-leave-hours').forEach(function (inp) {
+      inp.onchange = refreshLeaveDatesSummaries;
+      inp.oninput = refreshLeaveDatesSummaries;
+    });
+  }
+
+  function readLeaveBalanceFromEditor() {
+    var L = gmLeave();
+    if (!L || !empLeaveBalanceMount) return L ? L.defaultBalance() : null;
+    function readEntries(kind) {
+      var list = empLeaveBalanceMount.querySelector(
+        '.emp-leave-date-list[data-leave-kind="' + kind + '"]'
+      );
+      if (!list) return [];
+      var out = [];
+      list.querySelectorAll('.emp-leave-date-row').forEach(function (row) {
+        var dateInp = row.querySelector('.emp-leave-date');
+        var hrsInp = row.querySelector('.emp-leave-hours');
+        var dateVal = dateInp ? String(dateInp.value || '').trim() : '';
+        if (!dateVal) return;
+        out.push({
+          date: dateVal,
+          hours: Math.max(0, parseFloat(hrsInp && hrsInp.value ? hrsInp.value : L.HOURS_PER_DAY) || 0),
+        });
+      });
+      return out;
+    }
+    function readNum(sel) {
+      var el = empLeaveBalanceMount.querySelector(sel);
+      if (!el || el.value === '') return null;
+      var n = parseFloat(el.value);
+      return Number.isNaN(n) ? null : n;
+    }
+    var vacAllow =
+      readNum('.emp-leave-allow-days[data-leave-kind="vacation"]') != null
+        ? readNum('.emp-leave-allow-days[data-leave-kind="vacation"]')
+        : 0;
+    var sickAllow =
+      readNum('.emp-leave-allow-days[data-leave-kind="sick"]') != null
+        ? readNum('.emp-leave-allow-days[data-leave-kind="sick"]')
+        : 0;
+    var vacAllowH = readNum('.emp-leave-allow-hours[data-leave-kind="vacation"]');
+    var sickAllowH = readNum('.emp-leave-allow-hours[data-leave-kind="sick"]');
+    var noteEl = empLeaveBalanceMount.querySelector('.emp-leave-sick-note');
+    return {
+      version: L.SEED_VERSION,
+      vacation: {
+        allowanceDays: vacAllow,
+        allowanceHours: vacAllowH != null ? vacAllowH : vacAllow * L.HOURS_PER_DAY,
+        hoursPerDay: L.HOURS_PER_DAY,
+        entries: readEntries('vacation'),
+      },
+      sick: {
+        allowanceDays: sickAllow,
+        allowanceHours: sickAllowH != null ? sickAllowH : sickAllow * L.HOURS_PER_DAY,
+        hoursPerDay: L.HOURS_PER_DAY,
+        entries: readEntries('sick'),
+        hoursRemaining: null,
+        note: noteEl ? String(noteEl.value || '').trim() : '',
+      },
+    };
+  }
+
   function renderEmployeeList() {
     if (!employeeListEl) return;
     syncGenerateAllPinsButton();
@@ -4497,7 +5196,8 @@
           '</span>' +
           '<ul class="employee-card-meta">' +
           metaRows +
-          '</ul></button></li>'
+          '</ul>' +
+          '</button></li>'
         );
       });
       parts.push('</ul></section>');
@@ -4856,15 +5556,51 @@
   const empSavePinBtn = document.getElementById('empSavePinBtn');
   const empRegeneratePinBtn = document.getElementById('empRegeneratePinBtn');
   const empHourlyRate = document.getElementById('empHourlyRate');
-  const empProfilePanel = document.getElementById('empProfilePanel');
+  const empTipPoint = document.getElementById('empTipPoint');
+  const empTimeclockPanel = document.getElementById('empTimeclockPanel');
+  const empTimeclockNewHint = document.getElementById('empTimeclockNewHint');
   const empScheduleAssigned = document.getElementById('empScheduleAssigned');
   const empScheduleNewHint = document.getElementById('empScheduleNewHint');
-  const empDetailShifts = document.getElementById('empDetailShifts');
-  const empDetailPunches = document.getElementById('empDetailPunches');
-  const empDetailScheduleFilter = document.getElementById('empDetailScheduleFilter');
-  const empScheduleShiftsCaption = document.getElementById('empScheduleShiftsCaption');
-  const empDetailTimeclockSummary = document.getElementById('empDetailTimeclockSummary');
+  const empDetailShiftsMount = document.getElementById('empDetailShiftsMount');
+  const empDetailPunchesMount = document.getElementById('empDetailPunchesMount');
   var empDetailShiftBuckets = null;
+  var empDetailShiftFilter = 'all';
+
+  function renderProfileDropdownMount(mount, summaryText, panelHtml, openByDefault) {
+    if (!mount) return;
+    mount.innerHTML =
+      '<details class="emp-leave-dates-details emp-profile-dropdown"' +
+      (openByDefault ? ' open' : '') +
+      '>' +
+      '<summary class="emp-leave-dates-summary">' +
+      escapeHtml(summaryText) +
+      '</summary>' +
+      '<div class="emp-leave-dates-panel">' +
+      panelHtml +
+      '</div></details>';
+  }
+
+  function buildShiftDropdownSummary(rows, filter, todayCount, upcomingCount) {
+    if (!todayCount && !upcomingCount) return 'No assigned shifts';
+    if (!rows.length) return 'No shifts in this view';
+    if (filter === 'today') {
+      return rows.length + (rows.length === 1 ? ' shift today' : ' shifts today');
+    }
+    if (filter === 'upcoming') {
+      return rows.length + (rows.length === 1 ? ' upcoming shift' : ' upcoming shifts');
+    }
+    var bits = [rows.length + (rows.length === 1 ? ' shift' : ' shifts')];
+    if (todayCount) bits.push(todayCount + (todayCount === 1 ? ' today' : ' today'));
+    if (upcomingCount) bits.push(upcomingCount + ' upcoming');
+    return bits.join(' · ');
+  }
+
+  function buildPunchDropdownSummary(totalLabel, rowCount, fallback) {
+    if (fallback) return fallback;
+    if (!rowCount) return 'No punches this week';
+    var punchWord = rowCount === 1 ? 'punch' : 'punches';
+    return totalLabel + ' this week · ' + rowCount + ' ' + punchWord;
+  }
 
   function restaurantShortLabel(restaurantId, restaurantName) {
     var r = restaurantsList.find(function (x) {
@@ -4879,81 +5615,99 @@
     return escapeHtml(s.day) + ' · ' + escapeHtml(s.timeLabel || '') + escapeHtml(locPart);
   }
 
-  function syncEmployeeDetailScheduleSummary(todayCount, upcomingCount) {
-    if (!empScheduleShiftsCaption) return;
-    if (!todayCount && !upcomingCount) {
-      empScheduleShiftsCaption.textContent = 'No assigned shifts in the published schedule.';
-      return;
-    }
-    var bits = [];
-    if (todayCount) bits.push(todayCount + (todayCount === 1 ? ' shift today' : ' shifts today'));
-    if (upcomingCount) {
-      bits.push(upcomingCount + (upcomingCount === 1 ? ' upcoming shift' : ' upcoming shifts'));
-    }
-    empScheduleShiftsCaption.textContent = bits.join(' · ');
-  }
-
   function renderEmployeeDetailShiftsList() {
-    if (!empDetailShifts) return;
+    if (!empDetailShiftsMount) return;
     if (!empDetailShiftBuckets) {
-      empDetailShifts.innerHTML = '';
+      empDetailShiftsMount.innerHTML = '';
       return;
     }
-    var filter = empDetailScheduleFilter ? empDetailScheduleFilter.value : 'all';
+    var filter = empDetailShiftFilter || 'all';
     var today = empDetailShiftBuckets.today || [];
     var upcoming = (empDetailShiftBuckets.upcoming || []).slice(0, 14);
     var rows = [];
     if (filter === 'today') rows = today;
     else if (filter === 'upcoming') rows = upcoming;
     else rows = today.concat(upcoming);
+    var summary = buildShiftDropdownSummary(rows, filter, today.length, upcoming.length);
+    var filterHtml =
+      '<label class="emp-detail-filter">' +
+      '<span class="emp-detail-filter-label">Show</span>' +
+      '<select id="empDetailScheduleFilter" class="emp-detail-select">' +
+      '<option value="all"' +
+      (filter === 'all' ? ' selected' : '') +
+      '>All shifts</option>' +
+      '<option value="today"' +
+      (filter === 'today' ? ' selected' : '') +
+      '>Today only</option>' +
+      '<option value="upcoming"' +
+      (filter === 'upcoming' ? ' selected' : '') +
+      '>Upcoming only</option>' +
+      '</select></label>';
+    var listHtml;
     if (!rows.length) {
-      empDetailShifts.innerHTML = '<li class="emp-detail-empty">No shifts in this view.</li>';
-      return;
+      listHtml = '<p class="emp-detail-empty">No shifts in this view.</p>';
+    } else {
+      listHtml =
+        '<ul class="emp-detail-shift-compact emp-profile-dropdown-list" aria-label="Assigned shifts">' +
+        rows
+          .map(function (s) {
+            return (
+              '<li class="emp-detail-shift-row">' + formatEmployeeShiftCompactLine(s) + '</li>'
+            );
+          })
+          .join('') +
+        '</ul>';
     }
-    empDetailShifts.innerHTML = rows
-      .map(function (s) {
-        return '<li class="emp-detail-shift-row">' + formatEmployeeShiftCompactLine(s) + '</li>';
-      })
-      .join('');
+    renderProfileDropdownMount(empDetailShiftsMount, summary, filterHtml + listHtml, false);
   }
 
   function renderEmployeeDetailShifts(emp) {
     if (!emp) {
       empDetailShiftBuckets = null;
-      syncEmployeeDetailScheduleSummary(0, 0);
-      if (empDetailShifts) empDetailShifts.innerHTML = '';
+      empDetailShiftFilter = 'all';
+      if (empDetailShiftsMount) empDetailShiftsMount.innerHTML = '';
       return;
     }
     empDetailShiftBuckets = window.gmCalloutBridge.getWorkerScheduleBuckets(employeeDisplayName(emp));
     var today = empDetailShiftBuckets.today || [];
     var upcoming = (empDetailShiftBuckets.upcoming || []).slice(0, 14);
-    syncEmployeeDetailScheduleSummary(today.length, upcoming.length);
     renderEmployeeDetailShiftsList();
   }
 
-  if (empDetailScheduleFilter) {
-    empDetailScheduleFilter.addEventListener('change', function () {
+  if (empDetailShiftsMount) {
+    empDetailShiftsMount.addEventListener('change', function (e) {
+      if (!e.target || e.target.id !== 'empDetailScheduleFilter') return;
+      empDetailShiftFilter = e.target.value || 'all';
       renderEmployeeDetailShiftsList();
     });
   }
 
   async function loadEmployeeDetailPunches(emp) {
-    if (!empDetailPunches) return;
-    if (!empDetailTimeclockSummary) return;
+    if (!empDetailPunchesMount) return;
     if (!emp || !isUuidCloudId(emp.id)) {
-      empDetailTimeclockSummary.textContent = 'Unavailable';
-      empDetailPunches.innerHTML =
-        '<li class="emp-detail-punch-item"><span class="emp-detail-empty">Cloud roster required.</span></li>';
+      renderProfileDropdownMount(
+        empDetailPunchesMount,
+        'Cloud roster required',
+        '<p class="emp-detail-empty">Time clock punches need a saved cloud employee.</p>',
+        false
+      );
       return;
     }
     if (!gmSupabaseReadyNow()) {
-      empDetailTimeclockSummary.textContent = 'Sign in to load';
-      empDetailPunches.innerHTML =
-        '<li class="emp-detail-punch-item"><span class="emp-detail-empty">Sign in with Supabase.</span></li>';
+      renderProfileDropdownMount(
+        empDetailPunchesMount,
+        'Sign in to load punches',
+        '<p class="emp-detail-empty">Sign in with Supabase to view punches.</p>',
+        false
+      );
       return;
     }
-    empDetailTimeclockSummary.textContent = 'Loading…';
-    empDetailPunches.innerHTML = '';
+    renderProfileDropdownMount(
+      empDetailPunchesMount,
+      'Loading punches…',
+      '<p class="emp-detail-empty">Loading…</p>',
+      true
+    );
     var bounds = getPayWeekBounds();
     var res = await window.gmSupabase
       .from('time_clock_entries')
@@ -4963,11 +5717,14 @@
       .lte('clock_in_at', bounds.end.toISOString())
       .order('clock_in_at', { ascending: false });
     if (res.error) {
-      empDetailTimeclockSummary.textContent = 'Could not load';
-      empDetailPunches.innerHTML =
-        '<li class="emp-detail-punch-item"><span class="emp-detail-empty">' +
-        escapeHtml(res.error.message || 'Could not load punches.') +
-        '</span></li>';
+      renderProfileDropdownMount(
+        empDetailPunchesMount,
+        'Could not load punches',
+        '<p class="emp-detail-empty">' +
+          escapeHtml(res.error.message || 'Could not load punches.') +
+          '</p>',
+        true
+      );
       return;
     }
     var rows = res.data || [];
@@ -4976,62 +5733,62 @@
       totalMins += punchShiftRoundedMinutes(row.clock_in_at, row.clock_out_at);
     });
     var totalLabel = formatDurationHoursMinutes(totalMins);
-    var punchWord = rows.length === 1 ? 'punch' : 'punches';
-    empDetailTimeclockSummary.textContent =
-      totalLabel + ' this week' + (rows.length ? ' · ' + rows.length + ' ' + punchWord : '');
+    var summary = buildPunchDropdownSummary(totalLabel, rows.length, '');
+    var panelHtml;
     if (!rows.length) {
-      empDetailPunches.innerHTML =
-        '<li class="emp-detail-punch-item"><span class="emp-detail-empty">No punches this week.</span></li>';
-      return;
+      panelHtml = '<p class="emp-detail-empty">No punches this week.</p>';
+    } else {
+      panelHtml =
+        '<ul class="emp-detail-punch-list emp-profile-dropdown-list" aria-label="Punches this week">' +
+        rows
+          .map(function (row) {
+            var open = !row.clock_out_at;
+            var inR = formatRoundedClockTime(row.clock_in_at ? new Date(row.clock_in_at) : null);
+            var outR = open
+              ? 'in'
+              : formatRoundedClockTime(row.clock_out_at ? new Date(row.clock_out_at) : null);
+            var mins = punchShiftRoundedMinutes(row.clock_in_at, row.clock_out_at);
+            var dur = formatDurationHoursMinutes(mins) + (open ? ' · open' : '');
+            var day = '';
+            try {
+              day =
+                new Date(row.clock_in_at).toLocaleDateString(undefined, {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                }) + ' · ';
+            } catch (_eDay) {
+              day = '';
+            }
+            return (
+              '<li class="emp-detail-punch-item">' +
+              '<span class="emp-detail-punch-line">' +
+              escapeHtml(day + inR + '–' + outR) +
+              '</span>' +
+              '<span class="emp-detail-punch-dur">' +
+              escapeHtml(dur) +
+              '</span></li>'
+            );
+          })
+          .join('') +
+        '</ul>';
     }
-    empDetailPunches.innerHTML = rows
-      .map(function (row) {
-        var open = !row.clock_out_at;
-        var inR = formatRoundedClockTime(row.clock_in_at ? new Date(row.clock_in_at) : null);
-        var outR = open
-          ? 'in'
-          : formatRoundedClockTime(row.clock_out_at ? new Date(row.clock_out_at) : null);
-        var mins = punchShiftRoundedMinutes(row.clock_in_at, row.clock_out_at);
-        var dur = formatDurationHoursMinutes(mins) + (open ? ' · open' : '');
-        var day = '';
-        try {
-          day =
-            new Date(row.clock_in_at).toLocaleDateString(undefined, {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            }) + ' · ';
-        } catch (_eDay) {
-          day = '';
-        }
-        return (
-          '<li class="emp-detail-punch-item">' +
-          '<span class="emp-detail-punch-line">' +
-          escapeHtml(day + inR + '–' + outR) +
-          '</span>' +
-          '<span class="emp-detail-punch-dur">' +
-          escapeHtml(dur) +
-          '</span></li>'
-        );
-      })
-      .join('');
+    renderProfileDropdownMount(empDetailPunchesMount, summary, panelHtml, false);
   }
 
   function refreshEmployeeDetailPanel(emp) {
-    if (empProfilePanel) empProfilePanel.hidden = !emp;
+    if (empTimeclockPanel) empTimeclockPanel.hidden = !emp;
+    if (empTimeclockNewHint) empTimeclockNewHint.hidden = !!emp;
     if (empScheduleAssigned) empScheduleAssigned.hidden = !emp;
     if (empScheduleNewHint) empScheduleNewHint.hidden = !!emp;
     if (!emp) {
       empDetailShiftBuckets = null;
-      if (empDetailShifts) empDetailShifts.innerHTML = '';
-      if (empDetailPunches) empDetailPunches.innerHTML = '';
-      if (empScheduleShiftsCaption) {
-        empScheduleShiftsCaption.textContent = '—';
-      }
-      if (empDetailTimeclockSummary) empDetailTimeclockSummary.textContent = '—';
+      empDetailShiftFilter = 'all';
+      if (empDetailShiftsMount) empDetailShiftsMount.innerHTML = '';
+      if (empDetailPunchesMount) empDetailPunchesMount.innerHTML = '';
       return;
     }
-    if (empDetailScheduleFilter) empDetailScheduleFilter.value = 'all';
+    empDetailShiftFilter = 'all';
     renderEmployeeDetailShifts(emp);
     void loadEmployeeDetailPunches(emp);
   }
@@ -5064,7 +5821,14 @@
           ? String(emp.hourlyRate)
           : '';
     }
+    if (empTipPoint) {
+      empTipPoint.value =
+        emp && emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))
+          ? String(emp.tipPoint)
+          : '';
+    }
     refreshEmployeeDetailPanel(emp);
+    renderEmployeeLeaveEditor(emp);
     var st = empStaffType ? empStaffType.value : 'Kitchen';
     const grid = emp
       ? normalizeWeeklyGrid(emp.weeklyGrid, st)
@@ -5903,6 +6667,9 @@
       var hrRaw = empHourlyRate ? String(empHourlyRate.value || '').trim() : '';
       var hrNum = hrRaw === '' ? null : parseFloat(hrRaw);
       if (hrNum != null && (Number.isNaN(hrNum) || hrNum < 0)) hrNum = null;
+      var tpRaw = empTipPoint ? String(empTipPoint.value || '').trim() : '';
+      var tpNum = tpRaw === '' ? null : parseFloat(tpRaw);
+      if (tpNum != null && (Number.isNaN(tpNum) || tpNum < 0)) tpNum = null;
       const rec = {
         id: editingEmployeeId || newEmployeeId(),
         firstName: first,
@@ -5913,6 +6680,9 @@
         usualRestaurant: urVal,
       };
       if (hrNum != null) rec.hourlyRate = Math.round(hrNum * 100) / 100;
+      if (tpNum != null) {
+        rec.tipPoint = normalizeTipPointValue(tpNum);
+      }
       var wasNew = !editingEmployeeId;
       var savedId = editingEmployeeId || rec.id;
       var previousDisplayName = null;
@@ -5927,7 +6697,19 @@
         }
       } else {
         applyHourlyRatePresetIfMissing(rec);
+        applyTipPointPresetIfMissing(rec);
         employees.push(rec);
+      }
+      var L = gmLeave();
+      if (L && empLeaveBalanceMount) {
+        rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+        rec.meta.leaveBalance = L.normalizeBalance(readLeaveBalanceFromEditor());
+      }
+      if (rec.tipPoint != null) {
+        rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+        rec.meta.tipPoint = rec.tipPoint;
+      } else if (rec.meta && rec.meta.tipPoint != null) {
+        delete rec.meta.tipPoint;
       }
       var newDisplayName = employeeDisplayName(rec);
       if (previousDisplayName && !workerNamesMatch(previousDisplayName, newDisplayName)) {
@@ -6505,9 +7287,11 @@
     var loginEl = document.getElementById('login-screen');
     if (!loginEl) return;
     if (isOpen) {
+      loginEl.hidden = false;
       loginEl.removeAttribute('aria-hidden');
       loginEl.removeAttribute('inert');
     } else {
+      loginEl.hidden = true;
       loginEl.setAttribute('aria-hidden', 'true');
       loginEl.setAttribute('inert', '');
     }
@@ -6575,6 +7359,8 @@
       root.classList.add('manager-app');
     }
     gmCalloutSetLoginGateOpen(false);
+    var loginEl = document.getElementById('login-screen');
+    if (loginEl) loginEl.hidden = true;
     return true;
   }
 
@@ -6647,6 +7433,8 @@
           employees.push(e);
         });
         applyHourlyRatePresetsToAllEmployees();
+        applyTipPointPresetsToAllEmployees();
+        seedAllEmployeeLeaveBalances();
       }
     } else if (
       !empRes.error &&
@@ -6751,6 +7539,13 @@
   }
   window.gmCalloutSupabaseHydrateFromRemote = gmCalloutSupabaseHydrateFromRemote;
   window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
+  window.gmCalloutManagerBootstrap = function () {
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    showScreen(1);
+    renderEmployeeList();
+  };
   window.gmCalloutQueueEmployeeChatCloudSave = queueEmployeeChatCloudSave;
 
   function initGmCalloutTimecardsModule() {
@@ -6770,6 +7565,7 @@
       buildAllLocationScheduleSnapshot: buildAllLocationScheduleSnapshot,
       WEEK_META: WEEK_META,
       getPayWeekBounds: getPayWeekBounds,
+      getThisMondayDate: getThisMondayDate,
       punchShiftRoundedMinutes: punchShiftRoundedMinutes,
       formatRoundedClockTime: formatRoundedClockTime,
       scheduledShiftStartAt: scheduledShiftStartAt,
@@ -6778,6 +7574,10 @@
       formatDurationHoursMinutes: formatDurationHoursMinutes,
       redPokeShiftHoursDecimal: redPokeShiftHoursDecimal,
       redPokeShiftTimeLabel: redPokeShiftTimeLabel,
+      scheduleSlotDisplayLines: scheduleSlotDisplayLines,
+      scheduleCalendarCellText: scheduleCalendarCellText,
+      weekIndexForPayWeekStartIso: weekIndexForPayWeekStartIso,
+      buildScheduleSnapshotForPayWeek: buildScheduleSnapshotForPayWeek,
       gmSupabaseReadyNow: gmSupabaseReadyNow,
       showScreen: showScreen,
       setTimecardTitle: setTimecardScreenTitle,
@@ -6796,6 +7596,9 @@
         var restored = await gmCalloutRestoreAuthedShellFromSupabase();
         if (restored && !gmCalloutIsTimeclockKiosk()) {
           await gmCalloutSupabaseHydrateFromRemote();
+          if (document.documentElement.classList.contains('manager-app')) {
+            gmCalloutManagerBootstrap();
+          }
         }
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
@@ -6803,7 +7606,13 @@
     } else {
       gmCalloutSetLoginGateOpen(true);
     }
-    if (!gmCalloutIsTimeclockKiosk()) showScreen(1);
+    if (!gmCalloutIsTimeclockKiosk() && document.documentElement.classList.contains('authed')) {
+      if (document.documentElement.classList.contains('manager-app')) {
+        gmCalloutManagerBootstrap();
+      } else {
+        showScreen(1);
+      }
+    }
   })();
 
   if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {

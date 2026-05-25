@@ -8,14 +8,9 @@ import {
   staffTypeLabel,
   type EmployeeRow,
 } from '../../lib/employees';
+import { leaveSummaryLines } from '../../lib/employeeLeave';
 import { loadDraftFromTeamState } from '../../lib/schedule/engine';
-
-function groupOrder(staffType: string): number {
-  if (staffType === 'Bartender') return 0;
-  if (staffType === 'Kitchen') return 1;
-  if (staffType === 'Server') return 2;
-  return 9;
-}
+import { compareEmployeesByScheduleOrder } from '../../lib/schedule/rosterOrder';
 
 export default function ManagerTeam() {
   const { height: windowHeight } = useWindowDimensions();
@@ -25,11 +20,7 @@ export default function ManagerTeam() {
 
   const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
 
-  const sorted = [...employees].sort((a, b) => {
-    const g = groupOrder(a.staffType) - groupOrder(b.staffType);
-    if (g !== 0) return g;
-    return employeeDisplayName(a).localeCompare(employeeDisplayName(b));
-  });
+  const sorted = [...employees].sort(compareEmployeesByScheduleOrder);
 
   const sections: { title: string; list: EmployeeRow[] }[] = [];
   let curTitle = '';
@@ -59,18 +50,28 @@ export default function ManagerTeam() {
         {sections.map((sec) => (
           <View key={sec.title}>
             <Text style={styles.sectionTitle}>{sec.title}</Text>
-            {sec.list.map((item) => (
-              <Pressable key={item.id} style={styles.row} onPress={() => setSelected(item)}>
-                <Text style={styles.name}>{employeeDisplayName(item)}</Text>
-                <Text style={styles.phone}>{(item.phone || '').trim() || '—'}</Text>
-                <Text style={styles.loc}>Location: {employeeUsualLocationLine(item.usualRestaurant)}</Text>
-                {item.authUserId ? (
-                  <Text style={styles.badge}>Linked login</Text>
-                ) : (
-                  <Text style={styles.noLogin}>No login</Text>
-                )}
-              </Pressable>
-            ))}
+            {sec.list.map((item) => {
+              const leaveLines = leaveSummaryLines(item);
+              return (
+                <Pressable key={item.id} style={styles.row} onPress={() => setSelected(item)}>
+                  <Text style={styles.name}>{employeeDisplayName(item)}</Text>
+                  <Text style={styles.phone}>{(item.phone || '').trim() || '—'}</Text>
+                  <Text style={styles.loc}>Location: {employeeUsualLocationLine(item.usualRestaurant)}</Text>
+                  <View style={styles.leaveBlock}>
+                    {leaveLines.slice(0, 2).map((line) => (
+                      <Text key={line} style={styles.leaveLine}>
+                        {line}
+                      </Text>
+                    ))}
+                  </View>
+                  {item.authUserId ? (
+                    <Text style={styles.badge}>Linked login</Text>
+                  ) : (
+                    <Text style={styles.noLogin}>No login</Text>
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
         ))}
         {!loading && !employees.length ? (
@@ -98,6 +99,13 @@ export default function ManagerTeam() {
                 <Text style={styles.modalLine}>
                   Login: {selected.authUserId ? 'Linked to app account' : 'Not linked'}
                 </Text>
+                <Text style={styles.gridLabel}>Vacation &amp; sick days</Text>
+                <Text style={styles.leaveHint}>8 hours per day unless noted on a row.</Text>
+                {leaveSummaryLines(selected).map((line) => (
+                  <Text key={line} style={styles.leaveDetailLine}>
+                    {line}
+                  </Text>
+                ))}
                 <Text style={styles.gridLabel}>Weekly availability</Text>
                 <AvailabilityMatrixReadOnly
                   weeklyGrid={(selected.weeklyGrid ?? {}) as Record<string, unknown>}
@@ -140,6 +148,15 @@ const styles = StyleSheet.create({
   name: { fontSize: 16, fontWeight: '600', color: '#111' },
   phone: { fontSize: 14, color: '#475569', marginTop: 6 },
   loc: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  leaveBlock: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e8eaed',
+  },
+  leaveLine: { fontSize: 12, color: '#334155', lineHeight: 18 },
+  leaveHint: { fontSize: 12, color: '#64748b', marginTop: 4, marginBottom: 6 },
+  leaveDetailLine: { fontSize: 14, color: '#334155', marginTop: 4, lineHeight: 20 },
   badge: { fontSize: 12, color: '#047857', marginTop: 8, fontWeight: '600' },
   noLogin: { fontSize: 12, color: '#888', marginTop: 8 },
   muted: { fontSize: 14, color: '#888', padding: 16 },

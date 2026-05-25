@@ -3095,6 +3095,285 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   word-break: break-word;
 }
 
+.employee-card-leave {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.employee-card-leave-line {
+  margin: 0 0 4px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.employee-card-leave-line:last-child {
+  margin-bottom: 0;
+}
+
+.employee-card-leave-detail {
+  margin: 2px 0 0;
+  padding-left: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  list-style: disc;
+}
+
+.emp-leave-hint {
+  margin: 0 0 12px;
+}
+
+.emp-leave-mount {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.emp-leave-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  background: var(--surface);
+}
+
+.emp-leave-block-title {
+  margin: 0 0 6px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.emp-leave-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.emp-leave-summary-used,
+.emp-leave-summary-hrs,
+.emp-leave-summary-rem {
+  color: var(--text);
+}
+
+.emp-leave-summary-sep {
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.emp-leave-allow-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 480px) {
+  .emp-leave-allow-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.emp-leave-field {
+  margin: 0;
+}
+
+.emp-leave-field input {
+  width: 100%;
+}
+
+.emp-leave-note-field {
+  margin: 0 0 12px;
+}
+
+.emp-leave-note-field textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  resize: vertical;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: inherit;
+  color: var(--text);
+  background: var(--bg, #fff);
+}
+
+.emp-leave-note-field textarea:focus {
+  outline: 1px solid var(--primary);
+  outline-offset: 0;
+}
+
+.emp-leave-note-field textarea::placeholder {
+  color: var(--text);
+  opacity: 1;
+}
+
+.emp-leave-range-add {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.emp-leave-range-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr minmax(72px, 88px);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 480px) {
+  .emp-leave-range-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .emp-leave-range-grid .emp-leave-range-hours-field {
+    grid-column: 1 / -1;
+  }
+}
+
+.emp-leave-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+
+.emp-leave-range-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--bg, #fff);
+}
+
+.emp-leave-range-field input:focus {
+  outline: 1px solid var(--primary);
+  outline-offset: 0;
+}
+
+.emp-leave-add-range {
+  width: 100%;
+}
+
+.emp-leave-dates-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--hover-fill, #f9fafb);
+  overflow: hidden;
+}
+
+.emp-leave-dates-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.emp-leave-dates-summary::-webkit-details-marker {
+  display: none;
+}
+
+.emp-leave-dates-summary::after {
+  content: '';
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  margin-right: 2px;
+}
+
+.emp-leave-dates-details[open] .emp-leave-dates-summary::after {
+  transform: rotate(-135deg);
+  margin-top: 4px;
+}
+
+.emp-leave-dates-panel {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.emp-leave-date-list {
+  margin: 0;
+  padding: 10px 0 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.emp-leave-date-row {
+  display: grid;
+  grid-template-columns: 1fr minmax(72px, 88px) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+@media (max-width: 480px) {
+  .emp-leave-date-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .emp-leave-date-row .emp-leave-remove {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+.emp-leave-date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+
+.emp-leave-date-field-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.emp-leave-date-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 0.875rem;
+}
+
+.emp-leave-dates-panel .emp-leave-add-range {
+  margin-top: 0;
+}
+
 .employee-card-value--pin {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.06em;
@@ -3594,15 +3873,23 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .emp-clock-pin-row {
   display: flex;
   gap: 10px;
-  align-items: center;
+  align-items: stretch;
   flex-wrap: wrap;
 }
 
 .emp-clock-pin-value {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  display: inline-flex;
+  align-items: center;
+  min-width: 5.5rem;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: inherit;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  background: var(--hover-fill, #f9fafb);
 }
 
 .emp-clock-pin-row--set {
@@ -3612,9 +3899,42 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .emp-clock-pin-input {
   flex: 1 1 8rem;
   min-width: 0;
-  font-size: 1.1rem;
-  letter-spacing: 0.15em;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: inherit;
+  color: var(--text);
+  background: var(--bg, #fff);
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
+.emp-clock-pin-input:focus {
+  outline: 1px solid var(--primary);
+  outline-offset: 0;
+}
+
+.emp-clock-pin-input::placeholder {
+  color: var(--text);
+  opacity: 1;
+  letter-spacing: normal;
+}
+
+.emp-clock-pin-btn {
+  padding: 11px 14px;
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.emp-form-section--timeclock .emp-form-subtitle {
+  margin-top: 4px;
+}
+
+.emp-form-section--timeclock .emp-profile-dropdown-mount {
+  margin-top: 0;
 }
 
 .timeclock-mode-toggle {
@@ -3834,6 +4154,19 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
 }
 
+.emp-profile-dropdown-mount {
+  margin-top: 6px;
+}
+
+.emp-profile-dropdown-mount .emp-detail-filter {
+  margin: 0 0 8px;
+}
+
+.emp-profile-dropdown-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .emp-detail-filter {
   display: flex;
   align-items: center;
@@ -3935,6 +4268,31 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.875rem;
 }
 
+.timecards-week-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0;
+}
+
+.timecards-week-picker-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text, #1c1917);
+}
+
+.timecards-week-select {
+  min-width: min(100%, 280px);
+  max-width: 100%;
+  font-size: 0.875rem;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #d6d3d1);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
 .timecards-roster-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -3954,6 +4312,29 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   flex-shrink: 0;
   font-size: 0.8125rem;
   padding: 6px 12px;
+}
+
+.timecards-download-panel {
+  max-width: 22rem;
+}
+
+.timecards-download-hint {
+  margin: 0 0 12px;
+}
+
+.timecards-download-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.timecards-download-option {
+  text-align: left;
+}
+
+.timecards-download-back {
+  margin-top: 4px;
 }
 
 .timecards-grand-totals {

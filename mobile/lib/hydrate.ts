@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { TEAM_STATE_ROW_ID } from './constants';
+import { applyLeaveSeedsToEmployees } from './employeeLeave';
 import { mapEmployeeFromDb, type EmployeeRow } from './employees';
 import { mapStaffRequestFromDbRow, type StaffRequestUi } from './staffRequests';
 
@@ -39,6 +40,8 @@ export async function hydrateFromSupabase(sb: SupabaseClient): Promise<Hydration
       if (m) staffRequests.push(m);
     }
   }
+
+  applyLeaveSeedsToEmployees(employees);
 
   const teamState =
     teamRes.data && typeof teamRes.data === 'object'

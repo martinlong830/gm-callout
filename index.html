@@ -609,46 +609,33 @@
             <span class="form-label">Location</span>
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
-          <label class="form-field form-field-block">
-            <span class="form-label">Hourly rate ($)</span>
-            <input
-              type="number"
-              name="hourlyRate"
-              id="empHourlyRate"
-              min="0"
-              step="0.01"
-              inputmode="decimal"
-              placeholder="e.g. 18.00"
-            />
-          </label>
-
-          <div class="form-field form-field-block" id="empClockPinBlock" hidden>
-            <span class="form-label">Time clock PIN</span>
-            <div class="emp-clock-pin-row">
-              <span class="emp-clock-pin-value" id="empClockPinDisplay">----</span>
-              <button type="button" class="btn btn-secondary" id="empRegeneratePinBtn">Random PIN</button>
-            </div>
-            <div class="emp-clock-pin-row emp-clock-pin-row--set">
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">Hourly rate ($)</span>
               <input
-                type="text"
-                id="empClockPinInput"
-                class="emp-clock-pin-input"
-                inputmode="numeric"
-                pattern="[0-9]*"
-                maxlength="4"
-                placeholder="Custom 4-digit PIN"
-                autocomplete="off"
+                type="number"
+                name="hourlyRate"
+                id="empHourlyRate"
+                min="0"
+                step="0.01"
+                inputmode="decimal"
+                placeholder="e.g. 18.00"
               />
-              <button type="button" class="btn btn-secondary" id="empSavePinBtn">Save PIN</button>
-            </div>
-            <p class="calendar-hint">Share this 4-digit PIN with the employee for the shared time clock tablet.</p>
+            </label>
+            <label class="form-field">
+              <span class="form-label">Tip point</span>
+              <input
+                type="number"
+                name="tipPoint"
+                id="empTipPoint"
+                min="0"
+                step="0.5"
+                inputmode="decimal"
+                placeholder="e.g. 3"
+              />
+            </label>
           </div>
 
-              <div id="empProfilePanel" class="emp-profile-extra" hidden>
-                <h3 class="emp-form-subtitle">Time clock this week</h3>
-                <p class="emp-schedule-caption" id="empDetailTimeclockSummary">—</p>
-                <ul class="emp-detail-punch-list" id="empDetailPunches" aria-label="Punches this week"></ul>
-              </div>
             </div>
           </section>
 
@@ -657,18 +644,9 @@
             <div class="emp-form-section-body">
               <div class="emp-schedule-block">
                 <h3 class="emp-form-subtitle">Assigned shifts</h3>
-                <p class="emp-schedule-caption" id="empScheduleShiftsCaption">—</p>
                 <p class="calendar-hint" id="empScheduleNewHint">Save this employee to see assigned shifts from the published schedule.</p>
                 <div id="empScheduleAssigned" class="emp-schedule-assigned" hidden>
-                  <label class="emp-detail-filter">
-                    <span class="emp-detail-filter-label">Show</span>
-                    <select id="empDetailScheduleFilter" class="emp-detail-select">
-                      <option value="all">All shifts</option>
-                      <option value="today">Today only</option>
-                      <option value="upcoming">Upcoming only</option>
-                    </select>
-                  </label>
-                  <ul id="empDetailShifts" class="emp-detail-shift-compact" aria-live="polite"></ul>
+                  <div id="empDetailShiftsMount" class="emp-profile-dropdown-mount" aria-live="polite"></div>
                 </div>
               </div>
 
@@ -678,6 +656,49 @@
               </fieldset>
             </div>
           </section>
+
+          <section class="emp-form-section emp-form-section--timeclock" id="empTimeclockSection" aria-labelledby="empTimeclockSectionTitle">
+            <h2 class="emp-form-section-title" id="empTimeclockSectionTitle">Time clock</h2>
+            <div class="emp-form-section-body">
+              <p class="calendar-hint" id="empTimeclockNewHint">Save this employee to assign a time clock PIN and view punches.</p>
+              <div id="empTimeclockPanel" hidden>
+                <div class="form-field form-field-block" id="empClockPinBlock" hidden>
+                  <span class="form-label">Time clock PIN</span>
+                  <div class="emp-clock-pin-row">
+                    <span class="emp-clock-pin-value" id="empClockPinDisplay" aria-label="Current PIN">----</span>
+                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empRegeneratePinBtn">Random PIN</button>
+                  </div>
+                  <div class="emp-clock-pin-row emp-clock-pin-row--set">
+                    <input
+                      type="text"
+                      id="empClockPinInput"
+                      class="emp-clock-pin-input"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                      maxlength="4"
+                      placeholder="Custom 4-digit PIN"
+                      autocomplete="off"
+                    />
+                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empSavePinBtn">Save PIN</button>
+                  </div>
+                  <p class="calendar-hint">Share this 4-digit PIN with the employee for the shared time clock tablet.</p>
+                </div>
+                <h3 class="emp-form-subtitle">This week</h3>
+                <div id="empDetailPunchesMount" class="emp-profile-dropdown-mount" aria-live="polite"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="emp-form-section emp-form-section--leave" id="empLeaveSection" aria-labelledby="empLeaveSectionTitle">
+            <h2 class="emp-form-section-title" id="empLeaveSectionTitle">Vacation &amp; sick leave</h2>
+            <div class="emp-form-section-body">
+              <p class="calendar-hint emp-leave-hint">
+                Set allowance in days and hours, then record each day used. Save the employee to keep changes.
+              </p>
+              <div id="empLeaveBalanceMount" class="emp-leave-mount"></div>
+            </div>
+          </section>
+
           <div class="screen-actions screen-actions-split">
             <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn">Cancel</button>
             <button type="submit" class="btn btn-primary" id="saveEmployeeBtn">Save</button>
@@ -772,6 +793,45 @@
     </main>
   </div>
 
+  <div id="timecardsDownloadModal" class="availability-modal timecards-download-modal" hidden>
+    <div class="availability-modal-backdrop" data-timecards-download-dismiss tabindex="-1"></div>
+    <div class="availability-modal-panel timecards-download-panel" role="dialog" aria-modal="true" aria-labelledby="timecardsDownloadTitle">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="timecardsDownloadTitle">Download timecards</h2>
+        <button type="button" class="availability-modal-close" data-timecards-download-dismiss aria-label="Close">×</button>
+      </div>
+      <div class="timecards-download-step" id="timecardsDownloadStepType">
+        <p class="calendar-hint timecards-download-hint">Choose a report type.</p>
+        <div class="timecards-download-options">
+          <button type="button" class="btn btn-secondary btn-block timecards-download-option" data-timecards-report="summary">
+            Summary
+          </button>
+          <button type="button" class="btn btn-secondary btn-block timecards-download-option" data-timecards-report="shifts">
+            Shifts
+          </button>
+          <button type="button" class="btn btn-secondary btn-block timecards-download-option" data-timecards-report="full">
+            Full report (Excel)
+          </button>
+        </div>
+      </div>
+      <div class="timecards-download-step" id="timecardsDownloadStepFormat" hidden>
+        <p class="calendar-hint timecards-download-hint">
+          <strong id="timecardsDownloadReportLabel">Summary</strong> — choose file format.
+        </p>
+        <div class="timecards-download-options">
+          <button type="button" class="btn btn-secondary btn-block timecards-download-option" data-timecards-format="csv">
+            CSV spreadsheet
+          </button>
+          <button type="button" class="btn btn-secondary btn-block timecards-download-option" data-timecards-format="xlsx">
+            Excel workbook (.xlsx)
+          </button>
+        </div>
+        <button type="button" class="btn btn-ghost btn-block timecards-download-back" id="timecardsDownloadBack">
+          ← Back
+        </button>
+      </div>
+    </div>
+  </div>
 
   <div class="app-timeclock" id="appTimeclock">
     <div class="app-top">
@@ -1174,7 +1234,9 @@
 
   <script src="/gm-supabase-config.js?v=2"></script>
   <script src="/vendor/supabase-js.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
   <script src="gm-supabase-init.js"></script>
+  <script src="employee-leave.js"></script>
   <script src="timecards-manager.js"></script>
   <script src="app.js"></script>
   <script src="employee-app.js"></script>
@@ -1260,6 +1322,8 @@
         if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
           window.gmCalloutSetLoginGateOpen(false);
         }
+        var loginEl = document.getElementById('login-screen');
+        if (loginEl) loginEl.hidden = true;
       }
 
       async function finishPortalLogin(role, displayName) {
@@ -1280,6 +1344,9 @@
           }
           if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
             window.gmCalloutManagerMessagingBootstrap();
+          }
+          if (typeof window.gmCalloutManagerBootstrap === 'function') {
+            window.gmCalloutManagerBootstrap();
           }
           return;
         }
