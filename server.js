@@ -143,6 +143,27 @@ app.get("/vendor/supabase-js.js", (req, res) => {
   });
 });
 
+/** HTML/CSS/app bundles — avoid stale UI after deploy (tip pool inputs, etc.). */
+const NO_CACHE_ASSET = new Set([
+  "index.html",
+  "styles.css",
+  "app.js",
+  "timecards-manager.js",
+  "timeclock-app.js",
+  "break-policy.js",
+  "employee-leave.js",
+]);
+
+app.use((req, res, next) => {
+  const base = path.basename(req.path.split("?")[0] || "");
+  if (NO_CACHE_ASSET.has(base)) {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+  }
+  next();
+});
+
 app.use(express.static(__dirname));
 
 function createTwilioClient() {

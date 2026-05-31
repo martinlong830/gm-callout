@@ -4676,13 +4676,24 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-tip-input {
   width: 100%;
+  min-height: 38px;
   padding: 8px 10px;
+  font: inherit;
   font-size: 0.9375rem;
   font-variant-numeric: tabular-nums;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: textfield;
+}
+
+.timecards-tip-input::-webkit-outer-spin-button,
+.timecards-tip-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .timecards-tip-input:focus {
