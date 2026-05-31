@@ -357,6 +357,15 @@
               </div>
             </div>
             <div class="schedule-toolbar-actions">
+              <button
+                type="button"
+                class="btn btn-secondary schedule-toolbar-btn"
+                id="scheduleUndoBtn"
+                disabled
+                title="Undo last schedule or shift time change"
+              >
+                Undo
+              </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal">
                 Templates
               </button>
@@ -580,6 +589,20 @@
       <!-- Screen 6: Add / Edit employee -->
       <section class="screen" id="screen-employee-form" data-screen="6">
         <form id="employeeForm" class="employee-form">
+          <header class="emp-profile-header" id="empProfileHeader">
+            <div id="empProfileHeaderPhoto" class="emp-profile-header-photo"></div>
+            <div class="emp-profile-header-body">
+              <h2 class="emp-profile-header-name" id="empProfileHeaderName">Employee</h2>
+              <p class="emp-profile-header-role" id="empProfileHeaderRole"></p>
+              <div class="emp-photo-actions">
+                <label class="btn btn-secondary emp-photo-upload-label">
+                  Upload photo
+                  <input type="file" id="empPhotoInput" accept="image/jpeg,image/png,image/webp,image/gif" hidden />
+                </label>
+                <button type="button" class="btn btn-ghost" id="empPhotoRemoveBtn" hidden>Remove Photo</button>
+              </div>
+            </div>
+          </header>
           <section class="emp-form-section emp-form-section--profile" aria-labelledby="empProfileSectionTitle">
             <h2 class="emp-form-section-title" id="empProfileSectionTitle">Profile</h2>
             <div class="emp-form-section-body">
@@ -660,6 +683,14 @@
           <section class="emp-form-section emp-form-section--timeclock" id="empTimeclockSection" aria-labelledby="empTimeclockSectionTitle">
             <h2 class="emp-form-section-title" id="empTimeclockSectionTitle">Time clock</h2>
             <div class="emp-form-section-body">
+              <label class="form-field form-field-block">
+                <span class="form-label">Default break policy</span>
+                <select name="breakPolicy" id="empBreakPolicy">
+                  <option value="unpaid">Unpaid — break time deducted from paid hours</option>
+                  <option value="paid">Paid — break time counts as work time</option>
+                </select>
+              </label>
+              <p class="calendar-hint">Applies to this employee when a shift or punch does not specify otherwise.</p>
               <p class="calendar-hint" id="empTimeclockNewHint">Save this employee to assign a time clock PIN and view punches.</p>
               <div id="empTimeclockPanel" hidden>
                 <div class="form-field form-field-block" id="empClockPinBlock" hidden>
@@ -750,6 +781,14 @@
       <!-- Screen 10: Timecards roster -->
       <section class="screen" id="screen-timecards" data-screen="10">
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
+        <section class="timecards-timeclock-settings" id="timecardsTimeclockSettings" aria-labelledby="timecardsTimeclockSettingsTitle">
+          <h2 class="timecards-timeclock-settings-title" id="timecardsTimeclockSettingsTitle">Time clock settings</h2>
+          <label class="form-field form-field-inline">
+            <span class="form-label">Auto clock-out time</span>
+            <input type="time" id="tcAutoClockOutTime" class="timecards-time-input" value="00:00" step="60" />
+          </label>
+          <p class="calendar-hint">Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.</p>
+        </section>
       </section>
 
       <!-- Screen 11: Employee timecard shifts -->
@@ -843,19 +882,7 @@
     </div>
     <main class="main timeclock-main">
       <span class="timeclock-device-label" id="timeclockDeviceLabel"></span>
-      <div class="timeclock-mode-toggle" role="group" aria-label="Punch type">
-        <button type="button" class="timeclock-mode-btn timeclock-mode-btn--active" id="timeclockModeIn" data-tc-mode="in">
-          Clock in
-        </button>
-        <button type="button" class="timeclock-mode-btn" id="timeclockModeOut" data-tc-mode="out">Clock out</button>
-        <button type="button" class="timeclock-mode-btn" id="timeclockModeBreakStart" data-tc-mode="break_start">
-          Start break
-        </button>
-        <button type="button" class="timeclock-mode-btn" id="timeclockModeBreakEnd" data-tc-mode="break_end">
-          End break
-        </button>
-      </div>
-      <p class="timeclock-intro" id="timeclockIntro">Enter your 4-digit PIN, then confirm.</p>
+      <p class="timeclock-intro" id="timeclockIntro">Enter your 4-digit PIN.</p>
       <input
         type="tel"
         id="timeclockPinInput"
@@ -871,7 +898,7 @@
       <div class="timeclock-confirm" id="timeclockConfirm" hidden>
         <p class="timeclock-confirm-name" id="timeclockConfirmName"></p>
         <p class="timeclock-confirm-hint" id="timeclockConfirmHint"></p>
-        <button type="button" class="btn btn-primary btn-block" id="timeclockConfirmBtn">Confirm</button>
+        <div class="timeclock-action-btns" id="timeclockActionBtns"></div>
         <button type="button" class="btn btn-secondary btn-block" id="timeclockCancelBtn">Cancel</button>
       </div>
       <div class="timeclock-pad" id="timeclockPinPad">
@@ -1173,6 +1200,7 @@
       <div class="draft-schedule-actions">
         <button type="button" class="btn btn-secondary" id="addDraftSlotLineBtn">Add slot line</button>
         <button type="button" class="btn btn-secondary" id="resetDraftScheduleBtn">Reset to defaults</button>
+        <button type="button" class="btn btn-secondary" id="undoDraftScheduleBtn" disabled>Undo</button>
         <button type="button" class="btn btn-primary" id="saveDraftScheduleBtn">Save</button>
       </div>
     </div>
@@ -1235,10 +1263,12 @@
   <script src="/gm-supabase-config.js?v=2"></script>
   <script src="/vendor/supabase-js.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="gm-supabase-init.js"></script>
   <script src="employee-leave.js"></script>
-  <script src="timecards-manager.js"></script>
-  <script src="app.js"></script>
+  <script src="break-policy.js"></script>
+  <script src="timecards-manager.js?v=pto-tracker-2"></script>
+  <script src="app.js?v=employee-photos-4"></script>
   <script src="employee-app.js"></script>
   <script src="manager-messaging.js"></script>
   <script src="timeclock-app.js"></script>

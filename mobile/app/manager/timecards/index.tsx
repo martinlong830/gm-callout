@@ -13,12 +13,14 @@ import { useAppData } from '../../../contexts/AppDataContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
 import { employeeDisplayName, type EmployeeRow } from '../../../lib/employees';
 import {
-  buildRosterRow,
+  buildAllRosterRows,
   decimalHoursFromMinutes,
   formatPayAmount,
   statusColor,
   type RosterRow,
 } from '../../../lib/timecards/engine';
+import { getPayWeekBounds } from '../../../lib/timecards/payWeek';
+import { loadWeekExtrasSlice } from '../../../lib/timecards/weekExtras';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
 
@@ -42,10 +44,8 @@ export default function TimecardsRosterScreen() {
 
   const loadRows = useCallback(async () => {
     setRowsLoading(true);
-    const built: RosterRow[] = [];
-    for (const emp of employees) {
-      built.push(await buildRosterRow(emp, entries, teamState, staffRequests, lites));
-    }
+    const extrasSlice = await loadWeekExtrasSlice(getPayWeekBounds());
+    const built = buildAllRosterRows(employees, entries, teamState, staffRequests, lites, extrasSlice);
     built.sort((a, b) => {
       const empA = employees.find((e) => e.id === a.empId);
       const empB = employees.find((e) => e.id === b.empId);

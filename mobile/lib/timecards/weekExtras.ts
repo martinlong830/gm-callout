@@ -21,6 +21,72 @@ async function loadWeekExtrasMap(bounds: PayWeekBounds): Promise<Record<string, 
   }
 }
 
+export async function loadWeekExtrasSlice(bounds: PayWeekBounds) {
+  return loadWeekExtrasMap(bounds);
+}
+
+function computeLeaveExtrasFromRequests(
+  emp: EmployeeRow,
+  displayName: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>
+): WeekExtras {
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  let vlMins = 0;
+  let slMins = 0;
+  for (const req of staffRequests) {
+    if (req.status !== 'approved') continue;
+    if (!staffRequestMatchesEmployee(req, emp, displayName)) continue;
+    const range = parseTimeoffRequest(req);
+    if (!range) continue;
+    const overlapStart = range.start > weekStart ? range.start : weekStart;
+    const overlapEnd = range.end < weekEnd ? range.end : weekEnd;
+    if (overlapEnd < overlapStart) continue;
+    let cur = new Date(overlapStart + 'T12:00:00');
+    const endD = new Date(overlapEnd + 'T12:00:00');
+    while (cur <= endD) {
+      const iso = isoFromDate(cur);
+      const dayMins = schedMinsByDay[iso] > 0 ? schedMinsByDay[iso] : LEAVE_DEFAULT_DAY_MINUTES;
+      if (range.leaveType === 'sick') slMins += dayMins;
+      else vlMins += dayMins;
+      cur.setDate(cur.getDate() + 1);
+    }
+  }
+  return { vl: vlMins / 60, sl: slMins / 60, manual: false };
+}
+
+export function getEmployeeWeekExtrasSync(
+  emp: EmployeeRow,
+  displayName: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>,
+  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+): WeekExtras {
+  const row = slice[emp.id];
+  if (row?.manual) {
+    return {
+      vl: Math.max(0, parseFloat(String(row.vl)) || 0),
+      sl: Math.max(0, parseFloat(String(row.sl)) || 0),
+      manual: true,
+    };
+  }
+  return computeLeaveExtrasFromRequests(emp, displayName, bounds, staffRequests, schedMinsByDay);
+}
+
+export async function getEmployeeWeekExtras(
+  emp: EmployeeRow,
+  displayName: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>
+): Promise<WeekExtras> {
+  const slice = await loadWeekExtrasMap(bounds);
+  return getEmployeeWeekExtrasSync(emp, displayName, bounds, staffRequests, schedMinsByDay, slice);
+}
+
 async function saveWeekExtrasMap(bounds: PayWeekBounds, slice: Record<string, { vl: number; sl: number; manual?: boolean }>) {
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_EXTRAS_KEY);
@@ -67,47 +133,6 @@ function parseTimeoffRequest(req: StaffRequestUi): { start: string; end: string;
   if (/^sick leave:/i.test(summary)) leaveType = 'sick';
   else if (/^vacation leave:/i.test(summary)) leaveType = 'vacation';
   return { start, end, leaveType };
-}
-
-export async function getEmployeeWeekExtras(
-  emp: EmployeeRow,
-  displayName: string,
-  bounds: PayWeekBounds,
-  staffRequests: StaffRequestUi[],
-  schedMinsByDay: Record<string, number>
-): Promise<WeekExtras> {
-  const slice = await loadWeekExtrasMap(bounds);
-  const row = slice[emp.id];
-  if (row?.manual) {
-    return {
-      vl: Math.max(0, parseFloat(String(row.vl)) || 0),
-      sl: Math.max(0, parseFloat(String(row.sl)) || 0),
-      manual: true,
-    };
-  }
-  const weekStart = isoFromDate(bounds.start);
-  const weekEnd = isoFromDate(bounds.end);
-  let vlMins = 0;
-  let slMins = 0;
-  for (const req of staffRequests) {
-    if (req.status !== 'approved') continue;
-    if (!staffRequestMatchesEmployee(req, emp, displayName)) continue;
-    const range = parseTimeoffRequest(req);
-    if (!range) continue;
-    const overlapStart = range.start > weekStart ? range.start : weekStart;
-    const overlapEnd = range.end < weekEnd ? range.end : weekEnd;
-    if (overlapEnd < overlapStart) continue;
-    let cur = new Date(overlapStart + 'T12:00:00');
-    const endD = new Date(overlapEnd + 'T12:00:00');
-    while (cur <= endD) {
-      const iso = isoFromDate(cur);
-      const dayMins = schedMinsByDay[iso] > 0 ? schedMinsByDay[iso] : LEAVE_DEFAULT_DAY_MINUTES;
-      if (range.leaveType === 'sick') slMins += dayMins;
-      else vlMins += dayMins;
-      cur.setDate(cur.getDate() + 1);
-    }
-  }
-  return { vl: vlMins / 60, sl: slMins / 60, manual: false };
 }
 
 export async function setEmployeeWeekExtras(

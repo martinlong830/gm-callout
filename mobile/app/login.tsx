@@ -72,8 +72,9 @@ export default function LoginScreen() {
           {!isSupabaseConfigured ? (
             <View style={styles.card}>
               <Text style={styles.warn}>
-                Missing Supabase env. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to
-                mobile/.env and restart Expo.
+                Supabase is not configured in this build. For local dev, set EXPO_PUBLIC_SUPABASE_URL and
+                EXPO_PUBLIC_SUPABASE_ANON_KEY in mobile/.env. For TestFlight/App Store, add the same names as
+                EAS project secrets (eas secret:create), then run a new production build.
               </Text>
             </View>
           ) : (

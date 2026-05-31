@@ -24,6 +24,7 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
     breakTimes: false,
     scheduleShiftId: false,
     editHistory: false,
+    breakPaid: false,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

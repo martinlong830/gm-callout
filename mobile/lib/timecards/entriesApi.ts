@@ -20,7 +20,7 @@ export async function loadWeekEntries(sb: SupabaseClient): Promise<{
 } | { ok: false; reason: string }> {
   const bounds = getPayWeekBounds();
   const fullSel =
-    'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, schedule_shift_id, edit_history, updated_at';
+    'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, edit_history, updated_at';
   const res = await sb
     .from('time_clock_entries')
     .select(fullSel)
@@ -29,7 +29,7 @@ export async function loadWeekEntries(sb: SupabaseClient): Promise<{
     .order('clock_in_at', { ascending: true });
 
   let entries: TimeClockEntry[] = [];
-  if (res.error && /break_start_at|break_end_at|break_minutes|schedule_shift_id|edit_history/i.test(res.error.message || '')) {
+  if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|edit_history/i.test(res.error.message || '')) {
     const fallback = await sb
       .from('time_clock_entries')
       .select('id, employee_id, clock_in_at, clock_out_at, updated_at')
@@ -47,6 +47,7 @@ export async function loadWeekEntries(sb: SupabaseClient): Promise<{
     breakTimes: !!(entries.length && entries[0].break_start_at !== undefined),
     scheduleShiftId: !!(entries.length && entries[0].schedule_shift_id !== undefined),
     editHistory: !!(entries.length && entries[0].edit_history !== undefined),
+    breakPaid: !!(entries.length && entries[0].break_paid !== undefined),
   };
 
   const openSel = schema.breakMinutes
@@ -73,6 +74,7 @@ export type SavePunchInput = {
   breakStartIso: string | null;
   breakEndIso: string | null;
   breakMinutes: number;
+  breakPaid?: boolean | null;
   editingId: string | null;
   priorEntry: TimeClockEntry | null;
 };
@@ -106,6 +108,7 @@ async function callManagerSaveRpc(
     breakStartIso,
     breakEndIso,
     breakMinutes,
+    breakPaid,
     editingId,
   } = input;
 
@@ -123,6 +126,7 @@ async function callManagerSaveRpc(
   }
   if (schema.scheduleShiftId) fullArgs.p_schedule_shift_id = shiftId;
   if (schema.editHistory) fullArgs.p_edit_history = editHistory;
+  if (schema.breakPaid && breakPaid !== undefined) fullArgs.p_break_paid = breakPaid;
 
   let res = await sb.rpc('manager_save_time_clock_entry', fullArgs);
   if (res.error) {

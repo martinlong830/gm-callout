@@ -1722,6 +1722,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   white-space: nowrap;
 }
 
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .schedule-template-select,
 .schedule-template-name-input,
 .schedule-add-restaurant-input {
@@ -3045,6 +3051,167 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
 }
 
+.employee-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.employee-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.employee-photo,
+.emp-photo-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #e5e7eb;
+  border: 1px solid var(--border);
+}
+
+.employee-photo-img,
+.emp-photo-preview-img,
+.emp-profile-photo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+.employee-photo-initials,
+.emp-photo-preview-initials,
+.emp-profile-photo-initials {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+  z-index: 0;
+}
+
+.employee-photo--loaded .employee-photo-initials,
+.emp-profile-photo--loaded .emp-profile-photo-initials {
+  opacity: 0;
+}
+
+.emp-photo-field {
+  margin-bottom: 16px;
+}
+
+.emp-photo-preview-wrap {
+  margin-bottom: 10px;
+}
+
+.emp-photo-preview-mount .emp-photo-preview {
+  width: 96px;
+  height: 96px;
+}
+
+.emp-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.emp-photo-upload-label {
+  cursor: pointer;
+  margin: 0;
+}
+
+.emp-profile-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0 0 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.emp-profile-header-photo {
+  flex: 0 0 auto;
+  width: 112px;
+  min-width: 112px;
+  height: 112px;
+  min-height: 112px;
+}
+
+.emp-profile-header-photo .emp-profile-photo {
+  display: block;
+  width: 112px;
+  height: 112px;
+}
+
+.emp-profile-header-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.emp-profile-header-name {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.emp-profile-header-role {
+  margin: 0 0 12px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.emp-profile-photo {
+  position: relative;
+  flex: 0 0 auto;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #e5e7eb;
+  border: 1px solid var(--border);
+}
+
+.emp-profile-photo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+.emp-profile-photo-initials {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+  z-index: 0;
+}
+
+.emp-profile-header .emp-photo-actions {
+  margin-bottom: 0;
+}
+
 .employee-card:hover,
 .employee-card:focus-visible {
   border-color: #d1d5db;
@@ -3994,6 +4161,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.9rem;
 }
 
+.timeclock-action-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: var(--space-block);
+}
+
+.timeclock-action-btn {
+  min-height: 48px;
+  font-size: 1.05rem;
+}
+
 .timecards-save-status--err {
   color: var(--danger);
   font-weight: 600;
@@ -4051,6 +4230,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-punch-times {
   flex: 1 1 auto;
   font-weight: 600;
+}
+
+.timecards-break-policy-field {
+  margin-top: var(--space-tight);
+}
+
+.timecards-break-policy-select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+  border: 1px solid var(--border-subtle, #d1d5db);
+  border-radius: 6px;
+  background: #fff;
 }
 
 .timecards-punch-break {
@@ -4441,6 +4634,87 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-grand-totals-payroll-value {
   font-size: 1.375rem;
   font-weight: 700;
+  color: var(--text);
+}
+
+.timecards-grand-totals-tips {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.timecards-grand-totals-tips-title {
+  margin: 0 0 10px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.timecards-grand-totals-tips-grid {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 640px) {
+  .timecards-grand-totals-tips-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.timecards-tip-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timecards-tip-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.timecards-tip-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.timecards-tip-input:focus {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+  border-color: #93c5fd;
+}
+
+.timecards-tip-pool-summary {
+  margin: 10px 0 0;
+}
+
+.timecards-timeclock-settings {
+  margin: 16px 0 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.timecards-timeclock-settings-title {
+  margin: 0 0 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.timecards-time-input {
+  padding: 8px 10px;
+  font-size: 0.9375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: var(--text);
 }
 

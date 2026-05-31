@@ -1,6 +1,6 @@
 /**
  * Shared time-clock kiosk (profiles.role = timeclock).
- * PIN entry via keypad or keyboard; explicit clock-in / clock-out confirmation.
+ * PIN-only entry; available actions depend on current punch state.
  */
 (function () {
   'use strict';
@@ -9,7 +9,7 @@
   var pinBuffer = '';
   var busy = false;
   var resetTimer = null;
-  var punchMode = 'in';
+  var punchMode = null;
   var phase = 'enter';
   var pendingLookup = null;
 
@@ -23,12 +23,8 @@
   var confirmPanel = document.getElementById('timeclockConfirm');
   var confirmNameEl = document.getElementById('timeclockConfirmName');
   var confirmHintEl = document.getElementById('timeclockConfirmHint');
-  var confirmBtn = document.getElementById('timeclockConfirmBtn');
+  var actionBtnsEl = document.getElementById('timeclockActionBtns');
   var cancelBtn = document.getElementById('timeclockCancelBtn');
-  var modeInBtn = document.getElementById('timeclockModeIn');
-  var modeOutBtn = document.getElementById('timeclockModeOut');
-  var modeBreakStartBtn = document.getElementById('timeclockModeBreakStart');
-  var modeBreakEndBtn = document.getElementById('timeclockModeBreakEnd');
   var enterBlockEls = [];
   var uiBound = false;
   var focusBound = false;
@@ -57,7 +53,11 @@
     if (!busy) return false;
     if (Date.now() - busySince < BUSY_STUCK_MS) return false;
     setBusy(false);
-    if (confirmBtn) confirmBtn.disabled = false;
+    if (actionBtnsEl) {
+      actionBtnsEl.querySelectorAll('button').forEach(function (btn) {
+        btn.disabled = false;
+      });
+    }
     resetToEnter();
     if (forceMsg) setStatus(forceMsg, 'err');
     return true;
@@ -122,23 +122,7 @@
 
   function syncIntro() {
     if (!introEl) return;
-    if (punchMode === 'out') {
-      introEl.textContent = 'Enter PIN, then confirm clock out.';
-    } else if (punchMode === 'break_start') {
-      introEl.textContent = 'Enter PIN, then confirm break start.';
-    } else if (punchMode === 'break_end') {
-      introEl.textContent = 'Enter PIN, then confirm break end.';
-    } else {
-      introEl.textContent = 'Enter PIN, then confirm clock in.';
-    }
-  }
-
-  function syncModeButtons() {
-    var modes = ['in', 'out', 'break_start', 'break_end'];
-    var btns = [modeInBtn, modeOutBtn, modeBreakStartBtn, modeBreakEndBtn];
-    btns.forEach(function (btn, i) {
-      if (btn) btn.classList.toggle('timeclock-mode-btn--active', punchMode === modes[i]);
-    });
+    introEl.textContent = 'Enter your 4-digit PIN.';
   }
 
   function setEnterUiVisible(show) {
@@ -158,31 +142,52 @@
   function resetToEnter() {
     pinBuffer = '';
     pendingLookup = null;
+    punchMode = null;
     phase = 'enter';
     renderPinDisplay();
     setStatus('', null);
     setEnterUiVisible(true);
     syncIntro();
-    updateConfirmButton();
-    if (confirmBtn) confirmBtn.disabled = false;
+    if (actionBtnsEl) actionBtnsEl.innerHTML = '';
     setBusy(false);
     if (phase === 'enter') armHiddenInputForEntry();
   }
 
-  function setPunchMode(mode) {
-    if (busy || phase === 'confirm') return;
-    if (mode === 'out') punchMode = 'out';
-    else if (mode === 'break_start') punchMode = 'break_start';
-    else if (mode === 'break_end') punchMode = 'break_end';
-    else punchMode = 'in';
-    syncModeButtons();
-    syncIntro();
-    updateConfirmButton();
+  function availableActionsForLookup(data) {
+    if (!data || !data.is_clocked_in) return ['in'];
+    if (data.on_break) return ['out', 'break_end'];
+    return ['out', 'break_start'];
   }
 
-  function updateConfirmButton() {
-    if (!confirmBtn) return;
-    confirmBtn.textContent = MODE_LABELS[punchMode] || 'Confirm';
+  function hintForActions(actions) {
+    if (actions.length === 1 && actions[0] === 'in') {
+      return 'Confirm clock in to start your shift.';
+    }
+    if (actions.indexOf('break_end') !== -1) {
+      return 'Choose clock out or end break.';
+    }
+    return 'Choose clock out or start break.';
+  }
+
+  function renderConfirmActions(actions) {
+    if (!actionBtnsEl) return;
+    actionBtnsEl.innerHTML = actions
+      .map(function (action) {
+        var cls =
+          action === 'out'
+            ? 'btn btn-secondary btn-block timeclock-action-btn'
+            : 'btn btn-primary btn-block timeclock-action-btn';
+        return (
+          '<button type="button" class="' +
+          cls +
+          '" data-tc-action="' +
+          action +
+          '">' +
+          (MODE_LABELS[action] || action) +
+          '</button>'
+        );
+      })
+      .join('');
   }
 
   function appendDigit(d) {
@@ -241,25 +246,9 @@
       setEnterUiVisible(false);
       var name = String(data.display_name || 'Employee').trim();
       if (confirmNameEl) confirmNameEl.textContent = name;
-      if (confirmHintEl) {
-        if (punchMode === 'in' && data.is_clocked_in) {
-          confirmHintEl.textContent = 'Already clocked in. Switch to Clock out or break.';
-        } else if (punchMode === 'out' && !data.is_clocked_in) {
-          confirmHintEl.textContent = 'Not clocked in. Switch to Clock in if starting a shift.';
-        } else if (punchMode === 'break_start' && !data.is_clocked_in) {
-          confirmHintEl.textContent = 'Not clocked in. Clock in before starting a break.';
-        } else if (punchMode === 'break_start' && data.on_break) {
-          confirmHintEl.textContent = 'Already on break. Switch to End break when returning.';
-        } else if (punchMode === 'break_end' && !data.is_clocked_in) {
-          confirmHintEl.textContent = 'Not clocked in.';
-        } else if (punchMode === 'break_end' && !data.on_break) {
-          confirmHintEl.textContent = 'Not on break. Switch to Start break first.';
-        } else {
-          confirmHintEl.textContent =
-            'Tap ' + (MODE_LABELS[punchMode] || 'Confirm') + ' to record your punch.';
-        }
-      }
-      updateConfirmButton();
+      var actions = availableActionsForLookup(data);
+      renderConfirmActions(actions);
+      if (confirmHintEl) confirmHintEl.textContent = hintForActions(actions);
       setStatus('', null);
     } catch (ex) {
       setStatus((ex && ex.message) || 'Network error.', 'err');
@@ -269,15 +258,20 @@
     }
   }
 
-  async function confirmPunch() {
-    if (!pendingLookup || busy) return;
+  async function confirmPunch(action) {
+    if (!pendingLookup || busy || !action) return;
+    punchMode = action;
     var client = sb();
     if (!client) {
       setStatus('Supabase is not configured.', 'err');
       return;
     }
     setBusy(true);
-    if (confirmBtn) confirmBtn.disabled = true;
+    if (actionBtnsEl) {
+      actionBtnsEl.querySelectorAll('button').forEach(function (btn) {
+        btn.disabled = true;
+      });
+    }
     setStatus('Saving…', null);
     try {
       var res = await rpcWithTimeout(client, 'timeclock_punch_with_action', {
@@ -326,6 +320,7 @@
       prependRecent(name, verb, data.at);
       pinBuffer = '';
       pendingLookup = null;
+      punchMode = null;
       phase = 'enter';
       setEnterUiVisible(true);
       renderPinDisplay();
@@ -334,7 +329,11 @@
       setStatus((ex && ex.message) || 'Network error.', 'err');
     } finally {
       setBusy(false);
-      if (confirmBtn) confirmBtn.disabled = false;
+      if (actionBtnsEl) {
+        actionBtnsEl.querySelectorAll('button').forEach(function (btn) {
+          btn.disabled = false;
+        });
+      }
     }
   }
 
@@ -382,33 +381,12 @@
     }
   }
 
-  function bindModeToggle() {
-    if (modeInBtn) {
-      modeInBtn.addEventListener('click', function () {
-        setPunchMode('in');
-      });
-    }
-    if (modeOutBtn) {
-      modeOutBtn.addEventListener('click', function () {
-        setPunchMode('out');
-      });
-    }
-    if (modeBreakStartBtn) {
-      modeBreakStartBtn.addEventListener('click', function () {
-        setPunchMode('break_start');
-      });
-    }
-    if (modeBreakEndBtn) {
-      modeBreakEndBtn.addEventListener('click', function () {
-        setPunchMode('break_end');
-      });
-    }
-  }
-
   function bindConfirm() {
-    if (confirmBtn) {
-      confirmBtn.addEventListener('click', function () {
-        void confirmPunch();
+    if (actionBtnsEl) {
+      actionBtnsEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-tc-action]');
+        if (!btn || btn.disabled) return;
+        void confirmPunch(btn.getAttribute('data-tc-action'));
       });
     }
     if (cancelBtn) {
@@ -426,10 +404,7 @@
       if (busy) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (phase === 'confirm') {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          void confirmPunch();
-        } else if (e.key === 'Escape') {
+        if (e.key === 'Escape') {
           e.preventDefault();
           clearPin();
         }
@@ -511,7 +486,7 @@
     if (resetTimer) clearTimeout(resetTimer);
     pinBuffer = '';
     setBusy(false);
-    punchMode = 'in';
+    punchMode = null;
     phase = 'enter';
     pendingLookup = null;
     enterBlockEls = [
@@ -519,19 +494,15 @@
       document.querySelector('.timeclock-pad-actions'),
       displayEl,
       introEl,
-      document.querySelector('.timeclock-mode-toggle'),
       hiddenInputEl,
     ].filter(Boolean);
     renderPinDisplay();
-    syncModeButtons();
     syncIntro();
-    updateConfirmButton();
     setEnterUiVisible(true);
     setStatus('', null);
     if (!uiBound) {
       bindPad();
       bindPadActions();
-      bindModeToggle();
       bindConfirm();
       bindKeyboard();
       startWatchdog();

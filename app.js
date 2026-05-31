@@ -306,6 +306,8 @@
   /** Supabase `public.team_state` row id (single-store). */
   const TEAM_STATE_ROW_ID = 'main';
   const MESSAGING_STORAGE_KEY = 'gm-callout-messaging-templates-v1';
+  const TIMECLOCK_SETTINGS_KEY = 'gm-callout-timeclock-settings-v1';
+  const DEFAULT_TIMECLOCK_SETTINGS = { autoClockOutTime: '00:00' };
   const CALLOUT_HISTORY_KEY = 'gm-callout-coverage-callout-history-v1';
   /** Same key as `employee-app.js` (Messages). */
   const EMPLOYEE_CHAT_STORAGE_KEY = 'gm-callout-employee-messages-v1';
@@ -1180,6 +1182,7 @@
       draftObj[role] = draftScheduleRows[role] ? draftScheduleRows[role] : [];
     });
     var msg = loadMessagingTemplates();
+    var tcSettings = loadTimeclockSettings();
     var payload = {
       id: TEAM_STATE_ROW_ID,
       schedule_assignments: assign,
@@ -1188,6 +1191,7 @@
       messaging_templates: { voice: msg.voice != null ? String(msg.voice) : '' },
       current_restaurant_id: currentRestaurantId || 'rp-9',
       callout_history: buildCalloutHistoryPayload(),
+      timeclock_settings: { auto_clock_out_time: tcSettings.autoClockOutTime || '00:00' },
     };
     var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' });
     if (res.error) console.warn('gm-callout: team_state upsert', res.error);
@@ -1219,6 +1223,7 @@
         }
         localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
         if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
+        clearScheduleUndoStack();
       } catch (_s) {
         /* ignore */
       }
@@ -1248,6 +1253,8 @@
       }
       draftScheduleRows = loadDraftScheduleRows();
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      syncAllAssignmentTimesFromDraft();
+      clearScheduleUndoStack();
     } else if (isMgr && draftScheduleJsonHasLayers(draftScheduleRows)) {
       scheduleTeamStateDebouncedSync();
     }
@@ -1278,8 +1285,10 @@
     }
 
     applyCalloutHistoryFromRemote(row.callout_history, { isManager: isMgr });
+    applyTimeclockSettingsFromRemote(row.timeclock_settings);
 
     try {
+      syncAllAssignmentTimesFromDraft();
       pruneScheduleAssignmentsInvalidSlots();
     } catch (_p) {
       /* ignore */
@@ -1408,7 +1417,9 @@
   }
 
   /** Schedule rows for a pay week, built like the on-screen calendar (does not change the visible week). */
-  function buildScheduleSnapshotForPayWeek(weekIndex) {
+  function buildScheduleSnapshotForPayWeek(weekIndex, opts) {
+    opts = opts || {};
+    var skipUiRefresh = !!opts.skipUiRefresh;
     var prevRest = currentRestaurantId;
     var prevWeek = scheduleCalendarWeekIndex;
     var rows = [];
@@ -1438,6 +1449,7 @@
           timeLabel: s.timeLabel,
           redPokeBreak: s.redPokeBreak,
           redPokeHours: s.redPokeHours,
+          breakPaid: s.breakPaid === true || s.breakPaid === false ? !!s.breakPaid : undefined,
           workers: (s.workers || []).slice(),
         });
       });
@@ -1445,8 +1457,10 @@
       currentRestaurantId = prevRest;
       scheduleCalendarWeekIndex = prevWeek;
       rebuildSchedule();
-      if (calendarGrid) renderCalendar();
-      if (scheduleBody) renderSchedule();
+      if (!skipUiRefresh) {
+        if (calendarGrid) renderCalendar();
+        if (scheduleBody) renderSchedule();
+      }
     }
     return rows;
   }
@@ -1498,6 +1512,262 @@
     const f = (emp.firstName || '').trim();
     const l = (emp.lastName || '').trim();
     return [f, l].filter(Boolean).join(' ') || 'Unnamed';
+  }
+
+  /** File slug for bundled photos in assets/employee-photos/ (e.g. mark_ong.jpg). */
+  function employeePhotoSlug(emp) {
+    if (!emp) return '';
+    if (emp.displayName) {
+      return normNameKey(String(emp.displayName)).replace(/\s+/g, '_');
+    }
+    return normNameKey(employeeDisplayName(emp)).replace(/\s+/g, '_');
+  }
+
+  function appAssetUrl(relativePath) {
+    var rel = String(relativePath || '').replace(/^\/+/, '');
+    try {
+      var base = window.location.origin;
+      var path = window.location.pathname || '/';
+      var dir = path.endsWith('/') ? path : path.replace(/\/[^/]*$/, '/');
+      if (!dir.endsWith('/')) dir += '/';
+      return base + dir + rel;
+    } catch (_e) {
+      return rel;
+    }
+  }
+
+  function employeePhotoUrlCandidates(emp) {
+    if (!emp) return [];
+    var urls = [];
+    var hideBundled = !!(emp.meta && emp.meta.photoHidden);
+    var slug = employeePhotoSlug(emp);
+    if (slug && !hideBundled) {
+      urls.push(appAssetUrl('assets/employee-photos/' + slug + '.jpg'));
+      urls.push(appAssetUrl('assets/employee-photos/' + slug + '.png'));
+    }
+    var custom =
+      emp.meta && emp.meta.photoUrl && emp.meta.photoUseCustom
+        ? String(emp.meta.photoUrl).trim()
+        : '';
+    if (custom && (custom.indexOf('data:') === 0 || /^https?:\/\//i.test(custom))) {
+      urls.unshift(custom);
+    }
+    return urls.filter(function (u, i, a) {
+      return u && a.indexOf(u) === i;
+    });
+  }
+
+  function employeePhotoInitials(emp) {
+    if (!emp) return '?';
+    var f = (emp.firstName || '').trim();
+    var l = (emp.lastName || '').trim();
+    if (f && l) return (f.charAt(0) + l.charAt(0)).toUpperCase();
+    var parts = employeeDisplayName(emp).split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+    }
+    return employeeDisplayName(emp).slice(0, 2).toUpperCase() || '?';
+  }
+
+  function renderEmployeePhotoHtml(emp, className) {
+    className = className || 'employee-photo';
+    var initials = escapeHtml(employeePhotoInitials(emp));
+    var candidates = employeePhotoUrlCandidates(emp);
+    var img = '';
+    if (candidates.length > 0) {
+      img =
+        '<img class="' +
+        className +
+        '-img" alt="" decoding="async" src="' +
+        escapeHtml(candidates[0]) +
+        '" data-photo-idx="0" />';
+    }
+    return (
+      '<span class="' +
+      className +
+      '" data-photo-candidates="' +
+      encodeURIComponent(JSON.stringify(candidates)) +
+      '" aria-hidden="true">' +
+      '<span class="' +
+      className +
+      '-initials">' +
+      initials +
+      '</span>' +
+      img +
+      '</span>'
+    );
+  }
+
+  function markEmployeePhotoLoaded(el, img, className) {
+    if (img && img.naturalWidth > 0) {
+      el.classList.add(className + '--loaded');
+      return true;
+    }
+    el.classList.remove(className + '--loaded');
+    return false;
+  }
+
+  function wireEmployeePhotoImages(root) {
+    (root || document).querySelectorAll('[data-photo-candidates]').forEach(function (el) {
+      var img = el.querySelector('img');
+      if (!img) return;
+      var candidates = [];
+      try {
+        candidates = JSON.parse(decodeURIComponent(el.getAttribute('data-photo-candidates') || '[]'));
+      } catch (_e) {
+        candidates = [];
+      }
+      if (!candidates.length) return;
+      var className = el.classList.contains('emp-profile-photo') ? 'emp-profile-photo' : 'employee-photo';
+      if (markEmployeePhotoLoaded(el, img, className)) return;
+
+      var idx = parseInt(img.getAttribute('data-photo-idx') || '0', 10) || 0;
+      if (!img.getAttribute('src') && candidates[idx]) {
+        img.src = candidates[idx];
+      }
+
+      function tryNextPhoto() {
+        el.classList.remove(className + '--loaded');
+        idx += 1;
+        if (idx < candidates.length) {
+          img.setAttribute('data-photo-idx', String(idx));
+          img.src = candidates[idx];
+        } else {
+          img.remove();
+        }
+      }
+
+      img.onload = function () {
+        if (!markEmployeePhotoLoaded(el, img, className)) {
+          tryNextPhoto();
+        }
+      };
+      img.onerror = tryNextPhoto;
+
+      if (img.complete && img.naturalWidth === 0 && img.src) {
+        tryNextPhoto();
+      }
+    });
+  }
+
+  function refreshEmployeePhotosOnScreen(screenNum) {
+    if (screenNum === 5 && employeeListEl) {
+      wireEmployeePhotoImages(employeeListEl);
+    }
+    if (screenNum === 6) {
+      wireEmployeePhotoImages(document.getElementById('empProfileHeaderPhoto'));
+    }
+  }
+
+  var pendingEmployeePhotoFile = null;
+
+  async function uploadEmployeePhotoFile(emp, file) {
+    if (!emp || !file) return { ok: false, message: 'No file selected.' };
+    if (!file.type || file.type.indexOf('image/') !== 0) {
+      return { ok: false, message: 'Choose an image file.' };
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      return { ok: false, message: 'Photo must be under 5 MB.' };
+    }
+    emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    if (GM_SUPABASE_DATA && window.gmSupabase && isUuidCloudId(emp.id)) {
+      var sb = window.gmSupabase;
+      var ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+      var path = emp.id + '.' + ext;
+      var up = await sb.storage.from('employee-photos').upload(path, file, {
+        upsert: true,
+        contentType: file.type || 'image/jpeg',
+      });
+      if (up.error) {
+        return { ok: false, message: up.error.message || String(up.error) };
+      }
+      var pub = sb.storage.from('employee-photos').getPublicUrl(path);
+      emp.meta.photoUrl = pub.data.publicUrl + '?v=' + Date.now();
+      emp.meta.photoUseCustom = true;
+      delete emp.meta.photoHidden;
+      saveEmployees();
+      return { ok: true, url: emp.meta.photoUrl };
+    }
+    return new Promise(function (resolve) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        emp.meta.photoUrl = reader.result;
+        emp.meta.photoUseCustom = true;
+        delete emp.meta.photoHidden;
+        saveEmployees();
+        resolve({ ok: true, url: emp.meta.photoUrl });
+      };
+      reader.onerror = function () {
+        resolve({ ok: false, message: 'Could not read image file.' });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function clearEmployeePhoto(emp) {
+    if (!emp) return;
+    emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    delete emp.meta.photoUrl;
+    delete emp.meta.photoUseCustom;
+    emp.meta.photoHidden = true;
+    saveEmployees();
+  }
+
+  function syncEmployeePhotoRemoveButton(emp) {
+    var removeBtn = document.getElementById('empPhotoRemoveBtn');
+    if (!removeBtn) return;
+    removeBtn.hidden = !(pendingEmployeePhotoFile || editingEmployeeId);
+  }
+
+  function employeeDraftFromFormFields() {
+    var existing =
+      editingEmployeeId &&
+      employees.find(function (e) {
+        return e.id === editingEmployeeId;
+      });
+    return {
+      firstName: empFirstName ? (empFirstName.value || '').trim() : '',
+      lastName: empLastName ? (empLastName.value || '').trim() : '',
+      staffType: empStaffType ? empStaffType.value : 'Kitchen',
+      meta: existing && existing.meta ? existing.meta : undefined,
+    };
+  }
+
+  function refreshEmployeeProfileHeader(emp) {
+    var photoMount = document.getElementById('empProfileHeaderPhoto');
+    var nameEl = document.getElementById('empProfileHeaderName');
+    var roleEl = document.getElementById('empProfileHeaderRole');
+    var subject = emp;
+    if (!subject || (!subject.firstName && !subject.lastName)) {
+      subject = employeeDraftFromFormFields();
+    }
+    if (photoMount) {
+      if (pendingEmployeePhotoFile) {
+        var pendingUrl = URL.createObjectURL(pendingEmployeePhotoFile);
+        photoMount.innerHTML =
+          '<span class="emp-profile-photo emp-profile-photo--loaded" aria-hidden="true">' +
+          '<img class="emp-profile-photo-img" src="' +
+          escapeHtml(pendingUrl) +
+          '" alt="" decoding="async" />' +
+          '</span>';
+      } else {
+        photoMount.innerHTML = renderEmployeePhotoHtml(subject, 'emp-profile-photo');
+      }
+    }
+    if (nameEl) {
+      var label = employeeDisplayName(subject);
+      nameEl.textContent = label && label !== 'Unnamed' ? label : editingEmployeeId ? 'Employee' : 'New employee';
+    }
+    if (roleEl) {
+      var st = subject && subject.staffType ? subject.staffType : empStaffType ? empStaffType.value : '';
+      roleEl.textContent = STAFF_TYPE_LABELS[st] || st || '';
+    }
+    syncEmployeePhotoRemoveButton(emp);
+    wireEmployeePhotoImages(photoMount);
+  }
+
+  function refreshEmployeePhotoPreview(emp) {
+    refreshEmployeeProfileHeader(emp);
   }
 
   function newEmployeeId() {
@@ -1771,7 +2041,13 @@
       usualRestaurant: usualOk ? ur : 'both',
     };
     if (e.authUserId) out.authUserId = e.authUserId;
-    if (e.meta && typeof e.meta === 'object') out.meta = e.meta;
+    if (e.displayName) out.displayName = String(e.displayName);
+    if (e.meta && typeof e.meta === 'object') {
+      out.meta = e.meta;
+      if (out.meta.photoUrl && !out.meta.photoUseCustom) {
+        delete out.meta.photoUrl;
+      }
+    }
     if (e.clockPin) out.clockPin = String(e.clockPin);
     if (e.hourlyRate != null && !Number.isNaN(Number(e.hourlyRate))) {
       out.hourlyRate = Math.round(Number(e.hourlyRate) * 100) / 100;
@@ -2117,6 +2393,60 @@
     };
   }
 
+  /** Keep assignment timeLabel/hours aligned with Shift Times draft grid (Mon–Sun pattern per slot). */
+  function syncAssignmentTimesFromDraftInStore(restAssignments) {
+    if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var changed = false;
+    Object.keys(restAssignments).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      var rd = ROLE_DEFS[p.roleIdx];
+      if (!rd || !rd.role) return;
+      var dayStr = ALL_WEEK_DAYS[p.globalDayIdx];
+      if (!dayStr) return;
+      var wk = weekdayKeyFromScheduleDay(dayStr);
+      var tr = draftTimeSlotFor(rd.role, wk, p.trIdx);
+      var raw = restAssignments[shiftId];
+      var entry = normalizeScheduleAssignment(raw);
+      if (!tr) {
+        if (entry.timeLabel || entry.hours != null) {
+          delete entry.timeLabel;
+          delete entry.hours;
+          restAssignments[shiftId] = entry;
+          changed = true;
+        }
+        return;
+      }
+      var newLabel = redPokeShiftTimeLabel(tr.start, tr.end);
+      var newHours = redPokeShiftHoursDecimal(tr.start, tr.end);
+      var touched = false;
+      if (entry.timeLabel !== newLabel) {
+        entry.timeLabel = newLabel;
+        touched = true;
+      }
+      if (String(entry.hours || '') !== String(newHours)) {
+        entry.hours = newHours;
+        touched = true;
+      }
+      if (touched) {
+        restAssignments[shiftId] = entry;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function syncAllAssignmentTimesFromDraft() {
+    var store = loadScheduleAssignmentsStore();
+    var any = false;
+    restaurantsList.forEach(function (r) {
+      if (!store[r.id]) store[r.id] = {};
+      if (syncAssignmentTimesFromDraftInStore(store[r.id])) any = true;
+    });
+    if (any) saveScheduleAssignmentsStore(store);
+    return any;
+  }
+
   function pruneScheduleAssignmentsInvalidSlots() {
     var store = loadScheduleAssignmentsStore();
     var changed = false;
@@ -2143,6 +2473,7 @@
   }
 
   function persistDraftScheduleRows(nextRows) {
+    pushScheduleUndoSnapshot();
     var merged = {};
     ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
       var defR = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
@@ -2156,11 +2487,83 @@
     }
     scheduleTeamStateDebouncedSync();
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    syncAllAssignmentTimesFromDraft();
     pruneScheduleAssignmentsInvalidSlots();
     rebuildEmployeeDerivedData();
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
+  }
+
+  var SCHEDULE_UNDO_MAX = 40;
+  var scheduleUndoStack = [];
+  var scheduleUndoSuppressPush = false;
+
+  function cloneScheduleUndoSnapshot() {
+    return {
+      assignments: JSON.parse(JSON.stringify(loadScheduleAssignmentsStore())),
+      draft: cloneDraftSchedule(draftScheduleRows),
+    };
+  }
+
+  function scheduleUndoSnapshotsEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function updateScheduleUndoButtons() {
+    var enabled = scheduleUndoStack.length > 0;
+    ['scheduleUndoBtn', 'undoDraftScheduleBtn'].forEach(function (id) {
+      var btn = document.getElementById(id);
+      if (btn) btn.disabled = !enabled;
+    });
+  }
+
+  function clearScheduleUndoStack() {
+    scheduleUndoStack = [];
+    updateScheduleUndoButtons();
+  }
+
+  function pushScheduleUndoSnapshot() {
+    if (scheduleUndoSuppressPush) return;
+    var snap = cloneScheduleUndoSnapshot();
+    var top = scheduleUndoStack.length ? scheduleUndoStack[scheduleUndoStack.length - 1] : null;
+    if (top && scheduleUndoSnapshotsEqual(top, snap)) return;
+    scheduleUndoStack.push(snap);
+    if (scheduleUndoStack.length > SCHEDULE_UNDO_MAX) scheduleUndoStack.shift();
+    updateScheduleUndoButtons();
+  }
+
+  function restoreScheduleUndoSnapshot(snap) {
+    scheduleUndoSuppressPush = true;
+    try {
+      localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(snap.assignments));
+      localStorage.setItem(DRAFT_SCHEDULE_STORAGE_KEY, JSON.stringify(snap.draft));
+      draftScheduleRows = loadDraftScheduleRows();
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      syncAllAssignmentTimesFromDraft();
+      pruneScheduleAssignmentsInvalidSlots();
+      rebuildEmployeeDerivedData();
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+      scheduleTeamStateDebouncedSync();
+    } finally {
+      scheduleUndoSuppressPush = false;
+    }
+    updateScheduleUndoButtons();
+  }
+
+  function undoScheduleChange() {
+    if (!scheduleUndoStack.length) return;
+    var prev = scheduleUndoStack.pop();
+    restoreScheduleUndoSnapshot(prev);
+    if (typeof draftScheduleModal !== 'undefined' && draftScheduleModal && !draftScheduleModal.hidden) {
+      draftModalScratch = cloneDraftSchedule(draftScheduleRows);
+      if (typeof renderDraftScheduleTable === 'function') renderDraftScheduleTable();
+    }
+    if (typeof showScheduleNotice === 'function') {
+      showScheduleNotice('Undid last schedule change.', false);
+    }
   }
 
   function buildWeekPatternFromCurrentRestaurant() {
@@ -2182,6 +2585,7 @@
 
   function applyWeekPatternToCurrentRestaurant(weekPattern) {
     if (!weekPattern || typeof weekPattern !== 'object') return false;
+    pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var targetStart = scheduleCalendarWeekIndex * 7;
@@ -2215,6 +2619,7 @@
       return applyWeekPatternToCurrentRestaurant(tpl.weekPattern);
     }
     if (tpl.assignments && typeof tpl.assignments === 'object') {
+      pushScheduleUndoSnapshot();
       // Backward compatibility for older full-store templates.
       var shell = assignmentStoreShell();
       var merged = mergeAssignmentStoreWithShell(shell, tpl.assignments);
@@ -2451,6 +2856,7 @@
       if (val.break) out.break = String(val.break);
       if (val.hours != null && val.hours !== '') out.hours = String(val.hours);
       if (val.timeLabel) out.timeLabel = String(val.timeLabel);
+      if (val.breakPaid === true || val.breakPaid === false) out.breakPaid = !!val.breakPaid;
       return out;
     }
     return { workers: ['Unassigned'] };
@@ -2494,6 +2900,8 @@
     if (direct.hours != null && direct.hours !== '') out.hours = direct.hours;
     else if (pattern.hours != null && pattern.hours !== '') out.hours = pattern.hours;
     if (direct.timeLabel || pattern.timeLabel) out.timeLabel = direct.timeLabel || pattern.timeLabel;
+    if (direct.breakPaid === true || direct.breakPaid === false) out.breakPaid = direct.breakPaid;
+    else if (pattern.breakPaid === true || pattern.breakPaid === false) out.breakPaid = pattern.breakPaid;
     return out;
   }
 
@@ -2576,7 +2984,33 @@
     return store[currentRestaurantId] || {};
   }
 
+  function getAssignmentBreakPaidForShift(shiftId) {
+    var entry = lookupScheduleAssignment(getCurrentRestaurantAssignments(), shiftId);
+    if (!entry || entry.breakPaid == null) return null;
+    return !!entry.breakPaid;
+  }
+
+  function setAssignmentBreakPaidForShift(shiftId, breakPaid) {
+    var store = loadScheduleAssignmentsStore();
+    if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
+    var rs = store[currentRestaurantId];
+    var existing = lookupScheduleAssignment(rs, shiftId);
+    var entry = existing ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
+    if (breakPaid == null) delete entry.breakPaid;
+    else entry.breakPaid = !!breakPaid;
+    rs[shiftId] = entry;
+    saveScheduleAssignmentsStore(store);
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    if (window.gmCalloutTimecards && window.gmCalloutTimecards.invalidateScheduleCache) {
+      window.gmCalloutTimecards.invalidateScheduleCache();
+    }
+    scheduleTeamStateDebouncedSync();
+  }
+
   function saveScheduleAssignments() {
+    pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var ri = restaurantsList.findIndex(function (x) {
@@ -2615,14 +3049,30 @@
     var stored = getCurrentRestaurantAssignments();
     SCHEDULE.forEach(function (s) {
       var entry = lookupScheduleAssignment(stored, s.id);
-      if (!entry) return;
-      if (entry.break) s.redPokeBreak = entry.break;
-      if (entry.hours != null && String(entry.hours).trim() !== '') {
-        s.redPokeHours = entry.hours;
-      } else {
-        delete s.redPokeHours;
+      var slotLabel = redPokeShiftTimeLabel(s.start, s.end);
+      var slotHours = redPokeShiftHoursDecimal(s.start, s.end);
+      s.timeLabel = slotLabel;
+      if (!entry) {
+        s.redPokeHours = slotHours;
+        return;
       }
-      if (entry.timeLabel) s.timeLabel = entry.timeLabel;
+      if (entry.break) s.redPokeBreak = entry.break;
+      if (entry.breakPaid === true || entry.breakPaid === false) {
+        s.breakPaid = !!entry.breakPaid;
+      } else {
+        delete s.breakPaid;
+      }
+      if (entry.hours != null && String(entry.hours).trim() !== '') {
+        var entryH = parseFloat(entry.hours);
+        var slotH = parseFloat(slotHours);
+        if (!Number.isNaN(entryH) && !Number.isNaN(slotH) && Math.abs(entryH - slotH) > 0.02) {
+          s.redPokeHours = slotHours;
+        } else {
+          s.redPokeHours = entry.hours;
+        }
+      } else {
+        s.redPokeHours = slotHours;
+      }
       var list = entry.workers.filter(function (n) {
         return n && n !== 'Unassigned';
       });
@@ -3131,6 +3581,60 @@
     scheduleTeamStateDebouncedSync();
   }
 
+  function loadTimeclockSettings() {
+    try {
+      var raw = localStorage.getItem(TIMECLOCK_SETTINGS_KEY);
+      if (!raw) return Object.assign({}, DEFAULT_TIMECLOCK_SETTINGS);
+      var o = JSON.parse(raw);
+      if (!o || typeof o !== 'object') return Object.assign({}, DEFAULT_TIMECLOCK_SETTINGS);
+      return {
+        autoClockOutTime:
+          o.autoClockOutTime != null && String(o.autoClockOutTime).trim()
+            ? String(o.autoClockOutTime).trim()
+            : DEFAULT_TIMECLOCK_SETTINGS.autoClockOutTime,
+      };
+    } catch (_eTc) {
+      return Object.assign({}, DEFAULT_TIMECLOCK_SETTINGS);
+    }
+  }
+
+  function saveTimeclockSettings(settings) {
+    var next = {
+      autoClockOutTime:
+        settings && settings.autoClockOutTime != null
+          ? String(settings.autoClockOutTime).trim()
+          : DEFAULT_TIMECLOCK_SETTINGS.autoClockOutTime,
+    };
+    if (!/^\d{2}:\d{2}$/.test(next.autoClockOutTime)) {
+      next.autoClockOutTime = DEFAULT_TIMECLOCK_SETTINGS.autoClockOutTime;
+    }
+    try {
+      localStorage.setItem(TIMECLOCK_SETTINGS_KEY, JSON.stringify(next));
+    } catch (_eSaveTc) {
+      /* ignore */
+    }
+    scheduleTeamStateDebouncedSync();
+    return next;
+  }
+
+  function applyTimeclockSettingsFromRemote(raw) {
+    if (!raw || typeof raw !== 'object') return;
+    var time =
+      raw.auto_clock_out_time != null
+        ? String(raw.auto_clock_out_time).trim()
+        : raw.autoClockOutTime != null
+          ? String(raw.autoClockOutTime).trim()
+          : null;
+    if (!time || !/^\d{2}:\d{2}$/.test(time)) return;
+    try {
+      localStorage.setItem(TIMECLOCK_SETTINGS_KEY, JSON.stringify({ autoClockOutTime: time }));
+    } catch (_eApplyTc) {
+      /* ignore */
+    }
+    var input = document.getElementById('tcAutoClockOutTime');
+    if (input && document.activeElement !== input) input.value = time;
+  }
+
   function applyMessagingTemplate(template, vars) {
     return String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, key) {
       return vars[key] != null && vars[key] !== '' ? String(vars[key]) : '';
@@ -3406,6 +3910,8 @@
   const draftScheduleRoleChips = document.getElementById('draftScheduleRoleChips');
   const draftScheduleTableMount = document.getElementById('draftScheduleTableMount');
   const openDraftScheduleModalBtn = document.getElementById('openDraftScheduleModal');
+  const scheduleUndoBtn = document.getElementById('scheduleUndoBtn');
+  const undoDraftScheduleBtn = document.getElementById('undoDraftScheduleBtn');
   const addDraftSlotLineBtn = document.getElementById('addDraftSlotLineBtn');
   const resetDraftScheduleBtn = document.getElementById('resetDraftScheduleBtn');
   const saveDraftScheduleBtn = document.getElementById('saveDraftScheduleBtn');
@@ -3874,6 +4380,16 @@
     if (num === 5) {
       renderEmployeeRestaurantFilterChips();
       syncEmployeeFilterControls();
+      refreshEmployeePhotosOnScreen(5);
+    }
+    if (num === 6) {
+      var empForHeader = editingEmployeeId
+        ? employees.find(function (e) {
+            return e.id === editingEmployeeId;
+          })
+        : null;
+      refreshEmployeeProfileHeader(empForHeader);
+      refreshEmployeePhotosOnScreen(6);
     }
     if (num === 8) {
       if (requestsTypeChips) {
@@ -5191,18 +5707,23 @@
           '<button type="button" class="employee-card" data-employee-id="' +
           escapeHtml(emp.id) +
           '">' +
+          '<span class="employee-card-main">' +
+          renderEmployeePhotoHtml(emp, 'employee-photo') +
+          '<span class="employee-card-body">' +
           '<span class="employee-card-name">' +
           escapeHtml(employeeDisplayName(emp)) +
           '</span>' +
           '<ul class="employee-card-meta">' +
           metaRows +
           '</ul>' +
+          '</span></span>' +
           '</button></li>'
         );
       });
       parts.push('</ul></section>');
     });
     employeeListEl.innerHTML = parts.join('');
+    refreshEmployeePhotosOnScreen(5);
     employeeListEl.querySelectorAll('.employee-card[data-employee-id]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         openEmployeeForm(this.getAttribute('data-employee-id'));
@@ -5557,6 +6078,7 @@
   const empRegeneratePinBtn = document.getElementById('empRegeneratePinBtn');
   const empHourlyRate = document.getElementById('empHourlyRate');
   const empTipPoint = document.getElementById('empTipPoint');
+  const empBreakPolicy = document.getElementById('empBreakPolicy');
   const empTimeclockPanel = document.getElementById('empTimeclockPanel');
   const empTimeclockNewHint = document.getElementById('empTimeclockNewHint');
   const empScheduleAssigned = document.getElementById('empScheduleAssigned');
@@ -5797,6 +6319,9 @@
     const emp = empId ? employees.find(function (e) { return e.id === empId; }) : null;
     if (empId && !emp) return;
     editingEmployeeId = emp ? emp.id : null;
+    pendingEmployeePhotoFile = null;
+    var empPhotoInputEl = document.getElementById('empPhotoInput');
+    if (empPhotoInputEl) empPhotoInputEl.value = '';
     if (empFirstName) empFirstName.value = emp ? emp.firstName || '' : '';
     if (empLastName) empLastName.value = emp ? emp.lastName || '' : '';
     if (empStaffType) empStaffType.value = emp ? emp.staffType : 'Kitchen';
@@ -5827,6 +6352,10 @@
           ? String(emp.tipPoint)
           : '';
     }
+    if (empBreakPolicy) {
+      empBreakPolicy.value =
+        emp && emp.meta && emp.meta.breakPolicy === 'paid' ? 'paid' : 'unpaid';
+    }
     refreshEmployeeDetailPanel(emp);
     renderEmployeeLeaveEditor(emp);
     var st = empStaffType ? empStaffType.value : 'Kitchen';
@@ -5836,8 +6365,9 @@
     if (employeeWeekAvail) {
       employeeWeekAvail.innerHTML = renderEmployeeAvailabilityGrid(grid, st);
     }
+    refreshEmployeeProfileHeader(emp);
     showScreen(6);
-    screenTitle.textContent = editingEmployeeId ? 'Edit employee' : 'Add employee';
+    screenTitle.textContent = emp ? employeeDisplayName(emp) : 'Add employee';
   }
 
   if (toggleTable) {
@@ -6284,6 +6814,20 @@
   });
 
   document.addEventListener('keydown', function (ev) {
+    var mod = ev.metaKey || ev.ctrlKey;
+    if (mod && !ev.shiftKey && (ev.key === 'z' || ev.key === 'Z')) {
+      var tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+      var editable =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        (ev.target && ev.target.isContentEditable);
+      if (!editable && scheduleUndoStack.length && (currentScreen === 1 || currentScreen === 2)) {
+        undoScheduleChange();
+        ev.preventDefault();
+        return;
+      }
+    }
     if (ev.key !== 'Escape') return;
     if (draftScheduleModal && !draftScheduleModal.hidden) {
       closeDraftScheduleModal();
@@ -6453,6 +6997,12 @@
       persistDraftScheduleRows(draftModalScratch);
       closeDraftScheduleModal();
     });
+  }
+  if (scheduleUndoBtn) {
+    scheduleUndoBtn.addEventListener('click', undoScheduleChange);
+  }
+  if (undoDraftScheduleBtn) {
+    undoDraftScheduleBtn.addEventListener('click', undoScheduleChange);
   }
   if (openScheduleAddLocationModalBtn) {
     openScheduleAddLocationModalBtn.addEventListener('click', function () {
@@ -6634,6 +7184,57 @@
     });
   }
 
+  (function wireEmployeePhotoControls() {
+    var photoInput = document.getElementById('empPhotoInput');
+    var photoRemove = document.getElementById('empPhotoRemoveBtn');
+    if (photoInput) {
+      photoInput.addEventListener('change', function () {
+        var file = photoInput.files && photoInput.files[0];
+        if (!file) return;
+        var emp = editingEmployeeId
+          ? employees.find(function (e) {
+              return e.id === editingEmployeeId;
+            })
+          : null;
+        if (!emp) {
+          pendingEmployeePhotoFile = file;
+          refreshEmployeeProfileHeader(null);
+          syncEmployeePhotoRemoveButton(null);
+          return;
+        }
+        photoInput.disabled = true;
+        void uploadEmployeePhotoFile(emp, file).then(function (res) {
+          photoInput.disabled = false;
+          photoInput.value = '';
+          if (!res.ok) {
+            window.alert(res.message || 'Could not upload photo.');
+            return;
+          }
+          refreshEmployeePhotoPreview(emp);
+          renderEmployeeList();
+        });
+      });
+    }
+    if (photoRemove) {
+      photoRemove.addEventListener('click', function () {
+        pendingEmployeePhotoFile = null;
+        if (photoInput) photoInput.value = '';
+        if (!editingEmployeeId) {
+          refreshEmployeePhotoPreview(null);
+          syncEmployeePhotoRemoveButton(null);
+          return;
+        }
+        var emp = employees.find(function (e) {
+          return e.id === editingEmployeeId;
+        });
+        if (!emp) return;
+        clearEmployeePhoto(emp);
+        refreshEmployeePhotoPreview(emp);
+        renderEmployeeList();
+      });
+    }
+  })();
+
   if (cancelEmployeeBtn) {
     cancelEmployeeBtn.addEventListener('click', function () {
       editingEmployeeId = null;
@@ -6705,6 +7306,10 @@
         rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
         rec.meta.leaveBalance = L.normalizeBalance(readLeaveBalanceFromEditor());
       }
+      rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+      if (empBreakPolicy) {
+        rec.meta.breakPolicy = empBreakPolicy.value === 'paid' ? 'paid' : 'unpaid';
+      }
       if (rec.tipPoint != null) {
         rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
         rec.meta.tipPoint = rec.tipPoint;
@@ -6721,6 +7326,18 @@
       saveEmployees();
       rebuildEmployeeDerivedData();
       renderEmployeeList();
+      if (pendingEmployeePhotoFile) {
+        var photoEmp = employees.find(function (e) {
+          return e.id === savedId;
+        });
+        var pendingFile = pendingEmployeePhotoFile;
+        pendingEmployeePhotoFile = null;
+        if (photoEmp) {
+          void uploadEmployeePhotoFile(photoEmp, pendingFile).then(function () {
+            renderEmployeeList();
+          });
+        }
+      }
       if (currentScreen === 8) renderRequestsList();
       if (currentScreen === 10 && window.gmCalloutTimecards) {
         window.gmCalloutTimecards.renderRoster();
@@ -6749,8 +7366,30 @@
       });
       var grid = normalizeWeeklyGrid(collected, st);
       employeeWeekAvail.innerHTML = renderEmployeeAvailabilityGrid(grid, st);
+      refreshEmployeeProfileHeader(
+        editingEmployeeId
+          ? employees.find(function (e) {
+              return e.id === editingEmployeeId;
+            })
+          : null
+      );
     });
   }
+
+  function wireEmployeeProfileHeaderLiveUpdate() {
+    function syncHeaderFromForm() {
+      if (currentScreen !== 6) return;
+      var emp = editingEmployeeId
+        ? employees.find(function (e) {
+            return e.id === editingEmployeeId;
+          })
+        : null;
+      refreshEmployeeProfileHeader(emp);
+    }
+    if (empFirstName) empFirstName.addEventListener('input', syncHeaderFromForm);
+    if (empLastName) empLastName.addEventListener('input', syncHeaderFromForm);
+  }
+  wireEmployeeProfileHeaderLiveUpdate();
 
   document.querySelectorAll('.tab').forEach(function (tab) {
     tab.addEventListener('click', function () {
@@ -7417,6 +8056,7 @@
             authUserId: row.auth_user_id || undefined,
             firstName: row.first_name,
             lastName: row.last_name,
+            displayName: row.display_name || undefined,
             staffType: row.staff_type,
             phone: row.phone,
             weeklyGrid: row.weekly_grid,
@@ -7477,6 +8117,7 @@
                 authUserId: row.auth_user_id || undefined,
                 firstName: row.first_name,
                 lastName: row.last_name,
+                displayName: row.display_name || undefined,
                 staffType: row.staff_type,
                 phone: row.phone,
                 weeklyGrid: row.weekly_grid,
@@ -7554,6 +8195,7 @@
       escapeHtml: escapeHtml,
       employees: employees,
       employeeDisplayName: employeeDisplayName,
+      employeePhotoUrlCandidates: employeePhotoUrlCandidates,
       normNameKey: normNameKey,
       nameFirstToken: nameFirstToken,
       nameLastToken: nameLastToken,
@@ -7579,6 +8221,10 @@
       weekIndexForPayWeekStartIso: weekIndexForPayWeekStartIso,
       buildScheduleSnapshotForPayWeek: buildScheduleSnapshotForPayWeek,
       gmSupabaseReadyNow: gmSupabaseReadyNow,
+      getAssignmentBreakPaidForShift: getAssignmentBreakPaidForShift,
+      setAssignmentBreakPaidForShift: setAssignmentBreakPaidForShift,
+      loadTimeclockSettings: loadTimeclockSettings,
+      saveTimeclockSettings: saveTimeclockSettings,
       showScreen: showScreen,
       setTimecardTitle: setTimecardScreenTitle,
     });

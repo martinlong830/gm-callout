@@ -10,6 +10,8 @@ export type TimeClockEntry = {
   break_minutes?: number | null;
   break_start_at?: string | null;
   break_end_at?: string | null;
+  break_segments?: Array<{ start?: string; end?: string; minutes?: number }> | null;
+  break_paid?: boolean | null;
   schedule_shift_id?: string | null;
   edit_history?: unknown;
   updated_at?: string;
@@ -20,6 +22,7 @@ export type TimecardSchema = {
   breakTimes: boolean;
   scheduleShiftId: boolean;
   editHistory: boolean;
+  breakPaid: boolean;
 };
 
 export type ShiftDayRow = {
