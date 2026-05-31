@@ -76,7 +76,6 @@
       ],
       {
         hoursRemaining: 21,
-        note: '40 hours total sick bank; 21 hours remaining after listed dates (19 hrs used on 3/28 and 5/4).',
       },
       null,
       61
@@ -196,7 +195,16 @@
           sick.hoursRemaining != null && sick.hoursRemaining !== ''
             ? Math.max(0, parseFloat(sick.hoursRemaining) || 0)
             : null,
-        note: String(sick.note || ''),
+        note: (function () {
+          var n = String(sick.note || '');
+          if (
+            n ===
+            '40 hours total sick bank; 21 hours remaining after listed dates (19 hrs used on 3/28 and 5/4).'
+          ) {
+            return '';
+          }
+          return n;
+        })(),
       },
     };
   }

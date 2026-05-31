@@ -30,8 +30,12 @@ if (!fs.existsSync(path.join(root, 'eas.json'))) fail('Missing eas.json');
 else pass('eas.json');
 
 const cfg = fs.readFileSync(path.join(root, 'app.config.ts'), 'utf8');
-if (!cfg.includes('com.redpoke.scheduler')) fail('bundleIdentifier com.redpoke.scheduler not in app.config.ts');
-else pass('iOS bundle ID com.redpoke.scheduler');
+if (!cfg.includes('com.redpoke.scheduler')) fail('com.redpoke.scheduler not in app.config.ts');
+else pass('Bundle ID / package com.redpoke.scheduler (iOS + Android)');
+
+const eas = JSON.parse(fs.readFileSync(path.join(root, 'eas.json'), 'utf8'));
+if (eas.build?.production?.android?.buildType === 'app-bundle') pass('Android production builds AAB (Play Store)');
+else fail('eas.json production.android.buildType should be app-bundle');
 
 if (cfg.includes('projectId: process.env.EAS_PROJECT_ID') && !process.env.EAS_PROJECT_ID) {
   console.warn('⚠ Run `eas init` in mobile/ to link an EAS project (or set EAS_PROJECT_ID)');
@@ -47,7 +51,7 @@ if (fs.existsSync(envPath)) {
 
 console.log('');
 if (ok) {
-  console.log('Ready for EAS setup. Next: eas login && eas init && eas secret:create (see docs/APP_STORE.md)');
+  console.log('Ready for EAS setup. See docs/APP_STORE.md and docs/PLAY_STORE.md');
   process.exit(0);
 } else {
   console.log('Fix the issues above before building.');

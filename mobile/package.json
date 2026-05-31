@@ -8,10 +8,14 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:ios": "eas build --platform ios --profile production",
-    "build:ios:preview": "eas build --platform ios --profile preview",
-    "submit:ios": "eas submit --platform ios --profile production --latest",
+    "build:ios": "eas build --platform ios --profile=production",
+    "build:ios:preview": "eas build --platform ios --profile=preview",
+    "build:android": "eas build --platform android --profile=production",
+    "build:android:preview": "eas build --platform android --profile=preview",
+    "submit:ios": "eas submit --platform ios --profile=production --latest",
+    "submit:android": "eas submit --platform android --profile=production --latest",
     "credentials:ios": "eas credentials --platform ios",
+    "credentials:android": "eas credentials --platform android",
     "validate:store": "node scripts/validate-appstore.js"
   },
   "dependencies": {

@@ -68,7 +68,6 @@ const TEAM_LEAVE_SEED: Record<string, LeaveBalance> = {
     {
       allowanceHours: 61,
       hoursRemaining: 21,
-      note: '40 hours total sick bank; 21 hours remaining after listed dates (19 hrs used on 3/28 and 5/4).',
     }
   ),
   'maeve williams': balance(0, 5, [], [
@@ -136,7 +135,16 @@ export function normalizeLeaveBalance(raw: unknown): LeaveBalance {
       entries: mapEntries(sick.entries),
       allowanceHours: sick.allowanceHours != null ? Math.max(0, Number(sick.allowanceHours) || 0) : null,
       hoursRemaining: sick.hoursRemaining != null ? Math.max(0, Number(sick.hoursRemaining) || 0) : null,
-      note: String(sick.note ?? ''),
+      note: (() => {
+        const n = String(sick.note ?? '');
+        if (
+          n ===
+          '40 hours total sick bank; 21 hours remaining after listed dates (19 hrs used on 3/28 and 5/4).'
+        ) {
+          return '';
+        }
+        return n;
+      })(),
     },
   };
 }

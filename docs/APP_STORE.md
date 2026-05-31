@@ -120,10 +120,15 @@ npm run submit:ios
 | Signing errors | `eas credentials` → iOS → reset distribution cert |
 | Missing compliance | Already set: `ITSAppUsesNonExemptEncryption = false` |
 
-## Android (optional)
+## Android (Google Play)
+
+Full guide: **[PLAY_STORE.md](./PLAY_STORE.md)** and listing copy **[PLAY_STORE_CONNECT.md](./PLAY_STORE_CONNECT.md)**.
 
 ```bash
 cd mobile
-eas build --platform android --profile production
-eas submit --platform android --profile production
+bash scripts/setup-playstore.sh
+npm run build:android
+npm run submit:android
 ```
+
+Production web URL for this project: **`https://gm-callout.onrender.com`**

@@ -86,4 +86,15 @@ npm run build:ios
 npm run submit:ios
 ```
 
-Privacy policy: host **`../privacy.html`** at `https://your-domain/privacy.html` (see **[../docs/APP_STORE_CONNECT.md](../docs/APP_STORE_CONNECT.md)** for listing copy).
+## Google Play Store
+
+Full checklist: **[../docs/PLAY_STORE.md](../docs/PLAY_STORE.md)** (package `com.redpoke.scheduler`).
+
+```bash
+cd mobile
+bash scripts/setup-playstore.sh
+npm run build:android
+npm run submit:android
+```
+
+Privacy policy: **`https://gm-callout.onrender.com/privacy.html`** (see **[../docs/PLAY_STORE_CONNECT.md](../docs/PLAY_STORE_CONNECT.md)** for listing copy).

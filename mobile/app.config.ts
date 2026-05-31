@@ -35,7 +35,6 @@ const config: ExpoConfig = {
   },
   android: {
     package: ANDROID_PACKAGE,
-    versionCode: 1,
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#ffffff',
@@ -58,8 +57,7 @@ const config: ExpoConfig = {
   ],
   extra: {
     eas: {
-      // Filled automatically when you run: cd mobile && eas init
-      projectId: process.env.EAS_PROJECT_ID,
+      projectId: '4e08651a-f13a-4ebd-99e9-96ea3451a0bb',
     },
   },
   owner: undefined,
