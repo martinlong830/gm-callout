@@ -1,6 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getPayWeekBounds } from './payWeek';
-import type { TimecardSchema, TimeClockEntry } from './types';
+import type { PayWeekBounds, TimecardSchema, TimeClockEntry } from './types';
 
 function mergeWeekEntriesById(primary: TimeClockEntry[], extra: TimeClockEntry[]): TimeClockEntry[] {
   const byId: Record<string, TimeClockEntry> = {};
@@ -13,12 +12,14 @@ function mergeWeekEntriesById(primary: TimeClockEntry[], extra: TimeClockEntry[]
   return Object.values(byId).sort((a, b) => String(a.clock_in_at).localeCompare(String(b.clock_in_at)));
 }
 
-export async function loadWeekEntries(sb: SupabaseClient): Promise<{
+export async function loadWeekEntries(
+  sb: SupabaseClient,
+  bounds: PayWeekBounds
+): Promise<{
   ok: true;
   entries: TimeClockEntry[];
   schema: TimecardSchema;
 } | { ok: false; reason: string }> {
-  const bounds = getPayWeekBounds();
   const fullSel =
     'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, edit_history, updated_at';
   const res = await sb

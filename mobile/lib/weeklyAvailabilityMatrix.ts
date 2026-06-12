@@ -127,7 +127,7 @@ export function buildAvailabilityMatrixRows(
       const row: MatrixCell[] = WEEKDAY_KEYS.map((wk) => {
         const tr = draftTimeSlotFor(draftRows, role, wk, trIdx);
         if (!tr) return { wk, type: 'off' };
-        return { wk, type: 'slot', tr, available: !!normalized[wk][tr.slotKey] };
+        return { wk, type: 'slot', tr, available: !!normalized[wk]?.[tr.slotKey] };
       });
       rows.push(row);
     }
@@ -139,7 +139,7 @@ export function buildAvailabilityMatrixRows(
       wk,
       type: 'slot' as const,
       tr,
-      available: !!normalized[wk][tr.slotKey],
+      available: !!normalized[wk]?.[tr.slotKey],
     }))
   );
 }

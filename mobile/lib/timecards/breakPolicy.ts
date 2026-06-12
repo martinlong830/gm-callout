@@ -1,7 +1,7 @@
 import type { EmployeeRow } from '../employees';
 import type { TimeClockEntry } from './types';
 
-type ShiftBreakLike = { breakPaid?: boolean | null };
+export type ShiftBreakLike = { breakPaid?: boolean | null };
 
 export function employeeBreakPolicy(emp: EmployeeRow | null | undefined): 'paid' | 'unpaid' {
   const p = emp?.meta?.breakPolicy;

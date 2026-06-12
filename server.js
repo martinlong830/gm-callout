@@ -104,6 +104,7 @@ app.use(
   createPortalAuthRouter({
     supabaseUrl: SUPABASE_URL,
     supabaseServiceRoleKey: SUPABASE_SERVICE_ROLE_KEY,
+    publicBaseUrl: PUBLIC_BASE_URL,
   })
 );
 

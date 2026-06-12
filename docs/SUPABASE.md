@@ -40,6 +40,14 @@ If your hosted project **already has** time-clock tables from a previous laptop,
 
 **All portal accounts (manager / employee / time clock):** Sign-in and sign-up use **name + password** via `POST /api/portal/signin` and `/api/portal/signup`. Add `SUPABASE_SERVICE_ROLE_KEY` from Project Settings → API → `service_role` to `.env`, restart `npm start`.
 
+**Forgot password:** On the login screen, **Forgot password?** — enter your **sign-in name**; the server emails a reset link to the **recovery email** on that account (set under **Account** after sign-in). Requires:
+
+1. Migration `20260531120000_password_reset.sql`
+2. `PUBLIC_BASE_URL` set to your HTTPS site (e.g. Render URL)
+3. `RESEND_API_KEY` and `PASSWORD_RESET_FROM_EMAIL` on the server ([Resend](https://resend.com))
+
+Existing accounts: each person sets their own recovery email after sign-in via **Account** (top right). New sign-ups enter it on the create-account form.
+
 ## 4. First manager account
 
 1. **Authentication → Users** → Add user (email + password), or sign up from the app once login is wired.

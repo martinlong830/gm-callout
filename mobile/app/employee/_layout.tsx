@@ -1,7 +1,22 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
-import { Pressable, Text } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Pressable, Text, View } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
+
+function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
+  const router = useRouter();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginRight: 16 }}>
+      <Pressable onPress={() => router.push('/account')} hitSlop={8}>
+        <Text style={{ color: '#c41230', fontWeight: '600' }}>Account</Text>
+      </Pressable>
+      <Pressable onPress={onSignOut} hitSlop={8}>
+        <Text style={{ color: '#c41230', fontWeight: '600' }}>Sign Out</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function EmployeeLayout() {
   const { session, role, signOut } = useAuth();
@@ -13,11 +28,7 @@ export default function EmployeeLayout() {
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#c41230',
-        headerRight: () => (
-          <Pressable onPress={() => void signOut()} style={{ marginRight: 16 }} hitSlop={8}>
-            <Text style={{ color: '#c41230', fontWeight: '600' }}>Sign Out</Text>
-          </Pressable>
-        ),
+        headerRight: () => <HeaderActions onSignOut={() => void signOut()} />,
       }}
     >
       <Tabs.Screen

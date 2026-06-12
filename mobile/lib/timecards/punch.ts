@@ -97,6 +97,36 @@ export function parseIsoToDate(iso: string | null | undefined): Date | null {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
+/** Local midnight on the shift calendar day — used to pre-fill date before a time is entered. */
+export function shiftDateAtMidnight(shiftIso: string): Date | null {
+  return combineShiftIsoAndTime(shiftIso, new Date(2000, 0, 1, 0, 0, 0, 0));
+}
+
+/** True when the value is only the shift-day placeholder (date set, time still empty). */
+export function isMidnightOnShiftDate(d: Date | null | undefined, shiftIso: string): boolean {
+  if (!d || !shiftIso) return !d;
+  const anchor = shiftDateAtMidnight(shiftIso);
+  if (!anchor) return false;
+  return (
+    d.getFullYear() === anchor.getFullYear() &&
+    d.getMonth() === anchor.getMonth() &&
+    d.getDate() === anchor.getDate() &&
+    d.getHours() === 0 &&
+    d.getMinutes() === 0
+  );
+}
+
+/** Merge a clock time with the shift's calendar date (YYYY-MM-DD). */
+export function combineShiftIsoAndTime(shiftIso: string, time: Date | null | undefined): Date | null {
+  if (!shiftIso || !time || Number.isNaN(time.getTime())) return null;
+  const y = parseInt(String(shiftIso).slice(0, 4), 10);
+  const mo = parseInt(String(shiftIso).slice(5, 7), 10) - 1;
+  const da = parseInt(String(shiftIso).slice(8, 10), 10);
+  if (Number.isNaN(y) || Number.isNaN(mo) || Number.isNaN(da)) return null;
+  const d = new Date(y, mo, da, time.getHours(), time.getMinutes(), 0, 0);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function dateToIso(d: Date | null | undefined): string | null {
   if (!d || Number.isNaN(d.getTime())) return null;
   return d.toISOString();

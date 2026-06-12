@@ -14,6 +14,8 @@ import type {
 } from './types';
 
 export const SCHEDULE_VIEW_WEEK_COUNT = 3;
+/** Matches web portal `SCHEDULE_TEMPLATE_WEEK_INDEX` for `team_state.draft_schedule.byWeek`. */
+const WEB_TEAM_STATE_TEMPLATE_WEEK_KEY = '12';
 export const WEEKDAY_KEYS: WeekdayKey[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const SCHEDULE_GRID_ROLE_ORDER: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -248,10 +250,22 @@ function sanitizeDraftRoleRows(
   return out.length ? out : JSON.parse(JSON.stringify(defaultRows));
 }
 
-export function loadDraftFromTeamState(raw: unknown): DraftGrid {
+export function loadDraftFromTeamState(raw: unknown, weekIndex?: number): DraftGrid {
   const base = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   if (!raw || typeof raw !== 'object') return base;
   const p = raw as Record<string, unknown>;
+  if (p.byWeek && typeof p.byWeek === 'object') {
+    const byWeek = p.byWeek as Record<string, unknown>;
+    const wi =
+      weekIndex != null && !Number.isNaN(weekIndex)
+        ? String(weekIndex)
+        : WEB_TEAM_STATE_TEMPLATE_WEEK_KEY;
+    const weekLayers = byWeek[wi];
+    if (weekLayers && typeof weekLayers === 'object') {
+      return loadDraftFromTeamState(weekLayers);
+    }
+    return base;
+  }
   (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((role) => {
     const defR = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
     if (!Array.isArray(p[role])) return;

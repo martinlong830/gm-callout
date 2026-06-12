@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Red Poke Scheduler</title>
-  <link rel="stylesheet" href="styles.css?v=timecards-tips-1" />
+  <link rel="stylesheet" href="styles.css?v=timeclock-pad-1" />
   <script>
     /* Authed shell is applied in app.js after Supabase session is verified (avoids a blocking login overlay). */
   </script>
@@ -54,6 +54,9 @@
           <p class="login-error" id="loginError" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
         </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showForgotPasswordPanelBtn">Forgot password?</button>
+        </p>
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showRegisterPanelBtn">Create employee account</button>
         </p>
@@ -117,6 +120,20 @@
               enterkeyhint="next"
             />
           </label>
+          <label class="login-field">
+            <span class="login-label">Recovery email</span>
+            <input
+              type="email"
+              id="regRecoveryEmail"
+              class="login-input"
+              required
+              autocomplete="email"
+              inputmode="email"
+              maxlength="120"
+              enterkeyhint="next"
+            />
+          </label>
+          <p class="login-hint login-hint--tight">Used to reset your password if you forget it.</p>
           <label class="login-field">
             <span class="login-label">Staff type</span>
             <select id="regStaffType" class="login-input" required enterkeyhint="next">
@@ -187,6 +204,20 @@
             />
           </label>
           <label class="login-field">
+            <span class="login-label">Recovery email</span>
+            <input
+              type="email"
+              id="mgrRegRecoveryEmail"
+              class="login-input"
+              required
+              autocomplete="email"
+              inputmode="email"
+              maxlength="120"
+              enterkeyhint="next"
+            />
+          </label>
+          <p class="login-hint login-hint--tight">Used to reset your password if you forget it.</p>
+          <label class="login-field">
             <span class="login-label">Password</span>
             <input
               type="password"
@@ -215,6 +246,68 @@
         </form>
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showLoginFromManagerRegisterBtn">Back to sign in</button>
+        </p>
+      </div>
+      <div id="forgotPasswordPanel" hidden>
+        <p class="login-subtitle">Reset password</p>
+        <p class="login-hint">
+          Enter your <strong>sign-in name</strong> (same as on the login screen). We will email a reset link to the
+          recovery email saved on that account. Add or change it after sign-in under <strong>Account</strong>.
+        </p>
+        <form id="forgotPasswordForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Name</span>
+            <input
+              type="text"
+              id="forgotPasswordLoginName"
+              class="login-input"
+              required
+              autocomplete="username"
+              autocapitalize="words"
+              maxlength="80"
+              enterkeyhint="go"
+            />
+          </label>
+          <p class="login-error" id="forgotPasswordError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Send reset link</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginFromForgotPasswordBtn">Back to sign in</button>
+        </p>
+      </div>
+      <div id="resetPasswordPanel" hidden>
+        <p class="login-subtitle">Choose a new password</p>
+        <p class="login-hint" id="resetPasswordHint">Set a new password for your account.</p>
+        <form id="resetPasswordForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">New password</span>
+            <input
+              type="password"
+              id="resetPasswordNew"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+              enterkeyhint="next"
+            />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Confirm new password</span>
+            <input
+              type="password"
+              id="resetPasswordConfirm"
+              class="login-input"
+              required
+              autocomplete="new-password"
+              minlength="4"
+              enterkeyhint="done"
+            />
+          </label>
+          <p class="login-error" id="resetPasswordError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Update password</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLoginFromResetPasswordBtn">Back to sign in</button>
         </p>
       </div>
       <div id="timeclockLoginPanel" hidden>
@@ -294,9 +387,14 @@
           decoding="async"
         />
         <h1 class="title" id="screenTitle">Schedule Overview</h1>
-        <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign Out">
-          Sign Out
-        </button>
+        <div class="header-actions">
+          <button type="button" class="header-account-btn" data-open-account-settings aria-label="Account settings">
+            Account
+          </button>
+          <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign Out">
+            Sign Out
+          </button>
+        </div>
       </header>
       <nav class="top-nav" aria-label="Main navigation">
         <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
@@ -340,12 +438,6 @@
                 >
                   ›
                 </button>
-                <select
-                  class="schedule-week-nav-jump"
-                  id="scheduleWeekNavJump"
-                  aria-label="Jump to week"
-                  title="Jump to week"
-                ></select>
                 <button
                   type="button"
                   class="btn btn-secondary schedule-week-nav-today"
@@ -812,7 +904,6 @@
                 <th scope="col">Day total</th>
                 <th scope="col">Pay</th>
                 <th scope="col">Pay/hr</th>
-                <th scope="col">Status</th>
               </tr>
             </thead>
             <tbody id="timecardsEmployeeBody"></tbody>
@@ -934,7 +1025,12 @@
           decoding="async"
         />
         <h1 class="title" id="empScreenTitle">Home</h1>
-        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
+        <div class="header-actions">
+          <button type="button" class="header-account-btn" data-open-account-settings aria-label="Account settings">
+            Account
+          </button>
+          <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
+        </div>
       </header>
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
@@ -1188,7 +1284,7 @@
         </button>
       </div>
       <p class="availability-modal-meta">
-        Edit start/end for each day and slot line. Hours update from the range. Add a row for an extra slot. Reset restores the built-in Red Poke pattern for all roles.
+        Edit start/end for the week shown on the schedule (use the week navigator first). Changes apply only to that week. Add a row for an extra slot. Reset restores the built-in Red Poke pattern for all roles.
       </p>
       <div
         class="employee-filter-chips draft-role-chips"
@@ -1260,6 +1356,48 @@
     </div>
   </div>
 
+  <div id="accountSettingsModal" class="availability-modal account-settings-modal" hidden>
+    <div class="availability-modal-backdrop" data-account-settings-dismiss tabindex="-1"></div>
+    <div
+      class="availability-modal-panel account-settings-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="accountSettingsTitle"
+    >
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="accountSettingsTitle">Account</h2>
+        <button type="button" class="availability-modal-close" data-account-settings-dismiss aria-label="Close">×</button>
+      </div>
+      <p class="calendar-hint account-settings-intro">
+        Your <strong>sign-in name</strong> is shown for reference only — it cannot be changed here. Set your
+        <strong>recovery email</strong> for password reset (each person sets their own).
+      </p>
+      <form id="accountSettingsForm" class="account-settings-form" novalidate>
+        <label class="form-field form-field-block">
+          <span class="form-label">Sign-in name</span>
+          <input type="text" id="accountSettingsLoginName" class="login-input" readonly tabindex="-1" aria-readonly="true" />
+          <span class="calendar-hint account-settings-field-hint">Read only — used when you sign in.</span>
+        </label>
+        <label class="form-field form-field-block">
+          <span class="form-label">Recovery email</span>
+          <input
+            type="email"
+            id="accountSettingsRecoveryEmail"
+            class="login-input"
+            required
+            autocomplete="email"
+            inputmode="email"
+            maxlength="120"
+          />
+          <span class="calendar-hint account-settings-field-hint">Used when you choose Forgot password? on the login screen.</span>
+        </label>
+        <p class="login-error" id="accountSettingsError" role="alert" hidden></p>
+        <p class="login-error is-success" id="accountSettingsSuccess" role="status" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block">Save recovery email only</button>
+      </form>
+    </div>
+  </div>
+
   <script src="/gm-supabase-config.js?v=2"></script>
   <script src="/vendor/supabase-js.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
@@ -1272,7 +1410,7 @@
   <script src="employee-app.js?v=timecards-tips-1"></script>
   <script src="manager-messaging.js?v=timecards-tips-1"></script>
   <script src="timeclock-app.js?v=timecards-tips-1"></script>
-  <script src="portal-auth-client.js?v=timecards-tips-1"></script>
+  <script src="portal-auth-client.js?v=recovery-email-self-2"></script>
   <script src="login-timeclock.js?v=timecards-tips-1"></script>
   <script>
     (function () {
@@ -1281,6 +1419,18 @@
 
       var loginPanel = document.getElementById('loginPanel');
       var registerPanel = document.getElementById('registerPanel');
+      var forgotPasswordPanel = document.getElementById('forgotPasswordPanel');
+      var resetPasswordPanel = document.getElementById('resetPasswordPanel');
+      var forgotPasswordForm = document.getElementById('forgotPasswordForm');
+      var forgotPasswordLoginName = document.getElementById('forgotPasswordLoginName');
+      var forgotPasswordError = document.getElementById('forgotPasswordError');
+      var resetPasswordForm = document.getElementById('resetPasswordForm');
+      var resetPasswordHint = document.getElementById('resetPasswordHint');
+      var resetPasswordError = document.getElementById('resetPasswordError');
+      var showForgotPasswordPanelBtn = document.getElementById('showForgotPasswordPanelBtn');
+      var showLoginFromForgotPasswordBtn = document.getElementById('showLoginFromForgotPasswordBtn');
+      var showLoginFromResetPasswordBtn = document.getElementById('showLoginFromResetPasswordBtn');
+      var activeResetToken = null;
       var loginForm = document.getElementById('loginForm');
       var loginEmail = document.getElementById('loginEmail');
       var loginPassword = document.getElementById('loginPassword');
@@ -1295,6 +1445,15 @@
       var managerRegisterForm = document.getElementById('managerRegisterForm');
       var managerRegisterError = document.getElementById('managerRegisterError');
       var loginScreenEl = document.getElementById('login-screen');
+      var accountSettingsModal = document.getElementById('accountSettingsModal');
+      var accountSettingsForm = document.getElementById('accountSettingsForm');
+      var accountSettingsLoginName = document.getElementById('accountSettingsLoginName');
+      var accountSettingsRecoveryEmail = document.getElementById('accountSettingsRecoveryEmail');
+      var accountSettingsError = document.getElementById('accountSettingsError');
+      var accountSettingsSuccess = document.getElementById('accountSettingsSuccess');
+      var accountSettingsLoaded = false;
+      var recoveryEmailPromptInFlight = false;
+      var RECOVERY_EMAIL_PROMPT_SNOOZE_KEY = 'gm_recovery_email_prompt_snoozed';
 
       function norm(s) {
         return String(s || '')
@@ -1403,7 +1562,136 @@
         if (role === 'timeclock' && typeof window.gmCalloutApplySupabaseRole === 'function') {
           window.gmCalloutApplySupabaseRole(role, displayName);
         }
+        if (role === 'manager' || role === 'employee') {
+          await promptRecoveryEmailIfNeeded();
+        }
       }
+
+      function clearAccountSettingsMessages() {
+        if (accountSettingsError) {
+          accountSettingsError.textContent = '';
+          accountSettingsError.hidden = true;
+        }
+        if (accountSettingsSuccess) {
+          accountSettingsSuccess.textContent = '';
+          accountSettingsSuccess.hidden = true;
+        }
+      }
+
+      function showAccountSettingsError(msg) {
+        if (!accountSettingsError) return;
+        accountSettingsError.textContent = msg || '';
+        accountSettingsError.hidden = !msg;
+        if (accountSettingsSuccess) accountSettingsSuccess.hidden = true;
+      }
+
+      function showAccountSettingsSuccess(msg) {
+        if (!accountSettingsSuccess) return;
+        accountSettingsSuccess.textContent = msg || '';
+        accountSettingsSuccess.hidden = !msg;
+        if (accountSettingsError) accountSettingsError.hidden = true;
+      }
+
+      function setAccountSettingsModalOpen(isOpen) {
+        if (!accountSettingsModal) return;
+        accountSettingsModal.hidden = !isOpen;
+        document.body.classList.toggle('availability-modal-open', !!isOpen);
+      }
+
+      async function loadAccountSettingsForm() {
+        if (!window.gmPortalAuth || !window.gmPortalAuth.getAccount) {
+          showAccountSettingsError('Account settings need Supabase on this server.');
+          return false;
+        }
+        var acct = await window.gmPortalAuth.getAccount();
+        if (!acct.ok) {
+          showAccountSettingsError(acct.message || 'Could not load account.');
+          return false;
+        }
+        if (accountSettingsLoginName) accountSettingsLoginName.value = acct.loginName || '';
+        if (accountSettingsRecoveryEmail) {
+          accountSettingsRecoveryEmail.value = acct.recoveryEmail || '';
+        }
+        accountSettingsLoaded = true;
+        return acct;
+      }
+
+      async function openAccountSettingsModal() {
+        clearAccountSettingsMessages();
+        setAccountSettingsModalOpen(true);
+        accountSettingsLoaded = false;
+        await loadAccountSettingsForm();
+        if (accountSettingsRecoveryEmail) {
+          accountSettingsRecoveryEmail.focus();
+        }
+      }
+
+      async function currentPortalUserId() {
+        if (!window.gmSupabase || !window.gmSupabase.auth) return '';
+        try {
+          var sessRes = await window.gmSupabase.auth.getSession();
+          if (sessRes.data && sessRes.data.session && sessRes.data.session.user) {
+            return sessRes.data.session.user.id || '';
+          }
+        } catch (_uid) {
+          /* ignore */
+        }
+        return '';
+      }
+
+      function snoozeRecoveryEmailPrompt() {
+        (async function () {
+          var uid = await currentPortalUserId();
+          if (!uid) return;
+          try {
+            localStorage.setItem(RECOVERY_EMAIL_PROMPT_SNOOZE_KEY, uid);
+          } catch (_snz) {
+            /* ignore */
+          }
+        })();
+      }
+
+      function clearRecoveryEmailPromptSnooze() {
+        try {
+          localStorage.removeItem(RECOVERY_EMAIL_PROMPT_SNOOZE_KEY);
+        } catch (_clr) {
+          /* ignore */
+        }
+      }
+
+      function isRecoveryEmailPromptSnoozed(userId) {
+        if (!userId) return false;
+        try {
+          return localStorage.getItem(RECOVERY_EMAIL_PROMPT_SNOOZE_KEY) === userId;
+        } catch (_snz2) {
+          return false;
+        }
+      }
+
+      async function promptRecoveryEmailIfNeeded() {
+        if (!window.gmPortalAuth || !window.gmPortalAuth.getAccount) return;
+        if (recoveryEmailPromptInFlight) return;
+        var root = document.documentElement;
+        if (root.classList.contains('timeclock-app')) return;
+        if (!root.classList.contains('authed')) return;
+        recoveryEmailPromptInFlight = true;
+        try {
+          var uid = await currentPortalUserId();
+          if (isRecoveryEmailPromptSnoozed(uid)) return;
+          var acct = await window.gmPortalAuth.getAccount();
+          if (!acct.ok || acct.hasRecoveryEmail) {
+            if (acct.ok && acct.hasRecoveryEmail) clearRecoveryEmailPromptSnooze();
+            return;
+          }
+          await openAccountSettingsModal();
+          showAccountSettingsError('Add a recovery email so you can reset your password if you forget it.');
+        } finally {
+          recoveryEmailPromptInFlight = false;
+        }
+      }
+
+      window.gmCalloutPromptRecoveryEmailIfNeeded = promptRecoveryEmailIfNeeded;
+      window.gmCalloutOpenAccountSettings = openAccountSettingsModal;
 
       var timeclockLoginPanel = document.getElementById('timeclockLoginPanel');
       var timeclockRegisterPanel = document.getElementById('timeclockRegisterPanel');
@@ -1413,20 +1701,122 @@
         if (timeclockRegisterPanel) timeclockRegisterPanel.hidden = true;
       }
 
+      function hidePasswordResetPanels() {
+        if (forgotPasswordPanel) forgotPasswordPanel.hidden = true;
+        if (resetPasswordPanel) resetPasswordPanel.hidden = true;
+      }
+
+      function showForgotPasswordError(msg, variant) {
+        if (!forgotPasswordError) return;
+        forgotPasswordError.textContent = msg || '';
+        forgotPasswordError.hidden = !msg;
+        if (!msg) forgotPasswordError.classList.remove('is-success');
+        else forgotPasswordError.classList.toggle('is-success', variant === 'success');
+      }
+
+      function clearForgotPasswordError() {
+        showForgotPasswordError('');
+      }
+
+      function showResetPasswordError(msg, variant) {
+        if (!resetPasswordError) return;
+        resetPasswordError.textContent = msg || '';
+        resetPasswordError.hidden = !msg;
+        if (!msg) resetPasswordError.classList.remove('is-success');
+        else resetPasswordError.classList.toggle('is-success', variant === 'success');
+      }
+
+      function clearResetPasswordError() {
+        showResetPasswordError('');
+      }
+
+      function stripResetTokenFromUrl() {
+        try {
+          var url = new URL(window.location.href);
+          if (!url.searchParams.has('reset_token')) return;
+          url.searchParams.delete('reset_token');
+          var next = url.pathname + (url.search ? url.search : '') + url.hash;
+          window.history.replaceState({}, '', next);
+        } catch (_u) {
+          /* ignore */
+        }
+      }
+
       function showLoginPanel() {
         if (loginPanel) loginPanel.hidden = false;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hidePasswordResetPanels();
         hideTimeclockLoginPanels();
+        activeResetToken = null;
         if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
         clearRegisterError();
         clearManagerRegisterError();
+        clearForgotPasswordError();
+        clearResetPasswordError();
+      }
+
+      function showForgotPasswordPanel() {
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hideTimeclockLoginPanels();
+        if (resetPasswordPanel) resetPasswordPanel.hidden = true;
+        if (forgotPasswordPanel) forgotPasswordPanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        clearLoginError();
+        clearForgotPasswordError();
+        if (forgotPasswordLoginName && loginEmail && loginEmail.value) {
+          forgotPasswordLoginName.value = String(loginEmail.value).trim();
+        }
+      }
+
+      async function showResetPasswordPanel(token) {
+        var raw = String(token || '').trim();
+        if (!raw) {
+          showLoginPanel();
+          showLoginError('Reset link is invalid or expired.');
+          return;
+        }
+        if (!window.gmPortalAuth || !window.gmPortalAuth.enabled || !window.gmPortalAuth.enabled()) {
+          showLoginPanel();
+          showLoginError(
+            'Password reset needs Supabase on this server. Add SUPABASE_* keys and redeploy.'
+          );
+          return;
+        }
+        var verified = await window.gmPortalAuth.verifyResetToken(raw);
+        if (!verified.ok) {
+          stripResetTokenFromUrl();
+          showLoginPanel();
+          showLoginError(verified.message || 'Reset link is invalid or expired.');
+          return;
+        }
+        activeResetToken = raw;
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hideTimeclockLoginPanels();
+        if (forgotPasswordPanel) forgotPasswordPanel.hidden = true;
+        if (resetPasswordPanel) resetPasswordPanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        if (resetPasswordHint && verified.loginName) {
+          resetPasswordHint.textContent =
+            'Set a new password for ' + verified.loginName + '.';
+        }
+        clearLoginError();
+        clearResetPasswordError();
+        if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+          window.gmCalloutSetLoginGateOpen(true);
+        }
+        if (loginScreenEl) loginScreenEl.hidden = false;
       }
 
       function showRegisterPanel() {
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = false;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hidePasswordResetPanels();
         hideTimeclockLoginPanels();
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
@@ -1437,6 +1827,7 @@
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = false;
+        hidePasswordResetPanels();
         hideTimeclockLoginPanels();
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
@@ -1462,6 +1853,103 @@
         showLoginFromManagerRegisterBtn.addEventListener('click', function () {
           showLoginPanel();
         });
+      }
+      if (showForgotPasswordPanelBtn) {
+        showForgotPasswordPanelBtn.addEventListener('click', function () {
+          showForgotPasswordPanel();
+        });
+      }
+      if (showLoginFromForgotPasswordBtn) {
+        showLoginFromForgotPasswordBtn.addEventListener('click', function () {
+          showLoginPanel();
+        });
+      }
+      if (showLoginFromResetPasswordBtn) {
+        showLoginFromResetPasswordBtn.addEventListener('click', function () {
+          stripResetTokenFromUrl();
+          showLoginPanel();
+        });
+      }
+
+      if (forgotPasswordForm && forgotPasswordLoginName) {
+        forgotPasswordForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearForgotPasswordError();
+          var loginName = String(forgotPasswordLoginName.value || '').trim();
+          if (!loginName) {
+            showForgotPasswordError('Enter your sign-in name.');
+            return;
+          }
+          if (!window.gmPortalAuth || !window.gmPortalAuth.enabled || !window.gmPortalAuth.enabled()) {
+            showForgotPasswordError(
+              'Password reset needs Supabase on this server. Add SUPABASE_* keys and redeploy.'
+            );
+            return;
+          }
+          (async function () {
+            var res = await window.gmPortalAuth.requestPasswordReset(loginName);
+            if (!res.ok) {
+              showForgotPasswordError(res.message || 'Could not send reset email.');
+              return;
+            }
+            forgotPasswordForm.reset();
+            showForgotPasswordError(
+              res.message ||
+                'If that email is on file, we sent a password reset link. Check your inbox and spam folder.',
+              'success'
+            );
+          })();
+        });
+      }
+
+      if (resetPasswordForm) {
+        resetPasswordForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearResetPasswordError();
+          if (!activeResetToken) {
+            showResetPasswordError('Reset link is invalid or expired.');
+            return;
+          }
+          var pwEl = document.getElementById('resetPasswordNew');
+          var pw2El = document.getElementById('resetPasswordConfirm');
+          var p1 = pwEl && pwEl.value ? String(pwEl.value) : '';
+          var p2 = pw2El && pw2El.value ? String(pw2El.value) : '';
+          if (p1 !== p2) {
+            showResetPasswordError('Passwords do not match.');
+            return;
+          }
+          if (p1.length < 4) {
+            showResetPasswordError('Password must be at least 4 characters.');
+            return;
+          }
+          (async function () {
+            var res = await window.gmPortalAuth.resetPassword(activeResetToken, p1);
+            if (!res.ok) {
+              showResetPasswordError(res.message || 'Could not reset password.');
+              return;
+            }
+            var loginName = res.loginName || '';
+            stripResetTokenFromUrl();
+            resetPasswordForm.reset();
+            activeResetToken = null;
+            showLoginPanel();
+            if (loginEmail && loginName) loginEmail.value = loginName;
+            showLoginError(
+              res.message || 'Password updated. Sign in with your name and new password.',
+              'success'
+            );
+          })();
+        });
+      }
+
+      try {
+        var resetParams = new URLSearchParams(window.location.search);
+        var resetTokenFromUrl = resetParams.get('reset_token');
+        if (resetTokenFromUrl) {
+          showResetPasswordPanel(resetTokenFromUrl);
+        }
+      } catch (_rt) {
+        /* ignore */
       }
 
       function tryLegacyEmployeeLogin(rawLogin, password) {
@@ -1527,6 +2015,7 @@
           var fn = document.getElementById('regFirstName');
           var ln = document.getElementById('regLastName');
           var ph = document.getElementById('regPhone');
+          var re = document.getElementById('regRecoveryEmail');
           var st = document.getElementById('regStaffType');
           var pw = document.getElementById('regPassword');
           var pw2 = document.getElementById('regPasswordConfirm');
@@ -1565,6 +2054,7 @@
                   displayName: displayName,
                   phone: ph && ph.value ? String(ph.value).trim() : '',
                   staffType: st && st.value ? String(st.value) : '',
+                  recoveryEmail: re && re.value ? String(re.value).trim() : '',
                 });
                 if (!up.ok) {
                   showRegisterError(up.message || 'Could not create account.');
@@ -1649,6 +2139,7 @@
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             var codeRaw = codeEl && codeEl.value ? String(codeEl.value).trim() : '';
             var mgrNameEl = document.getElementById('mgrRegName');
+            var mgrRecoveryEl = document.getElementById('mgrRegRecoveryEmail');
             var mgrName = mgrNameEl ? String(mgrNameEl.value || '').trim() : '';
             if (!mgrName) {
               showManagerRegisterError('Name is required.');
@@ -1662,6 +2153,7 @@
                   role: 'manager',
                   accessCode: codeRaw,
                   displayName: mgrName,
+                  recoveryEmail: mgrRecoveryEl && mgrRecoveryEl.value ? String(mgrRecoveryEl.value).trim() : '',
                 });
                 if (!up.ok) {
                   showManagerRegisterError(up.message || 'Could not create account.');
@@ -1727,6 +2219,52 @@
           })();
         });
       });
+
+      document.querySelectorAll('[data-open-account-settings]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          void openAccountSettingsModal();
+        });
+      });
+
+      document.querySelectorAll('[data-account-settings-dismiss]').forEach(function (el) {
+        el.addEventListener('click', function () {
+          snoozeRecoveryEmailPrompt();
+          setAccountSettingsModalOpen(false);
+          clearAccountSettingsMessages();
+        });
+      });
+
+      if (accountSettingsForm) {
+        accountSettingsForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearAccountSettingsMessages();
+          var email = accountSettingsRecoveryEmail
+            ? String(accountSettingsRecoveryEmail.value || '').trim()
+            : '';
+          if (!email) {
+            showAccountSettingsError('Enter your recovery email.');
+            return;
+          }
+          if (!window.gmPortalAuth || !window.gmPortalAuth.updateRecoveryEmail) {
+            showAccountSettingsError('Account settings need Supabase on this server.');
+            return;
+          }
+          (async function () {
+            var saved = await window.gmPortalAuth.updateRecoveryEmail(email);
+            if (!saved.ok) {
+              showAccountSettingsError(saved.message || 'Could not save recovery email.');
+              return;
+            }
+            showAccountSettingsSuccess(saved.message || 'Recovery email saved.');
+            accountSettingsLoaded = true;
+            clearRecoveryEmailPromptSnooze();
+            setTimeout(function () {
+              setAccountSettingsModalOpen(false);
+              clearAccountSettingsMessages();
+            }, 900);
+          })();
+        });
+      }
     })();
   </script>
 </body>

@@ -47,8 +47,35 @@ export type RosterRow = {
   slHours: number;
   sohCount: number;
   sohPay: number | null;
+  vlPay: number | null;
+  slPay: number | null;
+  dishwasherTipsPay: number;
   status: string;
   statusRank: number;
+};
+
+export type RosterTotals = {
+  headcount: number;
+  schedMins: number;
+  regMins: number;
+  otMins: number;
+  vlHours: number;
+  slHours: number;
+  sohCount: number;
+  regPay: number;
+  otPay: number;
+  vlPay: number;
+  slPay: number;
+  sohPay: number;
+  dishwasherTipsPay: number;
+  grandTotalPay: number;
+  totalMins: number;
+  hasRegPay: boolean;
+  hasOtPay: boolean;
+  hasVlSlPay: boolean;
+  hasSohPay: boolean;
+  hasDishwasherTips: boolean;
+  hasGrandTotal: boolean;
 };
 
 export type WeekExtras = { vl: number; sl: number; manual: boolean };

@@ -19,7 +19,7 @@ const LEGACY_MANAGER_EMAIL = "martinlong830@gmail.com";
 const INTERNAL_EMAIL_DOMAIN = "example.org";
 
 const MANAGERS = [
-  { loginName: "Martin Long", displayName: "Martin Long" },
+  { loginName: "Martin Long", displayName: "Martin Long", recoveryEmail: "martinlong830@gmail.com" },
   { loginName: "Ongi Management", displayName: "Ongi Management" },
 ];
 
@@ -143,6 +143,12 @@ async function ensureAccount(admin, spec) {
       login_name: loginName,
       login_name_norm: norm,
       internal_auth_email: internalEmail,
+      ...(spec.recoveryEmail
+        ? {
+            recovery_email: String(spec.recoveryEmail).trim().toLowerCase(),
+            recovery_email_norm: String(spec.recoveryEmail).trim().toLowerCase(),
+          }
+        : {}),
     },
     { onConflict: "id" }
   );
@@ -179,6 +185,7 @@ async function main() {
       loginName: m.loginName,
       displayName: m.displayName,
       role: "manager",
+      recoveryEmail: m.recoveryEmail,
     });
     kept.add(r.userId);
     console.log("manager:", r.loginName);

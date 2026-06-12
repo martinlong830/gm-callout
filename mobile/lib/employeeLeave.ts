@@ -233,7 +233,7 @@ export function leaveSummaryLines(emp: EmployeeRow): string[] {
     lines.push(`  · Sick ${formatUsDate(e.date)} — ${formatLeaveHours(e.hours)} hrs`);
   }
   if (c.sick.note) lines.push(`  · ${c.sick.note}`);
-  if (c.sick.hoursRemaining != null && bal.sick.allowanceHours != null) {
+  if (c.sick.remainingHours != null && bal.sick.allowanceHours != null) {
     lines.push(
       `  · ${formatLeaveHours(c.sick.remainingHours)} sick hrs remaining (of ${formatLeaveHours(c.sick.allowanceHours)} hr bank)`
     );

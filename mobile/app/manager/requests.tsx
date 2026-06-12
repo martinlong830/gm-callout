@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,10 +15,12 @@ import {
 } from 'react-native';
 import { AvailabilityMatrixReadOnly } from '../../components/AvailabilityMatrixReadOnly';
 import { useAppData } from '../../contexts/AppDataContext';
+import { approveStaffRequest } from '../../lib/approveStaffRequest';
 import { staffTypeLabel } from '../../lib/employees';
 import { loadDraftFromTeamState } from '../../lib/schedule/engine';
 import { supabase } from '../../lib/supabase';
 import {
+  formatAvailabilityGridSummary,
   formatStaffRequestSubmittedDate,
   isCloudStaffRequestId,
   submittedAvailabilityGridIsNonEmpty,
@@ -122,7 +125,7 @@ const TYPE_CHIPS: { id: ActionTypeFilter; label: string }[] = [
 
 export default function ManagerRequests() {
   const { height: windowHeight } = useWindowDimensions();
-  const { staffRequests, teamState, loading, error, refetch } = useAppData();
+  const { staffRequests, teamState, employees, loading, error, refetch } = useAppData();
   const [typeFilter, setTypeFilter] = useState<ActionTypeFilter>('availability');
   const [statusByType, setStatusByType] = useState<Record<ActionTypeFilter, StatusFilter>>({
     availability: 'all',
@@ -187,13 +190,16 @@ export default function ManagerRequests() {
     setStatusByType((prev) => ({ ...prev, [typeFilter]: s }));
   }, [typeFilter]);
 
-  const onApprove = async (id: string) => {
-    if (!supabase || !isCloudStaffRequestId(id)) {
+  const onApprove = async (req: StaffRequestUi) => {
+    if (!supabase || !isCloudStaffRequestId(req.id)) {
       Alert.alert('Cannot update', 'This request is not stored in Supabase yet.');
       return;
     }
-    setBusyId(id);
-    const res = await updateStaffRequestStatus(supabase, id, 'approved');
+    setBusyId(req.id);
+    const res =
+      req.type === 'availability'
+        ? await approveStaffRequest(supabase, req, employees, draftRows)
+        : await updateStaffRequestStatus(supabase, req.id, 'approved');
     setBusyId(null);
     if (!res.ok) Alert.alert('Update failed', res.message);
     else void refetch();
@@ -226,7 +232,7 @@ export default function ManagerRequests() {
     }
     setBusyId('bulk');
     for (const r of cloud) {
-      await updateStaffRequestStatus(supabase, r.id, 'approved');
+      await approveStaffRequest(supabase, r, employees, draftRows);
     }
     setBusyId(null);
     void refetch();
@@ -313,22 +319,34 @@ export default function ManagerRequests() {
         <Text style={styles.meta}>
           {roleLabel} · {typeLabel(r)} · Submitted {formatStaffRequestSubmittedDate(r.submittedAt)}
         </Text>
+        {r.type === 'availability' && r.submittedWeekLabel ? (
+          <Text style={styles.meta}>Week: {r.submittedWeekLabel}</Text>
+        ) : null}
+        {r.type === 'swap' && r.offeredShiftLabel ? (
+          <Text style={styles.highlight}>Offered shift: {r.offeredShiftLabel}</Text>
+        ) : null}
+        {r.type === 'swap' && r.swapOfferId ? (
+          <Text style={styles.meta}>Accepting offer #{r.swapOfferId.slice(0, 8)}…</Text>
+        ) : null}
         <Text style={styles.notes}>{r.summary}</Text>
         {r.type === 'availability' &&
         r.submittedGrid &&
         submittedAvailabilityGridIsNonEmpty(r.submittedGrid) ? (
-          <View style={styles.viewGridWrap}>
-            <Pressable style={styles.btnSecondary} onPress={() => setGridModal(r)}>
-              <Text style={styles.btnSecondaryText}>View submitted grid</Text>
-            </Pressable>
-          </View>
+          <>
+            <Text style={styles.gridPreview}>{formatAvailabilityGridSummary(r.submittedGrid)}</Text>
+            <View style={styles.viewGridWrap}>
+              <Pressable style={styles.btnSecondary} onPress={() => setGridModal(r)}>
+                <Text style={styles.btnSecondaryText}>View submitted grid</Text>
+              </Pressable>
+            </View>
+          </>
         ) : null}
         {r.status === 'pending' ? (
           <View style={styles.actions}>
             <Pressable
               style={[styles.btnPrimary, busyId === r.id && styles.btnDisabled]}
               disabled={busyId === r.id}
-              onPress={() => void onApprove(r.id)}
+              onPress={() => void onApprove(r)}
             >
               <Text style={styles.btnPrimaryText}>Approve</Text>
             </Pressable>
@@ -406,6 +424,7 @@ export default function ManagerRequests() {
         <ActivityIndicator style={{ marginTop: 24 }} />
       ) : (
         <FlatList
+          style={styles.list}
           data={rows}
           keyExtractor={(item) => item.key}
           refreshing={loading}
@@ -413,6 +432,7 @@ export default function ManagerRequests() {
           renderItem={renderRow}
           ListEmptyComponent={<Text style={styles.muted}>{empty}</Text>}
           contentContainerStyle={styles.listPad}
+          keyboardShouldPersistTaps="handled"
         />
       )}
 
@@ -493,6 +513,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'nowrap',
     gap: 4,
+  },
+  list: { flex: 1 },
+  gridPreview: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 8,
+    lineHeight: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   search: {
     marginHorizontal: 12,

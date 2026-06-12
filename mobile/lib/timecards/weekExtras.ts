@@ -57,6 +57,74 @@ function computeLeaveExtrasFromRequests(
   return { vl: vlMins / 60, sl: slMins / 60, manual: false };
 }
 
+export function dayLeaveStorageKey(empId: string, iso: string): string {
+  return `${empId}@${iso}`;
+}
+
+export function getEmployeeDayLeaveSync(
+  empId: string,
+  iso: string,
+  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+): { vl: number; sl: number } {
+  const row = slice[dayLeaveStorageKey(empId, iso)];
+  if (!row) return { vl: 0, sl: 0 };
+  return {
+    vl: Math.max(0, parseFloat(String(row.vl)) || 0),
+    sl: Math.max(0, parseFloat(String(row.sl)) || 0),
+  };
+}
+
+export async function getEmployeeDayLeave(
+  empId: string,
+  iso: string,
+  bounds: PayWeekBounds
+): Promise<{ vl: number; sl: number }> {
+  const slice = await loadWeekExtrasMap(bounds);
+  return getEmployeeDayLeaveSync(empId, iso, slice);
+}
+
+export async function setEmployeeDayLeave(
+  empId: string,
+  iso: string,
+  vl: number,
+  sl: number,
+  bounds: PayWeekBounds
+): Promise<void> {
+  const slice = await loadWeekExtrasMap(bounds);
+  const key = dayLeaveStorageKey(empId, iso);
+  const v = Math.max(0, vl);
+  const s = Math.max(0, sl);
+  if (v <= 0 && s <= 0) delete slice[key];
+  else slice[key] = { vl: v, sl: s, manual: true };
+  delete slice[empId];
+  await saveWeekExtrasMap(bounds, slice);
+}
+
+function sumManualDayLeaveForEmployee(
+  empId: string,
+  bounds: PayWeekBounds,
+  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+): WeekExtras | null {
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  let vl = 0;
+  let sl = 0;
+  let any = false;
+  for (const k of Object.keys(slice)) {
+    const at = k.indexOf('@');
+    if (at < 0) continue;
+    if (k.slice(0, at) !== empId) continue;
+    const iso = k.slice(at + 1);
+    if (iso < weekStart || iso > weekEnd) continue;
+    const row = slice[k];
+    if (!row) continue;
+    vl += Math.max(0, parseFloat(String(row.vl)) || 0);
+    sl += Math.max(0, parseFloat(String(row.sl)) || 0);
+    any = true;
+  }
+  return any ? { vl, sl, manual: true } : null;
+}
+
 export function getEmployeeWeekExtrasSync(
   emp: EmployeeRow,
   displayName: string,
@@ -65,6 +133,8 @@ export function getEmployeeWeekExtrasSync(
   schedMinsByDay: Record<string, number>,
   slice: Record<string, { vl: number; sl: number; manual?: boolean }>
 ): WeekExtras {
+  const daySum = sumManualDayLeaveForEmployee(emp.id, bounds, slice);
+  if (daySum) return daySum;
   const row = slice[emp.id];
   if (row?.manual) {
     return {
@@ -142,6 +212,11 @@ export async function setEmployeeWeekExtras(
   bounds: PayWeekBounds
 ): Promise<void> {
   const slice = await loadWeekExtrasMap(bounds);
+  for (const k of Object.keys(slice)) {
+    const at = k.indexOf('@');
+    if (at < 0) continue;
+    if (k.slice(0, at) === empId) delete slice[k];
+  }
   slice[empId] = { vl: Math.max(0, vl), sl: Math.max(0, sl), manual: true };
   await saveWeekExtrasMap(bounds, slice);
 }

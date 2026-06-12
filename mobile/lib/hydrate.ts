@@ -10,9 +10,19 @@ export type HydrationResult = {
   teamState: Record<string, unknown> | null;
 };
 
-export async function hydrateFromSupabase(sb: SupabaseClient): Promise<HydrationResult> {
+const EMPLOYEE_LIST_COLUMNS =
+  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
+
+export async function hydrateFromSupabase(
+  sb: SupabaseClient,
+  opts?: { role?: 'manager' | 'employee' | null; userId?: string | null }
+): Promise<HydrationResult> {
+  const empQuery =
+    opts?.role === 'employee'
+      ? sb.from('employees').select(EMPLOYEE_LIST_COLUMNS)
+      : sb.from('employees').select('*');
   const [empRes, reqRes, teamRes] = await Promise.all([
-    sb.from('employees').select('*').order('display_name', { ascending: true }),
+    empQuery.order('display_name', { ascending: true }),
     sb.from('staff_requests').select('*').order('created_at', { ascending: false }),
     sb.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle(),
   ]);
@@ -22,6 +32,23 @@ export async function hydrateFromSupabase(sb: SupabaseClient): Promise<Hydration
     for (const row of empRes.data) {
       const m = mapEmployeeFromDb(row as Record<string, unknown>);
       if (m) employees.push(m);
+    }
+  }
+
+  if (opts?.role === 'employee' && opts.userId) {
+    const selfRes = await sb
+      .from('employees')
+      .select('id, weekly_grid')
+      .eq('auth_user_id', opts.userId)
+      .maybeSingle();
+    if (selfRes.data?.id) {
+      const idx = employees.findIndex((e) => e.id === selfRes.data!.id);
+      if (idx >= 0) {
+        employees[idx] = {
+          ...employees[idx],
+          weeklyGrid: (selfRes.data.weekly_grid as Record<string, unknown>) ?? {},
+        };
+      }
     }
   }
 

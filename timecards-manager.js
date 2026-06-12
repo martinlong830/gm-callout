@@ -18,6 +18,8 @@
   var cachedWeekExtrasSliceKey = null;
   var cachedWeekTipPool = null;
   var cachedWeekTipPoolKey = null;
+  var cachedDishwasherTipsSlice = null;
+  var cachedDishwasherTipsSliceKey = null;
 
   var ROSTER_SORT_COLS = [
     'name',
@@ -30,11 +32,11 @@
     'soh',
     'sohPay',
     'total',
-    'status',
   ];
 
   var TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
   var TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
+  var TIMECARD_DISHWASHER_TIPS_KEY = 'gm-timecard-dishwasher-tips-v1';
   var TIMECARDS_SELECTED_WEEK_KEY = 'gm-timecard-selected-pay-week-v1';
   var TIMECARDS_PAST_WEEK_COUNT = 12;
   /** First pay week with timecard data (Mon May 18, 2026 → Sun May 24). */
@@ -533,8 +535,117 @@
       (row.otPay || 0) +
       (row.vlPay || 0) +
       (row.slPay || 0) +
-      (row.sohPay || 0)
+      (row.sohPay || 0) +
+      (row.dishwasherTipsPay || 0)
     );
+  }
+
+  function isDeliveryDishwasherStaff(emp) {
+    return !!(emp && emp.staffType === 'Server');
+  }
+
+  function normalizeDishwasherTipAmount(val) {
+    if (val == null || val === '') return 0;
+    var n = parseFloat(String(val));
+    if (Number.isNaN(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
+  }
+
+  function loadDishwasherTipsMap(bounds) {
+    bounds = bounds || payWeekBounds();
+    try {
+      var raw = localStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
+      if (!raw) return {};
+      var all = JSON.parse(raw);
+      if (!all || typeof all !== 'object') return {};
+      var slice = all[weekExtrasStorageKey(bounds)];
+      return slice && typeof slice === 'object' ? slice : {};
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function invalidateDishwasherTipsSliceCache() {
+    cachedDishwasherTipsSlice = null;
+    cachedDishwasherTipsSliceKey = null;
+  }
+
+  function getDishwasherTipsSlice(bounds) {
+    bounds = bounds || payWeekBounds();
+    var key = weekExtrasStorageKey(bounds);
+    if (cachedDishwasherTipsSliceKey === key && cachedDishwasherTipsSlice) {
+      return cachedDishwasherTipsSlice;
+    }
+    cachedDishwasherTipsSlice = loadDishwasherTipsMap(bounds);
+    cachedDishwasherTipsSliceKey = key;
+    return cachedDishwasherTipsSlice;
+  }
+
+  function saveDishwasherTipsMap(bounds, slice) {
+    bounds = bounds || payWeekBounds();
+    try {
+      var raw = localStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
+      var all = raw ? JSON.parse(raw) : {};
+      if (!all || typeof all !== 'object') all = {};
+      all[weekExtrasStorageKey(bounds)] = slice;
+      localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(all));
+      invalidateDishwasherTipsSliceCache();
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function getEmployeeDayDishwasherTip(emp, iso, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp || !iso) return 0;
+    var slice = getDishwasherTipsSlice(bounds);
+    var row = slice[dayLeaveStorageKey(emp.id, iso)];
+    return normalizeDishwasherTipAmount(row);
+  }
+
+  function setEmployeeDayDishwasherTip(empId, iso, amount, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!empId || !iso) return;
+    var slice = loadDishwasherTipsMap(bounds);
+    var key = dayLeaveStorageKey(empId, iso);
+    var val = normalizeDishwasherTipAmount(amount);
+    if (val <= 0) delete slice[key];
+    else slice[key] = val;
+    saveDishwasherTipsMap(bounds, slice);
+  }
+
+  function sumEmployeeWeekDishwasherTips(emp, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp || !isDeliveryDishwasherStaff(emp)) return 0;
+    var slice = getDishwasherTipsSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var sum = 0;
+    Object.keys(slice).forEach(function (k) {
+      var at = k.indexOf('@');
+      if (at < 0) return;
+      if (k.slice(0, at) !== emp.id) return;
+      var dayIso = k.slice(at + 1);
+      if (dayIso < weekStart || dayIso > weekEnd) return;
+      sum += normalizeDishwasherTipAmount(slice[k]);
+    });
+    return Math.round(sum * 100) / 100;
+  }
+
+  function sumWeekDishwasherTips(bounds) {
+    bounds = bounds || payWeekBounds();
+    var slice = getDishwasherTipsSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var sum = 0;
+    Object.keys(slice).forEach(function (k) {
+      var at = k.indexOf('@');
+      if (at < 0) return;
+      var dayIso = k.slice(at + 1);
+      if (dayIso < weekStart || dayIso > weekEnd) return;
+      sum += normalizeDishwasherTipAmount(slice[k]);
+    });
+    return Math.round(sum * 100) / 100;
   }
 
   function rosterGrandTotalMinutes(row) {
@@ -578,11 +689,12 @@
     return pad(dt.getHours()) + ':' + pad(dt.getMinutes());
   }
 
-  function readDateTimeField(prefix) {
+  function readDateTimeField(prefix, optional) {
     var dateEl = document.getElementById(prefix + 'Date');
     var timeEl = document.getElementById(prefix + 'Time');
     if (!dateEl || !timeEl || !dateEl.value) return null;
-    return datetimeLocalToIso(dateEl.value + 'T' + (timeEl.value || '00:00'));
+    if (!timeEl.value) return null;
+    return datetimeLocalToIso(dateEl.value + 'T' + timeEl.value);
   }
 
   function setDateTimeField(prefix, iso) {
@@ -596,6 +708,24 @@
     }
     dateEl.value = isoToDateInputValue(iso);
     timeEl.value = isoToTimeInputValue(iso);
+  }
+
+  /** When a punch field has no saved time, pre-fill the date to the shift day and leave time empty. */
+  function setDateTimeFieldOrShiftDateDefault(prefix, iso, shiftIso) {
+    if (iso) {
+      setDateTimeField(prefix, iso);
+      return;
+    }
+    var dateEl = document.getElementById(prefix + 'Date');
+    var timeEl = document.getElementById(prefix + 'Time');
+    if (!dateEl || !timeEl) return;
+    if (shiftIso) {
+      dateEl.value = shiftIso;
+      timeEl.value = '';
+      return;
+    }
+    dateEl.value = '';
+    timeEl.value = '';
   }
 
   function setDateTimeFieldNow(prefix) {
@@ -966,10 +1096,65 @@
     return { vl: vlHrs, sl: slHrs, manual: false };
   }
 
+  function dayLeaveStorageKey(empId, iso) {
+    return String(empId || '') + '@' + String(iso || '');
+  }
+
+  function getEmployeeDayLeave(emp, iso, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp || !iso) return { vl: 0, sl: 0 };
+    var slice = getWeekExtrasSlice(bounds);
+    var row = slice[dayLeaveStorageKey(emp.id, iso)];
+    if (!row) return { vl: 0, sl: 0 };
+    return {
+      vl: Math.max(0, parseFloat(row.vl) || 0),
+      sl: Math.max(0, parseFloat(row.sl) || 0),
+    };
+  }
+
+  function setEmployeeDayLeave(empId, iso, vl, sl, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!empId || !iso) return;
+    var slice = loadWeekExtrasMap(bounds);
+    var key = dayLeaveStorageKey(empId, iso);
+    var v = Math.max(0, parseFloat(vl) || 0);
+    var s = Math.max(0, parseFloat(sl) || 0);
+    if (v <= 0 && s <= 0) delete slice[key];
+    else slice[key] = { vl: v, sl: s, manual: true };
+    delete slice[empId];
+    saveWeekExtrasMap(bounds, slice);
+  }
+
+  function sumManualDayLeaveForEmployee(emp, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp) return null;
+    var slice = getWeekExtrasSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var vl = 0;
+    var sl = 0;
+    var any = false;
+    Object.keys(slice).forEach(function (k) {
+      var at = k.indexOf('@');
+      if (at < 0) return;
+      if (k.slice(0, at) !== emp.id) return;
+      var iso = k.slice(at + 1);
+      if (iso < weekStart || iso > weekEnd) return;
+      var row = slice[k];
+      if (!row) return;
+      vl += Math.max(0, parseFloat(row.vl) || 0);
+      sl += Math.max(0, parseFloat(row.sl) || 0);
+      any = true;
+    });
+    return any ? { vl: vl, sl: sl, manual: true } : null;
+  }
+
   function getEmployeeWeekExtras(emp, bounds) {
     bounds = bounds || payWeekBounds();
     if (!emp) return { vl: 0, sl: 0, manual: false };
     var slice = getWeekExtrasSlice(bounds);
+    var daySum = sumManualDayLeaveForEmployee(emp, bounds);
+    if (daySum) return daySum;
     var row = slice[emp.id];
     if (row && row.manual) {
       return {
@@ -988,13 +1173,45 @@
   }
 
   function setEmployeeWeekExtras(empId, vl, sl, bounds) {
+    bounds = bounds || payWeekBounds();
     var slice = loadWeekExtrasMap(bounds);
+    Object.keys(slice).forEach(function (k) {
+      var at = k.indexOf('@');
+      if (at < 0) return;
+      if (k.slice(0, at) === empId) delete slice[k];
+    });
     slice[empId] = {
       vl: Math.max(0, parseFloat(vl) || 0),
       sl: Math.max(0, parseFloat(sl) || 0),
       manual: true,
     };
     saveWeekExtrasMap(bounds, slice);
+  }
+
+  function syncRosterRowForEmployee(emp) {
+    if (!emp || !rosterCache) return;
+    for (var ri = 0; ri < rosterCache.rows.length; ri += 1) {
+      if (rosterCache.rows[ri].emp.id === emp.id) {
+        rosterCache.rows[ri] = buildRosterRowData(emp);
+        break;
+      }
+    }
+    var wrap = document.getElementById('timecardsRosterWrap');
+    if (wrap && rosterCache) paintRosterTable(wrap);
+  }
+
+  function readShiftDayLeaveFromForm() {
+    var vlEl = document.getElementById('tcDayVl');
+    var slEl = document.getElementById('tcDaySl');
+    return {
+      vl: vlEl ? Math.max(0, parseFloat(vlEl.value) || 0) : 0,
+      sl: slEl ? Math.max(0, parseFloat(slEl.value) || 0) : 0,
+    };
+  }
+
+  function readShiftDishwasherTipFromForm() {
+    var el = document.getElementById('tcDishwasherTip');
+    return el ? normalizeDishwasherTipAmount(el.value) : 0;
   }
 
   function spreadOfHoursHourlyRate(emp) {
@@ -1107,53 +1324,13 @@
   }
 
   function renderEmployeeWeekSummary(emp) {
-    var extras = getEmployeeWeekExtras(emp);
-    var soh = computeSpreadOfHours(emp);
-    var agg = aggregateEmployeeWeek(emp);
-    var hint = extras.manual
-      ? 'Manual override for this pay week (replaces approved time off totals).'
-      : 'From approved time off: scheduled shift hours per day, or 8h when no shift is scheduled.';
-    return (
-      '<p class="calendar-hint timecards-leave-hint">' +
-      d().escapeHtml(hint) +
-      '</p>' +
-      '<div class="timecards-employee-summary">' +
-      '<div class="timecards-employee-summary-grid">' +
-      '<label class="timecards-summary-field"><span class="timecards-summary-label">VL (hrs)</span>' +
-      '<input type="number" class="timecards-extra-input" data-timecard-extra="vl" data-timecard-employee-id="' +
-      d().escapeHtml(emp.id) +
-      '" min="0" step="0.25" value="' +
-      d().escapeHtml(String(extras.vl)) +
-      '" /></label>' +
-      '<label class="timecards-summary-field"><span class="timecards-summary-label">SL (hrs)</span>' +
-      '<input type="number" class="timecards-extra-input" data-timecard-extra="sl" data-timecard-employee-id="' +
-      d().escapeHtml(emp.id) +
-      '" min="0" step="0.25" value="' +
-      d().escapeHtml(String(extras.sl)) +
-      '" /></label>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">SoH</span><span class="timecards-summary-value">' +
-      d().escapeHtml(String(soh.count)) +
-      '</span></div>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">SoH dates</span><span class="timecards-summary-value timecards-summary-value--dates">' +
-      d().escapeHtml(formatSoHDatesList(soh.dates)) +
-      '</span></div>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">SoH pay</span><span class="timecards-summary-value">' +
-      d().escapeHtml(soh.hasRate ? formatPayAmount(soh.pay) : '—') +
-      '</span></div>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">Pay/hr</span><span class="timecards-summary-value">' +
-      d().escapeHtml(formatHourlyRateLabel(emp)) +
-      '</span></div>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">Reg pay</span><span class="timecards-summary-value">' +
-      d().escapeHtml(agg.regPay != null ? formatPayAmount(agg.regPay) : '—') +
-      '</span></div>' +
-      '<div class="timecards-summary-stat"><span class="timecards-summary-label">OT pay</span><span class="timecards-summary-value">' +
-      d().escapeHtml(agg.otPay != null ? formatPayAmount(agg.otPay) : '—') +
-      '</span></div>' +
-      '<div class="timecards-summary-stat timecards-summary-stat--pay"><span class="timecards-summary-label">Shift pay</span><span class="timecards-summary-value">' +
-      d().escapeHtml(agg.totalPay != null ? formatPayAmount(agg.totalPay) : '—') +
-      '</span></div>' +
-      '</div></div>'
-    );
+    var row = buildRosterRowData(emp);
+    var totals = computeRosterTotals([row]);
+    return renderGrandTotalsHtml(totals, {
+      metaText: d().escapeHtml(d().employeeDisplayName(emp)) + ' · week totals',
+      includeTipPool: false,
+      hourlyRateLabel: formatHourlyRateLabel(emp),
+    });
   }
 
   function statusSortRank(status) {
@@ -1188,6 +1365,7 @@
       sohDates: soh.dates,
       sohDatesLabel: formatSoHDatesList(soh.dates),
       sohPay: soh.hasRate ? soh.pay : null,
+      dishwasherTipsPay: sumEmployeeWeekDishwasherTips(emp),
       status: agg.status,
       statusRank: statusSortRank(agg.status),
     };
@@ -1255,11 +1433,13 @@
       slPay: 0,
       sohCount: 0,
       sohPay: 0,
+      dishwasherTipsPay: 0,
       grandTotalPay: 0,
       hasRegPay: false,
       hasOtPay: false,
       hasVlSlPay: false,
       hasSohPay: false,
+      hasDishwasherTips: false,
       hasGrandTotal: false,
       headcount: rows.length,
     };
@@ -1294,17 +1474,23 @@
         t.sohPay += r.sohPay;
         t.hasSohPay = true;
       }
+      if (r.dishwasherTipsPay > 0) {
+        t.dishwasherTipsPay += r.dishwasherTipsPay;
+        t.hasDishwasherTips = true;
+      }
       if (r.regPay != null) t.grandTotalPay += r.regPay;
       if (r.otPay != null) t.grandTotalPay += r.otPay;
       if (r.vlPay != null) t.grandTotalPay += r.vlPay;
       if (r.slPay != null) t.grandTotalPay += r.slPay;
       if (r.sohPay != null) t.grandTotalPay += r.sohPay;
+      if (r.dishwasherTipsPay > 0) t.grandTotalPay += r.dishwasherTipsPay;
       if (
         r.regPay != null ||
         r.otPay != null ||
         r.vlPay != null ||
         r.slPay != null ||
-        r.sohPay != null
+        r.sohPay != null ||
+        r.dishwasherTipsPay > 0
       ) {
         t.hasGrandTotal = true;
       }
@@ -1312,7 +1498,13 @@
     return t;
   }
 
-  function renderGrandTotalsHtml(totals) {
+  function renderGrandTotalsHtml(totals, opts) {
+    opts = opts || {};
+    var includeTipPool = opts.includeTipPool !== false;
+    var metaText =
+      opts.metaText != null
+        ? opts.metaText
+        : d().escapeHtml(String(totals.headcount)) + ' employees';
     var payReg = totals.hasRegPay ? formatPayAmount(totals.regPay) : '—';
     var payOt = totals.hasOtPay ? formatPayAmount(totals.otPay) : '—';
     var payVlSl = totals.hasVlSlPay
@@ -1325,8 +1517,8 @@
       '<section class="timecards-grand-totals" aria-label="Pay week grand totals">' +
       '<h3 class="timecards-grand-totals-title">Grand totals</h3>' +
       '<p class="timecards-grand-totals-meta">' +
-      d().escapeHtml(String(totals.headcount)) +
-      ' employees</p>' +
+      metaText +
+      '</p>' +
       '<div class="timecards-grand-totals-grid">' +
       '<div class="timecards-total-card"><span class="timecards-total-label">Scheduled</span>' +
       '<span class="timecards-total-value">' +
@@ -1356,6 +1548,16 @@
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(totals.hasSohPay ? formatPayAmount(totals.sohPay) : '—') +
       '</span></div>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">Dishwasher tips</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(totals.hasDishwasherTips ? formatPayAmount(totals.dishwasherTipsPay) : '—') +
+      '</span></div>' +
+      (opts.hourlyRateLabel != null
+        ? '<div class="timecards-total-card"><span class="timecards-total-label">Pay/hr</span>' +
+          '<span class="timecards-total-value">' +
+          d().escapeHtml(opts.hourlyRateLabel) +
+          '</span></div>'
+        : '') +
       '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">Total hours</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(allPaidMins) + 'h') +
@@ -1365,7 +1567,7 @@
       d().escapeHtml(payTotal) +
       '</span></div>' +
       '</div>' +
-      renderGrandTotalsTipPoolHtml() +
+      (includeTipPool ? renderGrandTotalsTipPoolHtml() : '') +
       '</section>'
     );
   }
@@ -1384,7 +1586,6 @@
     else if (col === 'sl') cmp = a.slHours - b.slHours;
     else if (col === 'soh') cmp = a.sohCount - b.sohCount;
     else if (col === 'sohPay') cmp = (a.sohPay || 0) - (b.sohPay || 0);
-    else if (col === 'status') cmp = a.statusRank - b.statusRank || a.status.localeCompare(b.status);
     else cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     if (cmp === 0) cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     return cmp * mul;
@@ -1464,11 +1665,6 @@
       d().escapeHtml(row.sohPay != null ? formatPayAmount(row.sohPay) : '—') +
       '</td>' +
       rosterHoursCell(rosterGrandTotalMinutes(row), row.grandTotalPay) +
-      '<td><span class="timecards-status ' +
-      statusClass(row.status) +
-      '">' +
-      d().escapeHtml(row.status) +
-      '</span></td>' +
       '</tr>'
     );
   }
@@ -1690,6 +1886,7 @@
       'SoH count',
       'SoH dates',
       'SoH pay',
+      'Dishwasher tips',
       'Total pay',
       'Status',
       'Hourly rate',
@@ -1712,6 +1909,7 @@
         String(row.sohCount),
         row.sohDatesLabel,
         payCsv(row.sohPay),
+        payCsv(row.dishwasherTipsPay > 0 ? row.dishwasherTipsPay : null),
         payCsv(row.grandTotalPay),
         row.status,
         rate != null ? rate.toFixed(2) : '',
@@ -1734,6 +1932,7 @@
         String(totals.sohCount),
         '',
         payCsv(totals.hasSohPay ? totals.sohPay : null),
+        payCsv(totals.hasDishwasherTips ? totals.dishwasherTipsPay : null),
         payCsv(totals.hasGrandTotal ? totals.grandTotalPay : null),
         '',
         '',
@@ -1761,14 +1960,18 @@
       'Total pay',
       'VL (hrs)',
       'SL (hrs)',
+      'Dishwasher tip ($)',
       'SoH day',
       'Status',
       'Hourly rate',
     ];
     var aoa = [header];
     shiftRows.forEach(function (row) {
-      var extras = getEmployeeWeekExtras(row.emp);
+      var dayLeave = getEmployeeDayLeave(row.emp, row.dateIso);
       var rate = employeeHourlyRate(row.emp);
+      var dayTip = isDeliveryDishwasherStaff(row.emp)
+        ? getEmployeeDayDishwasherTip(row.emp, row.dateIso)
+        : null;
       aoa.push([
         row.name,
         row.role,
@@ -1783,8 +1986,9 @@
         payCsv(row.regPay),
         payCsv(row.otPay),
         payCsv(row.totalPay),
-        decimalHoursFromMinutes(extras.vl * 60),
-        decimalHoursFromMinutes(extras.sl * 60),
+        decimalHoursFromMinutes(dayLeave.vl * 60),
+        decimalHoursFromMinutes(dayLeave.sl * 60),
+        dayTip != null && dayTip > 0 ? dayTip.toFixed(2) : '',
         row.sohDay ? 'Yes' : '',
         row.status,
         rate != null ? rate.toFixed(2) : '',
@@ -2382,6 +2586,7 @@
       tipCalculation: null,
       tipRounded: null,
       cash: null,
+      dishwasherTipsPay: isOngi ? 0 : row.dishwasherTipsPay || 0,
     };
   }
 
@@ -2446,7 +2651,13 @@
       S.money,
       PAYROLL_MONEY_Z
     );
-    xlSet(ws, r, PAYROLL_COL_DELIVERY, '-', S.cellCenter);
+    xlSetMoney(
+      ws,
+      r,
+      PAYROLL_COL_DELIVERY,
+      m.dishwasherTipsPay > 0 ? m.dishwasherTipsPay : null,
+      S.money
+    );
 
     layout.firstEmpRow = layout.firstEmpRow == null ? r : layout.firstEmpRow;
     layout.lastEmpRow = r;
@@ -2790,6 +3001,14 @@
       S.money,
       PAYROLL_MONEY_Z
     );
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_DELIVERY,
+      '=' + payrollSumFormula(PAYROLL_COL_DELIVERY, sumFirst, sumLast),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
     if (layout) layout.lastEmpRow = Math.max(layout.lastEmpRow, r);
   }
 
@@ -2922,6 +3141,14 @@
       grandRow,
       PAYROLL_COL_TIP,
       '=' + payrollSumFormula(PAYROLL_COL_TIP, sumFirst, sumLast),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_DELIVERY,
+      '=' + payrollSumFormula(PAYROLL_COL_DELIVERY, sumFirst, sumLast),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3183,6 +3410,7 @@
     var headerPaidRow = startRow;
     var vlSlRow;
     var sohRow;
+    var dishwasherTipsRow;
     var payTotalPayRow;
     var r = startRow;
     var displayName = String(rosterRow.name || d().employeeDisplayName(emp)).toUpperCase();
@@ -3260,6 +3488,20 @@
     );
     r += 1;
 
+    if (isDeliveryDishwasherStaff(emp)) {
+      dishwasherTipsRow = r;
+      xlSet(ws, r, startCol + 0, 'Dishwasher tips', S.summaryLabel);
+      xlSet(ws, r, startCol + 1, '-', S.summaryValue);
+      payStubSetMoney(
+        ws,
+        r,
+        startCol + 2,
+        rosterRow.dishwasherTipsPay > 0 ? rosterRow.dishwasherTipsPay : null,
+        S.summaryValue
+      );
+      r += 1;
+    }
+
     xlSet(ws, r, startCol + 0, 'Total Hours', S.summaryLabel);
     xlSet(ws, r, startCol + 1, payStubHoursFromMinutes(weekLabor.workMins), S.summaryBoldUnderline);
     r += 2;
@@ -3298,19 +3540,17 @@
     payStubSetMoney(ws, r, startCol + 3, subTotal, S.tableNum);
     payStubSetMoney(ws, r, startCol + 4, weekLabor.laborPay, S.tableNum);
 
-    xlSetFormula(
-      ws,
-      headerPaidRow,
-      startCol + 9,
+    var totalPaidFormula =
       '=' +
-        payStubExcelNumber(payTotalPayRow, startCol + 4) +
-        '+' +
-        payStubExcelNumber(vlSlRow, startCol + 2) +
-        '+' +
-        payStubExcelNumber(sohRow, startCol + 2),
-      S.moneyUnderline,
-      PAY_STUB_MONEY_Z
-    );
+      payStubExcelNumber(payTotalPayRow, startCol + 4) +
+      '+' +
+      payStubExcelNumber(vlSlRow, startCol + 2) +
+      '+' +
+      payStubExcelNumber(sohRow, startCol + 2);
+    if (dishwasherTipsRow != null) {
+      totalPaidFormula += '+' + payStubExcelNumber(dishwasherTipsRow, startCol + 2);
+    }
+    xlSetFormula(ws, headerPaidRow, startCol + 9, totalPaidFormula, S.moneyUnderline, PAY_STUB_MONEY_Z);
 
     xlSet(ws, payTotalPayRow, startCol + 8, 'Tip', S.tipLabel);
     payStubSetMoney(ws, payTotalPayRow, startCol + 9, tipAmount, S.tipMoney);
@@ -4277,9 +4517,7 @@
         } else {
           rosterSort.col = col;
           rosterSort.dir =
-            col === 'name' || col === 'role' || col === 'status' || col === 'schedule'
-              ? 'asc'
-              : 'desc';
+            col === 'name' || col === 'role' || col === 'schedule' ? 'asc' : 'desc';
         }
         paintRosterTable(wrap);
       });
@@ -4319,7 +4557,6 @@
       '<th scope="col">SoH dates</th>' +
       rosterSortHeader('sohPay', 'SoH pay') +
       rosterSortHeader('total', 'Total') +
-      rosterSortHeader('status', 'Status') +
       '</tr></thead><tbody>' +
       body +
       '</tbody></table></div>';
@@ -4811,6 +5048,7 @@
     invalidatePayWeekScheduleCache();
     invalidateWeekExtrasSliceCache();
     invalidateWeekTipPoolCache();
+    invalidateDishwasherTipsSliceCache();
     loadWeekEntries().then(function (loadRes) {
       if (!loadRes.ok) {
         wrap.innerHTML =
@@ -4855,27 +5093,26 @@
     d().showScreen(11);
   }
 
-  function wireEmployeeExtrasInputs(root, emp) {
+  function wireEmployeeExtrasInputs(root, emp, dayIso) {
     if (!root) return;
     root.querySelectorAll('.timecards-extra-input').forEach(function (inp) {
       function persist() {
         var field = inp.getAttribute('data-timecard-extra');
         if (!field) return;
         var val = Math.max(0, parseFloat(inp.value) || 0);
-        var extras = getEmployeeWeekExtras(emp);
-        if (field === 'vl') setEmployeeWeekExtras(emp.id, val, extras.sl);
-        else if (field === 'sl') setEmployeeWeekExtras(emp.id, extras.vl, val);
-        if (rosterCache) {
-          for (var ri = 0; ri < rosterCache.rows.length; ri += 1) {
-            if (rosterCache.rows[ri].emp.id === emp.id) {
-              rosterCache.rows[ri] = buildRosterRowData(emp);
-              break;
-            }
+        var iso = dayIso || inp.getAttribute('data-timecard-day-iso') || null;
+        if (!iso) return;
+        if (field === 'dishwasherTip') {
+          if (isDeliveryDishwasherStaff(emp)) {
+            setEmployeeDayDishwasherTip(emp.id, iso, val);
           }
+        } else {
+          var dayLeave = getEmployeeDayLeave(emp, iso);
+          if (field === 'vl') setEmployeeDayLeave(emp.id, iso, val, dayLeave.sl);
+          else if (field === 'sl') setEmployeeDayLeave(emp.id, iso, dayLeave.vl, val);
         }
+        syncRosterRowForEmployee(emp);
         renderEmployeeShifts(emp);
-        var wrap = document.getElementById('timecardsRosterWrap');
-        if (wrap && rosterCache) paintRosterTable(wrap);
       }
       inp.addEventListener('change', persist);
     });
@@ -4897,12 +5134,11 @@
     }
     if (summaryMount) {
       summaryMount.innerHTML = renderEmployeeWeekSummary(emp);
-      wireEmployeeExtrasInputs(summaryMount, emp);
     }
     var rows = buildShiftsForEmployeeInWeek(emp);
     if (!rows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="9" class="timecards-empty">No scheduled shifts this pay week.</td></tr>';
+        '<tr><td colspan="8" class="timecards-empty">No scheduled shifts this pay week.</td></tr>';
       return;
     }
     tbody.innerHTML = rows
@@ -4915,7 +5151,6 @@
         if (dayEntries.length > 1) {
           recH += ' · ' + dayEntries.length + ' punches';
         }
-        var st = shiftStatusLabelForDay(s, emp, row.iso);
         var dayRounded = roundToNearest5Minutes(dayMins);
         var sohDay = isSoHDateForEmployee(emp, row.iso);
         var breakLabel = formatDayBreakLabel(emp, row.iso);
@@ -4956,11 +5191,6 @@
           '<td class="timecards-num">' +
           d().escapeHtml(rateLabel) +
           '</td>' +
-          '<td><span class="timecards-status ' +
-          statusClass(st) +
-          '">' +
-          d().escapeHtml(st) +
-          '</span></td>' +
           '</tr>'
         );
       })
@@ -5013,14 +5243,31 @@
     var idEl = document.getElementById('tcEditingEntryId');
     timecardState.entryId = entry && entry.id ? entry.id : null;
     if (idEl) idEl.value = timecardState.entryId || '';
-    setDateTimeField('tcClockIn', entry && entry.clock_in_at ? entry.clock_in_at : null);
-    setDateTimeField('tcClockOut', entry && entry.clock_out_at ? entry.clock_out_at : null);
-    setDateTimeField('tcBreakStart', entry && entry.break_start_at ? entry.break_start_at : null);
-    setDateTimeField('tcBreakEnd', entry && entry.break_end_at ? entry.break_end_at : null);
+    var shiftIso = shiftRow && shiftRow.iso ? shiftRow.iso : null;
+    setDateTimeFieldOrShiftDateDefault(
+      'tcClockIn',
+      entry && entry.clock_in_at ? entry.clock_in_at : null,
+      shiftIso
+    );
+    setDateTimeFieldOrShiftDateDefault(
+      'tcClockOut',
+      entry && entry.clock_out_at ? entry.clock_out_at : null,
+      shiftIso
+    );
+    setDateTimeFieldOrShiftDateDefault(
+      'tcBreakStart',
+      entry && entry.break_start_at ? entry.break_start_at : null,
+      shiftIso
+    );
+    setDateTimeFieldOrShiftDateDefault(
+      'tcBreakEnd',
+      entry && entry.break_end_at ? entry.break_end_at : null,
+      shiftIso
+    );
     var endBreakNowBtn = document.getElementById('tcEndBreakNow');
     if (endBreakNowBtn) {
       endBreakNowBtn.hidden = !(
-        readDateTimeField('tcBreakStart') && !readDateTimeField('tcBreakEnd')
+        readDateTimeField('tcBreakStart', true) && !readDateTimeField('tcBreakEnd', true)
       );
     }
     var isOpen = isEntryOpen(entry);
@@ -5080,15 +5327,6 @@
     var schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
     var schedPaid = scheduledPaidMinutes(s, emp);
     var schedBreakPaid = bp() ? bp().resolveBreakPaid({ shift: s, emp: emp }) : false;
-    var shiftBreakSelectVal = bp()
-      ? bp().breakPolicySelectValue(
-          s.breakPaid === true || s.breakPaid === false
-            ? !!s.breakPaid
-            : d().getAssignmentBreakPaidForShift
-              ? d().getAssignmentBreakPaidForShift(s.id)
-              : null
-        )
-      : 'inherit';
     var dayMins = dailyRecordedMinutesForEmployee(emp, shiftRow.iso);
     var dayRounded = roundToNearest5Minutes(dayMins);
     var soh = computeSpreadOfHours(emp);
@@ -5165,13 +5403,7 @@
           (bp() ? bp().formatBreakPolicyLabel(schedBreakPaid) : 'Unpaid')
       ) +
       '</dd></div>' +
-      '</dl>' +
-      renderBreakPolicySelect(
-        'tcShiftBreakPaid',
-        'Scheduled break policy (this shift)',
-        shiftBreakSelectVal
-      ) +
-      '</section>' +
+      '</dl></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">Pay (this shift)</h3>' +
       '<dl class="timecards-dl">' +
@@ -5198,6 +5430,16 @@
       '<div><dt>Shift total</dt><dd><strong>' +
       d().escapeHtml(shiftPay.totalPay != null ? formatPayAmount(shiftPay.totalPay) : '—') +
       '</strong></dd></div>' +
+      (isDeliveryDishwasherStaff(emp)
+        ? '<div><dt>Dishwasher tip ($)</dt><dd>' +
+          '<input type="number" class="timecards-extra-input" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
+          d().escapeHtml(shiftRow.iso) +
+          '" data-timecard-employee-id="' +
+          d().escapeHtml(emp.id) +
+          '" min="0" step="0.01" inputmode="decimal" value="' +
+          d().escapeHtml(String(getEmployeeDayDishwasherTip(emp, shiftRow.iso))) +
+          '" /></dd></div>'
+        : '') +
       (sohDay
         ? '<div><dt>SoH premium</dt><dd>' +
           d().escapeHtml(
@@ -5210,18 +5452,23 @@
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">VL / SL &amp; spread of hours</h3>' +
+      '<p class="calendar-hint">VL/SL below are for this shift day only (holidays, full vacation/sick days). Leave punch times empty and save.</p>' +
       '<dl class="timecards-dl">' +
       '<div><dt>VL (hrs)</dt><dd>' +
-      '<input type="number" class="timecards-extra-input" data-timecard-extra="vl" data-timecard-employee-id="' +
+      '<input type="number" class="timecards-extra-input" id="tcDayVl" data-timecard-extra="vl" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
       d().escapeHtml(emp.id) +
       '" min="0" step="0.25" value="' +
-      d().escapeHtml(String(getEmployeeWeekExtras(emp).vl)) +
+      d().escapeHtml(String(getEmployeeDayLeave(emp, shiftRow.iso).vl)) +
       '" /></dd></div>' +
       '<div><dt>SL (hrs)</dt><dd>' +
-      '<input type="number" class="timecards-extra-input" data-timecard-extra="sl" data-timecard-employee-id="' +
+      '<input type="number" class="timecards-extra-input" id="tcDaySl" data-timecard-extra="sl" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
       d().escapeHtml(emp.id) +
       '" min="0" step="0.25" value="' +
-      d().escapeHtml(String(getEmployeeWeekExtras(emp).sl)) +
+      d().escapeHtml(String(getEmployeeDayLeave(emp, shiftRow.iso).sl)) +
       '" /></dd></div>' +
       '<div><dt>Day total (5-min rounded)</dt><dd>' +
       d().escapeHtml(dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—') +
@@ -5247,7 +5494,7 @@
       (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '') +
       '</p>' +
       '<h3 class="emp-form-subtitle" id="timecardsEditPunchTitle">Edit punch</h3>' +
-      '<p class="calendar-hint">Type date and time in each field, or use the browser picker.</p>' +
+      '<p class="calendar-hint">Type date and time in each field, or use the browser picker. Empty fields start with the shift date.</p>' +
       '<form id="timecardsShiftForm" class="timecards-edit-form" novalidate>' +
       '<input type="hidden" id="tcEditingEntryId" value="" />' +
       renderDateTimeField('Clock in', 'tcClockIn') +
@@ -5261,7 +5508,7 @@
       '<button type="button" class="btn btn-secondary btn-block" id="tcEndShiftNow">End punch now</button>' +
       '<p class="calendar-hint" id="timecardsRecordedPreview"></p>' +
       '<p class="calendar-hint" id="timecardsSaveStatus" hidden></p>' +
-      '<button type="submit" class="btn btn-primary btn-block" id="tcSaveTimecardBtn">Save punch</button>' +
+      '<button type="submit" class="btn btn-primary btn-block" id="tcSaveTimecardBtn">Save</button>' +
       '<button type="button" class="btn btn-secondary btn-block" id="tcAddPunchBtn">Add another punch</button>' +
       '</form></section>' +
       '<section class="timecards-detail-card">' +
@@ -5279,27 +5526,6 @@
       };
     }
     wireDateTimePreviewInputs();
-    var shiftBreakSel = document.getElementById('tcShiftBreakPaid');
-    if (shiftBreakSel && d().setAssignmentBreakPaidForShift) {
-      shiftBreakSel.addEventListener('change', function () {
-        var val = bp() ? bp().parseBreakPolicySelectValue(shiftBreakSel.value) : null;
-        d().setAssignmentBreakPaidForShift(s.id, val);
-        if (val == null) delete s.breakPaid;
-        else s.breakPaid = val;
-        invalidatePayWeekScheduleCache();
-        if (rosterCache) {
-          for (var ri = 0; ri < rosterCache.rows.length; ri += 1) {
-            if (rosterCache.rows[ri].emp.id === emp.id) {
-              rosterCache.rows[ri] = buildRosterRowData(emp);
-              break;
-            }
-          }
-          var wrap = document.getElementById('timecardsRosterWrap');
-          if (wrap) paintRosterTable(wrap);
-        }
-        renderShiftDetail(emp, shiftRow);
-      });
-    }
     var punchBreakSel = document.getElementById('tcPunchBreakPaid');
     if (punchBreakSel) {
       punchBreakSel.addEventListener('change', updateRecordedPreview);
@@ -5345,16 +5571,16 @@
         setSaveStatus('', false);
       });
     });
-    wireEmployeeExtrasInputs(el, emp);
+    wireEmployeeExtrasInputs(el, emp, shiftRow.iso);
   }
 
   function updateRecordedPreview() {
     var prev = document.getElementById('timecardsRecordedPreview');
     if (!prev) return;
     var inIso = readDateTimeField('tcClockIn');
-    var outIso = readDateTimeField('tcClockOut');
-    var breakStartIso = readDateTimeField('tcBreakStart');
-    var breakEndIso = readDateTimeField('tcBreakEnd');
+    var outIso = readDateTimeField('tcClockOut', true);
+    var breakStartIso = readDateTimeField('tcBreakStart', true);
+    var breakEndIso = readDateTimeField('tcBreakEnd', true);
     var endBreakBtn = document.getElementById('tcEndBreakNow');
     if (endBreakBtn) {
       endBreakBtn.hidden = !(breakStartIso && !breakEndIso);
@@ -5526,9 +5752,11 @@
       return;
     }
     var inIso = readDateTimeField('tcClockIn');
-    var outIso = readDateTimeField('tcClockOut');
-    var breakStartIso = readDateTimeField('tcBreakStart');
-    var breakEndIso = readDateTimeField('tcBreakEnd');
+    var outIso = readDateTimeField('tcClockOut', true);
+    var breakStartIso = readDateTimeField('tcBreakStart', true);
+    var breakEndIso = readDateTimeField('tcBreakEnd', true);
+    var dayLeave = readShiftDayLeaveFromForm();
+    var hasPunch = !!(inIso || outIso || breakStartIso || breakEndIso);
     setSaveStatus('Saving…', false);
     if (saveBtn) saveBtn.disabled = true;
     try {
@@ -5538,8 +5766,23 @@
     if (idEl && idEl.value) editingId = idEl.value;
     var priorEntry = editingId ? entryById(editingId) : null;
     var employeeUuid = (priorEntry && priorEntry.employee_id) || emp.id;
+    if (!hasPunch) {
+      if (dayLeave.vl <= 0 && dayLeave.sl <= 0) {
+        alert('Enter clock times or vacation/sick hours for this day.');
+        return;
+      }
+      setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
+      if (isDeliveryDishwasherStaff(emp)) {
+        setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, readShiftDishwasherTipFromForm());
+      }
+      setSaveStatus('Saved vacation/sick hours.', false);
+      syncRosterRowForEmployee(emp);
+      openShift(emp, shiftRow);
+      renderEmployeeShifts(emp);
+      return;
+    }
     if (!inIso) {
-      alert('Clock in is required.');
+      alert('Clock in is required when saving punch times.');
       return;
     }
     var now = new Date();
@@ -5687,8 +5930,13 @@
     if (rpcRes.data.id) {
       timecardState.entryId = rpcRes.data.id;
     }
+    setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
+    if (isDeliveryDishwasherStaff(emp)) {
+      setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, readShiftDishwasherTipFromForm());
+    }
     await loadWeekEntries();
     setSaveStatus('Saved.', false);
+    syncRosterRowForEmployee(emp);
     openShift(emp, shiftRow);
     renderEmployeeShifts(emp);
     } catch (ex) {

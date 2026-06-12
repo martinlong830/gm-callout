@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { AvailabilityMatrixReadOnly } from '../../components/AvailabilityMatrixReadOnly';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
+import { EmployeePhoto } from '../../components/EmployeePhoto';
 import { useAppData } from '../../contexts/AppDataContext';
 import {
+  employeeClockPinLine,
   employeeDisplayName,
   employeeUsualLocationLine,
   staffTypeLabel,
@@ -12,11 +14,46 @@ import { leaveSummaryLines } from '../../lib/employeeLeave';
 import { loadDraftFromTeamState } from '../../lib/schedule/engine';
 import { compareEmployeesByScheduleOrder } from '../../lib/schedule/rosterOrder';
 
+function MetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.metaRow}>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text style={styles.metaValue}>{value}</Text>
+    </View>
+  );
+}
+
+function TeamMemberCard({ item, onPress }: { item: EmployeeRow; onPress: () => void }) {
+  const pinLine = employeeClockPinLine(item);
+  const leaveLines = leaveSummaryLines(item);
+
+  return (
+    <Pressable style={styles.row} onPress={onPress}>
+      <View style={styles.rowMain}>
+        <EmployeePhoto employee={item} size={52} />
+        <View style={styles.rowBody}>
+          <Text style={styles.name}>{employeeDisplayName(item)}</Text>
+          <MetaRow label="Phone" value={(item.phone || '').trim() || '—'} />
+          <MetaRow label="Location" value={employeeUsualLocationLine(item.usualRestaurant)} />
+          {pinLine ? <MetaRow label="PIN" value={pinLine} /> : null}
+          {leaveLines.length ? (
+            <View style={styles.leaveBlock}>
+              {leaveLines.slice(0, 2).map((line) => (
+                <Text key={line} style={styles.leaveLine}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
 export default function ManagerTeam() {
-  const { height: windowHeight } = useWindowDimensions();
   const { employees, teamState, loading, error, refetch } = useAppData();
   const [selected, setSelected] = useState<EmployeeRow | null>(null);
-  const sheetScrollMax = Math.round(windowHeight * 0.82);
 
   const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
 
@@ -50,28 +87,9 @@ export default function ManagerTeam() {
         {sections.map((sec) => (
           <View key={sec.title}>
             <Text style={styles.sectionTitle}>{sec.title}</Text>
-            {sec.list.map((item) => {
-              const leaveLines = leaveSummaryLines(item);
-              return (
-                <Pressable key={item.id} style={styles.row} onPress={() => setSelected(item)}>
-                  <Text style={styles.name}>{employeeDisplayName(item)}</Text>
-                  <Text style={styles.phone}>{(item.phone || '').trim() || '—'}</Text>
-                  <Text style={styles.loc}>Location: {employeeUsualLocationLine(item.usualRestaurant)}</Text>
-                  <View style={styles.leaveBlock}>
-                    {leaveLines.slice(0, 2).map((line) => (
-                      <Text key={line} style={styles.leaveLine}>
-                        {line}
-                      </Text>
-                    ))}
-                  </View>
-                  {item.authUserId ? (
-                    <Text style={styles.badge}>Linked login</Text>
-                  ) : (
-                    <Text style={styles.noLogin}>No login</Text>
-                  )}
-                </Pressable>
-              );
-            })}
+            {sec.list.map((item) => (
+              <TeamMemberCard key={item.id} item={item} onPress={() => setSelected(item)} />
+            ))}
           </View>
         ))}
         {!loading && !employees.length ? (
@@ -79,48 +97,13 @@ export default function ManagerTeam() {
         ) : null}
       </ScrollView>
 
-      <Modal visible={!!selected} animationType="slide" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setSelected(null)}>
-          <View style={styles.modalPanel}>
-            {selected ? (
-              <ScrollView
-                style={[styles.modalScroll, { maxHeight: sheetScrollMax }]}
-                contentContainerStyle={styles.modalScrollContent}
-                nestedScrollEnabled
-                showsVerticalScrollIndicator
-                keyboardShouldPersistTaps="handled"
-              >
-                <Text style={styles.modalTitle}>{employeeDisplayName(selected)}</Text>
-                <Text style={styles.modalLine}>{staffTypeLabel(selected.staffType)}</Text>
-                <Text style={styles.modalLine}>Phone: {(selected.phone || '').trim() || '—'}</Text>
-                <Text style={styles.modalLine}>
-                  Location: {employeeUsualLocationLine(selected.usualRestaurant)}
-                </Text>
-                <Text style={styles.modalLine}>
-                  Login: {selected.authUserId ? 'Linked to app account' : 'Not linked'}
-                </Text>
-                <Text style={styles.gridLabel}>Vacation &amp; sick days</Text>
-                <Text style={styles.leaveHint}>8 hours per day unless noted on a row.</Text>
-                {leaveSummaryLines(selected).map((line) => (
-                  <Text key={line} style={styles.leaveDetailLine}>
-                    {line}
-                  </Text>
-                ))}
-                <Text style={styles.gridLabel}>Weekly availability</Text>
-                <AvailabilityMatrixReadOnly
-                  weeklyGrid={(selected.weeklyGrid ?? {}) as Record<string, unknown>}
-                  staffType={selected.staffType}
-                  draftRows={draftRows}
-                  embedInParentScroll
-                />
-                <Pressable style={styles.closeBtn} onPress={() => setSelected(null)}>
-                  <Text style={styles.closeBtnText}>Close</Text>
-                </Pressable>
-              </ScrollView>
-            ) : null}
-          </View>
-        </Pressable>
-      </Modal>
+      <EmployeeEditorSheet
+        employee={selected}
+        visible={!!selected}
+        draftRows={draftRows}
+        onClose={() => setSelected(null)}
+        onSaved={() => void refetch()}
+      />
     </View>
   );
 }
@@ -145,9 +128,24 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e8eaed',
   },
-  name: { fontSize: 16, fontWeight: '600', color: '#111' },
-  phone: { fontSize: 14, color: '#475569', marginTop: 6 },
-  loc: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  rowMain: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  rowBody: { flex: 1, minWidth: 0 },
+  name: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 6 },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 4,
+    gap: 8,
+  },
+  metaLabel: {
+    width: 72,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748b',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  metaValue: { flex: 1, fontSize: 14, color: '#334155' },
   leaveBlock: {
     marginTop: 8,
     paddingTop: 8,
@@ -155,32 +153,6 @@ const styles = StyleSheet.create({
     borderTopColor: '#e8eaed',
   },
   leaveLine: { fontSize: 12, color: '#334155', lineHeight: 18 },
-  leaveHint: { fontSize: 12, color: '#64748b', marginTop: 4, marginBottom: 6 },
-  leaveDetailLine: { fontSize: 14, color: '#334155', marginTop: 4, lineHeight: 20 },
-  badge: { fontSize: 12, color: '#047857', marginTop: 8, fontWeight: '600' },
-  noLogin: { fontSize: 12, color: '#888', marginTop: 8 },
   muted: { fontSize: 14, color: '#888', padding: 16 },
   err: { color: '#b00020', padding: 12 },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.45)',
-    justifyContent: 'flex-end',
-  },
-  modalPanel: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
-    maxHeight: '92%',
-    width: '100%',
-  },
-  modalScroll: {},
-  modalScrollContent: { paddingBottom: 24 },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#0f172a' },
-  modalLine: { fontSize: 15, color: '#334155', marginTop: 10 },
-  gridLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginTop: 16, textTransform: 'uppercase' },
-  closeBtn: { marginTop: 16, paddingVertical: 12, alignItems: 'center' },
-  closeBtnText: { fontSize: 16, color: '#c41230', fontWeight: '700' },
 });

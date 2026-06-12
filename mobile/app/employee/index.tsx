@@ -1,9 +1,11 @@
-import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { CompactShiftRow } from '../../components/CompactShiftRow';
+import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../../lib/employees';
+import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -14,7 +16,6 @@ import {
   loadDraftFromTeamState,
   mergeRemoteAssignments,
   SCHEDULE_VIEW_WEEK_COUNT,
-  type WorkerShiftRow,
 } from '../../lib/schedule/engine';
 import type { EmployeeLite, RoleKey } from '../../lib/schedule/types';
 import { formatStaffRequestSubmittedDate, type StaffRequestUi } from '../../lib/staffRequests';
@@ -42,23 +43,11 @@ function statusLabel(status: string): string {
   return 'Pending';
 }
 
-function ShiftLine({ row }: { row: WorkerShiftRow }) {
-  const day = row.dayNameUpper || row.day;
-  return (
-    <View style={styles.shiftRow}>
-      <Text style={styles.shiftDay}>{day}</Text>
-      <Text style={styles.shiftTime}>{row.timeLabel}</Text>
-      <Text style={styles.shiftMeta}>
-        {row.groupLabel} · {row.restaurantName}
-      </Text>
-    </View>
-  );
-}
-
 export default function EmployeeHome() {
   const { displayName } = useAuth();
   const { myEmployee, employees, staffRequests, teamState, loading, error, refetch } = useAppData();
   const [refreshing, setRefreshing] = useState(false);
+  const [upcomingWeekCursor, setUpcomingWeekCursor] = useState(0);
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
@@ -83,7 +72,7 @@ export default function EmployeeHome() {
   }, [myEmployee, displayName]);
 
   const buckets = useMemo(() => {
-    if (!workerName) return { today: [] as WorkerShiftRow[], upcoming: [] as WorkerShiftRow[] };
+    if (!workerName) return { today: [], upcoming: [] };
     return getWorkerScheduleBuckets({
       workerName,
       weekMeta,
@@ -95,27 +84,29 @@ export default function EmployeeHome() {
     });
   }, [workerName, weekMeta, allWeekDays, draftRows, lites, restaurants, assignmentStore]);
 
-  /** RLS limits employees to their own `staff_requests` rows — same source as web. */
-  const recentRequests = useMemo(() => staffRequests.slice(0, 8), [staffRequests]);
-
-  useFocusEffect(
-    useCallback(() => {
-      void refetch();
-    }, [refetch])
+  const upcomingGrouped = useMemo(
+    () => partitionShiftsByWeekStart(buckets.upcoming),
+    [buckets.upcoming]
   );
+
+  const upcomingWeekRows = useMemo(() => {
+    const wk = upcomingGrouped.order[upcomingWeekCursor];
+    return wk ? upcomingGrouped.byWeek[wk] ?? [] : [];
+  }, [upcomingGrouped, upcomingWeekCursor]);
+
+  const recentRequests = useMemo(() => staffRequests.slice(0, 8), [staffRequests]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     void refetch().finally(() => setRefreshing(false));
   }, [refetch]);
 
-  const upcomingPreview = useMemo(() => buckets.upcoming.slice(0, 14), [buckets.upcoming]);
-
   return (
     <ScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c41230" />}
+      nestedScrollEnabled
     >
       <Text style={styles.h1}>Welcome</Text>
       <Text style={styles.sub}>{displayName}</Text>
@@ -127,8 +118,7 @@ export default function EmployeeHome() {
       ) : (
         <View style={styles.card}>
           <Text style={styles.warn}>
-            No roster row linked to your account yet. Ask a manager to connect your auth user in Employees, or
-            complete employee registration on the web.
+            No roster row linked to your account yet. Ask a manager to connect your auth user in Team.
           </Text>
         </View>
       )}
@@ -143,15 +133,32 @@ export default function EmployeeHome() {
           <>
             <Text style={styles.sectionLabel}>Today</Text>
             {!buckets.today.length ? (
-              <Text style={styles.muted}>No shifts scheduled for you today in the published window.</Text>
+              <Text style={styles.muted}>No shifts scheduled for you today.</Text>
             ) : (
-              buckets.today.map((row) => <ShiftLine key={`t-${row.restaurantId}-${row.id}`} row={row} />)
+              buckets.today.map((row) => (
+                <CompactShiftRow key={`t-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
+              ))
             )}
-            <Text style={[styles.sectionLabel, styles.sectionSpaced]}>Upcoming</Text>
-            {!upcomingPreview.length ? (
-              <Text style={styles.muted}>No upcoming shifts in the next few weeks.</Text>
+            <View style={styles.upcomingHead}>
+              <Text style={[styles.sectionLabel, styles.sectionSpaced]}>Upcoming</Text>
+              {upcomingGrouped.order.length ? (
+                <ScheduleWeekPicker
+                  mode="pager"
+                  weekMeta={weekMeta}
+                  weekStartIsos={upcomingGrouped.order}
+                  cursor={upcomingWeekCursor}
+                  onCursorChange={setUpcomingWeekCursor}
+                />
+              ) : null}
+            </View>
+            {!upcomingGrouped.order.length ? (
+              <Text style={styles.muted}>No later shifts in the current 3-week window.</Text>
+            ) : !upcomingWeekRows.length ? (
+              <Text style={styles.muted}>No shifts this week.</Text>
             ) : (
-              upcomingPreview.map((row) => <ShiftLine key={`u-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />)
+              upcomingWeekRows.map((row) => (
+                <CompactShiftRow key={`u-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
+              ))
             )}
           </>
         ) : null}
@@ -194,19 +201,11 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 12, fontWeight: '700', color: '#666', marginBottom: 8, textTransform: 'uppercase' },
   sectionLabel: { fontSize: 11, fontWeight: '700', color: '#64748b', letterSpacing: 0.5, marginTop: 4 },
   sectionSpaced: { marginTop: 14 },
+  upcomingHead: { marginTop: 4 },
   body: { fontSize: 15, color: '#333', lineHeight: 22 },
   warn: { fontSize: 14, color: '#8a5a00', lineHeight: 20 },
   muted: { fontSize: 14, color: '#888', marginTop: 4 },
   err: { color: '#b00020', marginTop: 8 },
-  shiftRow: {
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-    paddingTop: 10,
-    marginTop: 10,
-  },
-  shiftDay: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
-  shiftTime: { fontSize: 15, fontWeight: '600', color: '#111', marginTop: 2 },
-  shiftMeta: { fontSize: 13, color: '#64748b', marginTop: 4 },
   reqRow: { borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 10, marginTop: 10 },
   reqType: { fontWeight: '600', color: '#111' },
   reqMeta: { fontSize: 12, color: '#888', marginTop: 2 },

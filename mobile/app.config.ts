@@ -10,7 +10,7 @@ const ANDROID_PACKAGE = 'com.redpoke.scheduler';
 const config: ExpoConfig = {
   name: 'Red Poke Scheduler',
   slug: 'gm-callout',
-  version: '1.0.0',
+  version: '1.0.1',
   orientation: 'portrait',
   icon: './assets/icon.png',
   userInterfaceStyle: 'light',
@@ -46,6 +46,13 @@ const config: ExpoConfig = {
   },
   plugins: [
     'expo-router',
+    [
+      'expo-image-picker',
+      {
+        photosPermission:
+          'Allow access to your photo library to set employee profile pictures.',
+      },
+    ],
     '@react-native-community/datetimepicker',
     [
       'expo-build-properties',

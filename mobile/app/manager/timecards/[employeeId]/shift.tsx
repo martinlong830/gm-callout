@@ -7,15 +7,28 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { DateTimePickerField } from '../../../../components/DateTimePickerField';
 import { useAppData } from '../../../../contexts/AppDataContext';
 import { useTimecards } from '../../../../contexts/TimecardsContext';
-import { type EmployeeRow } from '../../../../lib/employees';
+import { employeeDisplayName, type EmployeeRow } from '../../../../lib/employees';
+import {
+  getEmployeeDayDishwasherTip,
+  isDeliveryDishwasherStaff,
+  setEmployeeDayDishwasherTip,
+} from '../../../../lib/timecards/dishwasherTips';
 import { saveManagerPunch } from '../../../../lib/timecards/entriesApi';
 import {
+  employeeBreakPolicy,
+  formatBreakPolicyLabel,
+  resolveBreakPaid,
+} from '../../../../lib/timecards/breakPolicy';
+import {
   buildShiftsForEmployeeInWeek,
+  getEmployeeDayLeave,
+  setEmployeeDayLeave,
   dailyRecordedMinutesForEmployee,
   decimalHoursFromMinutes,
   findEntriesForDay,
@@ -35,7 +48,12 @@ import {
   shiftPayForScheduledRecorded,
   type ShiftDayRow,
 } from '../../../../lib/timecards/engine';
-import { dateToIso, parseIsoToDate } from '../../../../lib/timecards/punch';
+import {
+  dateToIso,
+  isMidnightOnShiftDate,
+  parseIsoToDate,
+  shiftDateAtMidnight,
+} from '../../../../lib/timecards/punch';
 import { redPokeShiftTimeLabel } from '../../../../lib/schedule/engine';
 import type { EmployeeLite } from '../../../../lib/schedule/types';
 import type { TimeClockEntry } from '../../../../lib/timecards/types';
@@ -58,7 +76,8 @@ export default function TimecardsShiftScreen() {
   }>();
   const navigation = useNavigation();
   const { employees, teamState } = useAppData();
-  const { entries, schema, refresh } = useTimecards();
+  const { entries, schema, refresh, bounds } = useTimecards();
+  const [breakPaidChoice, setBreakPaidChoice] = useState<'inherit' | 'paid' | 'unpaid'>('inherit');
 
   const emp = useMemo(
     () => employees.find((e) => e.id === employeeId) ?? null,
@@ -68,9 +87,9 @@ export default function TimecardsShiftScreen() {
 
   const shiftRow = useMemo((): ShiftDayRow | null => {
     if (!emp) return null;
-    const rows = buildShiftsForEmployeeInWeek(emp, teamState, lites);
+    const rows = buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds);
     return rows.find((r) => r.shift.id === shiftId && r.iso === iso) ?? null;
-  }, [emp, teamState, lites, shiftId, iso]);
+  }, [emp, teamState, lites, bounds, shiftId, iso]);
 
   const dayEntries = useMemo(
     () => (emp && iso ? findEntriesForDay(entries, emp.id, iso) : []),
@@ -82,15 +101,43 @@ export default function TimecardsShiftScreen() {
   const [clockOutDate, setClockOutDate] = useState<Date | null>(null);
   const [breakStartDate, setBreakStartDate] = useState<Date | null>(null);
   const [breakEndDate, setBreakEndDate] = useState<Date | null>(null);
+  const [vlText, setVlText] = useState('0');
+  const [slText, setSlText] = useState('0');
+  const [dishwasherTipText, setDishwasherTipText] = useState('0');
   const [busy, setBusy] = useState(false);
+  const showDishwasherTip = emp ? isDeliveryDishwasherStaff(emp) : false;
 
-  const loadEntry = useCallback((entry: TimeClockEntry | null) => {
-    setEntryId(entry?.id ?? null);
-    setClockInDate(parseIsoToDate(entry?.clock_in_at));
-    setClockOutDate(parseIsoToDate(entry?.clock_out_at));
-    setBreakStartDate(parseIsoToDate(entry?.break_start_at));
-    setBreakEndDate(parseIsoToDate(entry?.break_end_at));
-  }, []);
+  const loadDayLeave = useCallback(async () => {
+    if (!emp || !iso) return;
+    const dayLeave = await getEmployeeDayLeave(emp.id, iso, bounds);
+    setVlText(String(dayLeave.vl));
+    setSlText(String(dayLeave.sl));
+    if (isDeliveryDishwasherStaff(emp)) {
+      const tip = await getEmployeeDayDishwasherTip(emp.id, iso, bounds);
+      setDishwasherTipText(String(tip));
+    }
+  }, [emp, iso, bounds]);
+
+  const loadEntry = useCallback(
+    (entry: TimeClockEntry | null) => {
+      const fieldDate = (iso: string | null | undefined) => {
+        if (iso) return parseIsoToDate(iso);
+        if (shiftRow?.iso) return shiftDateAtMidnight(shiftRow.iso);
+        return null;
+      };
+      setEntryId(entry?.id ?? null);
+      setClockInDate(fieldDate(entry?.clock_in_at));
+      setClockOutDate(fieldDate(entry?.clock_out_at));
+      setBreakStartDate(fieldDate(entry?.break_start_at));
+      setBreakEndDate(fieldDate(entry?.break_end_at));
+      if (entry?.break_paid != null) {
+        setBreakPaidChoice(entry.break_paid ? 'paid' : 'unpaid');
+      } else {
+        setBreakPaidChoice('inherit');
+      }
+    },
+    [shiftRow?.iso]
+  );
 
   useEffect(() => {
     if (!shiftRow || !emp) return;
@@ -101,7 +148,18 @@ export default function TimecardsShiftScreen() {
     const open = dayEntries.filter(isEntryOpen);
     const pick = open.length ? open[open.length - 1] : dayEntries[dayEntries.length - 1] ?? null;
     loadEntry(pick);
-  }, [shiftRow, emp, dayEntries, navigation, loadEntry]);
+    void loadDayLeave();
+  }, [shiftRow, emp, dayEntries, navigation, loadEntry, loadDayLeave]);
+
+  const hasPunchTimes = useMemo(() => {
+    if (!shiftRow) return false;
+    const shiftIso = shiftRow.iso;
+    const hasIn = clockInDate && !isMidnightOnShiftDate(clockInDate, shiftIso);
+    const hasOut = clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftIso);
+    const hasBreakStart = breakStartDate && !isMidnightOnShiftDate(breakStartDate, shiftIso);
+    const hasBreakEnd = breakEndDate && !isMidnightOnShiftDate(breakEndDate, shiftIso);
+    return !!(hasIn || hasOut || hasBreakStart || hasBreakEnd);
+  }, [clockInDate, clockOutDate, breakStartDate, breakEndDate, shiftRow]);
 
   const editingEntry = useMemo(
     () => (entryId ? dayEntries.find((e) => e.id === entryId) ?? null : null),
@@ -110,14 +168,24 @@ export default function TimecardsShiftScreen() {
 
   const previewPaid = useMemo(() => {
     const inIso = dateToIso(clockInDate);
-    if (!inIso) return null;
-    const breakStartIso = dateToIso(breakStartDate);
-    const breakEndIso = dateToIso(breakEndDate);
+    if (!inIso || (shiftRow && isMidnightOnShiftDate(clockInDate, shiftRow.iso))) return null;
+    const breakStartIso =
+      breakStartDate && !isMidnightOnShiftDate(breakStartDate, shiftRow.iso)
+        ? dateToIso(breakStartDate)
+        : null;
+    const breakEndIso =
+      breakEndDate && !isMidnightOnShiftDate(breakEndDate, shiftRow.iso)
+        ? dateToIso(breakEndDate)
+        : null;
+    const outIso =
+      clockOutDate && shiftRow && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
+        ? dateToIso(clockOutDate)
+        : null;
     const fake: TimeClockEntry = {
       id: '',
       employee_id: emp?.id ?? '',
       clock_in_at: inIso,
-      clock_out_at: dateToIso(clockOutDate),
+      clock_out_at: outIso,
       break_start_at: breakStartIso,
       break_end_at: breakEndIso,
       break_minutes: 0,
@@ -127,11 +195,40 @@ export default function TimecardsShiftScreen() {
 
   const save = async () => {
     if (!emp || !shiftRow || !supabase) return;
+    const vl = Math.max(0, parseFloat(vlText) || 0);
+    const sl = Math.max(0, parseFloat(slText) || 0);
+    const dishwasherTip = showDishwasherTip ? Math.max(0, parseFloat(dishwasherTipText) || 0) : 0;
     let inIso = dateToIso(clockInDate);
-    let outIso = dateToIso(clockOutDate);
-    const breakStartIso = dateToIso(breakStartDate);
-    const breakEndIso = dateToIso(breakEndDate);
-    if (!inIso) {
+    let outIso =
+      clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
+        ? dateToIso(clockOutDate)
+        : null;
+    const breakStartIso =
+      breakStartDate && !isMidnightOnShiftDate(breakStartDate, shiftRow.iso)
+        ? dateToIso(breakStartDate)
+        : null;
+    const breakEndIso =
+      breakEndDate && !isMidnightOnShiftDate(breakEndDate, shiftRow.iso)
+        ? dateToIso(breakEndDate)
+        : null;
+
+    if (!hasPunchTimes) {
+      if (vl <= 0 && sl <= 0) {
+        Alert.alert('Timecard', 'Enter clock times or vacation/sick hours for this day.');
+        return;
+      }
+      setBusy(true);
+      await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+      if (showDishwasherTip) {
+        await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
+      }
+      setBusy(false);
+      await refresh();
+      Alert.alert('Saved', 'Vacation/sick hours saved for this day.');
+      return;
+    }
+
+    if (!inIso || isMidnightOnShiftDate(clockInDate, shiftRow.iso)) {
       Alert.alert('Timecard', 'Set clock in time.');
       return;
     }
@@ -182,6 +279,8 @@ export default function TimecardsShiftScreen() {
     }
     const br = breakMinutesFromRange(breakStartIso, breakEndIso, outIso);
     setBusy(true);
+    const breakPaid =
+      breakPaidChoice === 'paid' ? true : breakPaidChoice === 'unpaid' ? false : null;
     const res = await saveManagerPunch(supabase, schema, {
       employeeId: emp.id,
       shiftId: shiftRow.shift.id,
@@ -190,6 +289,7 @@ export default function TimecardsShiftScreen() {
       breakStartIso,
       breakEndIso,
       breakMinutes: br,
+      breakPaid,
       editingId: entryId || null,
       priorEntry: editingEntry,
     });
@@ -197,6 +297,10 @@ export default function TimecardsShiftScreen() {
     if (!res.ok) {
       Alert.alert('Save failed', res.message);
       return;
+    }
+    await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+    if (showDishwasherTip) {
+      await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
     }
     await refresh();
     Alert.alert('Saved', 'Punch updated.');
@@ -315,6 +419,64 @@ export default function TimecardsShiftScreen() {
         <Text style={styles.btnSecondaryText}>End break now</Text>
       </Pressable>
 
+      <Text style={styles.sectionTitle}>Break on this punch</Text>
+      <Text style={styles.hint}>
+        Default for {employeeDisplayName(emp)}: {formatBreakPolicyLabel(employeeBreakPolicy(emp) === 'paid')}
+      </Text>
+      <View style={styles.chipRow}>
+        {(['inherit', 'paid', 'unpaid'] as const).map((c) => {
+          const on = breakPaidChoice === c;
+          const label = c === 'inherit' ? 'Default' : c === 'paid' ? 'Paid' : 'Unpaid';
+          return (
+            <Pressable
+              key={c}
+              style={[styles.chip, on && styles.chipOn]}
+              onPress={() => setBreakPaidChoice(c)}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {editingEntry ? (
+        <Text style={styles.hint}>
+          Effective: {formatBreakPolicyLabel(resolveBreakPaid({ entry: editingEntry, shift: s, emp }))}
+        </Text>
+      ) : null}
+
+      <Text style={styles.sectionTitle}>VL / SL (this day)</Text>
+      <Text style={styles.hint}>
+        For holidays or full vacation/sick days, enter hours here and leave punch times empty.
+      </Text>
+      <Text style={styles.fieldLabel}>VL (hrs)</Text>
+      <TextInput
+        style={styles.input}
+        value={vlText}
+        onChangeText={setVlText}
+        keyboardType="decimal-pad"
+      />
+      <Text style={styles.fieldLabel}>SL (hrs)</Text>
+      <TextInput
+        style={styles.input}
+        value={slText}
+        onChangeText={setSlText}
+        keyboardType="decimal-pad"
+      />
+
+      {showDishwasherTip ? (
+        <>
+          <Text style={styles.sectionTitle}>Dishwasher tip (this day)</Text>
+          <Text style={styles.hint}>Cash tips for delivery/dishwasher shifts (saved per day).</Text>
+          <Text style={styles.fieldLabel}>Tip ($)</Text>
+          <TextInput
+            style={styles.input}
+            value={dishwasherTipText}
+            onChangeText={setDishwasherTipText}
+            keyboardType="decimal-pad"
+          />
+        </>
+      ) : null}
+
       {previewPaid != null ? (
         <Text style={styles.preview}>
           Paid preview: {decimalHoursFromMinutes(previewPaid)}h
@@ -323,7 +485,7 @@ export default function TimecardsShiftScreen() {
       ) : null}
 
       <Pressable style={styles.btnPrimary} disabled={busy} onPress={() => void save()}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>Save punch</Text>}
+        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>Save</Text>}
       </Pressable>
       <Pressable
         style={styles.btnSecondary}
@@ -382,6 +544,16 @@ const styles = StyleSheet.create({
   punchTitle: { fontSize: 14, fontWeight: '600', color: '#0f172a' },
   punchSub: { fontSize: 13, color: '#64748b', marginTop: 4 },
   hint: { fontSize: 12, color: '#888', marginBottom: 4 },
+  fieldLabel: { fontSize: 12, fontWeight: '600', color: '#64748b', marginBottom: 4, marginTop: 4 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccd2d8',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+    backgroundColor: '#fff',
+    fontSize: 16,
+  },
   preview: { fontSize: 13, color: '#475569', marginTop: 10 },
   btnPrimary: {
     backgroundColor: '#c41230',
@@ -401,6 +573,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   btnSecondaryText: { color: '#334155', fontWeight: '700' },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+  },
+  chipOn: { backgroundColor: '#c41230', borderColor: '#c41230' },
+  chipText: { fontSize: 14, color: '#334155', fontWeight: '600' },
+  chipTextOn: { color: '#fff' },
   muted: { color: '#888', marginBottom: 12 },
   histBlock: { marginBottom: 12, paddingLeft: 4 },
   histWhen: { fontSize: 12, color: '#64748b', marginBottom: 4 },

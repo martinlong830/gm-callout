@@ -39,7 +39,10 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await hydrateFromSupabase(supabase);
+      const data = await hydrateFromSupabase(supabase, {
+        role,
+        userId: session.user.id,
+      });
       setEmployees(data.employees);
       setStaffRequests(data.staffRequests);
       setTeamState(data.teamState);
@@ -48,7 +51,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [session?.user?.id]);
+  }, [session?.user?.id, role]);
 
   useEffect(() => {
     void refetch();

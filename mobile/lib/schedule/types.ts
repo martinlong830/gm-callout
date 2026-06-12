@@ -27,6 +27,8 @@ export type ScheduleRow = {
   redPokeHours: string;
   workers: string[];
   worker: string;
+  /** Per-shift override; falls back to employee break policy when unset. */
+  breakPaid?: boolean;
 };
 
 export type Restaurant = { id: string; name: string; shortLabel: string; defaultUnassignedSchedule?: boolean };

@@ -4,6 +4,9 @@ const { createClient } = require("@supabase/supabase-js");
 
 const PORTAL_ACCESS_CODE = "redpoke";
 const INTERNAL_EMAIL_DOMAIN = "example.org";
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+
+const { sendPasswordResetEmail, isValidEmail } = require("./portal-email");
 
 function stripEnv(value) {
   if (value == null || value === "") return "";
@@ -26,7 +29,17 @@ function makeInternalEmail() {
   return `gm.${id}@${INTERNAL_EMAIL_DOMAIN}`;
 }
 
-function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
+function normalizeRecoveryEmail(email) {
+  return String(email || "")
+    .trim()
+    .toLowerCase();
+}
+
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBaseUrl }) {
   const router = require("express").Router();
 
   if (!supabaseUrl || !supabaseServiceRoleKey) {
@@ -45,7 +58,96 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
   });
 
   const profileSelect =
-    "id, role, display_name, internal_auth_email, login_name, login_name_norm";
+    "id, role, display_name, internal_auth_email, login_name, login_name_norm, recovery_email, recovery_email_norm";
+
+  function passwordResetBaseUrl() {
+    const base = String(publicBaseUrl || "").replace(/\/$/, "");
+    return base || "http://localhost:8000";
+  }
+
+  async function profileFromAccessToken(req) {
+    const authHeader = req.headers && req.headers.authorization;
+    const match = String(authHeader || "").match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+      return { error: "Sign in required.", status: 401 };
+    }
+    const { data, error } = await admin.auth.getUser(match[1]);
+    if (error || !data.user) {
+      return { error: "Sign in required.", status: 401 };
+    }
+    const { data: profile, error: profErr } = await admin
+      .from("profiles")
+      .select(profileSelect)
+      .eq("id", data.user.id)
+      .maybeSingle();
+    if (profErr || !profile) {
+      return { error: "Account not found.", status: 404 };
+    }
+    return { profile, userId: data.user.id };
+  }
+
+  async function createPasswordResetToken(profileId) {
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashResetToken(token);
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString();
+
+    await admin
+      .from("portal_password_reset_tokens")
+      .delete()
+      .eq("profile_id", profileId)
+      .is("used_at", null);
+
+    const { error } = await admin.from("portal_password_reset_tokens").insert({
+      profile_id: profileId,
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+    });
+    if (error) return { error: error.message };
+    return { token };
+  }
+
+  async function verifyPasswordResetToken(token) {
+    const raw = String(token || "").trim();
+    if (!raw) return { error: "Reset link is invalid or expired." };
+    const tokenHash = hashResetToken(raw);
+    const { data, error } = await admin
+      .from("portal_password_reset_tokens")
+      .select("id, profile_id, expires_at, used_at")
+      .eq("token_hash", tokenHash)
+      .maybeSingle();
+    if (error) return { error: error.message };
+    if (!data || data.used_at) return { error: "Reset link is invalid or expired." };
+    if (new Date(data.expires_at).getTime() < Date.now()) {
+      return { error: "Reset link has expired. Request a new one." };
+    }
+    const { data: profile, error: profErr } = await admin
+      .from("profiles")
+      .select(profileSelect)
+      .eq("id", data.profile_id)
+      .maybeSingle();
+    if (profErr || !profile) return { error: "Account not found." };
+    return { row: data, profile };
+  }
+
+  async function saveRecoveryEmail(profileId, email) {
+    const norm = normalizeRecoveryEmail(email);
+    if (!norm || !isValidEmail(norm)) return { error: "Enter a valid email address." };
+    const { data: existing } = await admin
+      .from("profiles")
+      .select("id")
+      .eq("recovery_email_norm", norm)
+      .neq("id", profileId)
+      .maybeSingle();
+    if (existing) {
+      return { error: "That email is already used on another account." };
+    }
+    const { error } = await admin
+      .from("profiles")
+      .update({ recovery_email: norm, recovery_email_norm: norm })
+      .eq("id", profileId);
+    if (error) return { error: error.message };
+    return { ok: true, recoveryEmail: norm };
+  }
 
   async function backfillProfileLoginFields(profile, authEmail, loginName) {
     const ln = String(loginName || profile.login_name || profile.display_name || "").trim();
@@ -75,6 +177,60 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
     if (!data) return { notFound: true };
     if (!data.internal_auth_email) return { profile: data, needsAuthEmail: true };
     return { profile: data };
+  }
+
+  /** Match legacy profiles that have display_name but no login_name_norm yet. */
+  async function findLegacyProfileByLoginName(loginName) {
+    const raw = String(loginName || "").trim();
+    if (!raw || raw.includes("@")) return { notFound: true };
+    const norm = normalizeLoginName(raw);
+    const { data: byDisplay, error: dispErr } = await admin
+      .from("profiles")
+      .select(profileSelect)
+      .is("login_name_norm", null)
+      .ilike("display_name", raw)
+      .limit(5);
+    if (dispErr) return { error: dispErr.message };
+    let prof =
+      (byDisplay || []).find((p) => normalizeLoginName(p.display_name) === norm) ||
+      (byDisplay || []).find((p) => normalizeLoginName(p.login_name) === norm);
+    if (prof) return { profile: prof };
+
+    const { data: byLogin, error: loginErr } = await admin
+      .from("profiles")
+      .select(profileSelect)
+      .is("login_name_norm", null)
+      .ilike("login_name", raw)
+      .limit(5);
+    if (loginErr) return { error: loginErr.message };
+    prof =
+      (byLogin || []).find((p) => normalizeLoginName(p.display_name) === norm) ||
+      (byLogin || []).find((p) => normalizeLoginName(p.login_name) === norm);
+    if (prof) return { profile: prof };
+    return { notFound: true };
+  }
+
+  async function resolveProfileForPasswordReset(loginName) {
+    const raw = String(loginName || "").trim();
+    if (!raw) return { error: "Enter your name." };
+    if (raw.includes("@")) {
+      return { error: "Enter your sign-in name, not an email address." };
+    }
+    let found = await findProfileByLoginName(raw);
+    if (found.error) return found;
+    if (found.notFound) {
+      found = await findLegacyProfileByLoginName(raw);
+    }
+    if (found.error) return found;
+    if (found.notFound) return { notFound: true };
+    const profile = found.profile;
+    if (profile.role === "timeclock") {
+      return { error: "Time clock devices cannot reset passwords by email." };
+    }
+    if (!profile.recovery_email_norm || !profile.recovery_email) {
+      return { noRecoveryEmail: true, profile };
+    }
+    return { profile };
   }
 
   async function authEmailForProfile(profile) {
@@ -121,17 +277,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
       return { error: "Sign in with your name, not email. Managers: Martin Long or Ongi Management." };
     }
 
-    const norm = normalizeLoginName(raw);
-    const { data: candidates, error: listErr } = await admin
-      .from("profiles")
-      .select(profileSelect)
-      .is("login_name_norm", null);
-    if (listErr) return { error: listErr.message };
-    const prof =
-      (candidates || []).find((p) => normalizeLoginName(p.display_name) === norm) ||
-      (candidates || []).find((p) => normalizeLoginName(p.login_name) === norm);
-    if (!prof) return { error: "Name or password is incorrect." };
-    return sessionForProfile(prof, pw, raw);
+    const legacy = await findLegacyProfileByLoginName(raw);
+    if (legacy.error) return legacy;
+    if (legacy.notFound) return { error: "Name or password is incorrect." };
+    return sessionForProfile(legacy.profile, pw, raw);
   }
 
   router.post("/signin", async (req, res) => {
@@ -212,6 +361,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
       const displayName =
         String(body.displayName || "").trim() || loginName;
       const internalEmail = makeInternalEmail();
+      const recoveryEmailRaw = String(body.recoveryEmail || "").trim();
+      if (!recoveryEmailRaw) {
+        return res.status(400).json({ ok: false, message: "Recovery email is required." });
+      }
 
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email: internalEmail,
@@ -233,21 +386,26 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
       }
 
       const userId = created.user.id;
-      await admin
-        .from("profiles")
-        .update({
-          login_name: loginName,
-          login_name_norm: loginNameNorm,
-          internal_auth_email: internalEmail,
-          display_name: displayName,
-          role,
-          phone: body.phone ? String(body.phone).trim() : null,
-          staff_type:
-            body.staffType && ["Kitchen", "Bartender", "Server"].includes(body.staffType)
-              ? body.staffType
-              : null,
-        })
-        .eq("id", userId);
+      const profilePatch = {
+        login_name: loginName,
+        login_name_norm: loginNameNorm,
+        internal_auth_email: internalEmail,
+        display_name: displayName,
+        role,
+        phone: body.phone ? String(body.phone).trim() : null,
+        staff_type:
+          body.staffType && ["Kitchen", "Bartender", "Server"].includes(body.staffType)
+            ? body.staffType
+            : null,
+      };
+      const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
+      if (saved.error) {
+        await admin.auth.admin.deleteUser(userId);
+        return res.status(400).json({ ok: false, message: saved.error });
+      }
+      profilePatch.recovery_email = saved.recoveryEmail;
+      profilePatch.recovery_email_norm = saved.recoveryEmail;
+      await admin.from("profiles").update(profilePatch).eq("id", userId);
 
       const { data: signInData, error: signInErr } = await admin.auth.signInWithPassword({
         email: internalEmail,
@@ -271,6 +429,155 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey }) {
     } catch (err) {
       console.warn("portal signup", err);
       return res.status(500).json({ ok: false, message: "Could not create account." });
+    }
+  });
+
+  router.get("/account", async (req, res) => {
+    try {
+      const authed = await profileFromAccessToken(req);
+      if (authed.error) {
+        return res.status(authed.status || 401).json({ ok: false, message: authed.error });
+      }
+      const p = authed.profile;
+      return res.json({
+        ok: true,
+        loginName: p.login_name || p.display_name || "",
+        recoveryEmail: p.recovery_email || "",
+        hasRecoveryEmail: Boolean(
+          p.recovery_email_norm || (p.recovery_email && isValidEmail(p.recovery_email))
+        ),
+      });
+    } catch (err) {
+      console.warn("portal account get", err);
+      return res.status(500).json({ ok: false, message: "Could not load account." });
+    }
+  });
+
+  router.put("/account/recovery-email", async (req, res) => {
+    try {
+      const authed = await profileFromAccessToken(req);
+      if (authed.error) {
+        return res.status(authed.status || 401).json({ ok: false, message: authed.error });
+      }
+      const recoveryEmail = req.body && req.body.recoveryEmail;
+      const saved = await saveRecoveryEmail(authed.userId, recoveryEmail);
+      if (saved.error) {
+        return res.status(400).json({ ok: false, message: saved.error });
+      }
+      return res.json({
+        ok: true,
+        recoveryEmail: saved.recoveryEmail,
+        message: "Recovery email saved.",
+      });
+    } catch (err) {
+      console.warn("portal account recovery-email", err);
+      return res.status(500).json({ ok: false, message: "Could not save recovery email." });
+    }
+  });
+
+  router.post("/forgot-password", async (req, res) => {
+    const genericOk =
+      "If we found that name with a recovery email on file, we sent a password reset link. Check your inbox and spam folder.";
+    try {
+      const loginName = (req.body && (req.body.loginName || req.body.email)) || "";
+      const found = await resolveProfileForPasswordReset(loginName);
+      if (found.error) {
+        return res.status(400).json({ ok: false, message: found.error });
+      }
+      if (found.notFound) {
+        return res.json({ ok: true, message: genericOk });
+      }
+      if (found.noRecoveryEmail) {
+        const who = found.profile.login_name || found.profile.display_name || "that account";
+        return res.status(400).json({
+          ok: false,
+          message:
+            `No recovery email on file for ${who}. Sign in and open Account (top right) to add one, or ask a manager for help.`,
+        });
+      }
+
+      const tokenOut = await createPasswordResetToken(found.profile.id);
+      if (tokenOut.error) {
+        console.warn("forgot-password token", tokenOut.error);
+        return res.json({ ok: true, message: genericOk });
+      }
+
+      const resetUrl = `${passwordResetBaseUrl()}/?reset_token=${encodeURIComponent(tokenOut.token)}`;
+      const who = found.profile.login_name || found.profile.display_name || "there";
+      const mailed = await sendPasswordResetEmail({
+        to: found.profile.recovery_email,
+        resetUrl,
+        loginName: who,
+      });
+      if (!mailed.ok) {
+        return res.status(503).json({ ok: false, message: mailed.error });
+      }
+      return res.json({
+        ok: true,
+        message: `We sent a password reset link to the recovery email on file for ${who}. Check your inbox and spam folder.`,
+        dev: !!mailed.dev,
+      });
+    } catch (err) {
+      console.warn("forgot-password", err);
+      return res.status(500).json({ ok: false, message: "Could not process request." });
+    }
+  });
+
+  router.get("/reset-password/verify", async (req, res) => {
+    try {
+      const token = req.query && req.query.token;
+      const verified = await verifyPasswordResetToken(token);
+      if (verified.error) {
+        return res.status(400).json({ ok: false, message: verified.error });
+      }
+      const p = verified.profile;
+      return res.json({
+        ok: true,
+        loginName: p.login_name || p.display_name || "your account",
+      });
+    } catch (err) {
+      console.warn("reset-password verify", err);
+      return res.status(500).json({ ok: false, message: "Could not verify reset link." });
+    }
+  });
+
+  router.post("/reset-password", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const token = body.token;
+      const password = String(body.password || "");
+      if (!password) {
+        return res.status(400).json({ ok: false, message: "Enter a new password." });
+      }
+      if (password.length < 4) {
+        return res.status(400).json({ ok: false, message: "Password must be at least 4 characters." });
+      }
+
+      const verified = await verifyPasswordResetToken(token);
+      if (verified.error) {
+        return res.status(400).json({ ok: false, message: verified.error });
+      }
+
+      const { error: pwErr } = await admin.auth.admin.updateUserById(verified.profile.id, {
+        password,
+      });
+      if (pwErr) {
+        return res.status(400).json({ ok: false, message: pwErr.message || "Could not update password." });
+      }
+
+      await admin
+        .from("portal_password_reset_tokens")
+        .update({ used_at: new Date().toISOString() })
+        .eq("id", verified.row.id);
+
+      return res.json({
+        ok: true,
+        message: "Password updated. Sign in with your name and new password.",
+        loginName: verified.profile.login_name || verified.profile.display_name || "",
+      });
+    } catch (err) {
+      console.warn("reset-password", err);
+      return res.status(500).json({ ok: false, message: "Could not reset password." });
     }
   });
 

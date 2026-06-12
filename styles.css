@@ -272,6 +272,11 @@ html.authed .login-screen {
   color: var(--text-muted);
 }
 
+.login-hint--tight {
+  margin: -6px 0 12px;
+  font-size: 0.75rem;
+}
+
 .login-form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -426,33 +431,76 @@ html.authed .login-screen {
   }
 }
 
+.header-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+html.authed .header-actions {
+  display: flex;
+}
+
+html.timeclock-app .header-actions {
+  display: none;
+}
+
+.header > .header-signout-btn {
+  margin-left: auto;
+}
+
+.header-account-btn,
 .header-signout-btn {
   display: none;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  margin-left: auto;
   padding: 7px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  font-size: 0.75rem;
-  font-weight: 600;
   color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
   cursor: pointer;
-  line-height: 1.2;
 }
 
+html.authed .header-account-btn,
 html.authed .header-signout-btn {
   display: inline-flex;
 }
 
+.header-account-btn:hover,
+.header-account-btn:focus-visible,
 .header-signout-btn:hover,
 .header-signout-btn:focus-visible {
   background: var(--hover-fill);
   color: var(--text);
   outline: 1px solid var(--border);
   outline-offset: 1px;
+}
+
+.account-settings-intro {
+  margin: 0 0 12px;
+}
+
+.account-settings-field-hint {
+  display: block;
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+}
+
+.account-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-settings-panel {
+  max-width: 420px;
 }
 
 .app,
@@ -1678,24 +1726,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-radius: 999px;
   background: color-mix(in srgb, var(--primary) 12%, transparent);
   white-space: nowrap;
-}
-
-.schedule-week-nav-jump {
-  min-height: 32px;
-  max-width: 9.5rem;
-  padding: 4px 28px 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.schedule-week-nav-jump:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 
 .schedule-week-nav-today.btn {
@@ -4009,6 +4039,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timeclock-pad-btn:active {
   background: var(--hover-fill);
+}
+
+.timeclock-pad-btn[data-tc-digit="0"] {
+  grid-column: 2;
 }
 
 .timeclock-pad-actions {

@@ -155,7 +155,7 @@ If your PIN stops working, a manager may have issued a new one — check with th
 | PIN not recognized on the tablet | Double-check the 6 digits. Ask a manager to read your PIN from **Team → your profile**. |
 | Employee app shows no shifts | You may not be scheduled that week, or your name on the schedule must match your sign-in name. |
 | Manager cannot open Timecards | Sign out and sign in again as **Martin Long** or **Ongi Management**. |
-| Forgot employee password | Ask a manager; they can help you get access again. |
+| Forgot employee password | Use **Forgot password?** on the login screen with your recovery email, or ask a manager. |
 
 ---
 

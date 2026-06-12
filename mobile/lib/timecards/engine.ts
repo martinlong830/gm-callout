@@ -15,13 +15,26 @@ import {
   type WorkerShiftRow,
 } from '../schedule/engine';
 import type { EmployeeLite, WeekMeta } from '../schedule/types';
-import { isoFromDate, getPayWeekBounds } from './payWeek';
+import { isoFromDate } from './payWeek';
+import {
+  isDeliveryDishwasherStaff,
+  loadDishwasherTipsSlice,
+  sumEmployeeWeekDishwasherTipsSync,
+} from './dishwasherTips';
+import { getEmployeeWeekExtras, getEmployeeWeekExtrasSync } from './weekExtras';
 import {
   punchShiftRoundedMinutes,
   scheduledShiftStartAt,
   formatPunchClock,
 } from './punch';
-import type { PayWeekBounds, RosterRow, ShiftDayRow, TimeClockEntry, WeekExtras } from './types';
+import type {
+  PayWeekBounds,
+  RosterRow,
+  RosterTotals,
+  ShiftDayRow,
+  TimeClockEntry,
+  WeekExtras,
+} from './types';
 
 import {
   resolveBreakPaid,
@@ -29,7 +42,7 @@ import {
   formatBreakPolicyLabel,
 } from './breakPolicy';
 
-export type { RosterRow, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds };
+export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds };
 
 const OT_RATE_MULTIPLIER = 1.5;
 const PAY_ROUND_MINUTES = 15;
@@ -337,10 +350,10 @@ export function buildShiftsForEmployeeInWeek(
   emp: EmployeeRow,
   teamState: Record<string, unknown> | null,
   employees: EmployeeLite[],
+  bounds: PayWeekBounds,
   cachedCtx?: ScheduleContext
 ): ShiftDayRow[] {
   const name = employeeDisplayName(emp);
-  const bounds = getPayWeekBounds();
   const startIso = isoFromDate(bounds.start);
   const endIso = isoFromDate(bounds.end);
   const { weekMeta, allWeekDays, draftRows, restaurants, assignmentStore } =
@@ -455,6 +468,7 @@ function rosterGrandTotalPay(row: {
   vlPay: number;
   slPay: number;
   sohPay: number | null;
+  dishwasherTipsPay?: number;
   totalMins: number;
   otMins: number;
   vlHours: number;
@@ -466,7 +480,14 @@ function rosterGrandTotalPay(row: {
   if (row.vlPay == null && row.vlHours > 0) return null;
   if (row.slPay == null && row.slHours > 0) return null;
   if (row.sohPay == null && row.sohCount > 0) return null;
-  return (row.regPay || 0) + (row.otPay || 0) + row.vlPay + row.slPay + (row.sohPay || 0);
+  return (
+    (row.regPay || 0) +
+    (row.otPay || 0) +
+    row.vlPay +
+    row.slPay +
+    (row.sohPay || 0) +
+    (row.dishwasherTipsPay || 0)
+  );
 }
 
 export function computeSpreadOfHoursIndexed(
@@ -501,17 +522,18 @@ export function buildRosterRowSync(
   staffRequests: StaffRequestUi[],
   employeesLite: EmployeeLite[],
   extrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }>,
+  dishwasherTipsSlice: Record<string, number>,
   entriesIndex: Record<string, TimeClockEntry[]>,
-  entriesByEmpId: Record<string, TimeClockEntry[]>
+  entriesByEmpId: Record<string, TimeClockEntry[]>,
+  bounds: PayWeekBounds
 ): RosterRow {
   const name = employeeDisplayName(emp);
-  const shifts = buildShiftsForEmployeeInWeek(emp, null, employeesLite, scheduleCtx);
+  const shifts = buildShiftsForEmployeeInWeek(emp, null, employeesLite, bounds, scheduleCtx);
   const schedMinsByDay: Record<string, number> = {};
   for (const row of shifts) {
     if (!row.iso) continue;
     schedMinsByDay[row.iso] = (schedMinsByDay[row.iso] || 0) + scheduledPaidMinutes(row.shift, emp);
   }
-  const bounds = getPayWeekBounds();
   const extras = getEmployeeWeekExtrasSync(emp, name, bounds, staffRequests, schedMinsByDay, extrasSlice);
 
   let schedMins = 0;
@@ -543,6 +565,9 @@ export function buildRosterRowSync(
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
+  const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice)
+    : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
   const partial = {
     regPay: pay.regPay,
@@ -550,6 +575,7 @@ export function buildRosterRowSync(
     vlPay,
     slPay,
     sohPay,
+    dishwasherTipsPay,
     totalMins: regMins + otMins,
     otMins,
     vlHours: extras.vl,
@@ -572,9 +598,92 @@ export function buildRosterRowSync(
     slHours: extras.sl,
     sohCount: soh.count,
     sohPay,
+    vlPay,
+    slPay,
+    dishwasherTipsPay,
     status,
     statusRank: statusSortRank(status),
   };
+}
+
+export function computeRosterTotals(rows: RosterRow[]): RosterTotals {
+  const t: RosterTotals = {
+    headcount: rows.length,
+    schedMins: 0,
+    regMins: 0,
+    otMins: 0,
+    vlHours: 0,
+    slHours: 0,
+    sohCount: 0,
+    regPay: 0,
+    otPay: 0,
+    vlPay: 0,
+    slPay: 0,
+    sohPay: 0,
+    dishwasherTipsPay: 0,
+    grandTotalPay: 0,
+    totalMins: 0,
+    hasRegPay: false,
+    hasOtPay: false,
+    hasVlSlPay: false,
+    hasSohPay: false,
+    hasDishwasherTips: false,
+    hasGrandTotal: false,
+  };
+  for (const r of rows) {
+    t.schedMins += r.schedMins;
+    t.regMins += r.regMins;
+    t.otMins += r.otMins;
+    t.vlHours += r.vlHours;
+    t.slHours += r.slHours;
+    t.sohCount += r.sohCount;
+    t.totalMins += r.regMins + r.otMins;
+    if (r.regPay != null) {
+      t.regPay += r.regPay;
+      t.hasRegPay = true;
+    }
+    if (r.otPay != null) {
+      t.otPay += r.otPay;
+      t.hasOtPay = true;
+    }
+    if (r.vlPay != null) {
+      t.vlPay += r.vlPay;
+      t.hasVlSlPay = true;
+    }
+    if (r.slPay != null) {
+      t.slPay += r.slPay;
+      t.hasVlSlPay = true;
+    }
+    if (r.sohPay != null) {
+      t.sohPay += r.sohPay;
+      t.hasSohPay = true;
+    }
+    if (r.dishwasherTipsPay > 0) {
+      t.dishwasherTipsPay += r.dishwasherTipsPay;
+      t.hasDishwasherTips = true;
+    }
+    if (r.grandTotalPay != null) {
+      t.grandTotalPay += r.grandTotalPay;
+      t.hasGrandTotal = true;
+    } else if (
+      r.regPay != null ||
+      r.otPay != null ||
+      r.vlPay != null ||
+      r.slPay != null ||
+      r.sohPay != null ||
+      r.dishwasherTipsPay > 0
+    ) {
+      t.grandTotalPay +=
+        (r.regPay ?? 0) +
+        (r.otPay ?? 0) +
+        (r.vlPay ?? 0) +
+        (r.slPay ?? 0) +
+        (r.sohPay ?? 0) +
+        r.dishwasherTipsPay;
+      t.hasGrandTotal = true;
+    }
+  }
+  return t;
 }
 
 export function buildAllRosterRows(
@@ -583,7 +692,9 @@ export function buildAllRosterRows(
   teamState: Record<string, unknown> | null,
   staffRequests: StaffRequestUi[],
   employeesLite: EmployeeLite[],
-  extrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }>
+  extrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }>,
+  dishwasherTipsSlice: Record<string, number>,
+  bounds: PayWeekBounds
 ): RosterRow[] {
   const scheduleCtx = buildScheduleContext(teamState);
   const entriesIndex = buildEntriesIndex(entries);
@@ -601,8 +712,10 @@ export function buildAllRosterRows(
       staffRequests,
       employeesLite,
       extrasSlice,
+      dishwasherTipsSlice,
       entriesIndex,
-      entriesByEmpId
+      entriesByEmpId,
+      bounds
     )
   );
 }
@@ -612,16 +725,17 @@ export async function buildRosterRow(
   entries: TimeClockEntry[],
   teamState: Record<string, unknown> | null,
   staffRequests: StaffRequestUi[],
-  employeesLite: EmployeeLite[]
+  employeesLite: EmployeeLite[],
+  bounds: PayWeekBounds
 ): Promise<RosterRow> {
   const name = employeeDisplayName(emp);
-  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite);
+  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite, bounds);
   const schedMinsByDay: Record<string, number> = {};
   for (const row of shifts) {
     if (!row.iso) continue;
     schedMinsByDay[row.iso] = (schedMinsByDay[row.iso] || 0) + scheduledPaidMinutes(row.shift, emp);
   }
-  const extras = await getEmployeeWeekExtras(emp, name, getPayWeekBounds(), staffRequests, schedMinsByDay);
+  const extras = await getEmployeeWeekExtras(emp, name, bounds, staffRequests, schedMinsByDay);
 
   let schedMins = 0;
   let regMins = 0;
@@ -650,7 +764,11 @@ export async function buildRosterRow(
   const soh = computeSpreadOfHours(emp, entries);
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
+  const tipsSlice = await loadDishwasherTipsSlice(bounds);
   const sohPay = soh.hasRate ? soh.pay : null;
+  const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice)
+    : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
   const partial = {
     regPay: pay.regPay,
@@ -658,6 +776,7 @@ export async function buildRosterRow(
     vlPay,
     slPay,
     sohPay,
+    dishwasherTipsPay,
     totalMins: regMins + otMins,
     otMins,
     vlHours: extras.vl,
@@ -680,6 +799,9 @@ export async function buildRosterRow(
     slHours: extras.sl,
     sohCount: soh.count,
     sohPay,
+    vlPay,
+    slPay,
+    dishwasherTipsPay,
     status,
     statusRank: statusSortRank(status),
   };
@@ -732,6 +854,11 @@ export function formatHistoryLines(entry: TimeClockEntry): { when: string; lines
     });
 }
 
-export { getEmployeeWeekExtras, setEmployeeWeekExtras } from './weekExtras';
+export {
+  getEmployeeDayLeave,
+  getEmployeeWeekExtras,
+  setEmployeeDayLeave,
+  setEmployeeWeekExtras,
+} from './weekExtras';
 export { formatPunchClock } from './punch';
 export { normalizePunchTimesForShift } from './punch';

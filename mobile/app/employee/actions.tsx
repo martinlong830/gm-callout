@@ -9,9 +9,21 @@ import {
   View,
 } from 'react-native';
 import { AvailabilityMatrixEditor, availabilityCheckAll } from '../../components/AvailabilityMatrixEditor';
+import { CompactShiftRow } from '../../components/CompactShiftRow';
+import { DatePickerField } from '../../components/DatePickerField';
+import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, staffTypeLabel } from '../../lib/employees';
+import {
+  compactShiftTimeLabel,
+  currentScheduleWeekIndex,
+  formatCalendarDateLabel,
+  shiftsForWeekIndex,
+  shiftOptionKey,
+  uniqueWeekIndicesWithShifts,
+  weekIndexFromIso,
+} from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -26,7 +38,7 @@ import {
   type WorkerShiftRow,
 } from '../../lib/schedule/engine';
 import type { EmployeeLite, RoleKey } from '../../lib/schedule/types';
-import { insertStaffRequest } from '../../lib/staffRequests';
+import { formatStaffRequestSubmittedDate, insertStaffRequest } from '../../lib/staffRequests';
 import { normalizeWeeklyGrid, type WeeklyGridNormalized } from '../../lib/weeklyAvailabilityMatrix';
 import { supabase } from '../../lib/supabase';
 
@@ -41,8 +53,12 @@ function toLite(e: { firstName: string; lastName: string; staffType: string; usu
   };
 }
 
-function shiftRowLabel(row: WorkerShiftRow): string {
-  return `${row.day} · ${row.timeLabel} · ${row.restaurantName}`;
+function formatShiftRequestLabel(row: WorkerShiftRow): string {
+  return `${formatCalendarDateLabel(row)} · ${compactShiftTimeLabel(row)} · ${row.restaurantName}`;
+}
+
+function isoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const CHIPS: { key: FormKey; label: string }[] = [
@@ -101,8 +117,8 @@ export default function EmployeeActions() {
     setSelectedAvailWeekIndex(0);
   }, [activeForm, myEmployee?.weeklyGrid, roleCode, draftRows]);
 
-  const [timeoffStart, setTimeoffStart] = useState('');
-  const [timeoffEnd, setTimeoffEnd] = useState('');
+  const [timeoffStartDate, setTimeoffStartDate] = useState<Date | null>(null);
+  const [timeoffEndDate, setTimeoffEndDate] = useState<Date | null>(null);
   const [timeoffNote, setTimeoffNote] = useState('');
 
   const [swapOfferShift, setSwapOfferShift] = useState<WorkerShiftRow | null>(null);
@@ -112,6 +128,47 @@ export default function EmployeeActions() {
 
   const [calloutShift, setCalloutShift] = useState<WorkerShiftRow | null>(null);
   const [calloutReason, setCalloutReason] = useState('');
+  const [shiftPickWeekIndex, setShiftPickWeekIndex] = useState(0);
+
+  const shiftPickWeekIndices = useMemo(
+    () => uniqueWeekIndicesWithShifts(workerShifts, weekMeta),
+    [workerShifts, weekMeta]
+  );
+  const scheduleCurrentWeekIndex = useMemo(() => currentScheduleWeekIndex(weekMeta), [weekMeta]);
+  const shiftsInPickWeek = useMemo(
+    () => shiftsForWeekIndex(workerShifts, weekMeta, shiftPickWeekIndex),
+    [workerShifts, weekMeta, shiftPickWeekIndex]
+  );
+
+  useEffect(() => {
+    if (activeForm !== 'swap' && activeForm !== 'callout') return;
+    const cur = scheduleCurrentWeekIndex;
+    if (shiftPickWeekIndices.includes(cur)) setShiftPickWeekIndex(cur);
+    else if (shiftPickWeekIndices.length) setShiftPickWeekIndex(shiftPickWeekIndices[0]);
+  }, [activeForm, shiftPickWeekIndices, scheduleCurrentWeekIndex]);
+
+  useEffect(() => {
+    if (swapOfferShift && weekIndexFromIso(weekMeta, swapOfferShift.iso) !== shiftPickWeekIndex) {
+      setSwapOfferShift(null);
+    }
+    if (calloutShift && weekIndexFromIso(weekMeta, calloutShift.iso) !== shiftPickWeekIndex) {
+      setCalloutShift(null);
+    }
+  }, [shiftPickWeekIndex, weekMeta, swapOfferShift, calloutShift]);
+
+  const myRequests = useMemo(() => {
+    const self = nameForRequests.trim().toLowerCase();
+    if (!self) return [];
+    return staffRequests
+      .filter(
+        (r) =>
+          String(r.employeeName || '')
+            .trim()
+            .toLowerCase() === self
+      )
+      .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')))
+      .slice(0, 12);
+  }, [staffRequests, nameForRequests]);
 
   const openSwapOffers = useMemo(() => {
     const self = nameForRequests.trim().toLowerCase();
@@ -172,10 +229,12 @@ export default function EmployeeActions() {
       Alert.alert('Error', 'Not configured');
       return;
     }
-    if (!timeoffStart || !timeoffEnd) {
-      Alert.alert('Time off', 'Enter start and end dates (YYYY-MM-DD).');
+    if (!timeoffStartDate || !timeoffEndDate) {
+      Alert.alert('Time off', 'Choose start and end dates.');
       return;
     }
+    const timeoffStart = isoDate(timeoffStartDate);
+    const timeoffEnd = isoDate(timeoffEndDate);
     if (timeoffEnd < timeoffStart) {
       Alert.alert('Time off', 'End date must be on or after start.');
       return;
@@ -191,15 +250,15 @@ export default function EmployeeActions() {
       if (!res.ok) Alert.alert('Error', res.message);
       else {
         Alert.alert('Sent', 'Submitted. Your manager will see it under Actions.');
-        setTimeoffStart('');
-        setTimeoffEnd('');
+        setTimeoffStartDate(null);
+        setTimeoffEndDate(null);
         setTimeoffNote('');
         void refetch();
       }
     } finally {
       setBusy(false);
     }
-  }, [supabase, timeoffStart, timeoffEnd, timeoffNote, nameForRequests, roleCode, refetch]);
+  }, [supabase, timeoffStartDate, timeoffEndDate, timeoffNote, nameForRequests, roleCode, refetch]);
 
   const submitSwapOffer = useCallback(async () => {
     if (!supabase) {
@@ -210,7 +269,7 @@ export default function EmployeeActions() {
       Alert.alert('Shift swap', 'Choose one of your upcoming shifts to offer.');
       return;
     }
-    const shiftLabel = shiftRowLabel(swapOfferShift);
+    const shiftLabel = formatShiftRequestLabel(swapOfferShift);
     setBusy(true);
     try {
       const res = await insertStaffRequest(supabase, {
@@ -284,7 +343,7 @@ export default function EmployeeActions() {
       Alert.alert('Callout', 'Add notes for your manager.');
       return;
     }
-    const optLabel = shiftRowLabel(calloutShift);
+    const optLabel = formatShiftRequestLabel(calloutShift);
     const summary = `Cannot work scheduled shift: ${optLabel}. ${calloutReason.trim()}`;
     setBusy(true);
     try {
@@ -306,12 +365,31 @@ export default function EmployeeActions() {
     }
   }, [supabase, calloutShift, calloutReason, nameForRequests, roleCode, refetch]);
 
+  const requestTypeLabel = (t: string) => {
+    if (t === 'availability') return 'Availability';
+    if (t === 'timeoff') return 'Time off';
+    if (t === 'swap') return 'Shift swap';
+    if (t === 'callout_request' || t === 'callout') return 'Callout';
+    return t;
+  };
+
   return (
     <ScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      nestedScrollEnabled
+      showsVerticalScrollIndicator
     >
+      {!myEmployee && displayName ? (
+        <View style={styles.banner}>
+          <Text style={styles.bannerText}>
+            Submitting as {displayName}. If requests fail to appear for your manager, ask them to link your login to
+            your roster row in Team.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.chipRow}>
         {CHIPS.map((c) => (
           <Pressable
@@ -365,21 +443,12 @@ export default function EmployeeActions() {
       {activeForm === 'timeoff' ? (
         <View style={styles.card}>
           <Text style={styles.hint}>Select the day range you need off. This submits as full-day time off.</Text>
-          <Text style={styles.fieldLabel}>Start date</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="YYYY-MM-DD"
-            value={timeoffStart}
-            onChangeText={setTimeoffStart}
-            autoCapitalize="none"
-          />
-          <Text style={styles.fieldLabel}>End date</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="YYYY-MM-DD"
-            value={timeoffEnd}
-            onChangeText={setTimeoffEnd}
-            autoCapitalize="none"
+          <DatePickerField label="Start date" value={timeoffStartDate} onChange={setTimeoffStartDate} />
+          <DatePickerField
+            label="End date"
+            value={timeoffEndDate}
+            onChange={setTimeoffEndDate}
+            minimumDate={timeoffStartDate ?? undefined}
           />
           <Text style={styles.fieldLabel}>Notes (optional)</Text>
           <TextInput
@@ -397,120 +466,111 @@ export default function EmployeeActions() {
 
       {activeForm === 'swap' ? (
         <View style={styles.card}>
-          <Text style={styles.hint}>
-            Post a shift you want to trade, or pick up someone else’s open offer. Your manager approves every swap.
-          </Text>
+          <Text style={styles.hint}>Offer a shift or accept a teammate’s offer. Manager approval required.</Text>
 
-          <View style={styles.panel}>
-            <View style={styles.panelHead}>
-              <View style={styles.badge}>
-                <Text style={styles.badgeInner}>1</Text>
-              </View>
-              <View style={styles.panelHeadText}>
-                <Text style={styles.panelTitle}>Offer a shift</Text>
-                <Text style={styles.panelDesc}>
-                  Choose an upcoming shift from your schedule to make available for others.
-                </Text>
-              </View>
-            </View>
-            {!workerShifts.length ? (
-              <Text style={styles.muted}>No upcoming shifts in the published schedule.</Text>
-            ) : (
-              workerShifts.map((row) => {
-                const sel = swapOfferShift?.id === row.id && swapOfferShift?.restaurantId === row.restaurantId;
-                return (
-                  <Pressable
-                    key={`${row.restaurantId}-${row.id}`}
-                    style={[styles.optionRow, sel && styles.optionRowActive]}
+          <Text style={styles.sectionTitle}>Offer a shift</Text>
+          {!workerShifts.length ? (
+            <Text style={styles.muted}>No shifts in the current schedule window.</Text>
+          ) : (
+            <>
+              <ScheduleWeekPicker
+                mode="chips"
+                weekMeta={weekMeta}
+                weekIndices={shiftPickWeekIndices}
+                selectedWeekIndex={shiftPickWeekIndex}
+                onSelectWeekIndex={setShiftPickWeekIndex}
+                currentWeekIndex={scheduleCurrentWeekIndex}
+              />
+              {!shiftsInPickWeek.length ? (
+                <Text style={styles.muted}>No shifts this week.</Text>
+              ) : (
+                shiftsInPickWeek.map((row) => (
+                  <CompactShiftRow
+                    key={`swap-${shiftOptionKey(row)}`}
+                    row={row}
+                    selected={swapOfferShift ? shiftOptionKey(swapOfferShift) === shiftOptionKey(row) : false}
                     onPress={() => setSwapOfferShift(row)}
-                  >
-                    <Text style={styles.optionText}>{shiftRowLabel(row)}</Text>
-                  </Pressable>
-                );
-              })
-            )}
-            <Text style={[styles.fieldLabel, styles.mt]}>Notes (optional)</Text>
-            <TextInput
-              style={[styles.input, styles.tall]}
-              placeholder="Preferences, timing, or who you’d like to swap with…"
-              value={swapNote}
-              onChangeText={setSwapNote}
-              multiline
-            />
-            <Pressable style={[styles.btnPrimary, styles.mt]} disabled={busy} onPress={() => void submitSwapOffer()}>
-              <Text style={styles.btnPrimaryText}>{busy ? 'Posting…' : 'Post offer'}</Text>
-            </Pressable>
-          </View>
+                  />
+                ))
+              )}
+            </>
+          )}
+          <Text style={[styles.fieldLabel, styles.mtSm]}>Notes (optional)</Text>
+          <TextInput
+            style={[styles.input, styles.tall]}
+            placeholder="Preferences or who you’d like to swap with…"
+            value={swapNote}
+            onChangeText={setSwapNote}
+            multiline
+          />
+          <Pressable style={[styles.btnPrimary, styles.mtSm]} disabled={busy} onPress={() => void submitSwapOffer()}>
+            <Text style={styles.btnPrimaryText}>{busy ? 'Posting…' : 'Post offer'}</Text>
+          </Pressable>
 
-          <View style={styles.divider} />
-
-          <View style={styles.panel}>
-            <View style={styles.panelHead}>
-              <View style={[styles.badge, styles.badgeMuted]}>
-                <Text style={styles.badgeInner}>2</Text>
-              </View>
-              <View style={styles.panelHeadText}>
-                <Text style={styles.panelTitle}>Available shifts</Text>
-                <Text style={styles.panelDesc}>
-                  Accept an open offer from a teammate. It’s sent to your manager for approval.
-                </Text>
-              </View>
-            </View>
-            {!openSwapOffers.length ? (
-              <Text style={styles.muted}>No open shift swap offers.</Text>
-            ) : (
-              openSwapOffers.map((o) => {
-                const sel = swapAcceptId === o.id;
-                return (
-                  <Pressable
-                    key={o.id}
-                    style={[styles.optionRow, sel && styles.optionRowActive]}
-                    onPress={() => setSwapAcceptId(o.id)}
-                  >
-                    <Text style={styles.optionText}>
-                      {o.offeredShiftLabel} · offered by {o.employeeName}
-                    </Text>
-                  </Pressable>
-                );
-              })
-            )}
-            <Text style={[styles.fieldLabel, styles.mt]}>Message (optional)</Text>
-            <TextInput
-              style={[styles.input, styles.tall]}
-              placeholder="Anything your manager should know…"
-              value={swapAcceptNote}
-              onChangeText={setSwapAcceptNote}
-              multiline
-            />
-            <Pressable
-              style={[styles.btnSecondary, styles.mt]}
-              disabled={busy}
-              onPress={() => void submitSwapAccept()}
-            >
-              <Text style={styles.btnSecondaryText}>{busy ? 'Submitting…' : 'Request to accept'}</Text>
-            </Pressable>
-          </View>
+          <View style={styles.sectionDivider} />
+          <Text style={styles.sectionTitle}>Open offers</Text>
+          {!openSwapOffers.length ? (
+            <Text style={styles.muted}>No open swap offers.</Text>
+          ) : (
+            openSwapOffers.map((o) => {
+              const sel = swapAcceptId === o.id;
+              return (
+                <Pressable
+                  key={o.id}
+                  style={[styles.offerRow, sel && styles.offerRowOn]}
+                  onPress={() => setSwapAcceptId(o.id)}
+                >
+                  <Text style={styles.offerText} numberOfLines={2}>
+                    {o.offeredShiftLabel}
+                  </Text>
+                  <Text style={styles.offerSub}>from {o.employeeName}</Text>
+                </Pressable>
+              );
+            })
+          )}
+          <Text style={[styles.fieldLabel, styles.mtSm]}>Message (optional)</Text>
+          <TextInput
+            style={[styles.input, styles.tall]}
+            placeholder="Note for your manager…"
+            value={swapAcceptNote}
+            onChangeText={setSwapAcceptNote}
+            multiline
+          />
+          <Pressable style={[styles.btnSecondary, styles.mtSm]} disabled={busy} onPress={() => void submitSwapAccept()}>
+            <Text style={styles.btnSecondaryText}>{busy ? 'Submitting…' : 'Request to accept'}</Text>
+          </Pressable>
         </View>
       ) : null}
 
       {activeForm === 'callout' ? (
         <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Shift you can’t cover</Text>
+          <Text style={styles.hint}>Select the shift you cannot work. Your manager will review it.</Text>
+          <Text style={styles.sectionTitle}>Your shift</Text>
           {!workerShifts.length ? (
             <Text style={styles.muted}>No scheduled shifts in the window — contact your manager.</Text>
           ) : (
-            workerShifts.map((row) => {
-              const sel = calloutShift?.id === row.id && calloutShift?.restaurantId === row.restaurantId;
-              return (
-                <Pressable
-                  key={`c-${row.restaurantId}-${row.id}`}
-                  style={[styles.optionRow, sel && styles.optionRowActive]}
-                  onPress={() => setCalloutShift(row)}
-                >
-                  <Text style={styles.optionText}>{shiftRowLabel(row)}</Text>
-                </Pressable>
-              );
-            })
+            <>
+              <ScheduleWeekPicker
+                mode="chips"
+                weekMeta={weekMeta}
+                weekIndices={shiftPickWeekIndices}
+                selectedWeekIndex={shiftPickWeekIndex}
+                onSelectWeekIndex={setShiftPickWeekIndex}
+                currentWeekIndex={scheduleCurrentWeekIndex}
+              />
+              {!shiftsInPickWeek.length ? (
+                <Text style={styles.muted}>No shifts this week.</Text>
+              ) : (
+                shiftsInPickWeek.map((row) => (
+                  <CompactShiftRow
+                    key={`co-${shiftOptionKey(row)}`}
+                    row={row}
+                    selected={calloutShift ? shiftOptionKey(calloutShift) === shiftOptionKey(row) : false}
+                    onPress={() => setCalloutShift(row)}
+                  />
+                ))
+              )}
+            </>
           )}
           <Text style={[styles.fieldLabel, styles.mt]}>Notes for your manager</Text>
           <TextInput
@@ -525,13 +585,42 @@ export default function EmployeeActions() {
           </Pressable>
         </View>
       ) : null}
+
+      {myRequests.length ? (
+        <View style={[styles.card, styles.requestsCard]}>
+          <Text style={styles.requestsTitle}>Your recent requests</Text>
+          {myRequests.map((r) => {
+            const status =
+              r.status === 'approved' ? 'Approved' : r.status === 'declined' ? 'Declined' : 'Pending';
+            return (
+              <View key={r.id} style={styles.requestRow}>
+                <Text style={styles.requestMain}>
+                  {requestTypeLabel(r.type)} · {status}
+                </Text>
+                <Text style={styles.requestSub}>
+                  {formatStaffRequestSubmittedDate(r.submittedAt)} — {r.summary}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
-  content: { padding: 16, paddingBottom: 40 },
+  content: { padding: 16, paddingBottom: 48 },
+  banner: {
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 14,
+  },
+  bannerText: { fontSize: 13, color: '#92400e', lineHeight: 19 },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -572,6 +661,20 @@ const styles = StyleSheet.create({
   },
   tall: { minHeight: 88, textAlignVertical: 'top' },
   mt: { marginTop: 12 },
+  mtSm: { marginTop: 10 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#0f172a', marginBottom: 4 },
+  sectionDivider: { height: 1, backgroundColor: '#e8eaed', marginVertical: 14 },
+  offerRow: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+    backgroundColor: '#fafbfc',
+  },
+  offerRowOn: { borderColor: '#c41230', backgroundColor: '#fff1f2' },
+  offerText: { fontSize: 14, fontWeight: '600', color: '#0f172a' },
+  offerSub: { fontSize: 12, color: '#64748b', marginTop: 2 },
   btnPrimary: { backgroundColor: '#c41230', padding: 14, borderRadius: 8, alignItems: 'center' },
   btnPrimaryText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   btnSecondary: {
@@ -584,31 +687,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   btnSecondaryText: { color: '#334155', fontWeight: '700', fontSize: 15 },
-  panel: { marginTop: 4 },
-  panelHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
-  badge: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: '#c41230',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeInner: { color: '#fff', fontWeight: '800', fontSize: 14 },
-  badgeMuted: { backgroundColor: '#94a3b8' },
-  panelHeadText: { flex: 1 },
-  panelTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a' },
-  panelDesc: { fontSize: 13, color: '#64748b', marginTop: 4, lineHeight: 18 },
-  optionRow: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-    backgroundColor: '#f8fafc',
-  },
-  optionRowActive: { borderColor: '#c41230', backgroundColor: '#fff1f2' },
-  optionText: { fontSize: 14, color: '#0f172a' },
   muted: { fontSize: 14, color: '#888' },
-  divider: { height: 1, backgroundColor: '#e8eaed', marginVertical: 18 },
+  requestsCard: { marginTop: 16 },
+  requestsTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', marginBottom: 10 },
+  requestRow: {
+    borderTopWidth: 1,
+    borderTopColor: '#e8eaed',
+    paddingTop: 10,
+    marginTop: 10,
+  },
+  requestMain: { fontSize: 14, fontWeight: '700', color: '#334155' },
+  requestSub: { fontSize: 13, color: '#64748b', marginTop: 4, lineHeight: 18 },
 });
