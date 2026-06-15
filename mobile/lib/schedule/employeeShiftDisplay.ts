@@ -4,6 +4,7 @@ import { getThisMondayDate } from './engine';
 import { isoFromDate } from '../timecards/payWeek';
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_LONG = [
   'Sunday',
   'Monday',
@@ -18,6 +19,13 @@ export function parseIsoDate(iso: string): Date | null {
   const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+}
+
+/** e.g. "Mon May 23" — manager timecards shift list date column. */
+export function formatPayWeekDateLabel(iso: string): string {
+  const d = parseIsoDate(iso);
+  if (!d || Number.isNaN(d.getTime())) return '';
+  return `${WEEKDAYS_SHORT[d.getDay()]} ${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
 }
 
 /** e.g. "Monday, Jan 5" — matches web employee shift list. */

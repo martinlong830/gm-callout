@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,18 +19,22 @@ import {
   isDeliveryDishwasherStaff,
   setEmployeeDayDishwasherTip,
 } from '../../../../lib/timecards/dishwasherTips';
-import { saveManagerPunch } from '../../../../lib/timecards/entriesApi';
+import { deleteTimeClockEntries, saveManagerPunch } from '../../../../lib/timecards/entriesApi';
 import {
   employeeBreakPolicy,
   formatBreakPolicyLabel,
   resolveBreakPaid,
 } from '../../../../lib/timecards/breakPolicy';
+import { removeShiftDay } from '../../../../lib/timecards/shiftDayCleanup';
 import {
   buildShiftsForEmployeeInWeek,
+  buildScheduledMinutesByDayForEmployee,
   getEmployeeDayLeave,
+  getSuggestedDayLeave,
   setEmployeeDayLeave,
   dailyRecordedMinutesForEmployee,
   decimalHoursFromMinutes,
+  entriesForShiftDayCleanup,
   findEntriesForDay,
   breakMinutesFromRange,
   formatBreakRangeLabel,
@@ -57,6 +61,12 @@ import {
 import { redPokeShiftTimeLabel } from '../../../../lib/schedule/engine';
 import type { EmployeeLite } from '../../../../lib/schedule/types';
 import type { TimeClockEntry } from '../../../../lib/timecards/types';
+import {
+  isOffScheduleShiftDayRow,
+  isoFromOffScheduleShiftId,
+  makeOffScheduleShiftDayRow,
+  scheduleShiftIdForSave,
+} from '../../../../lib/timecards/offScheduleShift';
 import { supabase } from '../../../../lib/supabase';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -75,7 +85,8 @@ export default function TimecardsShiftScreen() {
     iso: string;
   }>();
   const navigation = useNavigation();
-  const { employees, teamState } = useAppData();
+  const router = useRouter();
+  const { employees, teamState, staffRequests } = useAppData();
   const { entries, schema, refresh, bounds } = useTimecards();
   const [breakPaidChoice, setBreakPaidChoice] = useState<'inherit' | 'paid' | 'unpaid'>('inherit');
 
@@ -86,10 +97,15 @@ export default function TimecardsShiftScreen() {
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
   const shiftRow = useMemo((): ShiftDayRow | null => {
-    if (!emp) return null;
-    const rows = buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds);
-    return rows.find((r) => r.shift.id === shiftId && r.iso === iso) ?? null;
-  }, [emp, teamState, lites, bounds, shiftId, iso]);
+    if (!emp || !iso) return null;
+    const rows = buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, undefined, { entries });
+    const found = rows.find((r) => r.shift.id === shiftId && r.iso === iso);
+    if (found) return found;
+    if (isoFromOffScheduleShiftId(shiftId) === iso) {
+      return makeOffScheduleShiftDayRow(iso);
+    }
+    return null;
+  }, [emp, teamState, lites, bounds, shiftId, iso, entries]);
 
   const dayEntries = useMemo(
     () => (emp && iso ? findEntriesForDay(entries, emp.id, iso) : []),
@@ -103,23 +119,41 @@ export default function TimecardsShiftScreen() {
   const [breakEndDate, setBreakEndDate] = useState<Date | null>(null);
   const [vlText, setVlText] = useState('0');
   const [slText, setSlText] = useState('0');
+  const [suggestedLeave, setSuggestedLeave] = useState<{ vl: number; sl: number } | null>(null);
   const [dishwasherTipText, setDishwasherTipText] = useState('0');
   const [busy, setBusy] = useState(false);
+  const [punchesCleared, setPunchesCleared] = useState(false);
   const showDishwasherTip = emp ? isDeliveryDishwasherStaff(emp) : false;
 
   const loadDayLeave = useCallback(async () => {
     if (!emp || !iso) return;
+    setVlText('0');
+    setSlText('0');
+    setSuggestedLeave(null);
     const dayLeave = await getEmployeeDayLeave(emp.id, iso, bounds);
     setVlText(String(dayLeave.vl));
     setSlText(String(dayLeave.sl));
+    const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
+    const suggested = await getSuggestedDayLeave(
+      emp,
+      employeeDisplayName(emp),
+      iso,
+      bounds,
+      staffRequests,
+      schedMinsByDay
+    );
+    if (suggested.vl > 0 || suggested.sl > 0) {
+      setSuggestedLeave(suggested);
+    }
     if (isDeliveryDishwasherStaff(emp)) {
       const tip = await getEmployeeDayDishwasherTip(emp.id, iso, bounds);
       setDishwasherTipText(String(tip));
     }
-  }, [emp, iso, bounds]);
+  }, [emp, iso, bounds, teamState, lites, staffRequests]);
 
   const loadEntry = useCallback(
     (entry: TimeClockEntry | null) => {
+      setPunchesCleared(false);
       const fieldDate = (iso: string | null | undefined) => {
         if (iso) return parseIsoToDate(iso);
         if (shiftRow?.iso) return shiftDateAtMidnight(shiftRow.iso);
@@ -142,8 +176,11 @@ export default function TimecardsShiftScreen() {
   useEffect(() => {
     if (!shiftRow || !emp) return;
     const s = shiftRow.shift;
+    const offSchedule = isOffScheduleShiftDayRow(shiftRow);
     navigation.setOptions({
-      title: s.day + ' · ' + (s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)),
+      title: offSchedule
+        ? s.day + ' · Off schedule'
+        : s.day + ' · ' + (s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)),
     });
     const open = dayEntries.filter(isEntryOpen);
     const pick = open.length ? open[open.length - 1] : dayEntries[dayEntries.length - 1] ?? null;
@@ -167,8 +204,9 @@ export default function TimecardsShiftScreen() {
   );
 
   const previewPaid = useMemo(() => {
+    if (!shiftRow) return null;
     const inIso = dateToIso(clockInDate);
-    if (!inIso || (shiftRow && isMidnightOnShiftDate(clockInDate, shiftRow.iso))) return null;
+    if (!inIso || isMidnightOnShiftDate(clockInDate, shiftRow.iso)) return null;
     const breakStartIso =
       breakStartDate && !isMidnightOnShiftDate(breakStartDate, shiftRow.iso)
         ? dateToIso(breakStartDate)
@@ -178,7 +216,7 @@ export default function TimecardsShiftScreen() {
         ? dateToIso(breakEndDate)
         : null;
     const outIso =
-      clockOutDate && shiftRow && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
+      clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
         ? dateToIso(clockOutDate)
         : null;
     const fake: TimeClockEntry = {
@@ -192,6 +230,35 @@ export default function TimecardsShiftScreen() {
     };
     return recordedPaidMinutes(fake, shiftRow);
   }, [clockInDate, clockOutDate, breakStartDate, breakEndDate, emp, shiftRow]);
+
+  const clearPunchFields = useCallback(() => {
+    setClockInDate(null);
+    setClockOutDate(null);
+    setBreakStartDate(null);
+    setBreakEndDate(null);
+    setEntryId(null);
+    setPunchesCleared(true);
+    setVlText('0');
+    setSlText('0');
+    setDishwasherTipText('0');
+  }, []);
+
+  const finishClearedDaySave = async (_vl: number, _sl: number, _dishwasherTip: number) => {
+    if (!emp || !shiftRow || !supabase) return;
+    setBusy(true);
+    const res = await removeShiftDay(supabase, emp, shiftRow, entries, bounds, {
+      clearDishwasherTip: showDishwasherTip,
+      extraEntryIds: entryId ? [entryId] : [],
+    });
+    if (!res.ok) {
+      setBusy(false);
+      Alert.alert('Save failed', res.message);
+      return;
+    }
+    setBusy(false);
+    await refresh();
+    router.back();
+  };
 
   const save = async () => {
     if (!emp || !shiftRow || !supabase) return;
@@ -212,12 +279,38 @@ export default function TimecardsShiftScreen() {
         ? dateToIso(breakEndDate)
         : null;
 
+    if (punchesCleared) {
+      await finishClearedDaySave(0, 0, 0);
+      return;
+    }
+
     if (!hasPunchTimes) {
-      if (vl <= 0 && sl <= 0) {
-        Alert.alert('Timecard', 'Enter clock times or vacation/sick hours for this day.');
+      const removingDay =
+        punchesCleared || (vl <= 0 && sl <= 0 && dishwasherTip <= 0);
+      if (removingDay) {
+        await finishClearedDaySave(0, 0, 0);
         return;
       }
       setBusy(true);
+      const dayEntryIds = entriesForShiftDayCleanup(entries, emp.id, shiftRow, entryId ? [entryId] : []).map(
+        (e) => e.id
+      );
+      if (dayEntryIds.length) {
+        const delRes = await deleteTimeClockEntries(supabase, dayEntryIds);
+        if (!delRes.ok) {
+          setBusy(false);
+          Alert.alert('Save failed', delRes.message);
+          return;
+        }
+        if (delRes.deletedIds.length !== dayEntryIds.length) {
+          setBusy(false);
+          Alert.alert(
+            'Save failed',
+            'Could not delete all punch records. Sign in as a manager and apply the latest Supabase migrations (time_clock_entries_delete_managers).'
+          );
+          return;
+        }
+      }
       await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
       if (showDishwasherTip) {
         await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
@@ -283,7 +376,7 @@ export default function TimecardsShiftScreen() {
       breakPaidChoice === 'paid' ? true : breakPaidChoice === 'unpaid' ? false : null;
     const res = await saveManagerPunch(supabase, schema, {
       employeeId: emp.id,
-      shiftId: shiftRow.shift.id,
+      shiftId: scheduleShiftIdForSave(shiftRow.shift.id),
       clockInIso: inIso,
       clockOutIso: outIso,
       breakStartIso,
@@ -315,6 +408,7 @@ export default function TimecardsShiftScreen() {
   }
 
   const s = shiftRow.shift;
+  const offSchedule = isOffScheduleShiftDayRow(shiftRow);
   const schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
   const schedMins = scheduledPaidMinutes(s);
   const dayMins = dailyRecordedMinutesForEmployee(entries, emp.id, shiftRow.iso);
@@ -325,14 +419,19 @@ export default function TimecardsShiftScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Scheduled</Text>
+        <Text style={styles.cardTitle}>{offSchedule ? 'Day (off schedule)' : 'Scheduled'}</Text>
         <Text style={styles.line}>
-          {s.day} · {s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)}
+          {s.day}
+          {offSchedule ? ' · Off schedule' : ` · ${s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)}`}
         </Text>
-        <Text style={styles.line}>
-          Paid {decimalHoursFromMinutes(scheduledPaidMinutes(s))}h · Break{' '}
-          {schedBreak ? `${schedBreak} min` : 'none'}
-        </Text>
+        {!offSchedule ? (
+          <Text style={styles.line}>
+            Paid {decimalHoursFromMinutes(scheduledPaidMinutes(s))}h · Break{' '}
+            {schedBreak ? `${schedBreak} min` : 'none'}
+          </Text>
+        ) : (
+          <Text style={styles.line}>No scheduled shift — recorded time counts as overtime.</Text>
+        )}
         <Text style={styles.line}>
           Day total: {dayMins ? decimalHoursFromMinutes(roundToNearest5Minutes(dayMins)) + 'h' : '—'}
           {dayEntries.length > 1 ? ` · ${dayEntries.length} punches` : ''}
@@ -381,6 +480,8 @@ export default function TimecardsShiftScreen() {
         value={clockInDate}
         onChange={setClockInDate}
         maximumDate={new Date()}
+        allowClear
+        clearLabel="No clock in"
       />
 
       <DateTimePickerField
@@ -393,6 +494,10 @@ export default function TimecardsShiftScreen() {
         clearLabel="Still clocked in"
       />
 
+      <Pressable style={styles.btnSecondary} onPress={clearPunchFields}>
+        <Text style={styles.btnSecondaryText}>Clear punch times</Text>
+      </Pressable>
+
       <Pressable style={styles.btnSecondary} onPress={() => setClockOutDate(new Date())}>
         <Text style={styles.btnSecondaryText}>End punch now</Text>
       </Pressable>
@@ -403,6 +508,8 @@ export default function TimecardsShiftScreen() {
         onChange={setBreakStartDate}
         maximumDate={new Date()}
         minimumDate={clockInDate ?? undefined}
+        allowClear
+        clearLabel="No break"
       />
 
       <DateTimePickerField
@@ -446,8 +553,18 @@ export default function TimecardsShiftScreen() {
 
       <Text style={styles.sectionTitle}>VL / SL (this day)</Text>
       <Text style={styles.hint}>
-        For holidays or full vacation/sick days, enter hours here and leave punch times empty.
+        Saved per-day only — week totals may include other days or approved time off. Clear both
+        fields to 0 to remove leave from this day.
       </Text>
+      {suggestedLeave && (suggestedLeave.vl > 0 || suggestedLeave.sl > 0) ? (
+        <Text style={styles.hint}>
+          Approved time off suggests{' '}
+          {suggestedLeave.vl > 0 ? `VL ${suggestedLeave.vl}h` : ''}
+          {suggestedLeave.vl > 0 && suggestedLeave.sl > 0 ? ' · ' : ''}
+          {suggestedLeave.sl > 0 ? `SL ${suggestedLeave.sl}h` : ''} for this day (not saved until
+          you enter it below).
+        </Text>
+      ) : null}
       <Text style={styles.fieldLabel}>VL (hrs)</Text>
       <TextInput
         style={styles.input}
@@ -480,9 +597,13 @@ export default function TimecardsShiftScreen() {
       {previewPaid != null ? (
         <Text style={styles.preview}>
           Paid preview: {decimalHoursFromMinutes(previewPaid)}h
-          {!clockOutDate ? ' · shift still open' : ''}
+          {!clockOutDate || (shiftRow && isMidnightOnShiftDate(clockOutDate, shiftRow.iso))
+            ? ' · shift still open'
+            : ''}
         </Text>
-      ) : null}
+      ) : hasPunchTimes ? null : (
+        <Text style={styles.preview}>No punch times — save VL/SL below for vacation or sick days.</Text>
+      )}
 
       <Pressable style={styles.btnPrimary} disabled={busy} onPress={() => void save()}>
         {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>Save</Text>}

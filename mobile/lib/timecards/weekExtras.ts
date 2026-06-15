@@ -25,6 +25,12 @@ export async function loadWeekExtrasSlice(bounds: PayWeekBounds) {
   return loadWeekExtrasMap(bounds);
 }
 
+function leaveMinutesForIsoDay(schedMinsByDay: Record<string, number>, iso: string): number {
+  const mins = schedMinsByDay[iso];
+  if (mins != null && mins > 0) return mins;
+  return LEAVE_DEFAULT_DAY_MINUTES;
+}
+
 function computeLeaveExtrasFromRequests(
   emp: EmployeeRow,
   displayName: string,
@@ -48,13 +54,56 @@ function computeLeaveExtrasFromRequests(
     const endD = new Date(overlapEnd + 'T12:00:00');
     while (cur <= endD) {
       const iso = isoFromDate(cur);
-      const dayMins = schedMinsByDay[iso] > 0 ? schedMinsByDay[iso] : LEAVE_DEFAULT_DAY_MINUTES;
+      const dayMins = leaveMinutesForIsoDay(schedMinsByDay, iso);
       if (range.leaveType === 'sick') slMins += dayMins;
       else vlMins += dayMins;
       cur.setDate(cur.getDate() + 1);
     }
   }
   return { vl: vlMins / 60, sl: slMins / 60, manual: false };
+}
+
+/** Auto VL/SL for one calendar day from approved time off (not saved per-day storage). */
+export function getSuggestedDayLeaveSync(
+  emp: EmployeeRow,
+  displayName: string,
+  iso: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>,
+  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+): { vl: number; sl: number } {
+  if (!iso) return { vl: 0, sl: 0 };
+  if (sumManualDayLeaveForEmployee(emp.id, bounds, slice)) return { vl: 0, sl: 0 };
+  if (slice[emp.id]?.manual) return { vl: 0, sl: 0 };
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  if (iso < weekStart || iso > weekEnd) return { vl: 0, sl: 0 };
+  let vlMins = 0;
+  let slMins = 0;
+  for (const req of staffRequests) {
+    if (req.status !== 'approved') continue;
+    if (!staffRequestMatchesEmployee(req, emp, displayName)) continue;
+    const range = parseTimeoffRequest(req);
+    if (!range) continue;
+    if (iso < range.start || iso > range.end) continue;
+    const dayMins = leaveMinutesForIsoDay(schedMinsByDay, iso);
+    if (range.leaveType === 'sick') slMins += dayMins;
+    else vlMins += dayMins;
+  }
+  return { vl: vlMins / 60, sl: slMins / 60 };
+}
+
+export async function getSuggestedDayLeave(
+  emp: EmployeeRow,
+  displayName: string,
+  iso: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>
+): Promise<{ vl: number; sl: number }> {
+  const slice = await loadWeekExtrasMap(bounds);
+  return getSuggestedDayLeaveSync(emp, displayName, iso, bounds, staffRequests, schedMinsByDay, slice);
 }
 
 export function dayLeaveStorageKey(empId: string, iso: string): string {
@@ -67,7 +116,7 @@ export function getEmployeeDayLeaveSync(
   slice: Record<string, { vl: number; sl: number; manual?: boolean }>
 ): { vl: number; sl: number } {
   const row = slice[dayLeaveStorageKey(empId, iso)];
-  if (!row) return { vl: 0, sl: 0 };
+  if (!row || row.manual === false) return { vl: 0, sl: 0 };
   return {
     vl: Math.max(0, parseFloat(String(row.vl)) || 0),
     sl: Math.max(0, parseFloat(String(row.sl)) || 0),

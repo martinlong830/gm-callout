@@ -1502,6 +1502,13 @@
       return meta.iso === mondayIso;
     });
     if (hit && hit.weekIndex != null) return hit.weekIndex;
+    var anchor = getScheduleAnchorMondayDate();
+    var target = new Date(mondayIso + 'T12:00:00');
+    if (!Number.isNaN(target.getTime())) {
+      var diffDays = Math.round((target.getTime() - anchor.getTime()) / 86400000);
+      var idx = Math.floor(diffDays / 7);
+      if (idx >= 0 && idx < SCHEDULE_VIEW_WEEK_COUNT) return idx;
+    }
     return SCHEDULE_TEMPLATE_WEEK_INDEX;
   }
 

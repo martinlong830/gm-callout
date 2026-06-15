@@ -21,7 +21,14 @@ import {
   loadDishwasherTipsSlice,
   sumEmployeeWeekDishwasherTipsSync,
 } from './dishwasherTips';
-import { getEmployeeWeekExtras, getEmployeeWeekExtrasSync } from './weekExtras';
+import { getEmployeeWeekExtras, getEmployeeWeekExtrasSync, loadWeekExtrasSlice } from './weekExtras';
+import {
+  collectOffScheduleDayIsos,
+  dayHasTimecardActivity,
+  getAddedOffScheduleDays,
+  isOffScheduleShiftDayRow,
+  makeOffScheduleShiftDayRow,
+} from './offScheduleShift';
 import {
   punchShiftRoundedMinutes,
   scheduledShiftStartAt,
@@ -280,6 +287,37 @@ export function findEntriesForDay(entries: TimeClockEntry[], empId: string, shif
   );
 }
 
+/** Punch rows to clear for a shift day (calendar day + schedule_shift_id link). */
+export function entriesForShiftDayCleanup(
+  entries: TimeClockEntry[],
+  empId: string,
+  shiftRow: ShiftDayRow,
+  extraEntryIds?: string[]
+): TimeClockEntry[] {
+  const byId = new Map<string, TimeClockEntry>();
+  for (const e of findEntriesForDay(entries, empId, shiftRow.iso)) {
+    if (e?.id) byId.set(e.id, e);
+  }
+  if (!isOffScheduleShiftDayRow(shiftRow) && shiftRow.shift?.id) {
+    const shiftId = shiftRow.shift.id;
+    for (const e of entries) {
+      if (e?.employee_id === empId && e.schedule_shift_id === shiftId && e.id) {
+        byId.set(e.id, e);
+      }
+    }
+  }
+  for (const id of extraEntryIds || []) {
+    if (!id || byId.has(id)) continue;
+    const found = entries.find((e) => e?.id === id && e.employee_id === empId);
+    if (found) byId.set(id, found);
+  }
+  return [...byId.values()];
+}
+
+export function formatRecordedHoursLabel(dayMins: number): string {
+  return `${decimalHoursFromMinutes(roundToNearest5Minutes(dayMins || 0))}h`;
+}
+
 function statusSortRank(status: string): number {
   if (status === 'OK') return 0;
   if (status === 'Open') return 1;
@@ -346,12 +384,52 @@ function findEntriesForDayIndexed(
   return index[`${empId}\0${shiftIso}`] || [];
 }
 
-export function buildShiftsForEmployeeInWeek(
+export type BuildShiftsOptions = {
+  entries?: TimeClockEntry[];
+  extrasSlice?: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  dishwasherTipsSlice?: Record<string, number>;
+  addedDayIsos?: string[];
+};
+
+/** Scheduled paid minutes by day (all schedule rows in pay week, not activity-filtered). */
+export function buildScheduledMinutesByDayForEmployee(
   emp: EmployeeRow,
   teamState: Record<string, unknown> | null,
   employees: EmployeeLite[],
   bounds: PayWeekBounds,
   cachedCtx?: ScheduleContext
+): Record<string, number> {
+  const name = employeeDisplayName(emp);
+  const startIso = isoFromDate(bounds.start);
+  const endIso = isoFromDate(bounds.end);
+  const { weekMeta, allWeekDays, draftRows, restaurants, assignmentStore } =
+    cachedCtx ?? buildScheduleContext(teamState);
+  const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
+  const all = buildAllLocationsWorkerShiftRows(weekMeta, {
+    allWeekDays,
+    draftRows,
+    employees,
+    restaurants,
+    assignmentStore,
+    workerName: name,
+  });
+  const map: Record<string, number> = {};
+  for (const s of all) {
+    const meta = labelToMeta.get(s.day);
+    if (!meta?.iso) continue;
+    if (meta.iso < startIso || meta.iso > endIso) continue;
+    map[meta.iso] = (map[meta.iso] || 0) + scheduledPaidMinutes(s, emp);
+  }
+  return map;
+}
+
+export function buildShiftsForEmployeeInWeek(
+  emp: EmployeeRow,
+  teamState: Record<string, unknown> | null,
+  employees: EmployeeLite[],
+  bounds: PayWeekBounds,
+  cachedCtx?: ScheduleContext,
+  options?: BuildShiftsOptions
 ): ShiftDayRow[] {
   const name = employeeDisplayName(emp);
   const startIso = isoFromDate(bounds.start);
@@ -368,7 +446,7 @@ export function buildShiftsForEmployeeInWeek(
     assignmentStore,
     workerName: name,
   });
-  return all
+  const scheduled = all
     .filter((s) => {
       const meta = labelToMeta.get(s.day);
       if (!meta?.iso) return false;
@@ -383,6 +461,39 @@ export function buildShiftsForEmployeeInWeek(
         isToday: iso === todayIso,
         isUpcoming: iso > todayIso,
       };
+    });
+
+  const scheduledIsos = new Set(scheduled.map((r) => r.iso).filter(Boolean));
+  const addedDayIsos = options?.addedDayIsos ?? getAddedOffScheduleDays(emp.id);
+  const offIsos = collectOffScheduleDayIsos({
+    empId: emp.id,
+    bounds,
+    scheduledIsos,
+    entries: options?.entries,
+    extrasSlice: options?.extrasSlice,
+    dishwasherTipsSlice: options?.dishwasherTipsSlice,
+    addedDayIsos,
+  });
+  const offSchedule = offIsos.map((iso) => makeOffScheduleShiftDayRow(iso));
+  const activityParams = {
+    empId: emp.id,
+    entries: options?.entries,
+    extrasSlice: options?.extrasSlice,
+    dishwasherTipsSlice: options?.dishwasherTipsSlice,
+    addedDayIsos,
+  };
+
+  return [...scheduled, ...offSchedule]
+    .filter((row) => {
+      const hasActivity = dayHasTimecardActivity({ ...activityParams, iso: row.iso });
+      if (isOffScheduleShiftDayRow(row)) return hasActivity;
+      return scheduledPaidMinutes(row.shift, emp) > 0 || hasActivity;
+    })
+    .sort((a, b) => {
+      if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
+      if (isOffScheduleShiftDayRow(a) && !isOffScheduleShiftDayRow(b)) return 1;
+      if (!isOffScheduleShiftDayRow(a) && isOffScheduleShiftDayRow(b)) return -1;
+      return String(a.shift.start).localeCompare(String(b.shift.start));
     });
 }
 
@@ -528,12 +639,18 @@ export function buildRosterRowSync(
   bounds: PayWeekBounds
 ): RosterRow {
   const name = employeeDisplayName(emp);
-  const shifts = buildShiftsForEmployeeInWeek(emp, null, employeesLite, bounds, scheduleCtx);
-  const schedMinsByDay: Record<string, number> = {};
-  for (const row of shifts) {
-    if (!row.iso) continue;
-    schedMinsByDay[row.iso] = (schedMinsByDay[row.iso] || 0) + scheduledPaidMinutes(row.shift, emp);
-  }
+  const shifts = buildShiftsForEmployeeInWeek(emp, null, employeesLite, bounds, scheduleCtx, {
+    entries,
+    extrasSlice,
+    dishwasherTipsSlice,
+  });
+  const schedMinsByDay = buildScheduledMinutesByDayForEmployee(
+    emp,
+    null,
+    employeesLite,
+    bounds,
+    scheduleCtx
+  );
   const extras = getEmployeeWeekExtrasSync(emp, name, bounds, staffRequests, schedMinsByDay, extrasSlice);
 
   let schedMins = 0;
@@ -729,12 +846,19 @@ export async function buildRosterRow(
   bounds: PayWeekBounds
 ): Promise<RosterRow> {
   const name = employeeDisplayName(emp);
-  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite, bounds);
-  const schedMinsByDay: Record<string, number> = {};
-  for (const row of shifts) {
-    if (!row.iso) continue;
-    schedMinsByDay[row.iso] = (schedMinsByDay[row.iso] || 0) + scheduledPaidMinutes(row.shift, emp);
-  }
+  const extrasSlice = await loadWeekExtrasSlice(bounds);
+  const tipsSlice = await loadDishwasherTipsSlice(bounds);
+  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite, bounds, undefined, {
+    entries,
+    extrasSlice,
+    dishwasherTipsSlice: tipsSlice,
+  });
+  const schedMinsByDay = buildScheduledMinutesByDayForEmployee(
+    emp,
+    teamState,
+    employeesLite,
+    bounds
+  );
   const extras = await getEmployeeWeekExtras(emp, name, bounds, staffRequests, schedMinsByDay);
 
   let schedMins = 0;
@@ -764,7 +888,6 @@ export async function buildRosterRow(
   const soh = computeSpreadOfHours(emp, entries);
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
-  const tipsSlice = await loadDishwasherTipsSlice(bounds);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
     ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice)
@@ -857,6 +980,7 @@ export function formatHistoryLines(entry: TimeClockEntry): { when: string; lines
 export {
   getEmployeeDayLeave,
   getEmployeeWeekExtras,
+  getSuggestedDayLeave,
   setEmployeeDayLeave,
   setEmployeeWeekExtras,
 } from './weekExtras';

@@ -69,7 +69,7 @@ export async function loadWeekEntries(
 
 export type SavePunchInput = {
   employeeId: string;
-  shiftId: string;
+  shiftId: string | null;
   clockInIso: string;
   clockOutIso: string | null;
   breakStartIso: string | null;
@@ -125,7 +125,7 @@ async function callManagerSaveRpc(
     fullArgs.p_break_start_at = breakStartIso;
     fullArgs.p_break_end_at = breakEndIso;
   }
-  if (schema.scheduleShiftId) fullArgs.p_schedule_shift_id = shiftId;
+  if (schema.scheduleShiftId && shiftId != null) fullArgs.p_schedule_shift_id = shiftId;
   if (schema.editHistory) fullArgs.p_edit_history = editHistory;
   if (schema.breakPaid && breakPaid !== undefined) fullArgs.p_break_paid = breakPaid;
 
@@ -136,12 +136,34 @@ async function callManagerSaveRpc(
       res = await sb.rpc('manager_save_time_clock_entry', {
         ...base,
         p_break_minutes: breakMinutes,
-        p_schedule_shift_id: shiftId,
+        ...(shiftId != null ? { p_schedule_shift_id: shiftId } : {}),
         p_edit_history: editHistory,
       });
     }
   }
   return res;
+}
+
+export async function deleteTimeClockEntries(
+  sb: SupabaseClient,
+  entryIds: string[]
+): Promise<{ ok: true; deletedIds: string[] } | { ok: false; message: string }> {
+  const ids = entryIds.filter(Boolean);
+  if (!ids.length) return { ok: true, deletedIds: [] };
+  const res = await sb.from('time_clock_entries').delete().in('id', ids).select('id');
+  if (res.error) {
+    const msg = res.error.message || '';
+    if (/row-level security|violates row-level security/i.test(msg)) {
+      return {
+        ok: false,
+        message:
+          'Delete blocked by database permissions. Sign in as a manager and apply the latest Supabase migrations (time_clock_entries_delete_managers).',
+      };
+    }
+    return { ok: false, message: msg || 'Delete failed.' };
+  }
+  const deletedIds = (res.data || []).map((row) => String(row.id)).filter(Boolean);
+  return { ok: true, deletedIds };
 }
 
 export async function saveManagerPunch(

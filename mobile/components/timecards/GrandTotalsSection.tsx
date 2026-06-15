@@ -73,7 +73,7 @@ export function GrandTotalsSection({
   const updateSummary = (pool: TipPoolInputs) => {
     const t = payrollTipPoolTotals(pool);
     setTipSummary(
-      `Square Inhouse (after 3% fee): ${formatPayAmount(t.squareInhouse)} · Total tips: ${formatPayAmount(t.totalTips)}`
+      `Square In House (Net): ${formatPayAmount(t.squareInhouse)} · Total tips: ${formatPayAmount(t.totalTips)}`
     );
   };
 
@@ -150,7 +150,7 @@ export function GrandTotalsSection({
         <View style={styles.tips}>
           <Text style={styles.tipsTitle}>Tip pool</Text>
           <Text style={styles.tipsHint}>Used for payroll calculations (saved per pay week).</Text>
-          <Text style={styles.label}>Square In House</Text>
+          <Text style={styles.label}>Square In House Tips</Text>
           <TextInput
             style={styles.input}
             value={square}
@@ -158,7 +158,7 @@ export function GrandTotalsSection({
             onEndEditing={() => void persistTips({ cashTip: cash, sqGhDd, squareTips: square })}
             keyboardType="decimal-pad"
           />
-          <Text style={styles.label}>Cash</Text>
+          <Text style={styles.label}>Cash Tips</Text>
           <TextInput
             style={styles.input}
             value={cash}
@@ -166,7 +166,7 @@ export function GrandTotalsSection({
             onEndEditing={() => void persistTips({ cashTip: cash, sqGhDd, squareTips: square })}
             keyboardType="decimal-pad"
           />
-          <Text style={styles.label}>SQ / GH / DD</Text>
+          <Text style={styles.label}>SQ/GH/DD</Text>
           <TextInput
             style={styles.input}
             value={sqGhDd}

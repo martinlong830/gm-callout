@@ -4848,6 +4848,40 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: var(--hover-fill);
 }
 
+.timecards-col-actions {
+  width: 2.5rem;
+}
+
+.timecards-row-actions {
+  width: 2.5rem;
+  text-align: center;
+  vertical-align: middle;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.timecards-remove-day-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted, #64748b);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timecards-remove-day-btn:hover,
+.timecards-remove-day-btn:focus-visible {
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+}
+
 .timecards-name {
   font-weight: 500;
   color: var(--text);
@@ -4972,8 +5006,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .timecards-input--time {
-  flex: 0 1 7rem;
-  min-width: 0;
+  flex: 0 0 9rem;
+  width: 9rem;
+  min-width: 9rem;
+  max-width: 100%;
 }
 
 .timecards-field-optional {
@@ -5080,4 +5116,84 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: #fef3c7;
   color: #b45309;
   vertical-align: middle;
+}
+
+.timecards-shifts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.timecards-shifts-toolbar-label {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.timecards-add-day {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.timecards-add-day-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.25rem;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timecards-add-day-btn:hover,
+.timecards-add-day-btn:focus-visible {
+  background: var(--hover-fill);
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.timecards-add-day-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 10rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  z-index: 30;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+}
+
+.timecards-add-day-menu.hidden {
+  display: none;
+}
+
+.timecards-add-day-menu li {
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.timecards-add-day-menu li:hover,
+.timecards-add-day-menu li:focus {
+  background: var(--hover-fill);
+  outline: none;
 }
