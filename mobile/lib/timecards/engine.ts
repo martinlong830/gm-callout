@@ -53,6 +53,8 @@ export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, 
 
 const OT_RATE_MULTIPLIER = 1.5;
 const PAY_ROUND_MINUTES = 15;
+/** First 40h of recorded work in the pay week are regular; remainder is overtime. */
+export const WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 const SOH_THRESHOLD_MINUTES = 10 * 60;
 const SOH_PAY_HOURS = 1;
 const SOH_DEFAULT_HOURLY_RATE = 15;
@@ -111,12 +113,66 @@ function roundToNearest15Minutes(mins: number): number {
   return Math.round(m / PAY_ROUND_MINUTES) * PAY_ROUND_MINUTES;
 }
 
-export function shiftRegularOvertimeMinutes(schedMins: number, recordedMins: number) {
-  const sched = roundToNearest15Minutes(schedMins);
+export type RegOtMinutes = { regMins: number; otMins: number; totalMins: number };
+
+/** Split recorded minutes using remaining weekly regular allowance (chronological). */
+export function allocateRecordedRegOtMinutes(
+  recordedMins: number,
+  regularRemaining: number
+): RegOtMinutes & { regularRemaining: number } {
   const rec = roundToNearest15Minutes(recordedMins);
-  const regMins = Math.min(rec, sched);
-  const otMins = Math.max(0, rec - sched);
-  return { regMins, otMins, totalMins: regMins + otMins };
+  const regMins = Math.min(rec, Math.max(0, regularRemaining));
+  const otMins = rec - regMins;
+  return {
+    regMins,
+    otMins,
+    totalMins: regMins + otMins,
+    regularRemaining: regularRemaining - regMins,
+  };
+}
+
+/** Allocate reg/OT by calendar day (ascending ISO) within the pay week. */
+export function weeklyRegOtByDay(
+  dayRecorded: Array<{ iso: string; recordedMins: number }>
+): Record<string, RegOtMinutes> {
+  let regularRemaining = WEEKLY_REGULAR_CAP_MINUTES;
+  const out: Record<string, RegOtMinutes> = {};
+  const sorted = [...dayRecorded].sort((a, b) => a.iso.localeCompare(b.iso));
+  for (const day of sorted) {
+    const split = allocateRecordedRegOtMinutes(day.recordedMins, regularRemaining);
+    regularRemaining = split.regularRemaining;
+    out[day.iso] = { regMins: split.regMins, otMins: split.otMins, totalMins: split.totalMins };
+  }
+  return out;
+}
+
+export function weekDayRecordedForEmployee(
+  shifts: ShiftDayRow[],
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  entriesIndex?: Record<string, TimeClockEntry[]>
+): Array<{ iso: string; recordedMins: number }> {
+  const seen = new Set<string>();
+  const dayRecorded: Array<{ iso: string; recordedMins: number }> = [];
+  for (const row of shifts) {
+    if (seen.has(row.iso)) continue;
+    const dayEntries = entriesIndex
+      ? findEntriesForDayIndexed(entriesIndex, emp.id, row.iso)
+      : findEntriesForDay(entries, emp.id, row.iso);
+    if (!dayEntries.length) continue;
+    seen.add(row.iso);
+    dayRecorded.push({
+      iso: row.iso,
+      recordedMins: dailyRecordedMinutesForEmployee(entries, emp.id, row.iso, emp),
+    });
+  }
+  return dayRecorded;
+}
+
+/** @deprecated Use weekly reg/OT allocation; schedMins is ignored. */
+export function shiftRegularOvertimeMinutes(_schedMins: number, recordedMins: number) {
+  const split = allocateRecordedRegOtMinutes(recordedMins, WEEKLY_REGULAR_CAP_MINUTES);
+  return { regMins: split.regMins, otMins: split.otMins, totalMins: split.totalMins };
 }
 
 function employeeHourlyRate(emp: EmployeeRow): number | null {
@@ -141,8 +197,20 @@ export function payFromRegOtMinutes(emp: EmployeeRow, regMins: number, otMins: n
   return { regPay, otPay, totalPay: regPay + otPay };
 }
 
-export function shiftPayForScheduledRecorded(emp: EmployeeRow, schedMins: number, recordedMins: number) {
-  const split = shiftRegularOvertimeMinutes(schedMins, recordedMins);
+export function dayPayInPayWeek(
+  emp: EmployeeRow,
+  dayRecorded: Array<{ iso: string; recordedMins: number }>,
+  targetIso: string
+) {
+  const byDay = weeklyRegOtByDay(dayRecorded);
+  const split = byDay[targetIso] || { regMins: 0, otMins: 0, totalMins: 0 };
+  const pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
+  return { ...split, ...pay };
+}
+
+/** @deprecated Use dayPayInPayWeek for week-aware reg/OT; schedMins is ignored. */
+export function shiftPayForScheduledRecorded(emp: EmployeeRow, _schedMins: number, recordedMins: number) {
+  const split = allocateRecordedRegOtMinutes(recordedMins, WEEKLY_REGULAR_CAP_MINUTES);
   const pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
   return { ...split, ...pay };
 }
@@ -654,21 +722,14 @@ export function buildRosterRowSync(
   const extras = getEmployeeWeekExtrasSync(emp, name, bounds, staffRequests, schedMinsByDay, extrasSlice);
 
   let schedMins = 0;
-  let regMins = 0;
-  let otMins = 0;
   let needsReview = false;
   let open = false;
   const todayIso = isoFromDate(new Date());
 
   for (const row of shifts) {
-    const sched = scheduledPaidMinutes(row.shift, emp);
-    schedMins += sched;
+    schedMins += scheduledPaidMinutes(row.shift, emp);
     const dayEntries = findEntriesForDayIndexed(entriesIndex, emp.id, row.iso);
     if (dayEntries.length) {
-      const rec = dayEntries.reduce((sum, e) => sum + recordedPaidMinutes(e, row, emp), 0);
-      const split = shiftRegularOvertimeMinutes(sched, rec);
-      regMins += split.regMins;
-      otMins += split.otMins;
       const st = shiftStatusLabelForDay(row.shift, emp.id, row.iso, entries, emp);
       if (st === 'Review') needsReview = true;
       if (st === 'Open') open = true;
@@ -677,13 +738,26 @@ export function buildRosterRowSync(
     }
   }
 
+  const dayRecorded = weekDayRecordedForEmployee(shifts, emp, entries, entriesIndex);
+  const regOtByDay = weeklyRegOtByDay(dayRecorded);
+  let regMins = 0;
+  let otMins = 0;
+  for (const day of dayRecorded) {
+    const split = regOtByDay[day.iso];
+    regMins += split.regMins;
+    otMins += split.otMins;
+  }
+
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
   const soh = computeSpreadOfHoursIndexed(emp, entriesByEmpId[emp.id] || []);
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice)
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
+        entries,
+        extrasSlice,
+      })
     : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
   const partial = {
@@ -862,20 +936,13 @@ export async function buildRosterRow(
   const extras = await getEmployeeWeekExtras(emp, name, bounds, staffRequests, schedMinsByDay);
 
   let schedMins = 0;
-  let regMins = 0;
-  let otMins = 0;
   let needsReview = false;
   let open = false;
 
   for (const row of shifts) {
-    const sched = scheduledPaidMinutes(row.shift, emp);
-    schedMins += sched;
+    schedMins += scheduledPaidMinutes(row.shift, emp);
     const dayEntries = findEntriesForDay(entries, emp.id, row.iso);
     if (dayEntries.length) {
-      const rec = dailyRecordedMinutesForEmployee(entries, emp.id, row.iso, emp);
-      const split = shiftRegularOvertimeMinutes(sched, rec);
-      regMins += split.regMins;
-      otMins += split.otMins;
       const st = shiftStatusLabelForDay(row.shift, emp.id, row.iso, entries, emp);
       if (st === 'Review') needsReview = true;
       if (st === 'Open') open = true;
@@ -884,13 +951,26 @@ export async function buildRosterRow(
     }
   }
 
+  const dayRecorded = weekDayRecordedForEmployee(shifts, emp, entries);
+  const regOtByDay = weeklyRegOtByDay(dayRecorded);
+  let regMins = 0;
+  let otMins = 0;
+  for (const day of dayRecorded) {
+    const split = regOtByDay[day.iso];
+    regMins += split.regMins;
+    otMins += split.otMins;
+  }
+
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
   const soh = computeSpreadOfHours(emp, entries);
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice)
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
+        entries,
+        extrasSlice,
+      })
     : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
   const partial = {

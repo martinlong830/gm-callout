@@ -5,7 +5,12 @@ import { normalizeLeaveBalance, type LeaveBalance } from './employeeLeave';
 export function employeeToDbRow(emp: EmployeeRow): Record<string, unknown> {
   const display = employeeDisplayName(emp);
   const ur = emp.usualRestaurant;
-  const urDb = ur === 'both' || !ur ? 'rp-9' : ur;
+  let urDb: string = 'rp-9';
+  if (ur === 'both') {
+    urDb = 'both';
+  } else if (ur === 'rp-8' || ur === 'rp-9') {
+    urDb = ur;
+  }
   const meta =
     emp.meta && typeof emp.meta === 'object' ? { ...emp.meta } : ({} as Record<string, unknown>);
   if (emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {

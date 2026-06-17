@@ -418,33 +418,54 @@
     return gmCalloutCurrentSessionRole() === 'timeclock';
   }
 
-  /** Single-store: Red Poke 598 9th Ave only (no second location in-app for now). */
+  var KNOWN_RESTAURANT_IDS = { 'rp-9': true, 'rp-8': true };
+
   function defaultRestaurants() {
-    return [{ id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' }];
+    return [
+      { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
+      {
+        id: 'rp-8',
+        shortLabel: '8th Ave',
+        name: 'Red Poke 885 8th Ave',
+        defaultUnassignedSchedule: true,
+      },
+    ];
   }
 
   function loadRestaurants() {
+    var defaults = defaultRestaurants();
     try {
       var raw = localStorage.getItem(RESTAURANTS_LIST_KEY);
       if (raw) {
         var p = JSON.parse(raw);
         if (Array.isArray(p) && p.length) {
-          var only = p.filter(function (r) {
-            return (
+          var storedById = {};
+          p.forEach(function (r) {
+            if (
               r &&
-              r.id === 'rp-9' &&
-              typeof r.id === 'string' &&
+              KNOWN_RESTAURANT_IDS[r.id] &&
               typeof r.name === 'string' &&
               String(r.name).trim()
-            );
+            ) {
+              storedById[r.id] = r;
+            }
           });
-          if (only.length) return only;
+          return defaults.map(function (def) {
+            var s = storedById[def.id];
+            if (!s) return def;
+            return {
+              id: def.id,
+              shortLabel: s.shortLabel || def.shortLabel,
+              name: String(s.name).trim(),
+              defaultUnassignedSchedule: def.defaultUnassignedSchedule,
+            };
+          });
         }
       }
     } catch (e0) {
       /* ignore */
     }
-    return defaultRestaurants();
+    return defaults;
   }
 
   function saveRestaurantsList() {
@@ -952,11 +973,23 @@
     return full;
   }
 
+  function usualRestaurantFromDbRow(val) {
+    if (val === 'both') return 'both';
+    var ur = val != null && String(val).trim() !== '' ? String(val).trim() : 'rp-9';
+    if (restaurantsList.some(function (r) { return r.id === ur; })) return ur;
+    return 'rp-9';
+  }
+
   function employeeRecordToDbRow(emp) {
     if (!emp) return null;
     var display = employeeDisplayName(emp);
     var ur = emp.usualRestaurant;
-    var urDb = ur === 'both' || !ur ? 'rp-9' : ur;
+    var urDb = 'rp-9';
+    if (ur === 'both') {
+      urDb = 'both';
+    } else if (ur && restaurantsList.some(function (r) { return r.id === ur; })) {
+      urDb = ur;
+    }
     var row = {
       id: emp.id,
       auth_user_id: emp.authUserId || null,
@@ -1118,30 +1151,59 @@
     return { ok: true };
   }
 
+  var gmEmployeeProfileSaveInFlight = false;
+
+  async function syncSingleEmployeeToSupabase(emp) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !emp) return { ok: true };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var uid = sessRes.data.session.user.id;
+    var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
+    if (prof.error || !prof.data) return { ok: false, reason: 'no_profile' };
+    if (prof.data.role !== 'manager' && emp.authUserId !== uid) {
+      return { ok: false, reason: 'forbidden' };
+    }
+    var row = employeeRecordToDbRow(emp);
+    if (!row) return { ok: false, reason: 'invalid_row' };
+    var res = await sb.from('employees').upsert(row, { onConflict: 'id' });
+    if (res.error) {
+      console.warn('gm-callout: employee upsert', res.error);
+      return { ok: false, error: res.error };
+    }
+    return { ok: true };
+  }
+
+  async function syncEmployeesToSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: true };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var uid = sessRes.data.session.user.id;
+    var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
+    if (prof.error || !prof.data) return { ok: false, reason: 'no_profile' };
+    var rows;
+    if (prof.data.role === 'manager') {
+      rows = employees.map(employeeRecordToDbRow).filter(Boolean);
+    } else {
+      rows = employees
+        .filter(function (e) {
+          return e && e.authUserId === uid;
+        })
+        .map(employeeRecordToDbRow)
+        .filter(Boolean);
+      if (!rows.length) return { ok: true };
+    }
+    var res = await sb.from('employees').upsert(rows, { onConflict: 'id' });
+    if (res.error) {
+      console.warn('gm-callout: employees upsert', res.error);
+      return { ok: false, error: res.error };
+    }
+    return { ok: true };
+  }
+
   function syncEmployeesToSupabaseAfterSave() {
-    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
-    (async function () {
-      var sb = window.gmSupabase;
-      var sessRes = await sb.auth.getSession();
-      if (!sessRes.data || !sessRes.data.session) return;
-      var uid = sessRes.data.session.user.id;
-      var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
-      if (prof.error || !prof.data) return;
-      var rows;
-      if (prof.data.role === 'manager') {
-        rows = employees.map(employeeRecordToDbRow).filter(Boolean);
-      } else {
-        rows = employees
-          .filter(function (e) {
-            return e && e.authUserId === uid;
-          })
-          .map(employeeRecordToDbRow)
-          .filter(Boolean);
-        if (!rows.length) return;
-      }
-      var res = await sb.from('employees').upsert(rows, { onConflict: 'id' });
-      if (res.error) console.warn('gm-callout: employees upsert', res.error);
-    })();
+    void syncEmployeesToSupabase();
   }
 
   var teamStateSyncTimer = null;
@@ -1512,41 +1574,44 @@
     return SCHEDULE_TEMPLATE_WEEK_INDEX;
   }
 
-  /** Schedule rows for a pay week, built like the on-screen calendar (does not change the visible week). */
+  /** Schedule rows for a pay week, all locations (matches manager calendar + timecards). */
   function buildScheduleSnapshotForPayWeek(weekIndex, opts) {
     opts = opts || {};
     var skipUiRefresh = !!opts.skipUiRefresh;
     var prevRest = currentRestaurantId;
     var prevWeek = scheduleCalendarWeekIndex;
     var rows = [];
-    var useRp9 = restaurantsList.some(function (r) {
-      return r.id === 'rp-9';
-    });
     try {
-      if (useRp9) currentRestaurantId = 'rp-9';
       scheduleCalendarWeekIndex = weekIndex;
-      rebuildSchedule();
       var visible = {};
       getVisibleWeekDays().forEach(function (day) {
         visible[day] = true;
       });
-      SCHEDULE.forEach(function (s) {
-        if (!visible[s.day]) return;
-        rows.push({
-          id: s.id,
-          day: s.day,
-          trIdx: s.trIdx,
-          role: s.role,
-          roleClass: s.roleClass,
-          groupLabel: s.groupLabel,
-          start: s.start,
-          end: s.end,
-          slotKey: s.slotKey,
-          timeLabel: s.timeLabel,
-          redPokeBreak: s.redPokeBreak,
-          redPokeHours: s.redPokeHours,
-          breakPaid: s.breakPaid === true || s.breakPaid === false ? !!s.breakPaid : undefined,
-          workers: (s.workers || []).slice(),
+      restaurantsList.forEach(function (rest) {
+        currentRestaurantId = rest.id;
+        rebuildSchedule();
+        var rname = rest.name || rest.id;
+        var rid = rest.id;
+        SCHEDULE.forEach(function (s) {
+          if (!visible[s.day]) return;
+          rows.push({
+            id: s.id,
+            restaurantId: rid,
+            restaurantName: rname,
+            day: s.day,
+            trIdx: s.trIdx,
+            role: s.role,
+            roleClass: s.roleClass,
+            groupLabel: s.groupLabel,
+            start: s.start,
+            end: s.end,
+            slotKey: s.slotKey,
+            timeLabel: s.timeLabel,
+            redPokeBreak: s.redPokeBreak,
+            redPokeHours: s.redPokeHours,
+            breakPaid: s.breakPaid === true || s.breakPaid === false ? !!s.breakPaid : undefined,
+            workers: (s.workers || []).slice(),
+          });
         });
       });
     } finally {
@@ -2175,13 +2240,36 @@
     return seedDefaultEmployees();
   }
 
-  function saveEmployees() {
+  function applySavedEmployeeRecord(rec) {
+    if (!rec || !rec.id) return;
+    var ix = employees.findIndex(function (e) {
+      return e.id === rec.id;
+    });
+    if (ix !== -1) {
+      employees[ix] = rec;
+    } else {
+      employees.push(rec);
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+    } catch (_applyLs) {
+      /* ignore */
+    }
+  }
+
+  function saveEmployees(opts) {
+    opts = opts || {};
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
     } catch (err) {
       // ignore
     }
+    if (opts.awaitCloud) {
+      if (opts.singleEmployee) return syncSingleEmployeeToSupabase(opts.singleEmployee);
+      return syncEmployeesToSupabase();
+    }
     syncEmployeesToSupabaseAfterSave();
+    return Promise.resolve({ ok: true });
   }
 
   let employees = loadEmployees();
@@ -3140,6 +3228,7 @@
 
   function applyScheduleAssignmentsMerge() {
     var stored = getCurrentRestaurantAssignments();
+    var skipWorkers = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
     SCHEDULE.forEach(function (s) {
       var entry = lookupScheduleAssignment(stored, s.id);
       var slotLabel = redPokeShiftTimeLabel(s.start, s.end);
@@ -3166,6 +3255,7 @@
       } else {
         s.redPokeHours = slotHours;
       }
+      if (skipWorkers) return;
       var list = entry.workers.filter(function (n) {
         return n && n !== 'Unassigned';
       });
@@ -7342,7 +7432,7 @@
   }
 
   if (employeeForm) {
-    employeeForm.addEventListener('submit', function (ev) {
+    employeeForm.addEventListener('submit', async function (ev) {
       ev.preventDefault();
       if (!empFirstName || !empLastName || !empStaffType) return;
       const first = (empFirstName.value || '').trim();
@@ -7422,7 +7512,23 @@
         if (scheduleBody) renderSchedule();
       }
       editingEmployeeId = null;
-      saveEmployees();
+      var saveBtn = document.getElementById('saveEmployeeBtn');
+      if (saveBtn) saveBtn.disabled = true;
+      gmEmployeeProfileSaveInFlight = true;
+      var cloudRes = { ok: true };
+      try {
+        cloudRes = await saveEmployees({
+          awaitCloud: !!GM_SUPABASE_DATA,
+          singleEmployee: rec,
+        });
+        applySavedEmployeeRecord(rec);
+      } finally {
+        gmEmployeeProfileSaveInFlight = false;
+        if (saveBtn) saveBtn.disabled = false;
+      }
+      if (GM_SUPABASE_DATA && cloudRes && !cloudRes.ok) {
+        window.alert('Saved locally, but cloud sync failed. Try saving again.');
+      }
       rebuildEmployeeDerivedData();
       renderEmployeeList();
       if (pendingEmployeePhotoFile) {
@@ -8147,7 +8253,7 @@
       profRes.data &&
       profRes.data.role === 'manager';
 
-    if (empRes.data && empRes.data.length) {
+    if (empRes.data && empRes.data.length && !gmEmployeeProfileSaveInFlight) {
       var next = empRes.data
         .map(function (row) {
           return migrateEmployeeRecord({
@@ -8159,7 +8265,7 @@
             staffType: row.staff_type,
             phone: row.phone,
             weeklyGrid: row.weekly_grid,
-            usualRestaurant: row.usual_restaurant || 'rp-9',
+            usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
             meta: row.meta,
             clockPin: row.clock_pin || undefined,
             hourlyRate: row.hourly_rate != null ? Number(row.hourly_rate) : undefined,
@@ -8174,6 +8280,11 @@
         applyHourlyRatePresetsToAllEmployees();
         applyTipPointPresetsToAllEmployees();
         seedAllEmployeeLeaveBalances();
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+        } catch (_hydrateLs) {
+          /* ignore */
+        }
       }
     } else if (
       !empRes.error &&
@@ -8220,11 +8331,16 @@
                 staffType: row.staff_type,
                 phone: row.phone,
                 weeklyGrid: row.weekly_grid,
-                usualRestaurant: row.usual_restaurant || 'rp-9',
+                usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
                 meta: row.meta,
               });
               if (m) employees.push(m);
             });
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+            } catch (_seedLs) {
+              /* ignore */
+            }
           }
         }
       }
@@ -8319,6 +8435,9 @@
       scheduleCalendarCellText: scheduleCalendarCellText,
       weekIndexForPayWeekStartIso: weekIndexForPayWeekStartIso,
       buildScheduleSnapshotForPayWeek: buildScheduleSnapshotForPayWeek,
+      getRestaurantsList: function () {
+        return restaurantsList.slice();
+      },
       gmSupabaseReadyNow: gmSupabaseReadyNow,
       getAssignmentBreakPaidForShift: getAssignmentBreakPaidForShift,
       setAssignmentBreakPaidForShift: setAssignmentBreakPaidForShift,

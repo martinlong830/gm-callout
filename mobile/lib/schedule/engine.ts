@@ -148,7 +148,15 @@ export const DEFAULT_DRAFT_SCHEDULE_ROWS: DraftGrid = {
 };
 
 export function defaultRestaurants(): Restaurant[] {
-  return [{ id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' }];
+  return [
+    { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
+    {
+      id: 'rp-8',
+      shortLabel: '8th Ave',
+      name: 'Red Poke 885 8th Ave',
+      defaultUnassignedSchedule: true,
+    },
+  ];
 }
 
 export function redPokeShiftTimeLabel(start: string, end: string): string {
@@ -423,10 +431,15 @@ function getCurrentRestaurantAssignments(store: AssignmentStore, restaurantId: s
   return store[restaurantId] || {};
 }
 
-function applyScheduleAssignmentsMerge(schedule: ScheduleRow[], stored: Record<string, string[]>) {
+function applyScheduleAssignmentsMerge(
+  schedule: ScheduleRow[],
+  stored: Record<string, string[]>,
+  skipWorkers?: boolean
+) {
   schedule.forEach((s) => {
     const arr = stored[s.id];
     if (!arr || !Array.isArray(arr)) return;
+    if (skipWorkers) return;
     const list = arr.filter(Boolean);
     if (!list.length) return;
     s.workers = list.slice();
@@ -501,7 +514,7 @@ export function buildSchedule(params: {
     });
   });
 
-  applyScheduleAssignmentsMerge(schedule, stored);
+  applyScheduleAssignmentsMerge(schedule, stored, forceUnassigned);
   return schedule;
 }
 

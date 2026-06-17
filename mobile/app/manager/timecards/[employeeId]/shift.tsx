@@ -15,6 +15,7 @@ import { useAppData } from '../../../../contexts/AppDataContext';
 import { useTimecards } from '../../../../contexts/TimecardsContext';
 import { employeeDisplayName, type EmployeeRow } from '../../../../lib/employees';
 import {
+  DISHWASHER_TIP_REQUIRES_SHIFT_MSG,
   getEmployeeDayDishwasherTip,
   isDeliveryDishwasherStaff,
   setEmployeeDayDishwasherTip,
@@ -33,6 +34,7 @@ import {
   getSuggestedDayLeave,
   setEmployeeDayLeave,
   dailyRecordedMinutesForEmployee,
+  dayPayInPayWeek,
   decimalHoursFromMinutes,
   entriesForShiftDayCleanup,
   findEntriesForDay,
@@ -49,7 +51,7 @@ import {
   recordedPaidMinutes,
   roundToNearest5Minutes,
   scheduledPaidMinutes,
-  shiftPayForScheduledRecorded,
+  weekDayRecordedForEmployee,
   type ShiftDayRow,
 } from '../../../../lib/timecards/engine';
 import {
@@ -96,16 +98,25 @@ export default function TimecardsShiftScreen() {
   );
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
+  const weekShifts = useMemo(() => {
+    if (!emp) return [];
+    return buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, undefined, { entries });
+  }, [emp, teamState, lites, bounds, entries]);
+
+  const weekDayRecorded = useMemo(
+    () => (emp ? weekDayRecordedForEmployee(weekShifts, emp, entries) : []),
+    [emp, weekShifts, entries]
+  );
+
   const shiftRow = useMemo((): ShiftDayRow | null => {
     if (!emp || !iso) return null;
-    const rows = buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, undefined, { entries });
-    const found = rows.find((r) => r.shift.id === shiftId && r.iso === iso);
+    const found = weekShifts.find((r) => r.shift.id === shiftId && r.iso === iso);
     if (found) return found;
     if (isoFromOffScheduleShiftId(shiftId) === iso) {
       return makeOffScheduleShiftDayRow(iso);
     }
     return null;
-  }, [emp, teamState, lites, bounds, shiftId, iso, entries]);
+  }, [emp, weekShifts, shiftId, iso]);
 
   const dayEntries = useMemo(
     () => (emp && iso ? findEntriesForDay(entries, emp.id, iso) : []),
@@ -291,6 +302,10 @@ export default function TimecardsShiftScreen() {
         await finishClearedDaySave(0, 0, 0);
         return;
       }
+      if (showDishwasherTip && dishwasherTip > 0 && vl <= 0 && sl <= 0) {
+        Alert.alert('Timecard', DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
+        return;
+      }
       setBusy(true);
       const dayEntryIds = entriesForShiftDayCleanup(entries, emp.id, shiftRow, entryId ? [entryId] : []).map(
         (e) => e.id
@@ -410,10 +425,8 @@ export default function TimecardsShiftScreen() {
   const s = shiftRow.shift;
   const offSchedule = isOffScheduleShiftDayRow(shiftRow);
   const schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
-  const schedMins = scheduledPaidMinutes(s);
   const dayMins = dailyRecordedMinutesForEmployee(entries, emp.id, shiftRow.iso);
-  const shiftPay = shiftPayForScheduledRecorded(emp, schedMins, dayMins);
-  const payLabel = formatShiftPayLabel(shiftPay);
+  const shiftPay = emp && iso ? dayPayInPayWeek(emp, weekDayRecorded, iso) : null;
   const history = editingEntry ? formatHistoryLines(editingEntry) : [];
 
   return (
@@ -430,7 +443,7 @@ export default function TimecardsShiftScreen() {
             {schedBreak ? `${schedBreak} min` : 'none'}
           </Text>
         ) : (
-          <Text style={styles.line}>No scheduled shift — recorded time counts as overtime.</Text>
+          <Text style={styles.line}>No scheduled shift — recorded time uses weekly 40h regular cap.</Text>
         )}
         <Text style={styles.line}>
           Day total: {dayMins ? decimalHoursFromMinutes(roundToNearest5Minutes(dayMins)) + 'h' : '—'}
@@ -441,12 +454,13 @@ export default function TimecardsShiftScreen() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Pay (this shift)</Text>
         <Text style={styles.line}>
-          Regular {decimalHoursFromMinutes(shiftPay.regMins)}h · {formatPayAmount(shiftPay.regPay)}
+          Regular {decimalHoursFromMinutes(shiftPay?.regMins ?? 0)}h ·{' '}
+          {formatPayAmount(shiftPay?.regPay)}
         </Text>
         <Text style={styles.line}>
-          Overtime {decimalHoursFromMinutes(shiftPay.otMins)}h · {formatPayAmount(shiftPay.otPay)}
+          Overtime {decimalHoursFromMinutes(shiftPay?.otMins ?? 0)}h · {formatPayAmount(shiftPay?.otPay)}
         </Text>
-        <Text style={styles.lineStrong}>Shift total {payLabel}</Text>
+        <Text style={styles.lineStrong}>Shift total {shiftPay ? formatShiftPayLabel(shiftPay) : '—'}</Text>
         <Text style={styles.line}>Pay/hr {formatHourlyRateLabel(emp)}</Text>
       </View>
 

@@ -1,6 +1,5 @@
 import { formatCalendarDateLabel } from '../schedule/employeeShiftDisplay';
 import type { WorkerShiftRow } from '../schedule/engine';
-import { getEmployeeDayDishwasherTipSync } from './dishwasherTips';
 import { isoFromDate } from './payWeek';
 import { isMidnightOnShiftDate } from './punch';
 import { getEmployeeDayLeaveSync } from './weekExtras';
@@ -118,13 +117,6 @@ export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string
     maybeAdd(k.slice(at + 1));
   }
 
-  for (const k of Object.keys(dishwasherTipsSlice ?? {})) {
-    const at = k.indexOf('@');
-    if (at < 0 || k.slice(0, at) !== empId) continue;
-    const val = dishwasherTipsSlice![k];
-    if (val != null && val > 0) maybeAdd(k.slice(at + 1));
-  }
-
   for (const iso of addedDayIsos ?? []) {
     maybeAdd(iso);
   }
@@ -160,7 +152,7 @@ export type DayTimecardActivitySources = {
 };
 
 export function dayHasTimecardActivity(params: DayTimecardActivitySources): boolean {
-  const { empId, iso, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos } = params;
+  const { empId, iso, entries, extrasSlice, addedDayIsos } = params;
   if (!empId || !iso) return false;
   if ((addedDayIsos ?? getAddedOffScheduleDays(empId)).includes(iso)) return true;
   for (const e of entries ?? []) {
@@ -169,7 +161,6 @@ export function dayHasTimecardActivity(params: DayTimecardActivitySources): bool
   }
   const leave = getEmployeeDayLeaveSync(empId, iso, extrasSlice ?? {});
   if (leave.vl > 0 || leave.sl > 0) return true;
-  if (getEmployeeDayDishwasherTipSync(empId, iso, dishwasherTipsSlice ?? {}) > 0) return true;
   return false;
 }
 

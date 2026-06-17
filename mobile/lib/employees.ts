@@ -91,6 +91,7 @@ export function staffTypeLabel(code: string): string {
 const LOCATION_NAMES: Record<string, string> = {
   both: 'Both locations',
   'rp-9': 'Red Poke 598 9th Ave',
+  'rp-8': 'Red Poke 885 8th Ave',
 };
 
 /** Matches web `employeeLocationLine` for the single-store id. */

@@ -47,6 +47,7 @@ const STAFF_TYPES = [
 
 const LOCATIONS = [
   { value: 'rp-9', label: 'Red Poke 598 9th Ave' },
+  { value: 'rp-8', label: 'Red Poke 885 8th Ave' },
   { value: 'both', label: 'Both locations' },
 ] as const;
 
@@ -152,7 +153,11 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
       setLastName(emp.lastName || '');
       setStaffType(emp.staffType || 'Kitchen');
       setPhone(emp.phone || '');
-      setUsualRestaurant(emp.usualRestaurant === 'both' ? 'both' : 'rp-9');
+      setUsualRestaurant(
+        emp.usualRestaurant === 'both' || emp.usualRestaurant === 'rp-8'
+          ? emp.usualRestaurant
+          : 'rp-9'
+      );
       setHourlyRate(emp.hourlyRate != null ? String(emp.hourlyRate) : '');
       setTipPoint(emp.tipPoint != null ? String(emp.tipPoint) : '');
       setBreakPolicy(emp.meta?.breakPolicy === 'paid' ? 'paid' : 'unpaid');
