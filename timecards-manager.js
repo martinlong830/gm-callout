@@ -3669,6 +3669,14 @@
     return 'SUM(' + xlA1(firstRow, col) + ':' + xlA1(lastRow, col) + ')';
   }
 
+  function payrollGrandTotalFromSectionsFormula(col, fohTotalRow, bohTotalRow) {
+    var parts = [];
+    if (fohTotalRow != null) parts.push(payrollExcelNumber(fohTotalRow, col));
+    if (bohTotalRow != null) parts.push(payrollExcelNumber(bohTotalRow, col));
+    if (!parts.length) return '0';
+    return parts.join('+');
+  }
+
   /** Coerce payroll money cells: display "-" is text and breaks + formulas. */
   function payrollExcelNumber(r, c, opts) {
     var addr = xlA1(r, c, opts || {});
@@ -3754,7 +3762,6 @@
     var ws = {};
     var merges = [];
     var S = payrollStyles();
-    var tip = payrollTipPoolAddrs();
     var sections = payrollSectionRows();
     var fohMetrics = sections.foh.map(computePayrollRowMetrics);
     var bohMetrics = sections.boh.map(computePayrollRowMetrics);
@@ -3822,17 +3829,36 @@
 
     finalizePayrollTipRemainder(ws, tipLayout, S);
 
-    var sumFirst = layout.firstEmpRow;
-    var sumLast = layout.lastEmpRow;
     xlSet(ws, grandRow, 0, 'GRAND TOTAL', S.totalLabel);
-    xlSetFormula(ws, grandRow, PAYROLL_COL_REG_H, '=' + payrollSumFormula(PAYROLL_COL_REG_H, sumFirst, sumLast), S.num2, '0.00');
-    xlSetFormula(ws, grandRow, PAYROLL_COL_OT_H, '=' + payrollSumFormula(PAYROLL_COL_OT_H, sumFirst, sumLast), S.num2, '0.00');
-    xlSetFormula(ws, grandRow, 6, '=' + payrollSumFormula(6, sumFirst, sumLast), S.num2, '0.00');
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_REG_H,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_REG_H, fohTotalRow, bohTotalRow),
+      S.num2,
+      '0.00'
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_OT_H,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_OT_H, fohTotalRow, bohTotalRow),
+      S.num2,
+      '0.00'
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      6,
+      '=' + payrollGrandTotalFromSectionsFormula(6, fohTotalRow, bohTotalRow),
+      S.num2,
+      '0.00'
+    );
     xlSetFormula(
       ws,
       grandRow,
       PAYROLL_COL_GROSS,
-      '=' + payrollSumFormula(PAYROLL_COL_GROSS, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_GROSS, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3840,7 +3866,7 @@
       ws,
       grandRow,
       PAYROLL_COL_TOTAL_SOH,
-      '=' + payrollSumFormula(PAYROLL_COL_TOTAL_SOH, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_SOH, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3856,7 +3882,7 @@
       ws,
       grandRow,
       PAYROLL_COL_CHECK,
-      '=' + payrollSumFormula(PAYROLL_COL_CHECK, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_CHECK, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3864,7 +3890,7 @@
       ws,
       grandRow,
       PAYROLL_COL_TOTAL_TIP_PT,
-      '=' + payrollGrandTipPointsFormula(sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_TIP_PT, fohTotalRow, bohTotalRow),
       S.num2,
       '0.00'
     );
@@ -3872,7 +3898,7 @@
       ws,
       grandRow,
       PAYROLL_COL_TIP_CALC,
-      '=' + payrollSumFormula(PAYROLL_COL_TIP_CALC, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TIP_CALC, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3880,7 +3906,7 @@
       ws,
       grandRow,
       PAYROLL_COL_TIP,
-      '=' + tip.total,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TIP, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3888,7 +3914,7 @@
       ws,
       grandRow,
       PAYROLL_COL_DELIVERY,
-      '=' + payrollSumFormula(PAYROLL_COL_DELIVERY, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_DELIVERY, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3896,7 +3922,7 @@
       ws,
       grandRow,
       PAYROLL_COL_TOTAL_TIPS,
-      '=' + payrollSumFormula(PAYROLL_COL_TOTAL_TIPS, sumFirst, sumLast),
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_TIPS, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -3914,17 +3940,6 @@
       payrollRowHeights[r] = { hpt: isTitle ? 14 : 12 };
       r += 1;
     });
-
-    r += 1;
-    var tipSummaryRow = r;
-    var valCol = PAYROLL_TIP_VALUE_COL;
-    var labelCol = PAYROLL_TIP_LABEL_COL;
-    xlSet(ws, tipSummaryRow, labelCol, 'Total TIPS', S.tipLabel);
-    xlSetFormula(ws, tipSummaryRow, valCol, '=' + tip.total, S.money, PAYROLL_MONEY_Z);
-    xlSet(ws, tipSummaryRow + 1, labelCol, 'Cash + (SQ+GH+DD)', S.tipLabel);
-    xlSetFormula(ws, tipSummaryRow + 1, valCol, '=' + tip.cash + '+' + tip.sq, S.money, PAYROLL_MONEY_Z);
-    xlSet(ws, tipSummaryRow + 2, labelCol, 'SQUARE Inhouse', S.tipLabel);
-    xlSetFormula(ws, tipSummaryRow + 2, valCol, '=' + tip.inhouse, S.money, PAYROLL_MONEY_Z);
 
     return xlFinalizeSheet(
       ws,
@@ -5407,6 +5422,11 @@
     } else {
       next += ' scale="50"';
     }
+    if (/orientation="/i.test(next)) {
+      next = next.replace(/orientation="[^"]*"/i, 'orientation="portrait"');
+    } else {
+      next += ' orientation="portrait"';
+    }
     if (!/horizontalCentered="/i.test(next)) {
       next += ' horizontalCentered="1"';
     }
@@ -5414,6 +5434,18 @@
       next += ' verticalCentered="1"';
     }
     return next;
+  }
+
+  function payslipPageMarginsXml() {
+    return (
+      '<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0"/>'
+    );
+  }
+
+  function payslipPageSetupXml() {
+    return (
+      '<pageSetup orientation="portrait" scale="50" horizontalCentered="1" verticalCentered="1"/>'
+    );
   }
 
   function payslipColBreaksXml(pageBreakCols) {
@@ -5436,7 +5468,10 @@
 
   function patchPayslipSheetPrintXml(xml, pageBreakCols) {
     if (!xml) return xml;
-    var out = xml.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
+    var out = xml;
+    out = out.replace(/<rowBreaks\b[^>]*\/>/g, '');
+    out = out.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
+    out = out.replace(/<colBreaks\b[^>]*\/>/g, '');
     out = out.replace(/<colBreaks[\s\S]*?<\/colBreaks>/g, '');
     if (/<pageSetup[^>]*\/>/.test(out)) {
       out = out.replace(/<pageSetup([^>]*)\/>/, function (_match, attrs) {
@@ -5471,16 +5506,15 @@
         '<worksheet$1><sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/></sheetPr>'
       );
     }
-    if (!/<pageMargins\b/.test(out)) {
-      out = out.replace(
-        /<\/worksheet>/,
-        '<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0"/></worksheet>'
-      );
+    out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
+    out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
+    var printTail = payslipPageMarginsXml();
+    if (!/<pageSetup\b/.test(out)) {
+      printTail += payslipPageSetupXml();
     }
     var colBreaksXml = payslipColBreaksXml(pageBreakCols);
-    if (colBreaksXml) {
-      out = out.replace(/<\/worksheet>/, colBreaksXml + '</worksheet>');
-    }
+    if (colBreaksXml) printTail += colBreaksXml;
+    out = out.replace(/<\/worksheet>/, printTail + '</worksheet>');
     return out;
   }
 

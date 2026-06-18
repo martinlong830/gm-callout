@@ -106,6 +106,11 @@ function patchPayslipPageSetupAttrs(attrs) {
   } else {
     next += ' scale="' + PAYSLIP_PRINT_SCALE + '"';
   }
+  if (/orientation="/i.test(next)) {
+    next = next.replace(/orientation="[^"]*"/i, 'orientation="portrait"');
+  } else {
+    next += ' orientation="portrait"';
+  }
   if (!/horizontalCentered="/i.test(next)) {
     next += ' horizontalCentered="1"';
   }
@@ -113,6 +118,18 @@ function patchPayslipPageSetupAttrs(attrs) {
     next += ' verticalCentered="1"';
   }
   return next;
+}
+
+function payslipPageMarginsXml() {
+  return '<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0"/>';
+}
+
+function payslipPageSetupXml() {
+  return (
+    '<pageSetup orientation="portrait" scale="' +
+    PAYSLIP_PRINT_SCALE +
+    '" horizontalCentered="1" verticalCentered="1"/>'
+  );
 }
 
 function payslipColBreaksXml(pageBreakCols) {
@@ -135,7 +152,10 @@ function payslipColBreaksXml(pageBreakCols) {
 
 function patchPayslipSheetPrintXml(xml, pageBreakCols) {
   if (!xml) return xml;
-  let out = xml.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
+  let out = xml;
+  out = out.replace(/<rowBreaks\b[^>]*\/>/g, '');
+  out = out.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
+  out = out.replace(/<colBreaks\b[^>]*\/>/g, '');
   out = out.replace(/<colBreaks[\s\S]*?<\/colBreaks>/g, '');
   if (/<pageSetup[^>]*\/>/.test(out)) {
     out = out.replace(/<pageSetup([^>]*)\/>/, (_match, attrs) => {
@@ -159,22 +179,67 @@ function patchPayslipSheetPrintXml(xml, pageBreakCols) {
       /<sheetPr\s*\/>/,
       '<sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/></sheetPr>'
     );
-  } else if (/<sheetPr>/.test(out)) {
+  } else if (/<sheetPr[^>]*>/.test(out)) {
     out = out.replace(
-      /<sheetPr>/,
-      '<sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/>'
+      /<sheetPr([^>]*)>/,
+      '<sheetPr$1><pageSetUpPr fitToPage="0" autoPageBreaks="0"/>'
     );
-  } else {
+  } else if (!/<sheetPr/.test(out)) {
     out = out.replace(
       /<worksheet([^>]*)>/,
       '<worksheet$1><sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/></sheetPr>'
     );
   }
-  const colBreaksXml = payslipColBreaksXml(pageBreakCols);
-  if (colBreaksXml) {
-    out = out.replace(/<\/worksheet>/, colBreaksXml + '</worksheet>');
+  out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
+  out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
+  let printTail = payslipPageMarginsXml();
+  if (!/<pageSetup\b/.test(out)) {
+    printTail += payslipPageSetupXml();
   }
+  const colBreaksXml = payslipColBreaksXml(pageBreakCols);
+  if (colBreaksXml) printTail += colBreaksXml;
+  out = out.replace(/<\/worksheet>/, printTail + '</worksheet>');
   return out;
+}
+
+function worksheetPathFromWorkbook(wbXml, relsXml, sheetName) {
+  if (!wbXml || !relsXml || !sheetName) return null;
+  const sheetRe = new RegExp(
+    '<sheet[^>]*name="' + String(sheetName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"[^>]*\\/?>',
+    'gi'
+  );
+  let sheetTag;
+  while ((sheetTag = sheetRe.exec(wbXml))) {
+    const tag = sheetTag[0];
+    const ridMatch = tag.match(/\br:id="([^"]+)"/);
+    if (!ridMatch) continue;
+    const rid = ridMatch[1];
+    const relRe = new RegExp(
+      '<Relationship[^>]*Id="' + rid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"[^>]*Target="([^"]+)"'
+    );
+    const relMatch = relsXml.match(relRe);
+    if (!relMatch) continue;
+    const target = relMatch[1];
+    if (target.indexOf('xl/') === 0) return target;
+    return 'xl/' + target.replace(/^\/?/, '');
+  }
+  return null;
+}
+
+function assertPatchedPayslipXml(patchedXml, pageBreakCols) {
+  assert(!patchedXml.includes('rowBreaks'), 'rowBreaks must not be present in worksheet XML');
+  assert(patchedXml.includes('colBreaks'), 'expected colBreaks in worksheet XML');
+  pageBreakCols.forEach(function (excelCol) {
+    assert(patchedXml.includes('id="' + excelCol + '"'), 'missing col break at ' + excelCol);
+  });
+  assert(patchedXml.includes('scale="50"'), 'expected scale 50 in worksheet XML');
+  assert(patchedXml.includes('orientation="portrait"'), 'expected portrait orientation');
+  assert(patchedXml.includes('fitToPage="0"'), 'expected fitToPage=0 in worksheet XML');
+  assert(patchedXml.includes('autoPageBreaks="0"'), 'expected custom page breaks (autoPageBreaks=0)');
+  assert(patchedXml.includes('horizontalCentered="1"'), 'expected horizontalCentered in worksheet XML');
+  assert(!patchedXml.includes('fitToWidth'), 'fitToWidth must not be present');
+  assert(!patchedXml.includes('fitToHeight'), 'fitToHeight must not be present');
+  assert(patchedXml.includes('left="0.2"'), 'expected 0.2in margins in worksheet XML');
 }
 
 function assert(condition, message) {
@@ -273,11 +338,7 @@ async function smokeExcelPrintSettings() {
   fs.writeFileSync(outPath, outBuf);
   const patchedXml = execSync('unzip -p ' + JSON.stringify(outPath) + ' xl/worksheets/sheet1.xml').toString();
   const workbookXml = execSync('unzip -p ' + JSON.stringify(outPath) + ' xl/workbook.xml').toString();
-  assert(!patchedXml.includes('rowBreaks'), 'rowBreaks must not be present in worksheet XML');
-  assert(patchedXml.includes('colBreaks'), 'expected colBreaks in worksheet XML');
-  printMeta.pageBreakCols.forEach(function (excelCol) {
-    assert(patchedXml.includes('id="' + excelCol + '"'), 'missing col break at ' + excelCol);
-  });
+  assertPatchedPayslipXml(patchedXml, printMeta.pageBreakCols);
   assert(workbookXml.includes('Print_Area'), 'expected Print_Area defined name in workbook XML');
   assert(
     workbookXml.includes('$' + payslipExcelColLetter(printMeta.printLastCol) + printMeta.printLastExcelRow),
@@ -285,15 +346,47 @@ async function smokeExcelPrintSettings() {
       payslipExcelColLetter(printMeta.printLastCol) +
       printMeta.printLastExcelRow
   );
-  assert(patchedXml.includes('scale="50"'), 'expected scale 50 in worksheet XML');
-  assert(patchedXml.includes('fitToPage="0"'), 'expected fitToPage=0 in worksheet XML');
-  assert(patchedXml.includes('autoPageBreaks="0"'), 'expected custom page breaks (autoPageBreaks=0)');
-  assert(patchedXml.includes('horizontalCentered="1"'), 'expected horizontalCentered in worksheet XML');
-  assert(!patchedXml.includes('fitToWidth'), 'fitToWidth must not be present');
-  assert(!patchedXml.includes('fitToHeight'), 'fitToHeight must not be present');
-  assert(patchedXml.includes('left="0.2"'), 'expected 0.2in margins in worksheet XML');
   fs.unlinkSync(outPath);
   console.log('ExcelJS print settings + vertical col breaks + scale 50 smoke ok');
+}
+
+/** SheetJS-only path (actual full-report export): no pageSetup until OOXML patch. */
+async function smokeSheetJsOnlyPatch() {
+  const printMeta = computePayslipPrintMeta(7);
+  const wb = XLSX.utils.book_new();
+  ['Labor Cost', 'CPA', 'Payroll', 'Payslip', 'Schedule', 'PTO'].forEach(function (name) {
+    const ws = XLSX.utils.aoa_to_sheet([[name]]);
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  });
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', bookSST: false });
+  const zip = await JSZip.loadAsync(buf);
+  const wbXml = await zip.file('xl/workbook.xml').async('string');
+  const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  const sheetPath = worksheetPathFromWorkbook(wbXml, relsXml, 'Payslip');
+  assert(sheetPath, 'Payslip sheet path not found in multi-sheet workbook');
+  const rawXml = await zip.file(sheetPath).async('string');
+  assert(!rawXml.includes('pageSetup'), 'SheetJS must not emit pageSetup before patch');
+  const patched = patchPayslipSheetPrintXml(rawXml, printMeta.pageBreakCols);
+  assertPatchedPayslipXml(patched, printMeta.pageBreakCols);
+  console.log('SheetJS-only payslip OOXML patch ok (path ' + sheetPath + ')');
+}
+
+/** Legacy ExcelJS export may leave fitToWidth + horizontal rowBreaks; patch must fix. */
+async function smokeLegacyExcelJsRepair() {
+  const printMeta = computePayslipPrintMeta(14);
+  const legacyXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<sheetPr><pageSetUpPr fitToPage="1" autoPageBreaks="0"/></sheetPr>' +
+    '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>PAYSLIP</t></is></c></row></sheetData>' +
+    '<pageSetup fitToWidth="1" fitToHeight="0"/>' +
+    '<rowBreaks count="4" manualBreakCount="4">' +
+    '<brk id="28" max="16838" man="1"/><brk id="53" max="16838" man="1"/>' +
+    '<brk id="78" max="16838" man="1"/><brk id="103" max="16838" man="1"/></rowBreaks>' +
+    '</worksheet>';
+  const patched = patchPayslipSheetPrintXml(legacyXml, printMeta.pageBreakCols);
+  assertPatchedPayslipXml(patched, printMeta.pageBreakCols);
+  console.log('legacy ExcelJS payslip print XML repair ok');
 }
 
 async function smokeFormulaRoundtrip() {
@@ -324,5 +417,7 @@ async function smokeFormulaRoundtrip() {
 }
 
 main();
+await smokeSheetJsOnlyPatch();
+await smokeLegacyExcelJsRepair();
 await smokeExcelPrintSettings();
 await smokeFormulaRoundtrip();
