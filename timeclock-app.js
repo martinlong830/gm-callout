@@ -32,6 +32,9 @@
   var watchdogTimer = null;
   var RPC_TIMEOUT_MS = 15000;
   var BUSY_STUCK_MS = 20000;
+  var deviceRestaurantId = 'rp-9';
+  var scheduleAssignments = null;
+  var scheduleContextReady = null;
 
   var MODE_LABELS = {
     in: 'Clock in',
@@ -74,8 +77,82 @@
     ]);
   }
 
+  function scheduleMatchApi() {
+    return window.gmTimeclockScheduleMatch || null;
+  }
+
+  function punchIsoLocal() {
+    var api = scheduleMatchApi();
+    if (api && typeof api.isoFromDate === 'function') {
+      return api.isoFromDate(new Date());
+    }
+    var d = new Date();
+    var pad = function (n) {
+      return String(n).padStart(2, '0');
+    };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function inferDeviceRestaurantId(displayName) {
+    var api = scheduleMatchApi();
+    if (api && typeof api.restaurantFromDeviceLabel === 'function') {
+      var fromLabel = api.restaurantFromDeviceLabel(displayName);
+      if (fromLabel) return fromLabel;
+    }
+    return 'rp-9';
+  }
+
+  async function ensureScheduleContext() {
+    if (scheduleContextReady) return scheduleContextReady;
+    var client = sb();
+    if (!client) {
+      scheduleContextReady = Promise.resolve();
+      return scheduleContextReady;
+    }
+    scheduleContextReady = (async function () {
+      try {
+        var teamRes = await client.from('team_state').select('schedule_assignments').eq('id', 'main').maybeSingle();
+        if (!teamRes.error && teamRes.data && teamRes.data.schedule_assignments) {
+          scheduleAssignments = teamRes.data.schedule_assignments;
+        }
+      } catch (_ex) {
+        /* ignore — off-schedule punches still work without schedule data */
+      }
+    })();
+    return scheduleContextReady;
+  }
+
+  function resolvePunchContext(employeeName, openEntry) {
+    if (openEntry && (openEntry.open_schedule_shift_id || openEntry.open_clock_restaurant_id)) {
+      return {
+        scheduleShiftId: openEntry.open_schedule_shift_id || null,
+        restaurantId: openEntry.open_clock_restaurant_id || deviceRestaurantId,
+      };
+    }
+    var api = scheduleMatchApi();
+    if (!api || typeof api.resolvePunchScheduleContext !== 'function') {
+      return { scheduleShiftId: null, restaurantId: deviceRestaurantId };
+    }
+    return api.resolvePunchScheduleContext({
+      assignments: scheduleAssignments || {},
+      employeeName: employeeName,
+      punchIso: punchIsoLocal(),
+      deviceRestaurantId: deviceRestaurantId,
+    });
+  }
+
+  /** Phones/tablets/iPads: use on-screen pad only — never focus the hidden input (opens OS keyboard). */
+  function prefersOnScreenPadOnly() {
+    if (typeof window.matchMedia === 'function') {
+      if (window.matchMedia('(pointer: coarse)').matches) return true;
+      if (window.matchMedia('(hover: none)').matches && navigator.maxTouchPoints > 0) return true;
+    }
+    return typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+  }
+
   function armHiddenInputForEntry() {
     if (!hiddenInputEl || phase !== 'enter') return;
+    if (prefersOnScreenPadOnly()) return;
     hiddenInputEl.removeAttribute('readonly');
     try {
       hiddenInputEl.focus({ preventScroll: true });
@@ -222,6 +299,7 @@
     setBusy(true);
     setStatus('Checking PIN…', null);
     try {
+      await ensureScheduleContext();
       var res = await rpcWithTimeout(client, 'timeclock_lookup_pin', { pin_input: pinBuffer });
       if (res.error) {
         setStatus(res.error.message || 'Could not verify PIN.', 'err');
@@ -274,10 +352,31 @@
     }
     setStatus('Saving…', null);
     try {
-      var res = await rpcWithTimeout(client, 'timeclock_punch_with_action', {
+      await ensureScheduleContext();
+      var punchCtx = resolvePunchContext(
+        pendingLookup.display_name,
+        pendingLookup.is_clocked_in ? pendingLookup : null
+      );
+      var rpcArgs = {
         pin_input: pinBuffer,
         punch_action: punchMode,
-      });
+        p_restaurant_id: punchCtx.restaurantId,
+      };
+      if (punchMode === 'in') {
+        rpcArgs.p_schedule_shift_id = punchCtx.scheduleShiftId;
+      }
+      var res = await rpcWithTimeout(client, 'timeclock_punch_with_action', rpcArgs);
+      if (
+        res.error &&
+        /p_restaurant_id|p_schedule_shift_id|clock_restaurant|schema cache|Could not find the function/i.test(
+          res.error.message || ''
+        )
+      ) {
+        res = await rpcWithTimeout(client, 'timeclock_punch_with_action', {
+          pin_input: pinBuffer,
+          punch_action: punchMode,
+        });
+      }
       if (
         res.error &&
         /timeclock_punch_with_action|schema cache|function/i.test(res.error.message || '')
@@ -359,10 +458,7 @@
     if (!padEl) return;
     padEl.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-tc-digit]');
-      if (btn) {
-        armHiddenInputForEntry();
-        appendDigit(btn.getAttribute('data-tc-digit'));
-      }
+      if (btn) appendDigit(btn.getAttribute('data-tc-digit'));
     });
   }
 
@@ -464,7 +560,7 @@
   }
 
   async function loadDeviceLabel() {
-    if (!deviceLabelEl || !sb()) return;
+    if (!sb()) return;
     try {
       var sess = await sb().auth.getSession();
       var uid = sess.data && sess.data.session && sess.data.session.user && sess.data.session.user.id;
@@ -475,7 +571,8 @@
         .eq('id', uid)
         .maybeSingle();
       if (prof.data && prof.data.display_name) {
-        deviceLabelEl.textContent = prof.data.display_name;
+        deviceRestaurantId = inferDeviceRestaurantId(prof.data.display_name);
+        if (deviceLabelEl) deviceLabelEl.textContent = prof.data.display_name;
       }
     } catch (_ex) {
       /* ignore */
@@ -509,6 +606,7 @@
       uiBound = true;
     }
     void loadDeviceLabel();
+    void ensureScheduleContext();
     if (hiddenInputEl) {
       hiddenInputEl.setAttribute('readonly', 'readonly');
       if (phase === 'enter') armHiddenInputForEntry();

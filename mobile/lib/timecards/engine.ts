@@ -5,12 +5,13 @@ import {
   buildAllLocationsWorkerShiftRows,
   buildWeeksFromMonday,
   defaultRestaurants,
-  getThisMondayDate,
+  getScheduleAnchorMondayDate,
   loadDraftFromTeamState,
   mergeRemoteAssignments,
   assignmentShell,
   redPokeShiftHoursDecimal,
   redPokeShiftTimeLabel,
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   type WorkerShiftRow,
 } from '../schedule/engine';
@@ -28,6 +29,7 @@ import {
   getAddedOffScheduleDays,
   isOffScheduleShiftDayRow,
   makeOffScheduleShiftDayRow,
+  entryHasMeaningfulPunch,
 } from './offScheduleShift';
 import {
   punchShiftRoundedMinutes,
@@ -48,6 +50,7 @@ import {
   unpaidBreakMinutes,
   formatBreakPolicyLabel,
 } from './breakPolicy';
+import { entryRestaurantId, punchDayRestaurantId, type LocationFilter } from './restaurantAttribution';
 
 export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds };
 
@@ -150,23 +153,40 @@ export function weekDayRecordedForEmployee(
   shifts: ShiftDayRow[],
   emp: EmployeeRow,
   entries: TimeClockEntry[],
-  entriesIndex?: Record<string, TimeClockEntry[]>
+  entriesIndex?: Record<string, TimeClockEntry[]>,
+  scheduleCtx?: ScheduleContext,
+  locationFilter: LocationFilter = 'all'
 ): Array<{ iso: string; recordedMins: number }> {
-  const seen = new Set<string>();
-  const dayRecorded: Array<{ iso: string; recordedMins: number }> = [];
-  for (const row of shifts) {
-    if (seen.has(row.iso)) continue;
-    const dayEntries = entriesIndex
-      ? findEntriesForDayIndexed(entriesIndex, emp.id, row.iso)
-      : findEntriesForDay(entries, emp.id, row.iso);
-    if (!dayEntries.length) continue;
-    seen.add(row.iso);
-    dayRecorded.push({
-      iso: row.iso,
-      recordedMins: dailyRecordedMinutesForEmployee(entries, emp.id, row.iso, emp),
-    });
+  if (!scheduleCtx) {
+    const seen = new Set<string>();
+    const dayRecorded: Array<{ iso: string; recordedMins: number }> = [];
+    for (const row of shifts) {
+      if (seen.has(row.iso)) continue;
+      const dayEntries = entriesIndex
+        ? findEntriesForDayIndexed(entriesIndex, emp.id, row.iso)
+        : findEntriesForDay(entries, emp.id, row.iso);
+      if (!dayEntries.length) continue;
+      seen.add(row.iso);
+      dayRecorded.push({
+        iso: row.iso,
+        recordedMins: dailyRecordedMinutesForEmployee(entries, emp.id, row.iso, emp),
+      });
+    }
+    return dayRecorded;
   }
-  return dayRecorded;
+  const byIso: Record<string, number> = {};
+  for (const e of entries) {
+    if (e.employee_id !== emp.id || !e.clock_in_at) continue;
+    const iso = punchDayIso(e);
+    if (!entryHasMeaningfulPunch(e, iso)) continue;
+    if (locationFilter !== 'all' && entryRestaurantId(emp, e, entries, scheduleCtx) !== locationFilter) {
+      continue;
+    }
+    byIso[iso] = (byIso[iso] || 0) + recordedPaidMinutes(e, null, emp);
+  }
+  return Object.keys(byIso)
+    .sort()
+    .map((iso) => ({ iso, recordedMins: byIso[iso] }));
 }
 
 /** @deprecated Use weekly reg/OT allocation; schedMins is ignored. */
@@ -204,6 +224,109 @@ export function dayPayInPayWeek(
 ) {
   const byDay = weeklyRegOtByDay(dayRecorded);
   const split = byDay[targetIso] || { regMins: 0, otMins: 0, totalMins: 0 };
+  const pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
+  return { ...split, ...pay };
+}
+
+export function weekDayRecordedByRestaurantForEmployee(
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext,
+  locationFilter: LocationFilter = 'all'
+): Array<{ iso: string; restaurantId: string; recordedMins: number }> {
+  const buckets: Record<string, number> = {};
+  for (const e of entries) {
+    if (e.employee_id !== emp.id || !e.clock_in_at) continue;
+    const iso = punchDayIso(e);
+    if (!entryHasMeaningfulPunch(e, iso)) continue;
+    const rest = entryRestaurantId(emp, e, entries, scheduleCtx);
+    if (locationFilter !== 'all' && rest !== locationFilter) continue;
+    const key = `${iso}\0${rest}`;
+    buckets[key] = (buckets[key] || 0) + recordedPaidMinutes(e, null, emp);
+  }
+  return Object.keys(buckets)
+    .sort()
+    .map((key) => {
+      const sep = key.indexOf('\0');
+      return {
+        iso: key.slice(0, sep),
+        restaurantId: key.slice(sep + 1),
+        recordedMins: buckets[key],
+      };
+    });
+}
+
+export function weeklyRegOtByRestaurantDay(
+  buckets: Array<{ iso: string; restaurantId: string; recordedMins: number }>
+): Record<string, RegOtMinutes> {
+  const sorted = [...buckets].sort((a, b) => {
+    if (a.iso !== b.iso) return a.iso.localeCompare(b.iso);
+    return a.restaurantId.localeCompare(b.restaurantId);
+  });
+  let regularRemaining = WEEKLY_REGULAR_CAP_MINUTES;
+  const out: Record<string, RegOtMinutes> = {};
+  for (const b of sorted) {
+    const split = allocateRecordedRegOtMinutes(b.recordedMins, regularRemaining);
+    regularRemaining = split.regularRemaining;
+    out[`${b.iso}\0${b.restaurantId}`] = {
+      regMins: split.regMins,
+      otMins: split.otMins,
+      totalMins: split.totalMins,
+    };
+  }
+  return out;
+}
+
+export function shiftRowAttributionRestaurant(
+  emp: EmployeeRow,
+  row: ShiftDayRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext
+): string {
+  if (isOffScheduleShiftDayRow(row)) {
+    return punchDayRestaurantId(emp, row.iso, entries, scheduleCtx);
+  }
+  return shiftRestaurantId(row.shift);
+}
+
+export function dailyRecordedMinutesForEmployeeAtRestaurant(
+  emp: EmployeeRow,
+  iso: string,
+  restaurantId: string,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext
+): number {
+  let total = 0;
+  for (const e of findEntriesForDay(entries, emp.id, iso)) {
+    if (!e.clock_in_at) continue;
+    if (entryRestaurantId(emp, e, entries, scheduleCtx) !== restaurantId) continue;
+    total += recordedPaidMinutes(e, null, emp);
+  }
+  return total;
+}
+
+export function weekRegOtForShiftRow(
+  emp: EmployeeRow,
+  row: ShiftDayRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext,
+  locationFilter: LocationFilter = 'all'
+): RegOtMinutes {
+  const byRest = weeklyRegOtByRestaurantDay(
+    weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, locationFilter)
+  );
+  const rest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
+  return byRest[`${row.iso}\0${rest}`] || { regMins: 0, otMins: 0, totalMins: 0 };
+}
+
+export function shiftPayForShiftRow(
+  emp: EmployeeRow,
+  row: ShiftDayRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext,
+  locationFilter: LocationFilter = 'all'
+) {
+  const split = weekRegOtForShiftRow(emp, row, entries, scheduleCtx, locationFilter);
   const pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
   return { ...split, ...pay };
 }
@@ -360,7 +483,9 @@ export function entriesForShiftDayCleanup(
   entries: TimeClockEntry[],
   empId: string,
   shiftRow: ShiftDayRow,
-  extraEntryIds?: string[]
+  extraEntryIds?: string[],
+  emp?: EmployeeRow | null,
+  scheduleCtx?: ScheduleContext
 ): TimeClockEntry[] {
   const byId = new Map<string, TimeClockEntry>();
   for (const e of findEntriesForDay(entries, empId, shiftRow.iso)) {
@@ -368,10 +493,11 @@ export function entriesForShiftDayCleanup(
   }
   if (!isOffScheduleShiftDayRow(shiftRow) && shiftRow.shift?.id) {
     const shiftId = shiftRow.shift.id;
+    const rowRest = shiftRow.shift.restaurantId || 'rp-9';
     for (const e of entries) {
-      if (e?.employee_id === empId && e.schedule_shift_id === shiftId && e.id) {
-        byId.set(e.id, e);
-      }
+      if (e?.employee_id !== empId || e.schedule_shift_id !== shiftId || !e.id) continue;
+      if (emp && scheduleCtx && entryRestaurantId(emp, e, entries, scheduleCtx) !== rowRest) continue;
+      byId.set(e.id, e);
     }
   }
   for (const id of extraEntryIds || []) {
@@ -417,16 +543,17 @@ export function statusColor(status: string): { bg: string; text: string } {
 }
 
 export function buildScheduleContext(teamState: Record<string, unknown> | null) {
-  const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getThisMondayDate());
+  const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
   const allWeekDays = weekMeta.map((m) => m.label);
-  const draftRows = loadDraftFromTeamState(teamState?.draft_schedule);
+  const draftScheduleRaw = teamState?.draft_schedule;
+  const draftRows = loadDraftFromTeamState(draftScheduleRaw, SCHEDULE_TEMPLATE_WEEK_INDEX);
   const restaurants = defaultRestaurants();
   const assignmentStore = mergeRemoteAssignments(
     assignmentShell(restaurants),
     teamState?.schedule_assignments as Parameters<typeof mergeRemoteAssignments>[1],
     restaurants.map((r) => r.id)
   );
-  return { weekMeta, allWeekDays, draftRows, restaurants, assignmentStore };
+  return { weekMeta, allWeekDays, draftScheduleRaw, draftRows, restaurants, assignmentStore };
 }
 
 export type ScheduleContext = ReturnType<typeof buildScheduleContext>;
@@ -470,12 +597,12 @@ export function buildScheduledMinutesByDayForEmployee(
   const name = employeeDisplayName(emp);
   const startIso = isoFromDate(bounds.start);
   const endIso = isoFromDate(bounds.end);
-  const { weekMeta, allWeekDays, draftRows, restaurants, assignmentStore } =
+  const { weekMeta, allWeekDays, draftScheduleRaw, restaurants, assignmentStore } =
     cachedCtx ?? buildScheduleContext(teamState);
   const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
   const all = buildAllLocationsWorkerShiftRows(weekMeta, {
     allWeekDays,
-    draftRows,
+    draftScheduleRaw,
     employees,
     restaurants,
     assignmentStore,
@@ -502,13 +629,13 @@ export function buildShiftsForEmployeeInWeek(
   const name = employeeDisplayName(emp);
   const startIso = isoFromDate(bounds.start);
   const endIso = isoFromDate(bounds.end);
-  const { weekMeta, allWeekDays, draftRows, restaurants, assignmentStore } =
+  const { weekMeta, allWeekDays, draftScheduleRaw, restaurants, assignmentStore } =
     cachedCtx ?? buildScheduleContext(teamState);
   const todayIso = isoFromDate(new Date());
   const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
   const all = buildAllLocationsWorkerShiftRows(weekMeta, {
     allWeekDays,
-    draftRows,
+    draftScheduleRaw,
     employees,
     restaurants,
     assignmentStore,
@@ -606,11 +733,24 @@ export function formatDayBreakLabel(
   return label;
 }
 
-export function computeSpreadOfHours(emp: EmployeeRow, entries: TimeClockEntry[]) {
+export function computeSpreadOfHours(
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  options?: { locationFilter?: LocationFilter; scheduleCtx?: ScheduleContext }
+) {
+  const locationFilter = options?.locationFilter ?? 'all';
+  const scheduleCtx = options?.scheduleCtx;
   const byDay: Record<string, number> = {};
   for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
     if (!e.clock_out_at) continue;
+    if (
+      locationFilter !== 'all' &&
+      scheduleCtx &&
+      entryRestaurantId(emp, e, entries, scheduleCtx) !== locationFilter
+    ) {
+      continue;
+    }
     const iso = punchDayIso(e);
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
   }
@@ -671,11 +811,22 @@ function rosterGrandTotalPay(row: {
 
 export function computeSpreadOfHoursIndexed(
   emp: EmployeeRow,
-  empEntries: TimeClockEntry[]
-): ReturnType<typeof computeSpreadOfHours> {
+  empEntries: TimeClockEntry[],
+  options?: { locationFilter?: LocationFilter; scheduleCtx?: ScheduleContext; allEntries?: TimeClockEntry[] }
+) {
+  const locationFilter = options?.locationFilter ?? 'all';
+  const scheduleCtx = options?.scheduleCtx;
+  const allEntries = options?.allEntries ?? empEntries;
   const byDay: Record<string, number> = {};
   for (const e of empEntries) {
     if (!e.clock_in_at || !e.clock_out_at) continue;
+    if (
+      locationFilter !== 'all' &&
+      scheduleCtx &&
+      entryRestaurantId(emp, e, allEntries, scheduleCtx) !== locationFilter
+    ) {
+      continue;
+    }
     const iso = punchDayIso(e);
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
   }
@@ -694,6 +845,25 @@ export function computeSpreadOfHoursIndexed(
   return { count, dates, pay, hasRate: employeeHourlyRate(emp) != null };
 }
 
+function shiftRestaurantId(shift: WorkerShiftRow): string {
+  return shift?.restaurantId === 'rp-8' || shift?.restaurantId === 'rp-9' ? shift.restaurantId : 'rp-9';
+}
+
+export function shiftMatchesLocationFilter(
+  shiftRow: ShiftDayRow,
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext,
+  locationFilter: LocationFilter
+): boolean {
+  if (locationFilter === 'all') return true;
+  if (!shiftRow?.shift) return true;
+  if (isOffScheduleShiftDayRow(shiftRow)) {
+    return punchDayRestaurantId(emp, shiftRow.iso, entries, scheduleCtx) === locationFilter;
+  }
+  return shiftRestaurantId(shiftRow.shift) === locationFilter;
+}
+
 export function buildRosterRowSync(
   emp: EmployeeRow,
   entries: TimeClockEntry[],
@@ -704,7 +874,8 @@ export function buildRosterRowSync(
   dishwasherTipsSlice: Record<string, number>,
   entriesIndex: Record<string, TimeClockEntry[]>,
   entriesByEmpId: Record<string, TimeClockEntry[]>,
-  bounds: PayWeekBounds
+  bounds: PayWeekBounds,
+  locationFilter: LocationFilter = 'all'
 ): RosterRow {
   const name = employeeDisplayName(emp);
   const shifts = buildShiftsForEmployeeInWeek(emp, null, employeesLite, bounds, scheduleCtx, {
@@ -727,6 +898,12 @@ export function buildRosterRowSync(
   const todayIso = isoFromDate(new Date());
 
   for (const row of shifts) {
+    if (
+      locationFilter !== 'all' &&
+      !shiftMatchesLocationFilter(row, emp, entries, scheduleCtx, locationFilter)
+    ) {
+      continue;
+    }
     schedMins += scheduledPaidMinutes(row.shift, emp);
     const dayEntries = findEntriesForDayIndexed(entriesIndex, emp.id, row.iso);
     if (dayEntries.length) {
@@ -738,7 +915,14 @@ export function buildRosterRowSync(
     }
   }
 
-  const dayRecorded = weekDayRecordedForEmployee(shifts, emp, entries, entriesIndex);
+  const dayRecorded = weekDayRecordedForEmployee(
+    shifts,
+    emp,
+    entries,
+    entriesIndex,
+    scheduleCtx,
+    locationFilter
+  );
   const regOtByDay = weeklyRegOtByDay(dayRecorded);
   let regMins = 0;
   let otMins = 0;
@@ -749,7 +933,11 @@ export function buildRosterRowSync(
   }
 
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
-  const soh = computeSpreadOfHoursIndexed(emp, entriesByEmpId[emp.id] || []);
+  const soh = computeSpreadOfHoursIndexed(emp, entriesByEmpId[emp.id] || [], {
+    locationFilter,
+    scheduleCtx,
+    allEntries: entries,
+  });
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
@@ -757,6 +945,7 @@ export function buildRosterRowSync(
     ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
         entries,
         extrasSlice,
+        locationFilter,
       })
     : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
@@ -772,6 +961,7 @@ export function buildRosterRowSync(
     vlHours: extras.vl,
     slHours: extras.sl,
     sohCount: soh.count,
+    sohDatesLabel: formatSoHDatesList(soh.dates),
   };
 
   return {
@@ -788,6 +978,7 @@ export function buildRosterRowSync(
     vlHours: extras.vl,
     slHours: extras.sl,
     sohCount: soh.count,
+    sohDatesLabel: partial.sohDatesLabel,
     sohPay,
     vlPay,
     slPay,
@@ -885,7 +1076,8 @@ export function buildAllRosterRows(
   employeesLite: EmployeeLite[],
   extrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }>,
   dishwasherTipsSlice: Record<string, number>,
-  bounds: PayWeekBounds
+  bounds: PayWeekBounds,
+  locationFilter: LocationFilter = 'all'
 ): RosterRow[] {
   const scheduleCtx = buildScheduleContext(teamState);
   const entriesIndex = buildEntriesIndex(entries);
@@ -906,7 +1098,8 @@ export function buildAllRosterRows(
       dishwasherTipsSlice,
       entriesIndex,
       entriesByEmpId,
-      bounds
+      bounds,
+      locationFilter
     )
   );
 }
@@ -920,9 +1113,10 @@ export async function buildRosterRow(
   bounds: PayWeekBounds
 ): Promise<RosterRow> {
   const name = employeeDisplayName(emp);
+  const scheduleCtx = buildScheduleContext(teamState);
   const extrasSlice = await loadWeekExtrasSlice(bounds);
   const tipsSlice = await loadDishwasherTipsSlice(bounds);
-  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite, bounds, undefined, {
+  const shifts = buildShiftsForEmployeeInWeek(emp, teamState, employeesLite, bounds, scheduleCtx, {
     entries,
     extrasSlice,
     dishwasherTipsSlice: tipsSlice,
@@ -951,7 +1145,14 @@ export async function buildRosterRow(
     }
   }
 
-  const dayRecorded = weekDayRecordedForEmployee(shifts, emp, entries);
+  const dayRecorded = weekDayRecordedForEmployee(
+    shifts,
+    emp,
+    entries,
+    undefined,
+    scheduleCtx,
+    'all'
+  );
   const regOtByDay = weeklyRegOtByDay(dayRecorded);
   let regMins = 0;
   let otMins = 0;
@@ -985,6 +1186,7 @@ export async function buildRosterRow(
     vlHours: extras.vl,
     slHours: extras.sl,
     sohCount: soh.count,
+    sohDatesLabel: formatSoHDatesList(soh.dates),
   };
 
   return {
@@ -1001,6 +1203,7 @@ export async function buildRosterRow(
     vlHours: extras.vl,
     slHours: extras.sl,
     sohCount: soh.count,
+    sohDatesLabel: partial.sohDatesLabel,
     sohPay,
     vlPay,
     slPay,

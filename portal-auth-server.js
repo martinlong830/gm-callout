@@ -432,6 +432,108 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
+  async function requireManager(req) {
+    const authed = await profileFromAccessToken(req);
+    if (authed.error) {
+      return { error: authed.error, status: authed.status || 401 };
+    }
+    if (authed.profile.role !== "manager") {
+      return { error: "Manager sign-in required.", status: 403 };
+    }
+    return authed;
+  }
+
+  /** Manager creates portal login for a new roster employee (does not sign in as them). */
+  router.post("/admin/create-employee", async (req, res) => {
+    try {
+      const mgr = await requireManager(req);
+      if (mgr.error) {
+        return res.status(mgr.status || 401).json({ ok: false, message: mgr.error });
+      }
+
+      const body = req.body || {};
+      const loginName = String(body.loginName || body.displayName || "").trim();
+      const password = String(body.password || "");
+      const displayName = String(body.displayName || "").trim() || loginName;
+      const recoveryEmailRaw = String(body.recoveryEmail || "").trim();
+
+      if (!loginName || !password) {
+        return res.status(400).json({ ok: false, message: "Name and password are required." });
+      }
+      if (password.length < 4) {
+        return res.status(400).json({ ok: false, message: "Password must be at least 4 characters." });
+      }
+
+      const loginNameNorm = normalizeLoginName(loginName);
+      const { data: existing } = await admin
+        .from("profiles")
+        .select("id")
+        .eq("login_name_norm", loginNameNorm)
+        .maybeSingle();
+      if (existing) {
+        return res.status(409).json({
+          ok: false,
+          message: "A portal account already exists for that name.",
+        });
+      }
+
+      const internalEmail = makeInternalEmail();
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email: internalEmail,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          role: "employee",
+          display_name: displayName,
+          login_name: loginName,
+          login_name_norm: loginNameNorm,
+          phone: body.phone ? String(body.phone).trim() : "",
+          staff_type: body.staffType ? String(body.staffType).trim() : "",
+        },
+      });
+
+      if (createErr || !created.user) {
+        const msg = createErr && createErr.message ? createErr.message : "Could not create account.";
+        return res.status(400).json({ ok: false, message: msg });
+      }
+
+      const userId = created.user.id;
+      const profilePatch = {
+        login_name: loginName,
+        login_name_norm: loginNameNorm,
+        internal_auth_email: internalEmail,
+        display_name: displayName,
+        role: "employee",
+        phone: body.phone ? String(body.phone).trim() : null,
+        staff_type:
+          body.staffType && ["Kitchen", "Bartender", "Server"].includes(body.staffType)
+            ? body.staffType
+            : null,
+      };
+      if (recoveryEmailRaw) {
+        const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
+        if (saved.error) {
+          await admin.auth.admin.deleteUser(userId);
+          return res.status(400).json({ ok: false, message: saved.error });
+        }
+        profilePatch.recovery_email = saved.recoveryEmail;
+        profilePatch.recovery_email_norm = saved.recoveryEmail;
+      }
+      await admin.from("profiles").update(profilePatch).eq("id", userId);
+
+      return res.json({
+        ok: true,
+        userId,
+        loginName,
+        displayName,
+        message: "Portal account created. They can sign in with their name and password.",
+      });
+    } catch (err) {
+      console.warn("portal admin create-employee", err);
+      return res.status(500).json({ ok: false, message: "Could not create employee account." });
+    }
+  });
+
   router.get("/account", async (req, res) => {
     try {
       const authed = await profileFromAccessToken(req);

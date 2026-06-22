@@ -39,19 +39,19 @@ export default function EmployeeLayout() {
         }}
       />
       <Tabs.Screen
+        name="actions"
+        options={{
+          title: 'Actions',
+          tabBarIcon: ({ color, size }) => <Ionicons name="list-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="messages"
         options={{
           title: 'Messages',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubbles-outline" size={size} color={color} />
           ),
-        }}
-      />
-      <Tabs.Screen
-        name="actions"
-        options={{
-          title: 'Actions',
-          tabBarIcon: ({ color, size }) => <Ionicons name="list-outline" size={size} color={color} />,
         }}
       />
     </Tabs>

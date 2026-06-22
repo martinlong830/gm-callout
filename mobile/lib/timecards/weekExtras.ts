@@ -1,7 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { EmployeeRow } from '../employees';
 import type { StaffRequestUi } from '../staffRequests';
+import { isSupabaseConfigured, supabase } from '../supabase';
 import { isoFromDate, weekBoundsStorageKey } from './payWeek';
+import { queueTipPayrollPushToSupabase } from './tipPayrollSync';
 import type { PayWeekBounds } from './types';
 import type { WeekExtras } from './types';
 
@@ -21,8 +23,22 @@ async function loadWeekExtrasMap(bounds: PayWeekBounds): Promise<Record<string, 
   }
 }
 
+let cachedWeekExtrasKey: string | null = null;
+let cachedWeekExtrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }> | null = null;
+
+export function invalidateWeekExtrasSliceCache(bounds?: PayWeekBounds): void {
+  if (bounds && cachedWeekExtrasKey !== weekBoundsStorageKey(bounds)) return;
+  cachedWeekExtrasKey = null;
+  cachedWeekExtrasSlice = null;
+}
+
 export async function loadWeekExtrasSlice(bounds: PayWeekBounds) {
-  return loadWeekExtrasMap(bounds);
+  const key = weekBoundsStorageKey(bounds);
+  if (cachedWeekExtrasKey === key && cachedWeekExtrasSlice) return cachedWeekExtrasSlice;
+  const slice = await loadWeekExtrasMap(bounds);
+  cachedWeekExtrasKey = key;
+  cachedWeekExtrasSlice = slice;
+  return slice;
 }
 
 function leaveMinutesForIsoDay(schedMinsByDay: Record<string, number>, iso: string): number {
@@ -212,6 +228,9 @@ async function saveWeekExtrasMap(bounds: PayWeekBounds, slice: Record<string, { 
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     const next = { ...(all && typeof all === 'object' ? all : {}), [weekBoundsStorageKey(bounds)]: slice };
     await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(next));
+    cachedWeekExtrasKey = weekBoundsStorageKey(bounds);
+    cachedWeekExtrasSlice = slice;
+    if (isSupabaseConfigured && supabase) queueTipPayrollPushToSupabase(supabase);
   } catch {
     /* ignore */
   }

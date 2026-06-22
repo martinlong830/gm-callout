@@ -42,4 +42,15 @@ export type EmployeeLite = {
 
 export type DraftGrid = Record<RoleKey, (Array<string | null> | null)[][]>;
 
-export type AssignmentStore = Record<string, Record<string, string[]>>;
+/** Legacy `['Name']` or FOH sheet `{ workers, break?, hours?, timeLabel? }`. */
+export type ScheduleAssignmentEntry =
+  | string[]
+  | {
+      workers: string[];
+      break?: string;
+      hours?: string;
+      timeLabel?: string;
+      breakPaid?: boolean;
+    };
+
+export type AssignmentStore = Record<string, Record<string, ScheduleAssignmentEntry>>;

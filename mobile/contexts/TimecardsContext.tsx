@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { loadWeekEntries } from '../lib/timecards/entriesApi';
@@ -14,10 +15,17 @@ import {
   isoFromDate,
   payWeekBoundsFromMonday,
   saveSelectedPayWeekStartIso,
+  weekBoundsStorageKey,
   type PayWeekOption,
 } from '../lib/timecards/payWeek';
 import type { PayWeekBounds, TimecardSchema, TimeClockEntry } from '../lib/timecards/types';
+import { subscribeTimeClockEntries } from '../lib/timeClockEntriesSync';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+
+type CachedWeekEntries = {
+  entries: TimeClockEntry[];
+  schema: TimecardSchema;
+};
 
 type TimecardsState = {
   entries: TimeClockEntry[];
@@ -51,6 +59,13 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hydratedRef = useRef(false);
+  const refetchInFlightRef = useRef(false);
+  const refetchAgainRef = useRef(false);
+  const entriesCacheRef = useRef<Map<string, CachedWeekEntries>>(new Map());
+  const runRefreshRef = useRef<(opts?: { showLoading?: boolean; force?: boolean }) => Promise<void>>(
+    async () => {}
+  );
 
   useEffect(() => {
     (async () => {
@@ -64,32 +79,87 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
 
   const weekLabel = useMemo(() => formatPayWeekLabel(bounds), [bounds]);
 
+  const runRefresh = useCallback(
+    async (opts?: { showLoading?: boolean; force?: boolean }) => {
+      if (!isSupabaseConfigured || !supabase) {
+        hydratedRef.current = false;
+        setEntries([]);
+        setError('Supabase is not configured.');
+        setLoading(false);
+        return;
+      }
+      if (refetchInFlightRef.current) {
+        refetchAgainRef.current = true;
+        return;
+      }
+
+      const weekKey = weekBoundsStorageKey(bounds);
+      const cached = !opts?.force ? entriesCacheRef.current.get(weekKey) : undefined;
+      const hasCache = !!cached;
+      const showLoading = opts?.showLoading ?? !hasCache;
+
+      refetchInFlightRef.current = true;
+      if (hasCache) {
+        setEntries(cached.entries);
+        setSchema(cached.schema);
+        setError(null);
+        hydratedRef.current = true;
+      } else if (!opts?.force) {
+        setEntries([]);
+      }
+      if (showLoading) setLoading(true);
+      else if (hasCache) setLoading(false);
+      if (!hasCache) setError(null);
+
+      try {
+        const res = await loadWeekEntries(supabase, bounds);
+        if (!res.ok) {
+          if (!hasCache) {
+            setError(res.reason);
+            setEntries([]);
+          }
+        } else {
+          entriesCacheRef.current.set(weekKey, {
+            entries: res.entries,
+            schema: res.schema,
+          });
+          setEntries(res.entries);
+          setSchema(res.schema);
+          setError(null);
+          hydratedRef.current = true;
+        }
+      } finally {
+        refetchInFlightRef.current = false;
+        setLoading(false);
+        if (refetchAgainRef.current) {
+          refetchAgainRef.current = false;
+          void runRefresh({ showLoading: false, force: true });
+        }
+      }
+    },
+    [bounds]
+  );
+
   const refresh = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setEntries([]);
-      setError('Supabase is not configured.');
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const res = await loadWeekEntries(supabase, bounds);
-    if (!res.ok) {
-      setError(res.reason);
-      setEntries([]);
-    } else {
-      setEntries(res.entries);
-      setSchema(res.schema);
-    }
-    setLoading(false);
-  }, [bounds]);
+    await runRefresh({ showLoading: true, force: true });
+  }, [runRefresh]);
+
+  runRefreshRef.current = runRefresh;
 
   useEffect(() => {
-    if (ready) void refresh();
-  }, [ready, bounds, refresh]);
+    if (ready) void runRefresh();
+  }, [ready, bounds, runRefresh]);
 
-  const setPayWeekStartIso = useCallback(async (startIso: string) => {
-    await saveSelectedPayWeekStartIso(startIso);
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    return subscribeTimeClockEntries(supabase, () => {
+      entriesCacheRef.current.delete(weekBoundsStorageKey(bounds));
+      void runRefreshRef.current({ showLoading: false, force: true });
+    });
+  }, [bounds]);
+
+  const setPayWeekStartIso = useCallback((startIso: string) => {
+    void saveSelectedPayWeekStartIso(startIso);
     setSelectedWeekStartIso(startIso);
     const mon = new Date(`${startIso}T12:00:00`);
     setBounds(payWeekBoundsFromMonday(mon));
@@ -99,7 +169,7 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
     () => ({
       entries,
       schema,
-      loading: !ready || loading,
+      loading: !ready || (loading && !hydratedRef.current),
       error,
       bounds,
       weekLabel,

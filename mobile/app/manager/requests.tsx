@@ -17,7 +17,7 @@ import { AvailabilityMatrixReadOnly } from '../../components/AvailabilityMatrixR
 import { useAppData } from '../../contexts/AppDataContext';
 import { approveStaffRequest } from '../../lib/approveStaffRequest';
 import { staffTypeLabel } from '../../lib/employees';
-import { loadDraftFromTeamState } from '../../lib/schedule/engine';
+import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
 import { supabase } from '../../lib/supabase';
 import {
   formatAvailabilityGridSummary,
@@ -137,8 +137,17 @@ export default function ManagerRequests() {
   const [busyId, setBusyId] = useState<string | null>(null);
   /** Same as web: open submitted week in a modal from "View submitted grid". */
   const [gridModal, setGridModal] = useState<StaffRequestUi | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void refetch().finally(() => setRefreshing(false));
+  }, [refetch]);
+
+  const draftRows = useMemo(
+    () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
+    [teamState]
+  );
 
   const statusFilter = statusByType[typeFilter];
   const q = search.trim().toLowerCase();
@@ -202,7 +211,7 @@ export default function ManagerRequests() {
         : await updateStaffRequestStatus(supabase, req.id, 'approved');
     setBusyId(null);
     if (!res.ok) Alert.alert('Update failed', res.message);
-    else void refetch();
+    else void refetch({ silent: true });
   };
 
   const onDecline = async (id: string) => {
@@ -214,7 +223,7 @@ export default function ManagerRequests() {
     const res = await updateStaffRequestStatus(supabase, id, 'declined');
     setBusyId(null);
     if (!res.ok) Alert.alert('Update failed', res.message);
-    else void refetch();
+    else void refetch({ silent: true });
   };
 
   const onBulkApproveAvailability = async () => {
@@ -235,7 +244,7 @@ export default function ManagerRequests() {
       await approveStaffRequest(supabase, r, employees, draftRows);
     }
     setBusyId(null);
-    void refetch();
+    void refetch({ silent: true });
   };
 
   const typeLabel = (r: StaffRequestUi) => {
@@ -427,8 +436,8 @@ export default function ManagerRequests() {
           style={styles.list}
           data={rows}
           keyExtractor={(item) => item.key}
-          refreshing={loading}
-          onRefresh={() => void refetch()}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
           renderItem={renderRow}
           ListEmptyComponent={<Text style={styles.muted}>{empty}</Text>}
           contentContainerStyle={styles.listPad}

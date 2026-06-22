@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
 import { EmployeePhoto } from '../../components/EmployeePhoto';
 import { useAppData } from '../../contexts/AppDataContext';
@@ -11,8 +11,12 @@ import {
   type EmployeeRow,
 } from '../../lib/employees';
 import { leaveSummaryLines } from '../../lib/employeeLeave';
-import { loadDraftFromTeamState } from '../../lib/schedule/engine';
+import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
 import { compareEmployeesByScheduleOrder } from '../../lib/schedule/rosterOrder';
+
+type TeamRow =
+  | { key: string; kind: 'section'; title: string }
+  | { key: string; kind: 'member'; employee: EmployeeRow };
 
 function MetaRow({ label, value }: { label: string; value: string }) {
   return (
@@ -23,7 +27,13 @@ function MetaRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TeamMemberCard({ item, onPress }: { item: EmployeeRow; onPress: () => void }) {
+const TeamMemberCard = memo(function TeamMemberCard({
+  item,
+  onPress,
+}: {
+  item: EmployeeRow;
+  onPress: () => void;
+}) {
   const pinLine = employeeClockPinLine(item);
   const leaveLines = leaveSummaryLines(item);
 
@@ -49,60 +59,101 @@ function TeamMemberCard({ item, onPress }: { item: EmployeeRow; onPress: () => v
       </View>
     </Pressable>
   );
+});
+
+function buildTeamRows(employees: EmployeeRow[]): TeamRow[] {
+  const sorted = [...employees].sort(compareEmployeesByScheduleOrder);
+  const byTitle = new Map<string, EmployeeRow[]>();
+  for (const e of sorted) {
+    const title = staffTypeLabel(e.staffType);
+    const list = byTitle.get(title) ?? [];
+    list.push(e);
+    byTitle.set(title, list);
+  }
+  const knownOrder = ['Front of the House', 'Back of the House', 'Delivery/Dishwasher'];
+  const titles = [
+    ...knownOrder.filter((t) => byTitle.has(t)),
+    ...[...byTitle.keys()].filter((t) => !knownOrder.includes(t)).sort(),
+  ];
+  const rows: TeamRow[] = [];
+  for (const title of titles) {
+    rows.push({ key: `sec-${title}`, kind: 'section', title });
+    for (const employee of byTitle.get(title)!) {
+      rows.push({ key: employee.id, kind: 'member', employee });
+    }
+  }
+  return rows;
 }
 
 export default function ManagerTeam() {
   const { employees, teamState, loading, error, refetch } = useAppData();
   const [selected, setSelected] = useState<EmployeeRow | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
+  const draftRows = useMemo(
+    () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
+    [teamState]
+  );
 
-  const sorted = [...employees].sort(compareEmployeesByScheduleOrder);
+  const rows = useMemo(() => buildTeamRows(employees), [employees]);
 
-  const sections: { title: string; list: EmployeeRow[] }[] = [];
-  let curTitle = '';
-  let bucket: EmployeeRow[] = [];
-  for (const e of sorted) {
-    const title = staffTypeLabel(e.staffType);
-    if (title !== curTitle) {
-      if (bucket.length) sections.push({ title: curTitle, list: bucket });
-      curTitle = title;
-      bucket = [e];
-    } else {
-      bucket.push(e);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void refetch().finally(() => setRefreshing(false));
+  }, [refetch]);
+
+  const renderRow = useCallback(({ item }: { item: TeamRow }) => {
+    if (item.kind === 'section') {
+      return <Text style={styles.sectionTitle}>{item.title}</Text>;
     }
-  }
-  if (bucket.length) sections.push({ title: curTitle, list: bucket });
+    return <TeamMemberCard item={item.employee} onPress={() => setSelected(item.employee)} />;
+  }, []);
 
   return (
     <View style={styles.screen}>
       {error ? <Text style={styles.err}>{error}</Text> : null}
-      <Text style={styles.header}>{employees.length} people</Text>
-      <ScrollView
-        refreshControl={
-          <RefreshControl refreshing={loading} onRefresh={() => void refetch()} tintColor="#c41230" />
-        }
-        contentContainerStyle={styles.scrollContent}
-      >
-        {sections.map((sec) => (
-          <View key={sec.title}>
-            <Text style={styles.sectionTitle}>{sec.title}</Text>
-            {sec.list.map((item) => (
-              <TeamMemberCard key={item.id} item={item} onPress={() => setSelected(item)} />
-            ))}
-          </View>
-        ))}
-        {!loading && !employees.length ? (
-          <Text style={styles.muted}>No employees in Supabase yet.</Text>
-        ) : null}
-      </ScrollView>
+      <View style={styles.headerRow}>
+        <Text style={styles.header}>{employees.length} people</Text>
+        <Pressable
+          style={styles.addBtn}
+          onPress={() => {
+            setSelected(null);
+            setCreating(true);
+          }}
+        >
+          <Text style={styles.addBtnText}>+ Add</Text>
+        </Pressable>
+      </View>
+      {loading && !employees.length ? (
+        <ActivityIndicator style={styles.initialLoader} />
+      ) : (
+        <FlatList
+          style={styles.list}
+          data={rows}
+          keyExtractor={(item) => item.key}
+          renderItem={renderRow}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          contentContainerStyle={styles.scrollContent}
+          ListEmptyComponent={
+            !loading ? <Text style={styles.muted}>No employees in Supabase yet.</Text> : null
+          }
+          keyboardShouldPersistTaps="handled"
+        />
+      )}
 
       <EmployeeEditorSheet
-        employee={selected}
-        visible={!!selected}
+        employee={creating ? null : selected}
+        isCreate={creating}
+        visible={creating || !!selected}
         draftRows={draftRows}
-        onClose={() => setSelected(null)}
-        onSaved={() => void refetch()}
+        onClose={() => {
+          setSelected(null);
+          setCreating(false);
+        }}
+        onSaved={() => void refetch({ silent: true })}
       />
     </View>
   );
@@ -110,7 +161,24 @@ export default function ManagerTeam() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
-  header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4, fontSize: 14, color: '#666' },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  header: { fontSize: 14, color: '#666' },
+  addBtn: {
+    backgroundColor: '#c41230',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  addBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  list: { flex: 1 },
+  initialLoader: { marginTop: 24 },
   scrollContent: { paddingBottom: 32 },
   sectionTitle: {
     paddingHorizontal: 16,

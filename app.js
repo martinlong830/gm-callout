@@ -295,6 +295,12 @@
     if (saved && draftScheduleJsonHasLayers(saved)) {
       return sanitizeDraftScheduleLayers(saved);
     }
+    if (wi !== SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
+      if (tplSaved && draftScheduleJsonHasLayers(tplSaved)) {
+        return sanitizeDraftScheduleLayers(tplSaved);
+      }
+    }
     return cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   }
 
@@ -386,6 +392,9 @@
   const TEAM_STATE_ROW_ID = 'main';
   const MESSAGING_STORAGE_KEY = 'gm-callout-messaging-templates-v1';
   const TIMECLOCK_SETTINGS_KEY = 'gm-callout-timeclock-settings-v1';
+  const TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
+  const TIMECARD_DISHWASHER_TIPS_KEY = 'gm-timecard-dishwasher-tips-v1';
+  const TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
   const DEFAULT_TIMECLOCK_SETTINGS = { autoClockOutTime: '00:00' };
   const CALLOUT_HISTORY_KEY = 'gm-callout-coverage-callout-history-v1';
   /** Same key as `employee-app.js` (Messages). */
@@ -419,6 +428,8 @@
   }
 
   var KNOWN_RESTAURANT_IDS = { 'rp-9': true, 'rp-8': true };
+  /** Locations that must never show stored or auto-filled shift workers. */
+  var DEFAULT_UNASSIGNED_SCHEDULE_RESTAURANT_IDS = { 'rp-8': true };
 
   function defaultRestaurants() {
     return [
@@ -990,6 +1001,15 @@
     } else if (ur && restaurantsList.some(function (r) { return r.id === ur; })) {
       urDb = ur;
     }
+    var meta =
+      emp.meta && typeof emp.meta === 'object'
+        ? Object.assign({}, emp.meta)
+        : {};
+    if (emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {
+      meta.tipPoint = normalizeTipPointValue(emp.tipPoint);
+    } else if ('tipPoint' in meta) {
+      delete meta.tipPoint;
+    }
     var row = {
       id: emp.id,
       auth_user_id: emp.authUserId || null,
@@ -1000,15 +1020,11 @@
       staff_type: emp.staffType,
       usual_restaurant: urDb,
       weekly_grid: emp.weeklyGrid || {},
-      meta: emp.meta && typeof emp.meta === 'object' ? emp.meta : {},
+      meta: meta,
     };
     if (emp.clockPin) row.clock_pin = String(emp.clockPin);
     if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
       row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
-    }
-    if (emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {
-      row.meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
-      row.meta.tipPoint = normalizeTipPointValue(emp.tipPoint);
     }
     return row;
   }
@@ -1206,8 +1222,130 @@
     void syncEmployeesToSupabase();
   }
 
+  function mapEmployeeDbRowToRecord(row) {
+    if (!row) return null;
+    return migrateEmployeeRecord({
+      id: row.id,
+      authUserId: row.auth_user_id || undefined,
+      firstName: row.first_name,
+      lastName: row.last_name,
+      displayName: row.display_name || undefined,
+      staffType: row.staff_type,
+      phone: row.phone,
+      weeklyGrid: row.weekly_grid,
+      usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
+      meta: row.meta,
+      clockPin: row.clock_pin || undefined,
+      hourlyRate: row.hourly_rate != null ? Number(row.hourly_rate) : undefined,
+    });
+  }
+
+  function applyEmployeesFromRemoteDbRows(dbRows, opts) {
+    opts = opts || {};
+    if (!Array.isArray(dbRows) || !dbRows.length) return false;
+    if (!opts.force && gmEmployeeProfileSaveInFlight) {
+      employeesRemoteRefreshPending = true;
+      return false;
+    }
+    var next = dbRows.map(mapEmployeeDbRowToRecord).filter(Boolean);
+    if (!next.length) return false;
+    employees.length = 0;
+    next.forEach(function (e) {
+      employees.push(e);
+    });
+    applyHourlyRatePresetsToAllEmployees();
+    applyTipPointPresetsToAllEmployees();
+    seedAllEmployeeLeaveBalances();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+    } catch (_empRemoteLs) {
+      /* ignore */
+    }
+    rebuildEmployeeDerivedData();
+    if (typeof renderEmployeeList === 'function') renderEmployeeList();
+    notifyTimecardsEmployeesChanged();
+    return true;
+  }
+
+  function notifyTimecardsEmployeesChanged() {
+    if (!window.gmCalloutTimecards) return;
+    var refreshed =
+      typeof window.gmCalloutTimecards.refreshRosterFromEmployees === 'function' &&
+      window.gmCalloutTimecards.refreshRosterFromEmployees();
+    if (refreshed) return;
+    if (currentScreen === 10 && typeof window.gmCalloutTimecards.renderRoster === 'function') {
+      window.gmCalloutTimecards.renderRoster();
+    }
+  }
+
+  var employeesRemoteRefreshTimer = null;
+  var employeesRemoteRefreshPending = false;
+  var employeesRealtimeChannel = null;
+
+  function queueEmployeesRemoteRefresh() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (employeesRemoteRefreshTimer) clearTimeout(employeesRemoteRefreshTimer);
+    employeesRemoteRefreshTimer = setTimeout(function () {
+      employeesRemoteRefreshTimer = null;
+      void refreshEmployeesFromSupabaseRemote();
+    }, 350);
+  }
+
+  async function refreshEmployeesFromSupabaseRemote() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
+    if (gmEmployeeProfileSaveInFlight) {
+      employeesRemoteRefreshPending = true;
+      return { ok: false, reason: 'save_in_flight' };
+    }
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var res = await sb.from('employees').select('*').order('display_name', { ascending: true });
+    if (res.error) {
+      console.warn('gm-callout: employees refresh', res.error);
+      return { ok: false, error: res.error };
+    }
+    if (res.data && res.data.length) {
+      applyEmployeesFromRemoteDbRows(res.data);
+    }
+    return { ok: true };
+  }
+  window.gmCalloutRefreshEmployeesFromRemote = refreshEmployeesFromSupabaseRemote;
+
+  function teardownEmployeesRealtimeSubscription() {
+    if (employeesRealtimeChannel && window.gmSupabase) {
+      void window.gmSupabase.removeChannel(employeesRealtimeChannel);
+      employeesRealtimeChannel = null;
+    }
+  }
+
+  function setupEmployeesRealtimeSubscription() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    teardownEmployeesRealtimeSubscription();
+    var sb = window.gmSupabase;
+    employeesRealtimeChannel = sb
+      .channel('employees_team')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employees' },
+        function () {
+          queueEmployeesRemoteRefresh();
+        }
+      )
+      .subscribe();
+  }
+
   var teamStateSyncTimer = null;
+  var tipPayrollPushTimer = null;
+  var teamStateRemoteRefreshTimer = null;
+  var teamStateRealtimeChannel = null;
   var employeeChatCloudTimer = null;
+  var employeeChatRealtimeChannel = null;
+  var staffRequestsRealtimeChannel = null;
+  var staffRequestsRemoteRefreshTimer = null;
+  var timeClockEntriesRealtimeChannel = null;
+  var timeClockEntriesRemoteRefreshTimer = null;
+  var gmCalloutSessionIsManager = false;
 
   function isValidEmployeeChatPayload(o) {
     return !!(o && typeof o === 'object' && o.version === 1 && Array.isArray(o.threads));
@@ -1277,6 +1415,439 @@
     }
   }
 
+  function loadTimecardWeekTipPoolStore() {
+    try {
+      var raw = localStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
+      if (!raw) return {};
+      var o = JSON.parse(raw);
+      return o && typeof o === 'object' ? o : {};
+    } catch (_tp) {
+      return {};
+    }
+  }
+
+  function loadTimecardDishwasherTipsStore() {
+    try {
+      var raw = localStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
+      if (!raw) return {};
+      var o = JSON.parse(raw);
+      return o && typeof o === 'object' ? o : {};
+    } catch (_dt) {
+      return {};
+    }
+  }
+
+  function loadTimecardWeekExtrasStore() {
+    try {
+      var raw = localStorage.getItem(TIMECARD_WEEK_EXTRAS_KEY);
+      if (!raw) return {};
+      var o = JSON.parse(raw);
+      return o && typeof o === 'object' ? o : {};
+    } catch (_we) {
+      return {};
+    }
+  }
+
+  function mergeTipPayrollStoresForPush(localTip, localDw, remoteTip, remoteDw, localExtras, remoteExtras) {
+    remoteTip = remoteTip && typeof remoteTip === 'object' ? remoteTip : {};
+    remoteDw = remoteDw && typeof remoteDw === 'object' ? remoteDw : {};
+    localTip = localTip && typeof localTip === 'object' ? localTip : {};
+    localDw = localDw && typeof localDw === 'object' ? localDw : {};
+    remoteExtras = remoteExtras && typeof remoteExtras === 'object' ? remoteExtras : {};
+    localExtras = localExtras && typeof localExtras === 'object' ? localExtras : {};
+    var mergedTip = Object.assign({}, remoteTip);
+    Object.keys(localTip).forEach(function (key) {
+      var slice = localTip[key];
+      if (slice && typeof slice === 'object') mergedTip[key] = slice;
+    });
+    var mergedDw = Object.assign({}, remoteDw);
+    Object.keys(localDw).forEach(function (key) {
+      var slice = localDw[key];
+      if (slice && typeof slice === 'object') mergedDw[key] = slice;
+    });
+    var mergedExtras = Object.assign({}, remoteExtras);
+    Object.keys(localExtras).forEach(function (key) {
+      var slice = localExtras[key];
+      if (slice && typeof slice === 'object') mergedExtras[key] = slice;
+    });
+    return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
+  }
+
+  async function fetchRemoteTipPayrollStores(sb) {
+    var res = await sb
+      .from('team_state')
+      .select('timecard_week_tip_pool, timecard_dishwasher_tips, timecard_week_extras')
+      .eq('id', TEAM_STATE_ROW_ID)
+      .maybeSingle();
+    if (res.error) {
+      console.warn('gm-callout: team_state tip payroll select', res.error);
+      return { tipPool: {}, dishwasher: {}, weekExtras: {} };
+    }
+    var row = res.data || {};
+    return {
+      tipPool:
+        row.timecard_week_tip_pool && typeof row.timecard_week_tip_pool === 'object'
+          ? row.timecard_week_tip_pool
+          : {},
+      dishwasher:
+        row.timecard_dishwasher_tips && typeof row.timecard_dishwasher_tips === 'object'
+          ? row.timecard_dishwasher_tips
+          : {},
+      weekExtras:
+        row.timecard_week_extras && typeof row.timecard_week_extras === 'object'
+          ? row.timecard_week_extras
+          : {},
+    };
+  }
+
+  function scheduleTipPayrollDebouncedSync() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (tipPayrollPushTimer) clearTimeout(tipPayrollPushTimer);
+    tipPayrollPushTimer = setTimeout(function () {
+      tipPayrollPushTimer = null;
+      void pushTipPayrollToSupabase();
+    }, 700);
+  }
+
+  async function pushTipPayrollToSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return;
+    var prof = await sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle();
+    if (prof.error || !prof.data || prof.data.role !== 'manager') return;
+    var remote = await fetchRemoteTipPayrollStores(sb);
+    var merged = mergeTipPayrollStoresForPush(
+      loadTimecardWeekTipPoolStore(),
+      loadTimecardDishwasherTipsStore(),
+      remote.tipPool,
+      remote.dishwasher,
+      loadTimecardWeekExtrasStore(),
+      remote.weekExtras
+    );
+    try {
+      localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
+      localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
+      localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
+    } catch (_ls) {
+      /* ignore */
+    }
+    var res = await sb.from('team_state').upsert(
+      {
+        id: TEAM_STATE_ROW_ID,
+        timecard_week_tip_pool: merged.tipPool,
+        timecard_dishwasher_tips: merged.dishwasher,
+        timecard_week_extras: merged.weekExtras,
+      },
+      { onConflict: 'id' }
+    );
+    if (res.error) console.warn('gm-callout: team_state tip payroll upsert', res.error);
+  }
+
+  function queueTeamStateRemoteRefresh() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (teamStateRemoteRefreshTimer) clearTimeout(teamStateRemoteRefreshTimer);
+    teamStateRemoteRefreshTimer = setTimeout(function () {
+      teamStateRemoteRefreshTimer = null;
+      void refreshTeamStateFromRemote();
+    }, 350);
+  }
+
+  async function refreshTeamStateFromRemote() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var res = await sb.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle();
+    if (res.error) {
+      console.warn('gm-callout: team_state refresh', res.error);
+      return { ok: false, error: res.error };
+    }
+    if (res.data) {
+      applyTeamStateRowFromRemote(res.data, { isManager: gmCalloutSessionIsManager });
+    }
+    return { ok: true };
+  }
+
+  async function refreshTeamStateTipPayrollFromRemote() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var res = await sb
+      .from('team_state')
+      .select('timecard_week_tip_pool, timecard_dishwasher_tips, updated_at')
+      .eq('id', TEAM_STATE_ROW_ID)
+      .maybeSingle();
+    if (res.error) {
+      console.warn('gm-callout: team_state tip payroll refresh', res.error);
+      return { ok: false, error: res.error };
+    }
+    if (res.data) applyTimecardTipPayrollFromRemote(res.data);
+    return { ok: true };
+  }
+
+  function applyTimecardTipPayrollFromRemote(row) {
+    if (!row || typeof row !== 'object') return false;
+    var changed = false;
+    var tipPool = row.timecard_week_tip_pool;
+    if (tipPool && typeof tipPool === 'object' && Object.keys(tipPool).length > 0) {
+      try {
+        localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(tipPool));
+        changed = true;
+      } catch (_tpSet) {
+        /* ignore */
+      }
+    }
+    var dishwasher = row.timecard_dishwasher_tips;
+    if (dishwasher && typeof dishwasher === 'object' && Object.keys(dishwasher).length > 0) {
+      try {
+        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(dishwasher));
+        changed = true;
+      } catch (_dtSet) {
+        /* ignore */
+      }
+    }
+    var weekExtras = row.timecard_week_extras;
+    if (weekExtras && typeof weekExtras === 'object' && Object.keys(weekExtras).length > 0) {
+      try {
+        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(weekExtras));
+        changed = true;
+      } catch (_weSet) {
+        /* ignore */
+      }
+    }
+    if (
+      changed &&
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
+    ) {
+      window.gmCalloutTimecards.applyRemoteTipPayroll();
+    }
+    return changed;
+  }
+
+  function teardownTeamStateRealtimeSubscription() {
+    if (teamStateRealtimeChannel && window.gmSupabase) {
+      void window.gmSupabase.removeChannel(teamStateRealtimeChannel);
+      teamStateRealtimeChannel = null;
+    }
+  }
+
+  function setupTeamStateRealtimeSubscription() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    teardownTeamStateRealtimeSubscription();
+    var sb = window.gmSupabase;
+    teamStateRealtimeChannel = sb
+      .channel('team_state_main')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'team_state', filter: 'id=eq.main' },
+        function (payload) {
+          if (payload && payload.new) {
+            applyTeamStateRowFromRemote(payload.new, { isManager: gmCalloutSessionIsManager });
+          } else {
+            queueTeamStateRemoteRefresh();
+          }
+        }
+      )
+      .subscribe();
+  }
+
+  function mergeStaffRequestsFromRemoteRows(rows) {
+    if (!Array.isArray(rows)) return false;
+    var changed = false;
+    rows.forEach(function (row) {
+      var mapped = mapStaffRequestFromDbRow(row);
+      if (!mapped) return;
+      var ex = staffRequests.find(function (r) {
+        return r.id === mapped.id;
+      });
+      if (ex) {
+        ex.type = mapped.type;
+        ex.employeeName = mapped.employeeName;
+        ex.role = mapped.role;
+        ex.summary = mapped.summary;
+        ex.submittedAt = mapped.submittedAt;
+        ex.status = mapped.status;
+        if (mapped.submittedGrid) ex.submittedGrid = mapped.submittedGrid;
+        if (mapped.submittedWeekLabel) ex.submittedWeekLabel = mapped.submittedWeekLabel;
+        if (mapped.submittedWeekIndex != null) ex.submittedWeekIndex = mapped.submittedWeekIndex;
+        if (mapped.offeredShiftLabel) ex.offeredShiftLabel = mapped.offeredShiftLabel;
+        if (mapped.swapOfferId) ex.swapOfferId = mapped.swapOfferId;
+      } else {
+        staffRequests.push(mapped);
+        changed = true;
+      }
+    });
+    persistStaffRequestStatuses();
+    return changed;
+  }
+
+  function queueStaffRequestsRemoteRefresh() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (staffRequestsRemoteRefreshTimer) clearTimeout(staffRequestsRemoteRefreshTimer);
+    staffRequestsRemoteRefreshTimer = setTimeout(function () {
+      staffRequestsRemoteRefreshTimer = null;
+      void refreshStaffRequestsFromRemote();
+    }, 350);
+  }
+
+  async function refreshStaffRequestsFromRemote() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
+    var sb = window.gmSupabase;
+    var sessRes = await sb.auth.getSession();
+    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
+    var res = await sb.from('staff_requests').select('*').order('created_at', { ascending: false });
+    if (res.error) {
+      console.warn('gm-callout: staff_requests refresh', res.error);
+      return { ok: false, error: res.error };
+    }
+    if (res.data && res.data.length) mergeStaffRequestsFromRemoteRows(res.data);
+    notifyStaffRequestsUiRefresh();
+    return { ok: true };
+  }
+
+  function notifyStaffRequestsUiRefresh() {
+    if (typeof renderRequestsList === 'function') renderRequestsList();
+    if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
+    if (typeof window.gmCalloutEmployeeStaffRequestsRefreshUi === 'function') {
+      window.gmCalloutEmployeeStaffRequestsRefreshUi();
+    }
+  }
+
+  function applyStaffRequestsFromLocalStorageKeys() {
+    try {
+      var _reqStatusMap = JSON.parse(localStorage.getItem(REQUESTS_STORAGE_KEY) || 'null');
+      if (_reqStatusMap && typeof _reqStatusMap === 'object') {
+        staffRequests.forEach(function (r) {
+          var s = _reqStatusMap[r.id];
+          if (s === 'pending' || s === 'approved' || s === 'declined' || s === 'rejected') {
+            r.status = s === 'rejected' ? 'declined' : s;
+          }
+        });
+      }
+    } catch (_eReqLocal) {
+      /* ignore */
+    }
+    mergeEmployeeSubmittedFromStorage();
+    notifyStaffRequestsUiRefresh();
+  }
+
+  function teardownStaffRequestsRealtimeSubscription() {
+    if (staffRequestsRealtimeChannel && window.gmSupabase) {
+      void window.gmSupabase.removeChannel(staffRequestsRealtimeChannel);
+      staffRequestsRealtimeChannel = null;
+    }
+  }
+
+  function setupStaffRequestsRealtimeSubscription() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    teardownStaffRequestsRealtimeSubscription();
+    var sb = window.gmSupabase;
+    staffRequestsRealtimeChannel = sb
+      .channel('staff_requests_team')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'staff_requests' },
+        function () {
+          queueStaffRequestsRemoteRefresh();
+        }
+      )
+      .subscribe();
+  }
+
+  function queueTimeClockEntriesRemoteRefresh() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (timeClockEntriesRemoteRefreshTimer) clearTimeout(timeClockEntriesRemoteRefreshTimer);
+    timeClockEntriesRemoteRefreshTimer = setTimeout(function () {
+      timeClockEntriesRemoteRefreshTimer = null;
+      if (
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
+      ) {
+        void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
+      }
+    }, 350);
+  }
+
+  function teardownTimeClockEntriesRealtimeSubscription() {
+    if (timeClockEntriesRealtimeChannel && window.gmSupabase) {
+      void window.gmSupabase.removeChannel(timeClockEntriesRealtimeChannel);
+      timeClockEntriesRealtimeChannel = null;
+    }
+  }
+
+  function setupTimeClockEntriesRealtimeSubscription() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    teardownTimeClockEntriesRealtimeSubscription();
+    var sb = window.gmSupabase;
+    timeClockEntriesRealtimeChannel = sb
+      .channel('time_clock_entries_team')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'time_clock_entries' },
+        function () {
+          queueTimeClockEntriesRemoteRefresh();
+        }
+      )
+      .subscribe();
+  }
+
+  function teardownEmployeeChatRealtimeSubscription() {
+    if (employeeChatRealtimeChannel && window.gmSupabase) {
+      void window.gmSupabase.removeChannel(employeeChatRealtimeChannel);
+      employeeChatRealtimeChannel = null;
+    }
+  }
+
+  function setupEmployeeChatRealtimeSubscription() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    teardownEmployeeChatRealtimeSubscription();
+    var sb = window.gmSupabase;
+    void sb.auth.getSession().then(function (sessRes) {
+      if (!sessRes.data || !sessRes.data.session) return;
+      var uid = sessRes.data.session.user.id;
+      void sb
+        .from('profiles')
+        .select('role')
+        .eq('id', uid)
+        .maybeSingle()
+        .then(function (profRes) {
+          var isMgr = !!(profRes.data && profRes.data.role === 'manager');
+          var chatKey = isMgr ? MANAGER_CHAT_STORAGE_KEY : EMPLOYEE_CHAT_STORAGE_KEY;
+          employeeChatRealtimeChannel = sb
+            .channel('employee_chat_store_' + uid)
+            .on(
+              'postgres_changes',
+              {
+                event: '*',
+                schema: 'public',
+                table: 'employee_chat_store',
+                filter: 'user_id=eq.' + uid,
+              },
+              function (payload) {
+                if (!payload || !payload.new || !payload.new.payload) return;
+                if (!isValidEmployeeChatPayload(payload.new.payload)) return;
+                var store = sanitizeEmployeeChatPayload(payload.new.payload);
+                try {
+                  localStorage.setItem(chatKey, JSON.stringify(store));
+                } catch (_ecRt) {
+                  /* ignore */
+                }
+                if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
+                  window.gmCalloutManagerMessagesRefreshUi();
+                }
+                if (typeof window.gmCalloutEmployeeMessagesRefreshUi === 'function') {
+                  window.gmCalloutEmployeeMessagesRefreshUi();
+                }
+              }
+            )
+            .subscribe();
+        });
+    });
+  }
+
   function scheduleAssignmentsStoreIsPopulated(store) {
     if (!store || typeof store !== 'object') return false;
     return Object.keys(store).some(function (rid) {
@@ -1317,6 +1888,22 @@
     };
     var msg = loadMessagingTemplates();
     var tcSettings = loadTimeclockSettings();
+    var remote = await fetchRemoteTipPayrollStores(sb);
+    var mergedTipPayroll = mergeTipPayrollStoresForPush(
+      loadTimecardWeekTipPoolStore(),
+      loadTimecardDishwasherTipsStore(),
+      remote.tipPool,
+      remote.dishwasher,
+      loadTimecardWeekExtrasStore(),
+      remote.weekExtras
+    );
+    try {
+      localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(mergedTipPayroll.tipPool));
+      localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(mergedTipPayroll.dishwasher));
+      localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(mergedTipPayroll.weekExtras));
+    } catch (_ls) {
+      /* ignore */
+    }
     var payload = {
       id: TEAM_STATE_ROW_ID,
       schedule_assignments: assign,
@@ -1326,6 +1913,9 @@
       current_restaurant_id: currentRestaurantId || 'rp-9',
       callout_history: buildCalloutHistoryPayload(),
       timeclock_settings: { auto_clock_out_time: tcSettings.autoClockOutTime || '00:00' },
+      timecard_week_tip_pool: mergedTipPayroll.tipPool,
+      timecard_dishwasher_tips: mergedTipPayroll.dishwasher,
+      timecard_week_extras: mergedTipPayroll.weekExtras,
     };
     var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' });
     if (res.error) console.warn('gm-callout: team_state upsert', res.error);
@@ -1346,6 +1936,7 @@
         var schedChanged = mig.changed;
         if (isMgr) {
           restaurantsList.forEach(function (r) {
+            if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
             if (!mergedSched[r.id]) mergedSched[r.id] = {};
             if (replicateWeekZeroToFutureWeeksInStore(mergedSched[r.id], SCHEDULE_VIEW_WEEK_COUNT)) {
               schedChanged = true;
@@ -1353,6 +1944,9 @@
           });
         }
         if (backfillScheduleAssignmentBreakHours(mergedSched)) {
+          schedChanged = true;
+        }
+        if (purgeDefaultUnassignedRestaurantAssignments(mergedSched)) {
           schedChanged = true;
         }
         localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
@@ -1437,6 +2031,28 @@
 
     applyCalloutHistoryFromRemote(row.callout_history, { isManager: isMgr });
     applyTimeclockSettingsFromRemote(row.timeclock_settings);
+    applyTimecardTipPayrollFromRemote(row);
+    if (isMgr) {
+      var remoteTip = row.timecard_week_tip_pool;
+      var remoteDw = row.timecard_dishwasher_tips;
+      var remoteExtras = row.timecard_week_extras;
+      var localTip = loadTimecardWeekTipPoolStore();
+      var localDw = loadTimecardDishwasherTipsStore();
+      var localExtras = loadTimecardWeekExtrasStore();
+      var remoteTipEmpty =
+        !remoteTip || typeof remoteTip !== 'object' || !Object.keys(remoteTip).length;
+      var remoteDwEmpty =
+        !remoteDw || typeof remoteDw !== 'object' || !Object.keys(remoteDw).length;
+      var remoteExtrasEmpty =
+        !remoteExtras || typeof remoteExtras !== 'object' || !Object.keys(remoteExtras).length;
+      if (
+        (remoteTipEmpty && Object.keys(localTip).length) ||
+        (remoteDwEmpty && Object.keys(localDw).length) ||
+        (remoteExtrasEmpty && Object.keys(localExtras).length)
+      ) {
+        scheduleTipPayrollDebouncedSync();
+      }
+    }
 
     try {
       syncAllAssignmentTimesFromDraft();
@@ -1487,6 +2103,10 @@
         ex.submittedAt = row.submittedAt != null ? row.submittedAt : ex.submittedAt;
         ex.status = row.status != null ? row.status : ex.status;
         if (row.submittedGrid) ex.submittedGrid = row.submittedGrid;
+        if (row.offeredShiftLabel) ex.offeredShiftLabel = row.offeredShiftLabel;
+        if (row.swapOfferId) ex.swapOfferId = row.swapOfferId;
+        if (row.submittedWeekLabel) ex.submittedWeekLabel = row.submittedWeekLabel;
+        if (row.submittedWeekIndex != null) ex.submittedWeekIndex = row.submittedWeekIndex;
       }
     });
   }
@@ -2327,10 +2947,27 @@
   }
 
   function restaurantUsesDefaultUnassignedSchedule(restaurantId) {
+    if (DEFAULT_UNASSIGNED_SCHEDULE_RESTAURANT_IDS[restaurantId]) return true;
     var r = restaurantsList.find(function (x) {
       return x.id === restaurantId;
     });
     return !!(r && r.defaultUnassignedSchedule);
+  }
+
+  /** Drop saved worker rows for locations that must stay unassigned (e.g. rp-8). */
+  function purgeDefaultUnassignedRestaurantAssignments(store) {
+    if (!store || typeof store !== 'object') return false;
+    var changed = false;
+    restaurantsList.forEach(function (r) {
+      if (!restaurantUsesDefaultUnassignedSchedule(r.id)) return;
+      if (store[r.id] && Object.keys(store[r.id]).length) {
+        store[r.id] = {};
+        changed = true;
+      } else if (!store[r.id]) {
+        store[r.id] = {};
+      }
+    });
+    return changed;
   }
 
   /** FOH/BOH/Delivery rows map trIdx → one roster name (sheet-style), not random per day. */
@@ -2507,6 +3144,7 @@
             }
           }
           var mig = migrateScheduleAssignmentsForPastWeeks(p);
+          if (purgeDefaultUnassignedRestaurantAssignments(mig.store)) mig.changed = true;
           if (mig.changed) {
             try {
               localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mig.store));
@@ -2784,6 +3422,7 @@
 
   function applyWeekPatternToCurrentRestaurant(weekPattern) {
     if (!weekPattern || typeof weekPattern !== 'object') return false;
+    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return false;
     pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
@@ -3153,6 +3792,7 @@
     var store = loadScheduleAssignmentsStore();
     var any = false;
     restaurantsList.forEach(function (r) {
+      if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
       if (!store[r.id]) store[r.id] = {};
       if (replicateWeekZeroToFutureWeeksInStore(store[r.id], weekCount)) any = true;
     });
@@ -3191,16 +3831,10 @@
   }
 
   function saveScheduleAssignments() {
+    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return;
     pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
-    var ri = restaurantsList.findIndex(function (x) {
-      return x.id === currentRestaurantId;
-    });
-    if (ri !== -1 && restaurantsList[ri].defaultUnassignedSchedule) {
-      delete restaurantsList[ri].defaultUnassignedSchedule;
-      saveRestaurantsList();
-    }
     SCHEDULE.forEach(function (s) {
       var list = (s.workers || []).filter(function (n) {
         return n && n !== 'Unassigned';
@@ -3255,7 +3889,11 @@
       } else {
         s.redPokeHours = slotHours;
       }
-      if (skipWorkers) return;
+      if (skipWorkers) {
+        s.workers = ['Unassigned'];
+        s.worker = 'Unassigned';
+        return;
+      }
       var list = entry.workers.filter(function (n) {
         return n && n !== 'Unassigned';
       });
@@ -3611,6 +4249,7 @@
   }
 
   function moveWorkerToShift(workerName, sourceShiftId, targetShiftId) {
+    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return;
     if (!workerName || workerName === 'Unassigned' || sourceShiftId === targetShiftId) return;
     const src = SCHEDULE.find(function (s) {
       return s.id === sourceShiftId;
@@ -4987,6 +5626,10 @@
     }
 
     function commit() {
+      if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) {
+        cancel();
+        return;
+      }
       var chosen = pickCanonical(input.value);
       if (!chosen && String(input.value || '').trim()) {
         renderDd();
@@ -6268,6 +6911,9 @@
   const empHourlyRate = document.getElementById('empHourlyRate');
   const empTipPoint = document.getElementById('empTipPoint');
   const empBreakPolicy = document.getElementById('empBreakPolicy');
+  const empPortalAccountBlock = document.getElementById('empPortalAccountBlock');
+  const empPortalPassword = document.getElementById('empPortalPassword');
+  const empRecoveryEmail = document.getElementById('empRecoveryEmail');
   const empTimeclockPanel = document.getElementById('empTimeclockPanel');
   const empTimeclockNewHint = document.getElementById('empTimeclockNewHint');
   const empScheduleAssigned = document.getElementById('empScheduleAssigned');
@@ -6545,6 +7191,17 @@
       empBreakPolicy.value =
         emp && emp.meta && emp.meta.breakPolicy === 'paid' ? 'paid' : 'unpaid';
     }
+    if (empPortalAccountBlock) {
+      var showPortalFields =
+        !editingEmployeeId &&
+        GM_SUPABASE_DATA &&
+        window.gmPortalAuth &&
+        window.gmPortalAuth.enabled &&
+        window.gmPortalAuth.enabled();
+      empPortalAccountBlock.hidden = !showPortalFields;
+    }
+    if (empPortalPassword) empPortalPassword.value = '';
+    if (empRecoveryEmail) empRecoveryEmail.value = '';
     refreshEmployeeDetailPanel(emp);
     renderEmployeeLeaveEditor(emp);
     var st = empStaffType ? empStaffType.value : 'Kitchen';
@@ -7475,6 +8132,39 @@
       }
       var wasNew = !editingEmployeeId;
       var savedId = editingEmployeeId || rec.id;
+      if (
+        wasNew &&
+        GM_SUPABASE_DATA &&
+        window.gmPortalAuth &&
+        window.gmPortalAuth.enabled &&
+        window.gmPortalAuth.enabled() &&
+        typeof window.gmPortalAuth.createEmployeeAccount === 'function'
+      ) {
+        var portalPw = empPortalPassword ? String(empPortalPassword.value || '').trim() : '';
+        if (!portalPw) portalPw = 'redpoke';
+        if (portalPw.length < 4) {
+          window.alert('App login password must be at least 4 characters.');
+          return;
+        }
+        var portalRe = empRecoveryEmail ? String(empRecoveryEmail.value || '').trim() : '';
+        var displayNameNew = first + ' ' + last;
+        var portalPayload = {
+          loginName: displayNameNew,
+          password: portalPw,
+          displayName: displayNameNew,
+          phone: rec.phone || '',
+          staffType: stSave,
+        };
+        if (portalRe) portalPayload.recoveryEmail = portalRe;
+        var portalRes = await window.gmPortalAuth.createEmployeeAccount(portalPayload);
+        if (!portalRes || !portalRes.ok) {
+          window.alert(
+            (portalRes && portalRes.message) || 'Could not create portal login for this employee.'
+          );
+          return;
+        }
+        if (portalRes.userId) rec.authUserId = portalRes.userId;
+      }
       var previousDisplayName = null;
       if (editingEmployeeId) {
         const ix = employees.findIndex(function (e) { return e.id === editingEmployeeId; });
@@ -7525,6 +8215,10 @@
       } finally {
         gmEmployeeProfileSaveInFlight = false;
         if (saveBtn) saveBtn.disabled = false;
+        if (employeesRemoteRefreshPending) {
+          employeesRemoteRefreshPending = false;
+          queueEmployeesRemoteRefresh();
+        }
       }
       if (GM_SUPABASE_DATA && cloudRes && !cloudRes.ok) {
         window.alert('Saved locally, but cloud sync failed. Try saving again.');
@@ -7544,9 +8238,7 @@
         }
       }
       if (currentScreen === 8) renderRequestsList();
-      if (currentScreen === 10 && window.gmCalloutTimecards) {
-        window.gmCalloutTimecards.renderRoster();
-      }
+      notifyTimecardsEmployeesChanged();
       showScreen(5);
       if (GM_SUPABASE_DATA && isUuidCloudId(savedId) && (wasNew || !rec.clockPin)) {
         void assignClockPinRemote(savedId).then(function (pinRes) {
@@ -7941,6 +8633,11 @@
       mergeEmployeeSubmittedFromStorage();
       var all = buildAllLocationScheduleSnapshot();
       var todayIso = localTodayISO();
+      var windowStartMeta = WEEK_META[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
+      var windowEndMeta =
+        WEEK_META[(SCHEDULE_TEMPLATE_WEEK_INDEX + SCHEDULE_FUTURE_WEEK_COUNT + 1) * 7 - 1];
+      var windowStartIso = windowStartMeta ? windowStartMeta.iso : '';
+      var windowEndIso = windowEndMeta ? windowEndMeta.iso : '';
       var today = [];
       var upcoming = [];
       all.forEach(function (s) {
@@ -7949,6 +8646,8 @@
           return m.label === s.day;
         });
         var iso = meta ? meta.iso : '';
+        if (windowStartIso && iso && iso < windowStartIso) return;
+        if (windowEndIso && iso && iso > windowEndIso) return;
         var o = {
           id: s.id,
           restaurantId: s.restaurantId,
@@ -8252,40 +8951,10 @@
       !profRes.error &&
       profRes.data &&
       profRes.data.role === 'manager';
+    gmCalloutSessionIsManager = !!isManager;
 
     if (empRes.data && empRes.data.length && !gmEmployeeProfileSaveInFlight) {
-      var next = empRes.data
-        .map(function (row) {
-          return migrateEmployeeRecord({
-            id: row.id,
-            authUserId: row.auth_user_id || undefined,
-            firstName: row.first_name,
-            lastName: row.last_name,
-            displayName: row.display_name || undefined,
-            staffType: row.staff_type,
-            phone: row.phone,
-            weeklyGrid: row.weekly_grid,
-            usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
-            meta: row.meta,
-            clockPin: row.clock_pin || undefined,
-            hourlyRate: row.hourly_rate != null ? Number(row.hourly_rate) : undefined,
-          });
-        })
-        .filter(Boolean);
-      if (next.length) {
-        employees.length = 0;
-        next.forEach(function (e) {
-          employees.push(e);
-        });
-        applyHourlyRatePresetsToAllEmployees();
-        applyTipPointPresetsToAllEmployees();
-        seedAllEmployeeLeaveBalances();
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
-        } catch (_hydrateLs) {
-          /* ignore */
-        }
-      }
+      applyEmployeesFromRemoteDbRows(empRes.data, { force: true });
     } else if (
       !empRes.error &&
       Array.isArray(empRes.data) &&
@@ -8320,27 +8989,7 @@
             .select('*')
             .order('display_name', { ascending: true });
           if (empReload.data && empReload.data.length) {
-            employees.length = 0;
-            empReload.data.forEach(function (row) {
-              var m = migrateEmployeeRecord({
-                id: row.id,
-                authUserId: row.auth_user_id || undefined,
-                firstName: row.first_name,
-                lastName: row.last_name,
-                displayName: row.display_name || undefined,
-                staffType: row.staff_type,
-                phone: row.phone,
-                weeklyGrid: row.weekly_grid,
-                usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
-                meta: row.meta,
-              });
-              if (m) employees.push(m);
-            });
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
-            } catch (_seedLs) {
-              /* ignore */
-            }
+            applyEmployeesFromRemoteDbRows(empReload.data, { force: true });
           }
         }
       }
@@ -8349,28 +8998,7 @@
       applyTeamStateRowFromRemote(teamRes.data, { isManager: isManager });
     }
     if (reqRes.data && reqRes.data.length) {
-      reqRes.data.forEach(function (row) {
-        var mapped = mapStaffRequestFromDbRow(row);
-        if (!mapped) return;
-        var ex = staffRequests.find(function (r) {
-          return r.id === mapped.id;
-        });
-        if (ex) {
-          ex.type = mapped.type;
-          ex.employeeName = mapped.employeeName;
-          ex.role = mapped.role;
-          ex.summary = mapped.summary;
-          ex.submittedAt = mapped.submittedAt;
-          ex.status = mapped.status;
-          if (mapped.submittedGrid) ex.submittedGrid = mapped.submittedGrid;
-          if (mapped.submittedWeekLabel) ex.submittedWeekLabel = mapped.submittedWeekLabel;
-          if (mapped.submittedWeekIndex != null) ex.submittedWeekIndex = mapped.submittedWeekIndex;
-          if (mapped.offeredShiftLabel) ex.offeredShiftLabel = mapped.offeredShiftLabel;
-          if (mapped.swapOfferId) ex.swapOfferId = mapped.swapOfferId;
-        } else {
-          staffRequests.push(mapped);
-        }
-      });
+      mergeStaffRequestsFromRemoteRows(reqRes.data);
     }
     await hydrateUserChatStoreFromRemote(
       sb,
@@ -8381,7 +9009,7 @@
     rebuildEmployeeDerivedData();
     renderCalendar();
     if (scheduleBody) renderSchedule();
-    if (typeof renderRequestsList === 'function') renderRequestsList();
+    notifyStaffRequestsUiRefresh();
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
       window.gmCalloutManagerMessagesRefreshUi();
@@ -8395,6 +9023,8 @@
   }
   window.gmCalloutSupabaseHydrateFromRemote = gmCalloutSupabaseHydrateFromRemote;
   window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
+  window.gmCalloutSetupEmployeesRealtime = setupEmployeesRealtimeSubscription;
+  window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
   window.gmCalloutManagerBootstrap = function () {
     rebuildSchedule();
     renderCalendar();
@@ -8443,6 +9073,7 @@
       setAssignmentBreakPaidForShift: setAssignmentBreakPaidForShift,
       loadTimeclockSettings: loadTimeclockSettings,
       saveTimeclockSettings: saveTimeclockSettings,
+      scheduleTimecardPayrollDebouncedSync: scheduleTipPayrollDebouncedSync,
       showScreen: showScreen,
       setTimecardTitle: setTimecardScreenTitle,
     });
@@ -8460,6 +9091,11 @@
         var restored = await gmCalloutRestoreAuthedShellFromSupabase();
         if (restored && !gmCalloutIsTimeclockKiosk()) {
           await gmCalloutSupabaseHydrateFromRemote();
+          setupEmployeesRealtimeSubscription();
+          setupTeamStateRealtimeSubscription();
+          setupStaffRequestsRealtimeSubscription();
+          setupTimeClockEntriesRealtimeSubscription();
+          setupEmployeeChatRealtimeSubscription();
           if (document.documentElement.classList.contains('manager-app')) {
             gmCalloutManagerBootstrap();
           }
@@ -8485,6 +9121,12 @@
   if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
     window.gmSupabase.auth.onAuthStateChange(function (event, session) {
       if (event === 'SIGNED_OUT') {
+        teardownEmployeesRealtimeSubscription();
+        teardownTeamStateRealtimeSubscription();
+        teardownStaffRequestsRealtimeSubscription();
+        teardownTimeClockEntriesRealtimeSubscription();
+        teardownEmployeeChatRealtimeSubscription();
+        gmCalloutSessionIsManager = false;
         if (document.documentElement.classList.contains('authed')) {
           gmCalloutReturnToLogin();
         }
@@ -8500,11 +9142,53 @@
               }
               return null;
             }
-            return gmCalloutSupabaseHydrateFromRemote();
+            setupEmployeesRealtimeSubscription();
+            setupTeamStateRealtimeSubscription();
+            setupStaffRequestsRealtimeSubscription();
+            setupTimeClockEntriesRealtimeSubscription();
+            return gmCalloutSupabaseHydrateFromRemote().then(function () {
+              setupEmployeeChatRealtimeSubscription();
+            });
           })
           .catch(function (authErr) {
             console.warn('gm-callout: auth shell', authErr);
           });
+      }
+    });
+  }
+
+  if (GM_SUPABASE_DATA && typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!document.documentElement.classList.contains('authed')) return;
+      if (gmCalloutIsTimeclockKiosk()) return;
+      queueEmployeesRemoteRefresh();
+      queueTeamStateRemoteRefresh();
+      queueStaffRequestsRemoteRefresh();
+    });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', function (ev) {
+      if (
+        ev.key === REQUESTS_STORAGE_KEY ||
+        ev.key === EMPLOYEE_SUBMITTED_REQUESTS_KEY
+      ) {
+        applyStaffRequestsFromLocalStorageKeys();
+        return;
+      }
+      if (
+        ev.key !== TIMECARD_WEEK_TIP_POOL_KEY &&
+        ev.key !== TIMECARD_DISHWASHER_TIPS_KEY &&
+        ev.key !== TIMECARD_WEEK_EXTRAS_KEY
+      ) {
+        return;
+      }
+      if (
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
+      ) {
+        window.gmCalloutTimecards.applyRemoteTipPayroll();
       }
     });
   }

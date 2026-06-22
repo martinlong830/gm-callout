@@ -24,9 +24,63 @@ type ChipsProps = {
   currentWeekIndex?: number;
 };
 
-type Props = PagerProps | ChipsProps;
+type ManagerNavProps = {
+  mode: 'managerNav';
+  weekMeta: WeekMeta[];
+  weekIndex: number;
+  onWeekIndexChange: (weekIndex: number) => void;
+  minWeekIndex?: number;
+  maxWeekIndex?: number;
+  templateWeekIndex?: number;
+};
+
+type Props = PagerProps | ChipsProps | ManagerNavProps;
 
 export function ScheduleWeekPicker(props: Props) {
+  if (props.mode === 'managerNav') {
+    const {
+      weekMeta,
+      weekIndex,
+      onWeekIndexChange,
+      minWeekIndex = 0,
+      maxWeekIndex = weekMeta.length ? Math.floor((weekMeta.length - 1) / 7) : 0,
+      templateWeekIndex,
+    } = props;
+    const isCurrent = templateWeekIndex != null && weekIndex === templateWeekIndex;
+    const label = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
+    return (
+      <View style={styles.managerNavWrap}>
+        <Pressable
+          style={[styles.navArrow, weekIndex <= minWeekIndex && styles.pagerBtnDisabled]}
+          disabled={weekIndex <= minWeekIndex}
+          onPress={() => onWeekIndexChange(weekIndex - 1)}
+          accessibilityLabel="Previous week"
+        >
+          <Text style={styles.navArrowText}>‹</Text>
+        </Pressable>
+        <View style={styles.managerNavCenter}>
+          <Text style={styles.managerNavLabel} numberOfLines={2}>
+            {label}
+          </Text>
+          {isCurrent ? <Text style={styles.managerNavBadge}>This week</Text> : null}
+        </View>
+        <Pressable
+          style={[styles.navArrow, weekIndex >= maxWeekIndex && styles.pagerBtnDisabled]}
+          disabled={weekIndex >= maxWeekIndex}
+          onPress={() => onWeekIndexChange(weekIndex + 1)}
+          accessibilityLabel="Next week"
+        >
+          <Text style={styles.navArrowText}>›</Text>
+        </Pressable>
+        {!isCurrent && templateWeekIndex != null ? (
+          <Pressable style={styles.todayBtn} onPress={() => onWeekIndexChange(templateWeekIndex)}>
+            <Text style={styles.todayBtnText}>This week</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
+
   if (props.mode === 'pager') {
     const { weekStartIsos, cursor, onCursorChange } = props;
     const wk = weekStartIsos[cursor];
@@ -138,4 +192,40 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 12, color: '#475569', fontWeight: '600' },
   chipTextOn: { color: '#c41230' },
   muted: { fontSize: 13, color: '#888' },
+  managerNavWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  navArrow: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navArrowText: { fontSize: 22, fontWeight: '600', color: '#334155', lineHeight: 24 },
+  managerNavCenter: { flex: 1, alignItems: 'center', minWidth: 120 },
+  managerNavLabel: { fontSize: 14, fontWeight: '700', color: '#0f172a', textAlign: 'center' },
+  managerNavBadge: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#c41230',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  todayBtn: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#fff',
+  },
+  todayBtnText: { fontSize: 12, fontWeight: '600', color: '#334155' },
 });

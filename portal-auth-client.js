@@ -128,6 +128,19 @@
       };
     },
 
+    /** Manager-only: create portal login for a new employee without changing the current session. */
+    createEmployeeAccount: async function (payload) {
+      var r = await portalAuthedFetch("POST", "/api/portal/admin/create-employee", payload || {});
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        userId: r.data.userId,
+        loginName: r.data.loginName || "",
+        displayName: r.data.displayName || "",
+        message: r.data.message || "Portal account created.",
+      };
+    },
+
     requestPasswordReset: async function (loginName) {
       const r = await portalFetch("/api/portal/forgot-password", {
         loginName: String(loginName || "").trim(),

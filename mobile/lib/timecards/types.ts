@@ -13,6 +13,7 @@ export type TimeClockEntry = {
   break_segments?: Array<{ start?: string; end?: string; minutes?: number }> | null;
   break_paid?: boolean | null;
   schedule_shift_id?: string | null;
+  clock_restaurant_id?: string | null;
   edit_history?: unknown;
   updated_at?: string;
 };
@@ -46,6 +47,7 @@ export type RosterRow = {
   vlHours: number;
   slHours: number;
   sohCount: number;
+  sohDatesLabel: string;
   sohPay: number | null;
   vlPay: number | null;
   slPay: number | null;

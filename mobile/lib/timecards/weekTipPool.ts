@@ -1,8 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isSupabaseConfigured, supabase } from '../supabase';
 import { weekBoundsStorageKey } from './payWeek';
+import {
+  queueTipPayrollPushToSupabase,
+  TIMECARD_WEEK_TIP_POOL_KEY,
+} from './tipPayrollSync';
 import type { PayWeekBounds } from './types';
-
-const TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
 
 export const PAYROLL_TIP_POOL_DEFAULTS = {
   cashTip: 0,
@@ -92,6 +95,9 @@ export async function saveWeekTipPoolSlice(
     const next = all && typeof all === 'object' ? { ...all } : {};
     next[weekBoundsStorageKey(bounds)] = pool;
     await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(next));
+    if (isSupabaseConfigured && supabase) {
+      queueTipPayrollPushToSupabase(supabase);
+    }
   } catch {
     /* ignore */
   }

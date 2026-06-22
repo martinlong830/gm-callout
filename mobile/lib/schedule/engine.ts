@@ -8,14 +8,22 @@ import type {
   EmployeeLite,
   Restaurant,
   RoleKey,
+  ScheduleAssignmentEntry,
   ScheduleRow,
   WeekMeta,
   WeekdayKey,
 } from './types';
 
-export const SCHEDULE_VIEW_WEEK_COUNT = 3;
-/** Matches web portal `SCHEDULE_TEMPLATE_WEEK_INDEX` for `team_state.draft_schedule.byWeek`. */
-const WEB_TEAM_STATE_TEMPLATE_WEEK_KEY = '12';
+/** Matches web portal `SCHEDULE_PAST_WEEK_COUNT` / anchor week grid. */
+export const SCHEDULE_PAST_WEEK_COUNT = 12;
+/** Weeks after the current block (not counting the current week). */
+export const SCHEDULE_FUTURE_WEEK_COUNT = 2;
+export const SCHEDULE_VIEW_WEEK_COUNT =
+  SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
+/** Index in `WEEK_META` for this calendar week; also the replication template week. */
+export const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
+/** Employee portal shows current pay week + next 2 future weeks. */
+export const EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT = 3;
 export const WEEKDAY_KEYS: WeekdayKey[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const SCHEDULE_GRID_ROLE_ORDER: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -45,6 +53,28 @@ export const ROLE_DEFS: { role: RoleKey; roleClass: string; groupLabel: string }
   { role: 'Kitchen', roleClass: STAFF_ROLE_CLASS.Kitchen, groupLabel: STAFF_TYPE_LABELS.Kitchen },
   { role: 'Bartender', roleClass: STAFF_ROLE_CLASS.Bartender, groupLabel: STAFF_TYPE_LABELS.Bartender },
   { role: 'Server', roleClass: STAFF_ROLE_CLASS.Server, groupLabel: STAFF_TYPE_LABELS.Server },
+];
+
+/** Front of House (Bartender) — matches FOH schedule sheet / web `TEAM_ROSTER_BARTENDER`. */
+export const TEAM_ROSTER_BARTENDER = [
+  'MARK ONG',
+  'CHARLES JAKOB ZACANI',
+  'MAEVE WILLIAMS',
+  'JON ARELLANO',
+  'EUGENE VILLARRUZ',
+];
+export const TEAM_ROSTER_KITCHEN = [
+  'BALTAZAR LUCAS',
+  'ENRIQUE CUMES',
+  'ARMANDO CUMES',
+  'BERNABE DE LEON',
+  'ZEFERINO FLORES',
+  'IRINEO PINEDA',
+];
+export const TEAM_ROSTER_SERVER = [
+  'JUAN SALVATIERRA',
+  'NATALIO DE LA CRUZ',
+  'ABEL LUJAN',
 ];
 
 export const DEFAULT_DRAFT_SCHEDULE_ROWS: DraftGrid = {
@@ -267,10 +297,16 @@ export function loadDraftFromTeamState(raw: unknown, weekIndex?: number): DraftG
     const wi =
       weekIndex != null && !Number.isNaN(weekIndex)
         ? String(weekIndex)
-        : WEB_TEAM_STATE_TEMPLATE_WEEK_KEY;
+        : String(SCHEDULE_TEMPLATE_WEEK_INDEX);
     const weekLayers = byWeek[wi];
     if (weekLayers && typeof weekLayers === 'object') {
       return loadDraftFromTeamState(weekLayers);
+    }
+    if (wi !== String(SCHEDULE_TEMPLATE_WEEK_INDEX)) {
+      const tplLayers = byWeek[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
+      if (tplLayers && typeof tplLayers === 'object') {
+        return loadDraftFromTeamState(tplLayers);
+      }
     }
     return base;
   }
@@ -314,6 +350,122 @@ export function getThisMondayDate(): Date {
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
   monday.setHours(0, 0, 0, 0);
   return monday;
+}
+
+/** Monday that starts the multi-week schedule grid (12 weeks before this Monday). */
+export function getScheduleAnchorMondayDate(): Date {
+  const mon = getThisMondayDate();
+  return new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() - SCHEDULE_PAST_WEEK_COUNT * 7);
+}
+
+export function getEmployeeVisibleWeekIndices(): number[] {
+  return Array.from(
+    { length: EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT },
+    (_, i) => SCHEDULE_TEMPLATE_WEEK_INDEX + i
+  );
+}
+
+function draftForWeek(draftScheduleRaw: unknown | undefined, draftRows: DraftGrid | undefined, weekIndex: number): DraftGrid {
+  if (draftScheduleRaw != null) {
+    return loadDraftFromTeamState(draftScheduleRaw, weekIndex);
+  }
+  return draftRows ?? cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+}
+
+export function parseShiftIdParts(shiftId: string): { globalDayIdx: number; roleIdx: number; trIdx: number } | null {
+  const m = String(shiftId || '').match(/^shift-(\d+)-(\d+)-(\d+)$/);
+  if (!m) return null;
+  return {
+    globalDayIdx: parseInt(m[1], 10),
+    roleIdx: parseInt(m[2], 10),
+    trIdx: parseInt(m[3], 10),
+  };
+}
+
+type NormalizedScheduleAssignment = {
+  workers: string[];
+  break?: string;
+  hours?: string;
+  timeLabel?: string;
+  breakPaid?: boolean;
+};
+
+/** Assignment value: `['Name']` legacy, or `{ workers, break?, hours?, timeLabel? }` from FOH sheet. */
+export function normalizeScheduleAssignment(val: ScheduleAssignmentEntry | null | undefined): NormalizedScheduleAssignment {
+  if (val == null) return { workers: ['Unassigned'] };
+  if (Array.isArray(val)) {
+    const w = val.filter((n) => n && n !== 'Unassigned');
+    return { workers: w.length ? w.slice() : ['Unassigned'] };
+  }
+  if (typeof val === 'object') {
+    const workers = Array.isArray(val.workers)
+      ? val.workers.filter((n) => n && n !== 'Unassigned')
+      : [];
+    const out: NormalizedScheduleAssignment = { workers: workers.length ? workers : ['Unassigned'] };
+    if (val.break) out.break = String(val.break);
+    if (val.hours != null && val.hours !== '') out.hours = String(val.hours);
+    if (val.timeLabel) out.timeLabel = String(val.timeLabel);
+    if (val.breakPaid === true || val.breakPaid === false) out.breakPaid = !!val.breakPaid;
+    return out;
+  }
+  return { workers: ['Unassigned'] };
+}
+
+function cloneScheduleAssignment(val: ScheduleAssignmentEntry | null | undefined): NormalizedScheduleAssignment {
+  return JSON.parse(JSON.stringify(normalizeScheduleAssignment(val)));
+}
+
+/** Mon–Sun pattern from the template ("this") week — used for all calendar weeks. */
+function lookupScheduleAssignmentPattern(
+  stored: Record<string, ScheduleAssignmentEntry>,
+  shiftId: string
+): NormalizedScheduleAssignment | null {
+  const p = parseShiftIdParts(shiftId);
+  if (!p) return null;
+  const tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+  const dayInWeek = p.globalDayIdx % 7;
+  if (p.globalDayIdx >= tplStart && p.globalDayIdx < tplStart + 7) {
+    const legacyInTpl = `shift-${dayInWeek}-${p.roleIdx}-${p.trIdx}`;
+    if (stored[legacyInTpl] != null) {
+      return normalizeScheduleAssignment(stored[legacyInTpl]);
+    }
+  }
+  const templateId = `shift-${tplStart + dayInWeek}-${p.roleIdx}-${p.trIdx}`;
+  if (stored[templateId] != null) {
+    return normalizeScheduleAssignment(stored[templateId]);
+  }
+  const legacyTplId = `shift-${dayInWeek}-${p.roleIdx}-${p.trIdx}`;
+  if (stored[legacyTplId] != null) {
+    return normalizeScheduleAssignment(stored[legacyTplId]);
+  }
+  return null;
+}
+
+function mergeScheduleAssignmentEntries(
+  direct: NormalizedScheduleAssignment | null,
+  pattern: NormalizedScheduleAssignment | null
+): NormalizedScheduleAssignment | null {
+  if (!direct && !pattern) return null;
+  if (!pattern) return direct;
+  if (!direct) return pattern;
+  const out: NormalizedScheduleAssignment = { workers: direct.workers };
+  if (direct.break || pattern.break) out.break = direct.break || pattern.break;
+  if (direct.hours != null && direct.hours !== '') out.hours = direct.hours;
+  else if (pattern.hours != null && pattern.hours !== '') out.hours = pattern.hours;
+  if (direct.timeLabel || pattern.timeLabel) out.timeLabel = direct.timeLabel || pattern.timeLabel;
+  if (direct.breakPaid === true || direct.breakPaid === false) out.breakPaid = direct.breakPaid;
+  else if (pattern.breakPaid === true || pattern.breakPaid === false) out.breakPaid = pattern.breakPaid;
+  return out;
+}
+
+/** Per-shift assignment; inherits break/hours/time from template week when missing. */
+function lookupScheduleAssignment(
+  stored: Record<string, ScheduleAssignmentEntry>,
+  shiftId: string
+): NormalizedScheduleAssignment | null {
+  const direct = stored[shiftId] != null ? normalizeScheduleAssignment(stored[shiftId]) : null;
+  const pattern = lookupScheduleAssignmentPattern(stored, shiftId);
+  return mergeScheduleAssignmentEntries(direct, pattern);
 }
 
 export function buildWeeksFromMonday(numWeeks: number, mondayDate: Date): WeekMeta[] {
@@ -383,6 +535,7 @@ function namesPoolForScheduleRole(
 }
 
 function restaurantUsesDefaultUnassignedSchedule(restaurants: Restaurant[], restaurantId: string): boolean {
+  if (restaurantId === 'rp-8') return true;
   const r = restaurants.find((x) => x.id === restaurantId);
   return !!(r && r.defaultUnassignedSchedule);
 }
@@ -405,6 +558,40 @@ function normalizeWorkerKey(name: string): string {
     .toLowerCase();
 }
 
+/** FOH/BOH/Delivery rows map trIdx → one roster name (sheet-style), not random per day. */
+function scheduleRowRosterDefault(role: RoleKey, trIdx: number): string | null {
+  if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
+  if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
+  if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
+  return null;
+}
+
+function workerAllowedOnScheduleRow(name: string, basePool: string[]): boolean {
+  if (!name || name === 'Unassigned') return false;
+  if (!basePool || !basePool.length) return true;
+  const key = normalizeWorkerKey(name);
+  return basePool.some((n) => normalizeWorkerKey(n) === key);
+}
+
+function pickDefaultScheduleWorkers(
+  role: RoleKey,
+  trIdx: number,
+  basePool: string[],
+  usedToday: Record<string, boolean>,
+  seed: number
+): string[] {
+  const rowName = scheduleRowRosterDefault(role, trIdx);
+  if (rowName && workerAllowedOnScheduleRow(rowName, basePool) && !usedToday[normalizeWorkerKey(rowName)]) {
+    return [rowName];
+  }
+  const filtered = (basePool || []).filter((name) => {
+    if (!name || name === 'Unassigned') return false;
+    return !usedToday[normalizeWorkerKey(name)];
+  });
+  if (filtered.length) return uniqueWorkers(filtered, seed, 1);
+  return ['Unassigned'];
+}
+
 export function assignmentShell(restaurants: Restaurant[]): AssignmentStore {
   const o: AssignmentStore = {};
   restaurants.forEach((r) => {
@@ -420,27 +607,144 @@ export function mergeRemoteAssignments(
 ): AssignmentStore {
   const next = JSON.parse(JSON.stringify(shell)) as AssignmentStore;
   if (!parsed || typeof parsed !== 'object') return next;
-  const p = parsed as Record<string, Record<string, string[]>>;
+  const p = parsed as AssignmentStore;
   restaurantIds.forEach((rid) => {
     if (p[rid] && typeof p[rid] === 'object') next[rid] = p[rid];
   });
-  return next;
+  mergeFormerRp8AssignmentsIntoRp9(next);
+  const mig = migrateScheduleAssignmentsForPastWeeks(next);
+  const store = mig.store;
+  const restaurants = defaultRestaurants();
+  restaurantIds.forEach((rid) => {
+    if (restaurantUsesDefaultUnassignedSchedule(restaurants, rid)) return;
+    if (!store[rid]) store[rid] = {};
+    replicateWeekZeroToFutureWeeksInStore(store[rid], SCHEDULE_VIEW_WEEK_COUNT);
+  });
+  purgeDefaultUnassignedRestaurantAssignments(store, restaurants);
+  return store;
 }
 
-function getCurrentRestaurantAssignments(store: AssignmentStore, restaurantId: string): Record<string, string[]> {
+/** Fold legacy 8th Ave assignment keys into rp-9 when moving to single-site. */
+function mergeFormerRp8AssignmentsIntoRp9(parsed: AssignmentStore): boolean {
+  if (!parsed || typeof parsed !== 'object' || !parsed['rp-8'] || typeof parsed['rp-8'] !== 'object') {
+    return false;
+  }
+  const n9 =
+    parsed['rp-9'] && typeof parsed['rp-9'] === 'object' ? { ...parsed['rp-9'] } : {};
+  const e8 = parsed['rp-8'];
+  Object.keys(e8).forEach((shiftId) => {
+    if (n9[shiftId] === undefined || n9[shiftId] === null) n9[shiftId] = e8[shiftId];
+  });
+  parsed['rp-9'] = n9;
+  delete parsed['rp-8'];
+  return true;
+}
+
+function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): { store: AssignmentStore; changed: boolean } {
+  if (!store || typeof store !== 'object') return { store, changed: false };
+  const offset = SCHEDULE_PAST_WEEK_COUNT * 7;
+  let changed = false;
+  Object.keys(store).forEach((rid) => {
+    const rs = store[rid];
+    if (!rs || typeof rs !== 'object') return;
+    const removeIds: string[] = [];
+    Object.keys(rs).forEach((shiftId) => {
+      const p = parseShiftIdParts(shiftId);
+      if (!p || p.globalDayIdx >= offset) return;
+      const newId = `shift-${p.globalDayIdx + offset}-${p.roleIdx}-${p.trIdx}`;
+      if (rs[newId] == null) {
+        rs[newId] = rs[shiftId];
+        changed = true;
+      }
+      removeIds.push(shiftId);
+    });
+    removeIds.forEach((shiftId) => {
+      delete rs[shiftId];
+      changed = true;
+    });
+  });
+  return { store, changed };
+}
+
+function replicateWeekZeroToFutureWeeksInStore(
+  restAssignments: Record<string, ScheduleAssignmentEntry>,
+  weekCount: number
+): boolean {
+  if (!restAssignments || typeof restAssignments !== 'object') return false;
+  const tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+  const tplStart = tpl * 7;
+  let changed = false;
+  Object.keys(restAssignments).forEach((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    if (!p) return;
+    if (p.globalDayIdx >= tplStart + 7 && p.globalDayIdx < weekCount * 7) {
+      delete restAssignments[shiftId];
+      changed = true;
+    }
+  });
+  for (let w = tpl + 1; w < weekCount; w += 1) {
+    const weekStart = w * 7;
+    for (let dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
+      for (let roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
+        const slotCount = slotCountForRole(DEFAULT_DRAFT_SCHEDULE_ROWS, ROLE_DEFS[roleIdx].role);
+        for (let trIdx = 0; trIdx < slotCount; trIdx += 1) {
+          const templateId = `shift-${tplStart + dayInWeek}-${roleIdx}-${trIdx}`;
+          const targetId = `shift-${weekStart + dayInWeek}-${roleIdx}-${trIdx}`;
+          if (restAssignments[templateId] == null) continue;
+          restAssignments[targetId] = cloneScheduleAssignment(restAssignments[templateId]);
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+function getCurrentRestaurantAssignments(
+  store: AssignmentStore,
+  restaurantId: string
+): Record<string, ScheduleAssignmentEntry> {
   return store[restaurantId] || {};
 }
 
 function applyScheduleAssignmentsMerge(
   schedule: ScheduleRow[],
-  stored: Record<string, string[]>,
+  stored: Record<string, ScheduleAssignmentEntry>,
   skipWorkers?: boolean
 ) {
   schedule.forEach((s) => {
-    const arr = stored[s.id];
-    if (!arr || !Array.isArray(arr)) return;
-    if (skipWorkers) return;
-    const list = arr.filter(Boolean);
+    const entry = lookupScheduleAssignment(stored, s.id);
+    const slotLabel = redPokeShiftTimeLabel(s.start, s.end);
+    const slotHours = redPokeShiftHoursDecimal(s.start, s.end);
+    s.timeLabel = slotLabel;
+    if (!entry) {
+      s.redPokeHours = slotHours;
+      return;
+    }
+    if (entry.break) s.redPokeBreak = entry.break;
+    if (entry.breakPaid === true || entry.breakPaid === false) {
+      s.breakPaid = !!entry.breakPaid;
+    } else {
+      delete s.breakPaid;
+    }
+    if (entry.hours != null && String(entry.hours).trim() !== '') {
+      const entryH = parseFloat(entry.hours);
+      const slotH = parseFloat(slotHours);
+      if (!Number.isNaN(entryH) && !Number.isNaN(slotH) && Math.abs(entryH - slotH) > 0.02) {
+        s.redPokeHours = slotHours;
+      } else {
+        s.redPokeHours = entry.hours;
+      }
+    } else {
+      s.redPokeHours = slotHours;
+    }
+    if (entry.timeLabel) s.timeLabel = entry.timeLabel;
+    if (skipWorkers) {
+      s.workers = ['Unassigned'];
+      s.worker = 'Unassigned';
+      return;
+    }
+    const list = entry.workers.filter((n) => n && n !== 'Unassigned');
     if (!list.length) return;
     s.workers = list.slice();
     s.worker = s.workers[0];
@@ -449,13 +753,15 @@ function applyScheduleAssignmentsMerge(
 
 export function buildSchedule(params: {
   allWeekDays: string[];
-  draftRows: DraftGrid;
+  draftScheduleRaw?: unknown;
+  draftRows?: DraftGrid;
   employees: EmployeeLite[];
   restaurants: Restaurant[];
   currentRestaurantId: string;
   assignmentStore: AssignmentStore;
 }): ScheduleRow[] {
-  const { allWeekDays, draftRows, employees, restaurants, currentRestaurantId, assignmentStore } = params;
+  const { allWeekDays, draftScheduleRaw, draftRows, employees, restaurants, currentRestaurantId, assignmentStore } =
+    params;
   const pools = refreshPools(employees);
   const forceUnassigned = restaurantUsesDefaultUnassignedSchedule(restaurants, currentRestaurantId);
   const schedule: ScheduleRow[] = [];
@@ -463,11 +769,13 @@ export function buildSchedule(params: {
 
   allWeekDays.forEach((dayStr, globalDayIdx) => {
     const wk = weekdayKeyFromScheduleDay(dayStr);
+    const weekIdx = Math.floor(globalDayIdx / 7);
+    const weekDraft = draftForWeek(draftScheduleRaw, draftRows, weekIdx);
     const usedToday: Record<string, boolean> = Object.create(null);
     ROLE_DEFS.forEach((rd, roleIdx) => {
-      const n = slotCountForRole(draftRows, rd.role);
+      const n = slotCountForRole(weekDraft, rd.role);
       for (let trIdx = 0; trIdx < n; trIdx += 1) {
-        const tr = draftTimeSlotFor(draftRows, rd.role, wk, trIdx);
+        const tr = draftTimeSlotFor(weekDraft, rd.role, wk, trIdx);
         if (!tr) continue;
         const seed = hashString(
           `shift|${dayStr}|${rd.role}|${tr.start}|${tr.end}|${currentRestaurantId}`
@@ -478,15 +786,7 @@ export function buildSchedule(params: {
         if (forceUnassigned) {
           workers = ['Unassigned'];
         } else {
-          const filtered = (basePool || []).filter((name) => {
-            if (!name || name === 'Unassigned') return false;
-            return !usedToday[normalizeWorkerKey(name)];
-          });
-          if (filtered.length) {
-            workers = uniqueWorkers(filtered, seed, 1);
-          } else {
-            workers = ['Unassigned'];
-          }
+          workers = pickDefaultScheduleWorkers(rd.role, trIdx, basePool, usedToday, seed);
           if (!workers.length) workers = ['Unassigned'];
           const chosen = workers[0];
           if (chosen && chosen !== 'Unassigned') {
@@ -600,16 +900,6 @@ export function buildCalendarBody(
   return bodyRows;
 }
 
-export function parseShiftIdParts(shiftId: string): { globalDayIdx: number; roleIdx: number; trIdx: number } | null {
-  const m = String(shiftId || '').match(/^shift-(\d+)-(\d+)-(\d+)$/);
-  if (!m) return null;
-  return {
-    globalDayIdx: parseInt(m[1], 10),
-    roleIdx: parseInt(m[2], 10),
-    trIdx: parseInt(m[3], 10),
-  };
-}
-
 export function updateAssignmentWorkers(
   store: AssignmentStore,
   restaurantId: string,
@@ -636,22 +926,28 @@ export function getAvailabilityWeekOptions(weekMeta: WeekMeta[]): {
 }[] {
   const todayIso = localTodayISO();
   const out: { weekIndex: number; startIso: string; label: string }[] = [];
-  for (let wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+  for (let wi = SCHEDULE_TEMPLATE_WEEK_INDEX; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
     const startMeta = weekMeta[wi * 7];
     if (!startMeta) continue;
     if (String(startMeta.iso) < String(todayIso)) continue;
-    const prefix = out.length === 0 ? 'This week' : out.length === 1 ? 'Next week' : `Week ${out.length + 1}`;
+    const prefix =
+      wi === SCHEDULE_TEMPLATE_WEEK_INDEX
+        ? 'This week'
+        : wi === SCHEDULE_TEMPLATE_WEEK_INDEX + 1
+          ? 'Next week'
+          : `Week ${wi - SCHEDULE_TEMPLATE_WEEK_INDEX + 1}`;
     out.push({
       weekIndex: wi,
       startIso: startMeta.iso,
       label: `${prefix} (${startMeta.label})`,
     });
   }
-  if (!out.length && weekMeta[0]) {
+  const fallbackMeta = weekMeta[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
+  if (!out.length && fallbackMeta) {
     out.push({
-      weekIndex: 0,
-      startIso: weekMeta[0].iso,
-      label: `This week (${weekMeta[0].label})`,
+      weekIndex: SCHEDULE_TEMPLATE_WEEK_INDEX,
+      startIso: fallbackMeta.iso,
+      label: `This week (${fallbackMeta.label})`,
     });
   }
   return out;
@@ -698,19 +994,21 @@ export function buildAllLocationsWorkerShiftRows(
   weekMeta: WeekMeta[],
   params: {
     allWeekDays: string[];
-    draftRows: DraftGrid;
+    draftScheduleRaw?: unknown;
+    draftRows?: DraftGrid;
     employees: EmployeeLite[];
     restaurants: Restaurant[];
     assignmentStore: AssignmentStore;
     workerName: string;
   }
 ): WorkerShiftRow[] {
-  const { allWeekDays, draftRows, employees, restaurants, assignmentStore, workerName } = params;
+  const { allWeekDays, draftScheduleRaw, draftRows, employees, restaurants, assignmentStore, workerName } = params;
   const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
   const out: WorkerShiftRow[] = [];
   for (const rest of restaurants) {
     const schedule = buildSchedule({
       allWeekDays,
+      draftScheduleRaw,
       draftRows,
       employees,
       restaurants,
@@ -737,14 +1035,30 @@ export function getWorkerScheduleBuckets(params: {
   workerName: string;
   weekMeta: WeekMeta[];
   allWeekDays: string[];
-  draftRows: DraftGrid;
+  draftScheduleRaw?: unknown;
+  draftRows?: DraftGrid;
   employees: EmployeeLite[];
   restaurants: Restaurant[];
   assignmentStore: AssignmentStore;
 }): { today: WorkerShiftRow[]; upcoming: WorkerShiftRow[] } {
-  const { workerName, weekMeta, allWeekDays, draftRows, employees, restaurants, assignmentStore } = params;
+  const {
+    workerName,
+    weekMeta,
+    allWeekDays,
+    draftScheduleRaw,
+    draftRows,
+    employees,
+    restaurants,
+    assignmentStore,
+  } = params;
+  const windowStartMeta = weekMeta[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
+  const windowEndMeta =
+    weekMeta[(SCHEDULE_TEMPLATE_WEEK_INDEX + EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT) * 7 - 1];
+  const windowStartIso = windowStartMeta?.iso ?? '';
+  const windowEndIso = windowEndMeta?.iso ?? '';
   const all = buildAllLocationsWorkerShiftRows(weekMeta, {
     allWeekDays,
+    draftScheduleRaw,
     draftRows,
     employees,
     restaurants,
@@ -755,6 +1069,8 @@ export function getWorkerScheduleBuckets(params: {
   const today: WorkerShiftRow[] = [];
   const upcoming: WorkerShiftRow[] = [];
   for (const o of all) {
+    if (windowStartIso && o.iso && o.iso < windowStartIso) continue;
+    if (windowEndIso && o.iso && o.iso > windowEndIso) continue;
     if (o.iso === todayIso) today.push(o);
     else if (o.iso && o.iso > todayIso) upcoming.push(o);
   }
@@ -764,4 +1080,23 @@ export function getWorkerScheduleBuckets(params: {
   });
   today.sort((a, b) => a.start.localeCompare(b.start));
   return { today, upcoming };
+}
+
+/** Drop saved worker rows for locations that must stay unassigned (e.g. rp-8). */
+export function purgeDefaultUnassignedRestaurantAssignments(
+  store: AssignmentStore,
+  restaurants: Restaurant[]
+): boolean {
+  if (!store || typeof store !== 'object') return false;
+  let changed = false;
+  for (const r of restaurants) {
+    if (!restaurantUsesDefaultUnassignedSchedule(restaurants, r.id)) continue;
+    if (store[r.id] && Object.keys(store[r.id]).length) {
+      store[r.id] = {};
+      changed = true;
+    } else if (!store[r.id]) {
+      store[r.id] = {};
+    }
+  }
+  return changed;
 }

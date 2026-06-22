@@ -751,6 +751,31 @@
             </label>
           </div>
 
+          <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
+            <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below.</p>
+            <label class="form-field form-field-block">
+              <span class="form-label">App login password</span>
+              <input
+                type="password"
+                name="portalPassword"
+                id="empPortalPassword"
+                minlength="4"
+                autocomplete="new-password"
+                placeholder="redpoke"
+              />
+            </label>
+            <label class="form-field form-field-block">
+              <span class="form-label">Recovery email (optional)</span>
+              <input
+                type="email"
+                name="recoveryEmail"
+                id="empRecoveryEmail"
+                autocomplete="email"
+                placeholder="For password reset"
+              />
+            </label>
+          </div>
+
             </div>
           </section>
 
@@ -986,6 +1011,8 @@
         maxlength="4"
         autocomplete="off"
         aria-label="PIN entry"
+        readonly
+        tabindex="-1"
       />
       <div class="timeclock-pin-display" id="timeclockPinDisplay" aria-live="polite">○○○○</div>
       <p class="timeclock-status" id="timeclockStatus" hidden></p>
@@ -1037,8 +1064,8 @@
       </header>
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
-        <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
         <button type="button" class="nav-item" data-emp-nav="requests">Actions</button>
+        <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
       </nav>
     </div>
     <main class="main emp-main">
@@ -1413,7 +1440,8 @@
   <script src="app.js?v=timecards-tips-1"></script>
   <script src="employee-app.js?v=timecards-tips-1"></script>
   <script src="manager-messaging.js?v=timecards-tips-1"></script>
-  <script src="timeclock-app.js?v=timecards-tips-1"></script>
+  <script src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
+  <script src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
   <script src="portal-auth-client.js?v=recovery-email-self-2"></script>
   <script src="login-timeclock.js?v=timecards-tips-1"></script>
   <script>

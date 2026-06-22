@@ -25,10 +25,13 @@
   var cachedWeekExtrasSliceKey = null;
   var cachedWeekTipPool = null;
   var cachedWeekTipPoolKey = null;
+  var tipPoolPersistTimer = null;
   var cachedDishwasherTipsSlice = null;
   var cachedDishwasherTipsSliceKey = null;
   var cachedPayrollTipDist = null;
   var cachedPayrollTipDistKey = null;
+  var weekEntriesCacheByKey = Object.create(null);
+  var weekEntriesSchemaCacheByKey = Object.create(null);
 
   var ROSTER_SORT_COLS = [
     'name',
@@ -91,7 +94,7 @@
     if (d().getRestaurantsList) return d().getRestaurantsList();
     return [
       { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
-      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave' },
+      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave', defaultUnassignedSchedule: true },
     ];
   }
 
@@ -110,6 +113,11 @@
   /** Which store a calendar day's punches belong to when not on a scheduled shift row. */
   function punchDayRestaurantId(emp, iso) {
     if (!emp || !iso) return 'rp-9';
+    var dayEntries = findEntriesForDay(emp.id, iso);
+    for (var pe = 0; pe < dayEntries.length; pe += 1) {
+      var kioskRest = dayEntries[pe].clock_restaurant_id;
+      if (kioskRest === 'rp-8' || kioskRest === 'rp-9') return kioskRest;
+    }
     var name = d().employeeDisplayName(emp);
     var metaByLabel = weekMetaByLabelMap();
     var restaurants = {};
@@ -180,14 +188,25 @@
     var sid = entry && entry.schedule_shift_id;
     if (!sid || !emp) return [];
     var name = d().employeeDisplayName(emp);
-    return scheduleSnapshotForPayWeek().filter(function (s) {
+    var matches = scheduleSnapshotForPayWeek().filter(function (s) {
       return s.id === sid && d().shiftRowIncludesWorker(s, name);
     });
+    var kioskRest = entry.clock_restaurant_id;
+    if (kioskRest === 'rp-8' || kioskRest === 'rp-9') {
+      var scoped = matches.filter(function (s) {
+        return shiftRestaurantId(s) === kioskRest;
+      });
+      if (scoped.length) return scoped;
+    }
+    return matches;
   }
 
-  /** Which store a punch row belongs to (schedule link or calendar-day inference). */
+  /** Which store a punch row belongs to (schedule link, kiosk attribution, or calendar-day inference). */
   function entryRestaurantId(emp, entry) {
     if (!entry || !emp) return 'rp-9';
+    if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
+      return entry.clock_restaurant_id;
+    }
     var matches = findScheduleShiftsForEntry(emp, entry);
     if (matches.length) return preferRestaurantAmongMatches(emp, matches);
     return punchDayRestaurantId(emp, punchDayIso(entry));
@@ -202,19 +221,11 @@
     return shiftRestaurantId(shiftRow.shift) === timecardsLocationFilter;
   }
 
+  /** Home store determines roster membership; use All locations for cross-store payroll. */
   function rosterRowVisibleAtLocation(row) {
     if (timecardsLocationFilter === 'all') return true;
     var home = employeeHomeRestaurant(row && row.emp);
-    if (home === 'both' || home === timecardsLocationFilter) return true;
-    return (
-      (row.schedMins || 0) > 0 ||
-      (row.regMins || 0) > 0 ||
-      (row.otMins || 0) > 0 ||
-      (row.sohCount || 0) > 0 ||
-      (row.vlHours || 0) > 0 ||
-      (row.slHours || 0) > 0 ||
-      (row.dishwasherTipsPay || 0) > 0
-    );
+    return home === 'both' || home === timecardsLocationFilter;
   }
 
   function dishwasherTipStorageKey(empId, iso, restaurantId) {
@@ -273,8 +284,7 @@
         var next = btn.getAttribute('data-timecards-location') || 'all';
         if (next === timecardsLocationFilter) return;
         saveTimecardsLocationFilter(next);
-        invalidatePayWeekScheduleCache();
-        renderRoster();
+        repaintRoster();
       });
     });
   }
@@ -689,22 +699,95 @@
     return out;
   }
 
-  function weekDayRecordedForEmployee(emp, shifts) {
-    var seen = {};
-    var dayRecorded = [];
-    shifts.forEach(function (row) {
-      if (seen[row.iso]) return;
-      var dayEntries = findEntriesForDay(emp.id, row.iso);
-      if (!dayEntries.length) return;
-      seen[row.iso] = true;
-      dayRecorded.push({ iso: row.iso, recordedMins: dailyRecordedMinutesForEmployee(emp, row.iso) });
+  /** Sum recorded minutes for punches attributed to one store on a calendar day. */
+  function dailyRecordedMinutesForEmployeeAtRestaurant(emp, iso, restaurantId) {
+    if (!emp || !iso || !restaurantId) return 0;
+    var total = 0;
+    findEntriesForDay(emp.id, iso).forEach(function (e) {
+      if (!e || !e.clock_in_at) return;
+      if (entryRestaurantId(emp, e) !== restaurantId) return;
+      total += recordedPaidMinutes(e, null, emp);
     });
-    return dayRecorded;
+    return total;
+  }
+
+  function shiftRowAttributionRestaurant(emp, row) {
+    if (!row) return 'rp-9';
+    if (isOffScheduleShiftDayRow(row)) return punchDayRestaurantId(emp, row.iso);
+    return shiftRestaurantId(row.shift);
+  }
+
+  function weekDayRecordedByRestaurantForEmployee(emp) {
+    var buckets = Object.create(null);
+    var loc = effectiveLocationFilter();
+    var list = weekEntriesByEmpId ? weekEntriesByEmpId[emp.id] || [] : weekEntries;
+    list.forEach(function (e) {
+      if (!e || !e.clock_in_at) return;
+      var iso = punchDayIso(e);
+      if (!entryHasMeaningfulPunch(e, iso)) return;
+      var rest = entryRestaurantId(emp, e);
+      if (loc !== 'all' && rest !== loc) return;
+      var key = iso + '\0' + rest;
+      buckets[key] = (buckets[key] || 0) + recordedPaidMinutes(e, null, emp);
+    });
+    return Object.keys(buckets)
+      .sort()
+      .map(function (key) {
+        var sep = key.indexOf('\0');
+        return {
+          iso: key.slice(0, sep),
+          restaurantId: key.slice(sep + 1),
+          recordedMins: buckets[key],
+        };
+      });
+  }
+
+  function weeklyRegOtByRestaurantDay(buckets) {
+    var sorted = buckets.slice().sort(function (a, b) {
+      if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
+      return String(a.restaurantId).localeCompare(String(b.restaurantId));
+    });
+    var regularRemaining = WEEKLY_REGULAR_CAP_MINUTES;
+    var out = Object.create(null);
+    sorted.forEach(function (b) {
+      var split = allocateRecordedRegOtMinutes(b.recordedMins, regularRemaining);
+      regularRemaining = split.regularRemaining;
+      out[b.iso + '\0' + b.restaurantId] = {
+        regMins: split.regMins,
+        otMins: split.otMins,
+        totalMins: split.totalMins,
+      };
+    });
+    return out;
+  }
+
+  function weekRegOtForShiftRow(emp, row) {
+    var byRest = weeklyRegOtByRestaurantDay(weekDayRecordedByRestaurantForEmployee(emp));
+    var rest = shiftRowAttributionRestaurant(emp, row);
+    return byRest[row.iso + '\0' + rest] || { regMins: 0, otMins: 0, totalMins: 0 };
+  }
+
+  /** Distinct calendar days with attributed punches (each minute counted once). */
+  function weekDayRecordedForEmployee(emp, _shifts) {
+    var byIso = Object.create(null);
+    var loc = effectiveLocationFilter();
+    var list = weekEntriesByEmpId ? weekEntriesByEmpId[emp.id] || [] : weekEntries;
+    list.forEach(function (e) {
+      if (!e || !e.clock_in_at) return;
+      var iso = punchDayIso(e);
+      if (!entryHasMeaningfulPunch(e, iso)) return;
+      if (loc !== 'all' && entryRestaurantId(emp, e) !== loc) return;
+      byIso[iso] = (byIso[iso] || 0) + recordedPaidMinutes(e, null, emp);
+    });
+    return Object.keys(byIso)
+      .sort()
+      .map(function (iso) {
+        return { iso: iso, recordedMins: byIso[iso] };
+      });
   }
 
   function weekRegOtForEmployee(emp) {
-    var shifts = buildShiftsForEmployeeInWeek(emp);
-    return weeklyRegOtByDay(weekDayRecordedForEmployee(emp, shifts));
+    return weeklyRegOtByDay(weekDayRecordedForEmployee(emp, null));
   }
 
   /** @deprecated schedMins ignored — use weekly allocation helpers. */
@@ -856,6 +939,7 @@
       all[weekExtrasStorageKey(bounds)] = slice;
       localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(all));
       invalidateDishwasherTipsSliceCache();
+      if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
     } catch (_e) {
       /* ignore */
     }
@@ -1162,6 +1246,7 @@
       all[weekExtrasStorageKey(bounds)] = slice;
       localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(all));
       invalidateWeekExtrasSliceCache();
+      if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
     } catch (_e) {
       /* ignore */
     }
@@ -1232,6 +1317,7 @@
       all[weekExtrasStorageKey(bounds)] = pool;
       localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(all));
       invalidateWeekTipPoolCache();
+      if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
     } catch (_e) {
       /* ignore */
     }
@@ -1250,6 +1336,14 @@
       manual: true,
     });
     updateTipPoolSummaryText();
+  }
+
+  function schedulePersistTipPoolFromInputs() {
+    if (tipPoolPersistTimer) clearTimeout(tipPoolPersistTimer);
+    tipPoolPersistTimer = setTimeout(function () {
+      tipPoolPersistTimer = null;
+      persistTipPoolFromInputs();
+    }, 500);
   }
 
   function readTipPoolFromInputs() {
@@ -1321,7 +1415,10 @@
         ev.stopPropagation();
       });
       inp.addEventListener('change', persistTipPoolFromInputs);
-      inp.addEventListener('input', updateTipPoolSummaryText);
+      inp.addEventListener('input', function () {
+        updateTipPoolSummaryText();
+        schedulePersistTipPoolFromInputs();
+      });
     });
   }
 
@@ -1694,8 +1791,7 @@
   }
 
   function shiftPayForRow(emp, row) {
-    var regOtByDay = weekRegOtForEmployee(emp);
-    var split = regOtByDay[row.iso] || { regMins: 0, otMins: 0, totalMins: 0 };
+    var split = weekRegOtForShiftRow(emp, row);
     var pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
     return {
       regMins: split.regMins,
@@ -1774,9 +1870,9 @@
   function buildShiftDetailRow(emp, row) {
     var s = row.shift;
     var schedMins = scheduledPaidMinutes(s, emp);
-    var recordedMins = dailyRecordedMinutesForEmployee(emp, row.iso);
-    var regOtByDay = weekRegOtForEmployee(emp);
-    var split = regOtByDay[row.iso] || { regMins: 0, otMins: 0, totalMins: 0 };
+    var rowRest = shiftRowAttributionRestaurant(emp, row);
+    var recordedMins = dailyRecordedMinutesForEmployeeAtRestaurant(emp, row.iso, rowRest);
+    var split = weekRegOtForShiftRow(emp, row);
     var pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
     var st = shiftStatusLabelForDay(s, emp, row.iso);
     return {
@@ -2702,6 +2798,7 @@
 
   var PAYROLL_COLS = 20;
   var PAYROLL_COL_GROSS = 8;
+  var PAYROLL_COL_SPREAD_HOURS = 9;
   var PAYROLL_COL_SOH_HR = 10;
   var PAYROLL_COL_TOTAL_SOH = 11;
   var PAYROLL_COL_GROSS_WITH_SOH = 12;
@@ -2731,6 +2828,34 @@
   ];
   var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 8, 12, 11, 8, 10, 16, 16, 8, 12, 15, 8, 14, 12];
   var PAYROLL_HEADER_ROW_HPT = 42;
+
+  function payrollSpreadHoursCellText(m) {
+    return m.sohCount > 0 && m.row.sohDatesLabel && m.row.sohDatesLabel !== '—'
+      ? m.row.sohDatesLabel
+      : m.sohCount > 0
+        ? m.sohCount
+        : '-';
+  }
+
+  /** Widen SPREAD HOURS column so SoH date strings are not clipped (wrapText: false). */
+  function payrollResolvedColWidths(fohMetrics, bohMetrics) {
+    var w = PAYROLL_COL_WIDTHS.slice();
+    var spreadCol = PAYROLL_COL_SPREAD_HOURS;
+    var headerLines = payrollHeaderCellText('SPREAD HOURS').split('\n');
+    headerLines.forEach(function (line) {
+      w[spreadCol] = Math.max(w[spreadCol], line.length + 1);
+    });
+    function considerMetrics(metrics) {
+      (metrics || []).forEach(function (m) {
+        var cell = payrollSpreadHoursCellText(m);
+        if (cell == null || cell === '') return;
+        w[spreadCol] = Math.max(w[spreadCol], String(cell).length + 1);
+      });
+    }
+    considerMetrics(fohMetrics);
+    considerMetrics(bohMetrics);
+    return w;
+  }
   var PAYROLL_TITLE = 'RED POKE 1 - PAYROLL';
   var ONGI_MANAGEMENT_GROSS = 1500;
 
@@ -3212,17 +3337,7 @@
     xlSet(ws, r, 6, payrollHoursNum(m.totalH), S.num2);
     xlSetMoney(ws, r, 7, m.rate, S.money);
     xlSetMoney(ws, r, 8, m.gross, S.money);
-    xlSet(
-      ws,
-      r,
-      9,
-      m.sohCount > 0 && m.row.sohDatesLabel && m.row.sohDatesLabel !== '—'
-        ? m.row.sohDatesLabel
-        : m.sohCount > 0
-          ? m.sohCount
-          : '-',
-      S.cell
-    );
+    xlSet(ws, r, PAYROLL_COL_SPREAD_HOURS, payrollSpreadHoursCellText(m), S.cell);
     xlSetMoney(ws, r, PAYROLL_COL_SOH_HR, m.sohHr, S.money);
     xlSetMoney(
       ws,
@@ -3427,35 +3542,52 @@
   }
 
   var CPA_COLS = 14;
-  var CPA_COL_WIDTHS = [4, 14, 14, 12, 14, 16, 10, 14, 14, 12, 10, 12, 16, 10];
+  var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 18, 12, 11, 12, 20, 12];
   var CPA_TITLE = '600 BAKERY CAFÉ CORP';
+  var CPA_NOTES_MERGE_HEADER = 'NOTES | ADJUSTMENTS HOURLY - PTO - SL';
+  var CPA_HEADER_ROW_HPT = 20;
+  var CPA_HEAD_LABELS = [
+    '#',
+    'FIRST NAME',
+    'LAST NAME',
+    'WAGE PER HOUR',
+    'REGULAR WORK HOUR',
+    'OVER-TIME WORK HOUR',
+    'VL/SL',
+    'TOTAL WORK HOUR',
+    'SPREAD OF HOUR/S',
+    'SOH DATE/S',
+    'SOH TOTAL',
+    'GROSS PAY',
+  ];
   var XL_CPA_YELLOW = { patternType: 'solid', fgColor: { rgb: 'FFFF00' } };
+
+  function cpaMergedColWidth(colWidths, startCol, endCol) {
+    var total = 0;
+    for (var c = startCol; c <= endCol; c += 1) total += colWidths[c];
+    return total;
+  }
+
+  function cpaEnsureMergedColWidth(colWidths, startCol, endCol, minTotal) {
+    var total = cpaMergedColWidth(colWidths, startCol, endCol);
+    if (total >= minTotal) return;
+    colWidths[endCol] += minTotal - total;
+  }
+
+  /** Bold header text needs more wch than plain char count in Excel. */
+  function cpaHeaderWidthUnits(text) {
+    return Math.ceil(String(text).length * 1.2) + 2;
+  }
 
   /** Widen columns so one-line cells (wrapText: false) are not clipped. */
   function cpaResolvedColWidths(employeeRows) {
     var w = CPA_COL_WIDTHS.slice();
-    var headLabels = [
-      '#',
-      'FIRST NAME',
-      'LAST NAME',
-      'WAGE PER HOUR',
-      'REGULAR WORK HOUR',
-      'OVER-TIME WORK HOUR',
-      'VL/SL',
-      'TOTAL WORK HOUR',
-      'SPREAD OF HOUR/S',
-      'SOH DATE/S',
-      'SOH TOTAL',
-      'GROSS PAY',
-    ];
-    headLabels.forEach(function (label, c) {
-      w[c] = Math.max(w[c], String(label).length + 1);
+    CPA_HEAD_LABELS.forEach(function (label, c) {
+      w[c] = Math.max(w[c], cpaHeaderWidthUnits(label));
     });
-    var notesHeader = 'NOTES | ADJUSTMENTS HOURLY - PTO - SL';
-    var mergedNotesW = w[12] + w[13];
-    if (mergedNotesW < notesHeader.length + 1) {
-      w[13] += notesHeader.length + 1 - mergedNotesW;
-    }
+    cpaEnsureMergedColWidth(w, 12, 13, cpaHeaderWidthUnits(CPA_NOTES_MERGE_HEADER));
+    w[12] = Math.max(w[12], cpaHeaderWidthUnits('NOTES'));
+    w[13] = Math.max(w[13], cpaHeaderWidthUnits('HOURS'));
     (employeeRows || []).forEach(function (row, i) {
       var cells = buildCpaEmployeeRow(row, i);
       cells.forEach(function (cell, colIdx) {
@@ -3621,24 +3753,13 @@
     xlMerge(merges, r, 0, r, CPA_COLS - 1);
     r += 1;
 
-    var headLabels = [
-      '#',
-      'FIRST NAME',
-      'LAST NAME',
-      'WAGE PER HOUR',
-      'REGULAR WORK HOUR',
-      'OVER-TIME WORK HOUR',
-      'VL/SL',
-      'TOTAL WORK HOUR',
-      'SPREAD OF HOUR/S',
-      'SOH DATE/S',
-      'SOH TOTAL',
-      'GROSS PAY',
-    ];
-    headLabels.forEach(function (label, c) {
+    var headerRow = r;
+    var rowHeights = [];
+    rowHeights[headerRow] = { hpt: CPA_HEADER_ROW_HPT };
+    CPA_HEAD_LABELS.forEach(function (label, c) {
       xlSet(ws, r, c, label, S.head);
     });
-    xlSet(ws, r, 12, 'NOTES | ADJUSTMENTS HOURLY - PTO - SL', S.head);
+    xlSet(ws, r, 12, CPA_NOTES_MERGE_HEADER, S.head);
     xlMerge(merges, r, 12, r, 13);
     r += 1;
 
@@ -3660,9 +3781,15 @@
       }
     }
 
-    return xlFinalizeSheet(ws, merges, colWidths.map(function (w) {
-      return { wch: w };
-    }));
+    return xlFinalizeSheet(
+      ws,
+      merges,
+      colWidths.map(function (w) {
+        return { wch: w };
+      }),
+      null,
+      rowHeights
+    );
   }
 
   function payrollSumFormula(col, firstRow, lastRow) {
@@ -3794,7 +3921,7 @@
     var layout = { grandRow: grandRow, firstEmpRow: firstEmpRow, lastEmpRow: lastEmpRow };
     var tipLayout = { tipperRows: [] };
 
-    var colWidths = PAYROLL_COL_WIDTHS.slice();
+    var colWidths = payrollResolvedColWidths(fohMetrics, bohMetrics);
     while (colWidths.length <= PAYROLL_FEE_AMT_COL) colWidths.push(12);
 
     xlSet(ws, 0, 0, PAYROLL_TITLE, S.title);
@@ -6480,7 +6607,7 @@
   }
 
   /** Punch rows to clear for a shift day (calendar day + schedule_shift_id link). */
-  function entriesForShiftDayCleanup(empId, shiftRow) {
+  function entriesForShiftDayCleanup(empId, shiftRow, emp) {
     var byId = Object.create(null);
     if (!empId || !shiftRow || !shiftRow.iso) return [];
     findEntriesForDay(empId, shiftRow.iso).forEach(function (e) {
@@ -6488,10 +6615,11 @@
     });
     if (shiftRow.shift && !isOffScheduleShiftDayRow(shiftRow) && shiftRow.shift.id) {
       var shiftId = shiftRow.shift.id;
+      var rowRest = shiftRestaurantId(shiftRow.shift);
       weekEntries.forEach(function (e) {
-        if (e && e.employee_id === empId && e.schedule_shift_id === shiftId && e.id) {
-          byId[e.id] = e;
-        }
+        if (!e || e.employee_id !== empId || e.schedule_shift_id !== shiftId || !e.id) return;
+        if (emp && entryRestaurantId(emp, e) !== rowRest) return;
+        byId[e.id] = e;
       });
     }
     if (timecardState.entryId) {
@@ -6537,6 +6665,7 @@
     break_start_at: 'Break start',
     break_end_at: 'Break end',
     break_paid: 'Break policy',
+    kiosk_punch: 'Kiosk punch',
   };
 
   function formatHistoryWhen(iso) {
@@ -6557,6 +6686,13 @@
 
   function formatHistoryValue(key, val) {
     if (val == null || val === '') return '—';
+    if (key === 'kiosk_punch') {
+      if (val === 'in') return 'Clock in';
+      if (val === 'out') return 'Clock out';
+      if (val === 'break_start') return 'Break start';
+      if (val === 'break_end') return 'Break end';
+      return String(val);
+    }
     if (key === 'clock_in_at' || key === 'clock_out_at' || key === 'break_start_at' || key === 'break_end_at') {
       return formatPunchClock(val);
     }
@@ -6725,15 +6861,16 @@
     var session = await ensureSupabaseSession(sb);
     if (!session) return { ok: false, reason: 'no_session' };
     var bounds = payWeekBounds();
+    var cacheKey = weekExtrasStorageKey(bounds);
     var sel =
-      'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, edit_history, updated_at';
+      'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, clock_restaurant_id, edit_history, updated_at';
     var res = await sb
       .from('time_clock_entries')
       .select(sel)
       .gte('clock_in_at', bounds.start.toISOString())
       .lte('clock_in_at', bounds.end.toISOString())
       .order('clock_in_at', { ascending: true });
-    if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|edit_history/i.test(res.error.message || '')) {
+    if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|clock_restaurant_id|edit_history/i.test(res.error.message || '')) {
       res = await sb
         .from('time_clock_entries')
         .select('id, employee_id, clock_in_at, clock_out_at, updated_at')
@@ -6770,8 +6907,133 @@
     if (!openRes.error && openRes.data && openRes.data.length) {
       weekEntries = mergeWeekEntriesById(weekEntries, openRes.data);
     }
+    weekEntriesCacheByKey[cacheKey] = weekEntries.slice();
+    weekEntriesSchemaCacheByKey[cacheKey] = {
+      breakMinutes: timecardSchema.breakMinutes,
+      breakTimes: timecardSchema.breakTimes,
+      scheduleShiftId: timecardSchema.scheduleShiftId,
+      editHistory: timecardSchema.editHistory,
+      breakPaid: timecardSchema.breakPaid,
+    };
     rebuildWeekEntriesIndex();
     return { ok: true };
+  }
+
+  function applyWeekEntriesSchemaCache(cached) {
+    if (!cached) return;
+    timecardSchema.breakMinutes = !!cached.breakMinutes;
+    timecardSchema.breakTimes = !!cached.breakTimes;
+    timecardSchema.scheduleShiftId = !!cached.scheduleShiftId;
+    timecardSchema.editHistory = !!cached.editHistory;
+    timecardSchema.breakPaid = !!cached.breakPaid;
+  }
+
+  function hydrateWeekEntriesFromCache(bounds) {
+    bounds = bounds || payWeekBounds();
+    var cacheKey = weekExtrasStorageKey(bounds);
+    if (!weekEntriesCacheByKey[cacheKey]) return false;
+    weekEntries = weekEntriesCacheByKey[cacheKey];
+    applyWeekEntriesSchemaCache(weekEntriesSchemaCacheByKey[cacheKey]);
+    rebuildWeekEntriesIndex();
+    return true;
+  }
+
+  function invalidateWeekEntriesCache(bounds) {
+    if (bounds) {
+      delete weekEntriesCacheByKey[weekExtrasStorageKey(bounds)];
+      delete weekEntriesSchemaCacheByKey[weekExtrasStorageKey(bounds)];
+      return;
+    }
+    weekEntriesCacheByKey = Object.create(null);
+    weekEntriesSchemaCacheByKey = Object.create(null);
+  }
+
+  function buildRosterCacheFromCurrentWeek() {
+    ensurePayWeekScheduleRows();
+    var bounds = payWeekBounds();
+    var weekLabel =
+      bounds.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+      ' – ' +
+      bounds.end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    var emps = d().employees.slice();
+    rosterCache = {
+      weekLabel: weekLabel,
+      fileBase: 'timecards-' + isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end),
+      rows: emps.map(buildRosterRowData),
+      shiftRows: null,
+    };
+    invalidatePayrollTipDistCache();
+  }
+
+  function paintRosterWrap(wrap) {
+    if (!wrap) return;
+    if (!rosterCache || !rosterCache.rows || !rosterCache.rows.length) {
+      wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
+      return;
+    }
+    paintRosterTable(wrap);
+  }
+
+  function repaintRoster() {
+    var wrap = document.getElementById('timecardsRosterWrap');
+    if (!wrap || !deps) return;
+    if (!weekEntries.length && !hydrateWeekEntriesFromCache()) {
+      renderRoster();
+      return;
+    }
+    buildRosterCacheFromCurrentWeek();
+    paintRosterWrap(wrap);
+  }
+
+  function renderRoster() {
+    var wrap = document.getElementById('timecardsRosterWrap');
+    if (!wrap) return;
+    if (!deps) {
+      wrap.innerHTML =
+        '<p class="calendar-hint">Timecards failed to start. Hard-refresh the page.</p>';
+      return;
+    }
+    if (!d().gmSupabaseReadyNow()) {
+      wrap.innerHTML =
+        '<p class="calendar-hint">Timecards need Supabase on this server (SUPABASE_URL and SUPABASE_ANON_KEY). Sign in as Martin Long or Ongi Management after redeploy.</p>';
+      return;
+    }
+    var bounds = payWeekBounds();
+    var hadCache = hydrateWeekEntriesFromCache(bounds);
+    if (hadCache) {
+      var emps = d().employees.slice();
+      if (!emps.length) {
+        rosterCache = null;
+        wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
+        return;
+      }
+      buildRosterCacheFromCurrentWeek();
+      paintRosterWrap(wrap);
+      loadWeekEntries().then(function (loadRes) {
+        if (!loadRes.ok) return;
+        buildRosterCacheFromCurrentWeek();
+        paintRosterWrap(wrap);
+      });
+      return;
+    }
+    wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
+    loadWeekEntries().then(function (loadRes) {
+      if (!loadRes.ok) {
+        wrap.innerHTML =
+          '<p class="calendar-hint">' +
+          d().escapeHtml(formatTimecardsLoadError(loadRes.reason)) +
+          '</p>';
+        return;
+      }
+      var emps = d().employees.slice();
+      if (!emps.length) {
+        rosterCache = null;
+        wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
+        return;
+      }
+      buildRosterCacheFromCurrentWeek();
+      paintRosterWrap(wrap);
+    });
   }
 
   function aggregateEmployeeWeek(emp) {
@@ -6792,20 +7054,26 @@
 
     var regMins = 0;
     var otMins = 0;
-    var dayRecorded = [];
+    var dayRecorded = weekDayRecordedForEmployee(emp, null);
+    dayRecorded.forEach(function (day) {
+      if (!byDay[day.iso]) byDay[day.iso] = { sched: 0 };
+    });
+    dayRecorded.forEach(function (day) {
+      var iso = day.iso;
+      shifts.forEach(function (row) {
+        if (row.iso !== iso) return;
+        var st = shiftStatusLabelForDay(row.shift, emp, iso);
+        if (st === 'Review') needsReview = true;
+        if (st === 'Open') open = true;
+      });
+    });
     Object.keys(byDay)
       .sort()
       .forEach(function (iso) {
-        var recordedMins = dailyRecordedMinutesForEmployee(emp, iso);
-        if (recordedMins > 0) {
-          dayRecorded.push({ iso: iso, recordedMins: recordedMins });
-          shifts.forEach(function (row) {
-            if (row.iso !== iso) return;
-            var st = shiftStatusLabelForDay(row.shift, emp, iso);
-            if (st === 'Review') needsReview = true;
-            if (st === 'Open') open = true;
-          });
-        } else if (iso <= todayIso && byDay[iso] && byDay[iso].sched > 0) {
+        var hasRecorded = dayRecorded.some(function (d) {
+          return d.iso === iso;
+        });
+        if (!hasRecorded && iso <= todayIso && byDay[iso] && byDay[iso].sched > 0) {
           needsReview = true;
         }
       });
@@ -6842,55 +7110,6 @@
     input.addEventListener('change', function () {
       if (!d().saveTimeclockSettings) return;
       d().saveTimeclockSettings({ autoClockOutTime: input.value || '00:00' });
-    });
-  }
-
-  function renderRoster() {
-    var wrap = document.getElementById('timecardsRosterWrap');
-    if (!wrap) return;
-    if (!deps) {
-      wrap.innerHTML =
-        '<p class="calendar-hint">Timecards failed to start. Hard-refresh the page.</p>';
-      return;
-    }
-    if (!d().gmSupabaseReadyNow()) {
-      wrap.innerHTML =
-        '<p class="calendar-hint">Timecards need Supabase on this server (SUPABASE_URL and SUPABASE_ANON_KEY). Sign in as Martin Long or Ongi Management after redeploy.</p>';
-      return;
-    }
-    wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
-    invalidatePayWeekScheduleCache();
-    invalidateWeekExtrasSliceCache();
-    invalidateWeekTipPoolCache();
-    invalidateDishwasherTipsSliceCache();
-    loadWeekEntries().then(function (loadRes) {
-      if (!loadRes.ok) {
-        wrap.innerHTML =
-          '<p class="calendar-hint">' +
-          d().escapeHtml(formatTimecardsLoadError(loadRes.reason)) +
-          '</p>';
-        return;
-      }
-      ensurePayWeekScheduleRows();
-      var bounds = payWeekBounds();
-      var weekLabel =
-        bounds.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
-        ' – ' +
-        bounds.end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-      var emps = d().employees.slice();
-      if (!emps.length) {
-        rosterCache = null;
-        wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
-        return;
-      }
-      rosterCache = {
-        weekLabel: weekLabel,
-        fileBase: 'timecards-' + isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end),
-        rows: emps.map(buildRosterRowData),
-        shiftRows: null,
-      };
-      invalidatePayrollTipDistCache();
-      paintRosterTable(wrap);
     });
   }
 
@@ -7771,7 +7990,7 @@
 
   async function finishClearedShiftDaySave(sb, emp, shiftRow, dayLeave, dishwasherTip) {
     await loadWeekEntries();
-    var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow)
+    var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow, emp)
       .map(function (e) {
         return e.id;
       })
@@ -7866,7 +8085,7 @@
         setSaveStatus(DISHWASHER_TIP_REQUIRES_SHIFT_MSG, true);
         return;
       }
-      var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow)
+      var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow, emp)
         .map(function (e) {
           return e.id;
         })
@@ -8117,6 +8336,76 @@
     }
   }
 
+  function timecardsRosterScreenActive() {
+    var wrap = document.getElementById('timecardsRosterWrap');
+    if (!wrap) return false;
+    var screen = wrap.closest('.screen');
+    return !!(screen && screen.classList.contains('active'));
+  }
+
+  function timecardsEmployeeScreenActive() {
+    var tbody = document.getElementById('timecardsEmployeeBody');
+    if (!tbody) return false;
+    var screen = tbody.closest('.screen');
+    return !!(screen && screen.classList.contains('active'));
+  }
+
+  function refreshRosterFromEmployees() {
+    if (!deps || !d().employees.length) return false;
+    invalidatePayrollTipDistCache();
+    var changed = false;
+    if (rosterCache) {
+      rosterCache.rows = d().employees.map(buildRosterRowData);
+      rosterCache.shiftRows = null;
+      if (timecardsRosterScreenActive()) {
+        var wrap = document.getElementById('timecardsRosterWrap');
+        if (wrap) paintRosterTable(wrap);
+        changed = true;
+      }
+    }
+    if (timecardState.employeeId && timecardsEmployeeScreenActive()) {
+      var emp = d().employees.find(function (e) {
+        return e.id === timecardState.employeeId;
+      });
+      if (emp) {
+        renderEmployeeShifts(emp);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  function applyRemoteTipPayroll() {
+    invalidateWeekTipPoolCache();
+    invalidateDishwasherTipsSliceCache();
+    invalidateWeekExtrasSliceCache();
+    invalidatePayrollTipDistCache();
+    var squareEl = document.getElementById('tcTipSquareInHouse');
+    var cashEl = document.getElementById('tcTipCash');
+    var sqEl = document.getElementById('tcTipSqGhDd');
+    if (squareEl && cashEl && sqEl) {
+      var pool = getPayrollTipPoolInputs();
+      squareEl.value = String(pool.squareTips);
+      cashEl.value = String(pool.cashTip);
+      sqEl.value = String(pool.sqGhDd);
+      updateTipPoolSummaryText();
+    }
+    refreshRosterFromEmployees();
+  }
+
+  async function applyRemoteTimeClockEntries() {
+    var res = await loadWeekEntries();
+    if (!res.ok) return false;
+    refreshRosterFromEmployees();
+    if (timecardState.employeeId && timecardsEmployeeScreenActive()) {
+      var emp = d().employees.find(function (e) {
+        return e.id === timecardState.employeeId;
+      });
+      if (emp) renderEmployeeShifts(emp);
+    }
+    return true;
+  }
+
   function init(dependencies) {
     deps = dependencies;
     selectedPayWeekStartIso = loadSelectedPayWeekStartIso();
@@ -8129,9 +8418,12 @@
   global.gmCalloutTimecards = {
     init: init,
     renderRoster: renderRoster,
+    refreshRosterFromEmployees: refreshRosterFromEmployees,
     handleBack: handleBack,
     reloadWeek: loadWeekEntries,
     invalidateScheduleCache: invalidatePayWeekScheduleCache,
+    applyRemoteTipPayroll: applyRemoteTipPayroll,
+    applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
   };
 
   if (typeof global.__gmCalloutTimecardsInitPending === 'function') {

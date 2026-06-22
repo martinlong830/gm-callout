@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
@@ -31,10 +32,12 @@ import {
   buildSchedule,
   buildWeeksFromMonday,
   defaultRestaurants,
-  getThisMondayDate,
+  getScheduleAnchorMondayDate,
   getVisibleWeekDays,
   loadDraftFromTeamState,
   mergeRemoteAssignments,
+  purgeDefaultUnassignedRestaurantAssignments,
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   STAFF_TYPE_LABELS,
   type CalendarBodyRow,
@@ -58,23 +61,11 @@ function toLite(e: EmployeeRow): EmployeeLite {
   };
 }
 
-function weekChipLabel(weekMeta: ReturnType<typeof buildWeeksFromMonday>, w: number): string {
-  const i0 = w * 7;
-  const m0 = weekMeta[i0];
-  const m6 = weekMeta[Math.min(i0 + 6, weekMeta.length - 1)];
-  if (m0 && m6) {
-    const d0 = m0.label.replace(/^[A-Za-z]+\s+/, '');
-    const d6 = m6.label.replace(/^[A-Za-z]+\s+/, '');
-    return `Week ${w + 1} (${d0} – ${d6})`;
-  }
-  return `Week ${w + 1}`;
-}
-
 export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role } = useAuth();
   const { employees, teamState, refetch, loading } = useAppData();
-  const [weekIndex, setWeekIndex] = useState(0);
+  const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
   const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
@@ -84,17 +75,21 @@ export default function ManagerScheduleScreen() {
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const weekMeta = useMemo(() => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getThisMondayDate()), []);
+  const weekMeta = useMemo(
+    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
+    []
+  );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
   const visibleDays = useMemo(
     () => getVisibleWeekDays(allWeekDays, weekIndex),
     [allWeekDays, weekIndex]
   );
 
-  const draftRows = useMemo(() => {
-    const dr = teamState?.draft_schedule;
-    return loadDraftFromTeamState(dr);
-  }, [teamState]);
+  const draftScheduleRaw = teamState?.draft_schedule;
+  const draftRows = useMemo(
+    () => loadDraftFromTeamState(draftScheduleRaw, weekIndex),
+    [draftScheduleRaw, weekIndex]
+  );
 
   useEffect(() => {
     const ids = restaurants.map((r) => r.id);
@@ -109,13 +104,13 @@ export default function ManagerScheduleScreen() {
     () =>
       buildSchedule({
         allWeekDays,
-        draftRows,
+        draftScheduleRaw,
         employees: lites,
         restaurants,
         currentRestaurantId,
         assignmentStore,
       }),
-    [allWeekDays, draftRows, lites, restaurants, currentRestaurantId, assignmentStore]
+    [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
   );
 
   const calendarBody = useMemo(
@@ -133,9 +128,11 @@ export default function ManagerScheduleScreen() {
         const cur = await supabase.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle();
         if (cur.error || !cur.data) return;
         const row = cur.data as Record<string, unknown>;
+        const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
+        purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
         const up = await supabase.from('team_state').upsert({
           id: row.id,
-          schedule_assignments: store,
+          schedule_assignments: toSave,
           schedule_templates: row.schedule_templates ?? [],
           draft_schedule: row.draft_schedule ?? {},
           messaging_templates: row.messaging_templates ?? { voice: '' },
@@ -143,12 +140,12 @@ export default function ManagerScheduleScreen() {
           callout_history: row.callout_history ?? [],
         });
         if (up.error) console.warn('team_state upsert', up.error);
-        else void refetch();
+        else void refetch({ silent: true });
       } finally {
         setSaving(false);
       }
     },
-    [role, refetch]
+    [role, refetch, restaurants]
   );
 
   const queuePersist = useCallback(
@@ -177,12 +174,17 @@ export default function ManagerScheduleScreen() {
     if (!pickerShift) return [] as string[];
     const role = pickerShift.role as RoleKey;
     const names = employees
-      .filter((e) => e.staffType === role)
+      .filter((e) => {
+        if (e.staffType !== role) return false;
+        const u = e.usualRestaurant || 'both';
+        if (u === 'both') return true;
+        return u === currentRestaurantId;
+      })
       .map(employeeDisplayName)
       .filter(Boolean);
     const u = ['Unassigned', ...names];
     return u;
-  }, [pickerShift, employees]);
+  }, [pickerShift, employees, currentRestaurantId]);
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
@@ -203,36 +205,46 @@ export default function ManagerScheduleScreen() {
 
         <View style={styles.toolbar}>
           <Text style={styles.toolbarLabel}>Week</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-            {Array.from({ length: SCHEDULE_VIEW_WEEK_COUNT }, (_, w) => (
-              <Pressable
-                key={w}
-                onPress={() => setWeekIndex(w)}
-                style={[styles.chip, weekIndex === w && styles.chipActive]}
-              >
-                <Text style={[styles.chipText, weekIndex === w && styles.chipTextActive]}>
-                  {weekChipLabel(weekMeta, w)}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+          <ScheduleWeekPicker
+            mode="managerNav"
+            weekMeta={weekMeta}
+            weekIndex={weekIndex}
+            onWeekIndexChange={setWeekIndex}
+            minWeekIndex={0}
+            maxWeekIndex={SCHEDULE_VIEW_WEEK_COUNT - 1}
+            templateWeekIndex={SCHEDULE_TEMPLATE_WEEK_INDEX}
+          />
         </View>
 
         <View style={styles.locRow}>
           <Text style={styles.toolbarLabel}>Location</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-            {restaurants.map((r) => (
-              <Pressable
-                key={r.id}
-                onPress={() => setCurrentRestaurantId(r.id)}
-                style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
-              >
-                <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
-                  {r.shortLabel || r.name}
-                </Text>
+          <View style={styles.locRowContent}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.locChipsScroll}
+              contentContainerStyle={styles.chipsRow}
+            >
+              {restaurants.map((r) => (
+                <Pressable
+                  key={r.id}
+                  onPress={() => setCurrentRestaurantId(r.id)}
+                  style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
+                >
+                  <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
+                    {r.shortLabel || r.name}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <View style={styles.locActions}>
+              {loading ? <ActivityIndicator /> : null}
+              {saving ? <Text style={styles.syncHint}>Saving…</Text> : null}
+              <Pressable onPress={() => void refetch()} style={styles.refreshBtn}>
+                <Text style={styles.refreshTxt}>Refresh</Text>
               </Pressable>
-            ))}
-          </ScrollView>
+            </View>
+          </View>
         </View>
 
         <View style={styles.legend}>
@@ -245,14 +257,6 @@ export default function ManagerScheduleScreen() {
           <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-server'].border }]}>
             <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>Delivery/Dishwasher</Text>
           </View>
-        </View>
-
-        <View style={styles.syncRow}>
-          {loading ? <ActivityIndicator /> : null}
-          {saving ? <Text style={styles.syncHint}>Saving…</Text> : null}
-          <Pressable onPress={() => void refetch()} style={styles.refreshBtn}>
-            <Text style={styles.refreshTxt}>Refresh</Text>
-          </Pressable>
         </View>
 
         <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
@@ -398,6 +402,9 @@ const styles = StyleSheet.create({
   brandLogo: { width: 52, height: 52, resizeMode: 'contain' },
   toolbar: { paddingHorizontal: 12, paddingTop: 8 },
   locRow: { paddingHorizontal: 12, marginTop: 6 },
+  locRowContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  locChipsScroll: { flex: 1 },
+  locActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
   toolbarLabel: { fontSize: 11, fontWeight: '700', color: '#64748b', marginBottom: 6, textTransform: 'uppercase' },
   chipsRow: { flexDirection: 'row', gap: 8, paddingBottom: 4 },
   chip: {
@@ -414,15 +421,8 @@ const styles = StyleSheet.create({
   legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, paddingVertical: 10 },
   legendPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, backgroundColor: '#fff' },
   legendTxt: { fontSize: 11, fontWeight: '600' },
-  syncRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-  },
   syncHint: { fontSize: 13, color: '#64748b' },
-  refreshBtn: { marginLeft: 'auto' },
+  refreshBtn: { paddingVertical: 4 },
   refreshTxt: { fontSize: 14, color: '#c41230', fontWeight: '700' },
   headerRow: { flexDirection: 'row', marginBottom: 4 },
   th: { paddingVertical: 10, paddingHorizontal: 4, borderBottomWidth: 1, borderColor: '#e2e8f0' },

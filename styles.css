@@ -1906,9 +1906,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-rp {
-  margin-bottom: 10px;
+  box-sizing: border-box;
+  height: var(--calendar-slot-rp-h, 4.5rem);
+  min-height: var(--calendar-slot-rp-h, 4.5rem);
+  max-height: var(--calendar-slot-rp-h, 4.5rem);
   padding-bottom: 10px;
   border-bottom: 1px dashed var(--border);
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .calendar-slot-rp-time {
@@ -1916,6 +1921,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 600;
   color: var(--text);
   letter-spacing: 0.01em;
+  line-height: 1.35;
+  min-height: calc(0.82rem * 1.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .calendar-slot-rp-break {
@@ -1923,6 +1933,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.72rem;
   font-weight: 500;
   color: var(--text-muted);
+  line-height: 1.35;
+  min-height: calc(0.72rem * 1.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .calendar-slot-rp-hours {
@@ -1930,6 +1945,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text);
+  line-height: 1.35;
+  min-height: calc(0.78rem * 1.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .emp-shift-rp {
@@ -1970,6 +1990,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-bottom: 1px solid var(--border);
   padding: 14px 10px;
   vertical-align: top;
+}
+
+/* Stretch shift cells in a row to equal height so name pills share one baseline. */
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) > td {
+  height: 1px;
+}
+
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) > td > .calendar-slot-wrap {
+  height: 100%;
 }
 
 .calendar-matrix thead th:not(.time-col),
@@ -2063,6 +2092,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   box-sizing: border-box;
 }
 
+.calendar-slot-wrap:not(.calendar-slot-empty) {
+  display: grid;
+  grid-template-rows: var(--calendar-slot-rp-h, 4.5rem) minmax(0, 1fr);
+  align-content: stretch;
+}
+
 .calendar-slot-wrap:hover,
 .calendar-slot-wrap:focus-visible {
   outline: 1px solid var(--primary);
@@ -2075,9 +2110,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
-  min-height: 0;
+  align-self: stretch;
 }
 
 .calendar-cell-edit-host {
@@ -2182,6 +2217,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-worker-pill--static {
   cursor: text;
+}
+
+.calendar-slot-wrap:not(.calendar-slot-empty) .role-pill-mini.calendar-worker-pill {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  height: calc(1.35 * 0.72rem + 12px);
+  min-height: calc(1.35 * 0.72rem + 12px);
+  max-height: calc(1.35 * 0.72rem + 12px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
 }
 
 .calendar-group-row td {
@@ -2308,6 +2357,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   .calendar-slot-wrap:not(.calendar-slot-empty) {
     min-height: 140px;
+    --calendar-slot-rp-h: 4.5rem;
   }
 
   .availability-modal-panel {
@@ -2833,16 +2883,25 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .notes-section textarea {
   width: 100%;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font: inherit;
+  font-size: inherit;
+  color: var(--text);
+  background: var(--surface);
+  line-height: 1.5;
   resize: vertical;
 }
 
 .notes-section textarea:focus {
   outline: 1px solid var(--primary);
   outline-offset: 0;
+}
+
+.notes-section textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 /* Messaging templates */
@@ -3673,15 +3732,30 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .form-field input,
-.form-field select {
+.form-field select,
+.form-field textarea {
   padding: 11px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font: inherit;
+  font-size: inherit;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.form-field textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.form-field textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 .form-field input:focus,
-.form-field select:focus {
+.form-field select:focus,
+.form-field textarea:focus {
   outline: 1px solid var(--primary);
   outline-offset: 0;
 }
@@ -3865,25 +3939,27 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     padding: 8px 8px;
   }
 
+  .calendar-slot-wrap:not(.calendar-slot-empty) {
+    --calendar-slot-rp-h: 4.15rem;
+  }
+
   /* One horizontal line per name; ellipsis instead of letter-stacking wraps */
   .calendar-slot-pills {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) .role-pill-mini.calendar-worker-pill {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    display: block;
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
-    white-space: normal;
+    height: calc(1.35 * 0.72rem + 12px);
+    min-height: calc(1.35 * 0.72rem + 12px);
+    max-height: calc(1.35 * 0.72rem + 12px);
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    overflow-wrap: break-word;
-    word-break: normal;
     line-height: 1.35;
-    max-height: 2.85em;
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) .time-role-sub {

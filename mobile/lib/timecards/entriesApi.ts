@@ -21,7 +21,7 @@ export async function loadWeekEntries(
   schema: TimecardSchema;
 } | { ok: false; reason: string }> {
   const fullSel =
-    'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, edit_history, updated_at';
+    'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, clock_restaurant_id, edit_history, updated_at';
   const res = await sb
     .from('time_clock_entries')
     .select(fullSel)
@@ -30,7 +30,7 @@ export async function loadWeekEntries(
     .order('clock_in_at', { ascending: true });
 
   let entries: TimeClockEntry[] = [];
-  if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|edit_history/i.test(res.error.message || '')) {
+  if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|clock_restaurant_id|edit_history/i.test(res.error.message || '')) {
     const fallback = await sb
       .from('time_clock_entries')
       .select('id, employee_id, clock_in_at, clock_out_at, updated_at')

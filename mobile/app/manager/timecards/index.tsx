@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -9,6 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { PayWeekPicker } from '../../../components/PayWeekPicker';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
 import { useAppData } from '../../../contexts/AppDataContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
@@ -17,14 +18,20 @@ import {
   computeRosterTotals,
   decimalHoursFromMinutes,
   formatPayAmount,
-  formatSoHDatesList,
-  computeSpreadOfHours,
   type RosterRow,
 } from '../../../lib/timecards/engine';
 import { loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
 import { loadWeekExtrasSlice } from '../../../lib/timecards/weekExtras';
+import {
+  loadTimecardsLocationFilter,
+  saveTimecardsLocationFilter,
+  TIMECARDS_LOCATION_OPTIONS,
+} from '../../../lib/timecards/locationFilter';
+import type { LocationFilter } from '../../../lib/timecards/restaurantAttribution';
+import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
+import { weekBoundsStorageKey } from '../../../lib/timecards/payWeek';
 import { type EmployeeRow } from '../../../lib/employees';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -36,18 +43,31 @@ function toLite(e: EmployeeRow): EmployeeLite {
   };
 }
 
+function HoursPayStat({
+  label,
+  mins,
+  pay,
+}: {
+  label: string;
+  mins: number;
+  pay: number | null;
+}) {
+  return (
+    <View style={styles.statRow}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={styles.statHours}>{decimalHoursFromMinutes(mins)}h</Text>
+      <Text style={styles.statPay}>{pay != null ? formatPayAmount(pay) : '—'}</Text>
+    </View>
+  );
+}
+
 function RosterRowCard({
   row,
-  emp,
-  entries,
   onPress,
 }: {
   row: RosterRow;
-  emp: EmployeeRow;
-  entries: ReturnType<typeof useTimecards>['entries'];
   onPress: () => void;
 }) {
-  const soh = computeSpreadOfHours(emp, entries);
   return (
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.cardTop}>
@@ -55,29 +75,50 @@ function RosterRowCard({
       </View>
       <Text style={styles.role}>{row.role}</Text>
       <View style={styles.statsGrid}>
-        <Text style={styles.stat}>
-          Sched {decimalHoursFromMinutes(row.schedMins)}h
-        </Text>
-        <Text style={styles.stat}>
-          Reg {decimalHoursFromMinutes(row.regMins)}h · {formatPayAmount(row.regPay)}
-        </Text>
-        <Text style={styles.stat}>
-          OT {decimalHoursFromMinutes(row.otMins)}h · {formatPayAmount(row.otPay)}
-        </Text>
-        <Text style={styles.stat}>
-          VL {row.vlHours.toFixed(1)}h · SL {row.slHours.toFixed(1)}h
-        </Text>
-        <Text style={styles.stat}>
-          SoH {row.sohCount} · {formatSoHDatesList(soh.dates)}
-        </Text>
+        <View style={styles.statRow}>
+          <Text style={styles.statLabel}>Scheduled</Text>
+          <Text style={styles.statHours}>{decimalHoursFromMinutes(row.schedMins)}h</Text>
+        </View>
+        <HoursPayStat label="Regular" mins={row.regMins} pay={row.regPay} />
+        <HoursPayStat label="OT" mins={row.otMins} pay={row.otPay} />
+        <View style={styles.statRow}>
+          <Text style={styles.statLabel}>VL / SL</Text>
+          <Text style={styles.statHours}>
+            {row.vlHours.toFixed(1)}h / {row.slHours.toFixed(1)}h
+          </Text>
+        </View>
+        <View style={styles.statRow}>
+          <Text style={styles.statLabel}>SoH</Text>
+          <Text style={styles.statHours}>
+            {row.sohCount} · {row.sohDatesLabel}
+          </Text>
+          {row.sohPay != null ? (
+            <Text style={styles.statPay}>{formatPayAmount(row.sohPay)}</Text>
+          ) : null}
+        </View>
         {row.dishwasherTipsPay > 0 ? (
-          <Text style={styles.stat}>Dishwasher tips {formatPayAmount(row.dishwasherTipsPay)}</Text>
+          <View style={styles.statRow}>
+            <Text style={styles.statLabel}>Dishwasher tips</Text>
+            <Text style={styles.statPay}>{formatPayAmount(row.dishwasherTipsPay)}</Text>
+          </View>
         ) : null}
-        <Text style={styles.total}>Total {formatPayAmount(row.grandTotalPay)}</Text>
+        <View style={[styles.statRow, styles.totalRow]}>
+          <Text style={styles.totalLabel}>Total</Text>
+          <Text style={styles.totalHours}>
+            {decimalHoursFromMinutes(row.regMins + row.otMins)}h
+          </Text>
+          <Text style={styles.totalPay}>{formatPayAmount(row.grandTotalPay)}</Text>
+        </View>
       </View>
     </Pressable>
   );
 }
+
+type WeekSlices = {
+  key: string;
+  extras: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  dishwasherTips: Record<string, number>;
+};
 
 export default function TimecardsRosterScreen() {
   const router = useRouter();
@@ -87,55 +128,94 @@ export default function TimecardsRosterScreen() {
     loading,
     error,
     bounds,
-    weekLabel,
     payWeekOptions,
     selectedWeekStartIso,
     setPayWeekStartIso,
     refresh,
   } = useTimecards();
-  const [rows, setRows] = useState<RosterRow[]>([]);
-  const [rowsLoading, setRowsLoading] = useState(false);
+  const [weekSlices, setWeekSlices] = useState<WeekSlices | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [locationFilter, setLocationFilter] = useState<LocationFilter>('all');
+  const [locationReady, setLocationReady] = useState(false);
 
+  const boundsKey = weekBoundsStorageKey(bounds);
   const lites = useMemo(() => employees.map(toLite), [employees]);
+  const employeeById = useMemo(
+    () => Object.fromEntries(employees.map((e) => [e.id, e])),
+    [employees]
+  );
 
-  const loadRows = useCallback(async () => {
-    setRowsLoading(true);
-    const [extrasSlice, dishwasherTipsSlice] = await Promise.all([
-      loadWeekExtrasSlice(bounds),
-      loadDishwasherTipsSlice(bounds),
-    ]);
+  useEffect(() => {
+    void loadTimecardsLocationFilter().then((loc) => {
+      setLocationFilter(loc);
+      setLocationReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([loadWeekExtrasSlice(bounds), loadDishwasherTipsSlice(bounds)]).then(
+      ([extras, dishwasherTips]) => {
+        if (cancelled) return;
+        setWeekSlices({ key: boundsKey, extras, dishwasherTips });
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [bounds, boundsKey]);
+
+  const rows = useMemo(() => {
+    if (loading || !locationReady || !weekSlices || weekSlices.key !== boundsKey) return [];
     const built = buildAllRosterRows(
       employees,
       entries,
       teamState,
       staffRequests,
       lites,
-      extrasSlice,
-      dishwasherTipsSlice,
-      bounds
+      weekSlices.extras,
+      weekSlices.dishwasherTips,
+      bounds,
+      locationFilter
     );
     built.sort((a, b) => {
-      const empA = employees.find((e) => e.id === a.empId);
-      const empB = employees.find((e) => e.id === b.empId);
+      const empA = employeeById[a.empId];
+      const empB = employeeById[b.empId];
       if (empA && empB) return compareEmployeesByScheduleOrder(empA, empB);
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
-    setRows(built);
-    setRowsLoading(false);
-  }, [employees, entries, teamState, staffRequests, lites, bounds]);
+    return built.filter((row) => {
+      const emp = employeeById[row.empId];
+      return emp ? rosterRowVisibleAtLocation(emp, locationFilter) : true;
+    });
+  }, [
+    loading,
+    locationReady,
+    weekSlices,
+    boundsKey,
+    employees,
+    entries,
+    teamState,
+    staffRequests,
+    lites,
+    bounds,
+    locationFilter,
+    employeeById,
+    teamState?.updated_at,
+  ]);
 
-  useEffect(() => {
-    if (!loading) void loadRows();
-  }, [loading, loadRows]);
+  const onLocationChange = useCallback(async (next: LocationFilter) => {
+    setLocationFilter(next);
+    await saveTimecardsLocationFilter(next);
+  }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (!loading) void loadRows();
-    }, [loading, loadRows])
-  );
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void refresh().finally(() => setRefreshing(false));
+  }, [refresh]);
 
   const totals = useMemo(() => computeRosterTotals(rows), [rows]);
-  const busy = loading || rowsLoading;
+  const initialBusy = (loading || !weekSlices || weekSlices.key !== boundsKey) && !rows.length;
 
   return (
     <ScrollView
@@ -145,59 +225,53 @@ export default function TimecardsRosterScreen() {
       keyboardShouldPersistTaps="handled"
       nestedScrollEnabled
       refreshControl={
-        <RefreshControl
-          refreshing={busy}
-          onRefresh={() => {
-            void refresh().then(() => loadRows());
-          }}
-          tintColor="#c41230"
-        />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c41230" />
       }
     >
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        nestedScrollEnabled
-        style={styles.weekPickerScroll}
-        contentContainerStyle={styles.weekPicker}
-      >
-        {payWeekOptions.map((opt) => {
-          const on = opt.startIso === selectedWeekStartIso;
-          return (
-            <Pressable
-              key={opt.startIso}
-              style={[styles.weekChip, on && styles.weekChipOn]}
-              onPress={() => void setPayWeekStartIso(opt.startIso)}
-            >
-              <Text style={[styles.weekChipText, on && styles.weekChipTextOn]} numberOfLines={2}>
-                {opt.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <PayWeekPicker
+        options={payWeekOptions}
+        selectedStartIso={selectedWeekStartIso}
+        onSelect={setPayWeekStartIso}
+      />
 
-      <Text style={styles.weekLabel}>Pay week: {weekLabel}</Text>
+      <View style={styles.locationSection}>
+        <Text style={styles.locationLabel}>Location</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          nestedScrollEnabled
+          contentContainerStyle={styles.locationPicker}
+        >
+          {TIMECARDS_LOCATION_OPTIONS.map((opt) => {
+            const on = opt.id === locationFilter;
+            return (
+              <Pressable
+                key={opt.id}
+                style={[styles.locationChip, on && styles.locationChipOn]}
+                onPress={() => void onLocationChange(opt.id)}
+              >
+                <Text style={[styles.locationChipText, on && styles.locationChipTextOn]}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
       {error ? <Text style={styles.err}>{error}</Text> : null}
 
-      {busy && !rows.length ? (
-        <ActivityIndicator style={styles.spinner} color="#c41230" />
-      ) : null}
+      {initialBusy ? <ActivityIndicator style={styles.spinner} color="#c41230" /> : null}
 
-      {!busy && rows.length ? (
-        <GrandTotalsSection totals={totals} bounds={bounds} />
-      ) : null}
+      {rows.length > 0 ? <GrandTotalsSection totals={totals} bounds={bounds} /> : null}
 
       <View style={styles.list}>
         {rows.map((row) => {
-          const emp = employees.find((e) => e.id === row.empId);
-          if (!emp) return null;
+          if (!employeeById[row.empId]) return null;
           return (
             <RosterRowCard
               key={row.empId}
               row={row}
-              emp={emp}
-              entries={entries}
               onPress={() =>
                 router.push({
                   pathname: '/manager/timecards/[employeeId]',
@@ -207,8 +281,11 @@ export default function TimecardsRosterScreen() {
             />
           );
         })}
-        {!busy && !employees.length ? (
+        {!initialBusy && !employees.length ? (
           <Text style={styles.muted}>No employees on the roster.</Text>
+        ) : null}
+        {!initialBusy && employees.length > 0 && !rows.length ? (
+          <Text style={styles.muted}>No employees at this location for this pay week.</Text>
         ) : null}
       </View>
     </ScrollView>
@@ -218,21 +295,20 @@ export default function TimecardsRosterScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
   scrollContent: { paddingBottom: 32 },
-  weekPickerScroll: { maxHeight: 56, flexGrow: 0 },
-  weekPicker: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  weekChip: {
+  locationSection: { paddingHorizontal: 16, paddingBottom: 8, paddingTop: 4 },
+  locationLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginBottom: 6 },
+  locationPicker: { gap: 8 },
+  locationChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#cbd5e1',
     backgroundColor: '#fff',
-    maxWidth: 200,
   },
-  weekChipOn: { borderColor: '#c41230', backgroundColor: '#fef2f2' },
-  weekChipText: { fontSize: 12, color: '#475569' },
-  weekChipTextOn: { color: '#c41230', fontWeight: '700' },
-  weekLabel: { paddingHorizontal: 16, paddingBottom: 4, fontSize: 13, color: '#64748b' },
+  locationChipOn: { borderColor: '#c41230', backgroundColor: '#fef2f2' },
+  locationChipText: { fontSize: 12, color: '#475569' },
+  locationChipTextOn: { color: '#c41230', fontWeight: '700' },
   err: { color: '#b91c1c', paddingHorizontal: 16, paddingBottom: 8 },
   spinner: { marginTop: 40 },
   list: { paddingHorizontal: 16, paddingTop: 4, gap: 10 },
@@ -245,11 +321,15 @@ const styles = StyleSheet.create({
   },
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   name: { fontSize: 17, fontWeight: '700', color: '#0f172a', flex: 1 },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  badgeText: { fontSize: 12, fontWeight: '700' },
   role: { fontSize: 13, color: '#64748b', marginTop: 4 },
-  statsGrid: { marginTop: 10, gap: 4 },
-  stat: { fontSize: 13, color: '#475569' },
-  total: { fontSize: 15, fontWeight: '700', color: '#c41230', marginTop: 6 },
+  statsGrid: { marginTop: 10, gap: 6 },
+  statRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },
+  statLabel: { fontSize: 13, fontWeight: '600', color: '#475569', minWidth: 88 },
+  statHours: { fontSize: 13, color: '#0f172a', fontWeight: '600' },
+  statPay: { fontSize: 13, color: '#64748b' },
+  totalRow: { marginTop: 4, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#e8eaed' },
+  totalLabel: { fontSize: 14, fontWeight: '700', color: '#0f172a', minWidth: 88 },
+  totalHours: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+  totalPay: { fontSize: 14, fontWeight: '700', color: '#c41230' },
   muted: { textAlign: 'center', color: '#888', marginTop: 24 },
 });

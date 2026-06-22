@@ -1,4 +1,4 @@
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
@@ -19,6 +19,7 @@ import {
   flushChatStoreSave,
   loadChatStore,
   queueChatStoreSave,
+  readChatStoreCache,
   subscribeChatStore,
   type ChatStore,
   type ChatThread,
@@ -26,6 +27,7 @@ import {
 import { supabase } from '../lib/supabase';
 
 const MANAGER_CONTACT = { id: 'msg-mgr', name: 'MARK ONG', subtitle: 'Manager' };
+const CHAT_REFRESH_FRESH_MS = 30_000;
 
 type MessageRecipient = { id: string; name: string; subtitle: string };
 
@@ -110,11 +112,6 @@ export function MessagesScreen() {
   const { user, displayName, role } = useAuth();
   const { employees } = useAppData();
   const uid = user?.id;
-  const isFocused = useIsFocused();
-  const isFocusedRef = useRef(isFocused);
-  isFocusedRef.current = isFocused;
-  /** While clearing inbox on tab focus; ignore remote activeThreadId until flush completes. */
-  const resettingInboxRef = useRef(false);
   const [store, setStore] = useState<ChatStore | null>(null);
   const [search, setSearch] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -122,10 +119,14 @@ export function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const activeIdRef = useRef<string | null>(null);
+  const hydratedRef = useRef(false);
+  const refetchInFlightRef = useRef(false);
+  const lastFetchMsRef = useRef(0);
+  const skipNextFocusRefreshRef = useRef(true);
   activeIdRef.current = activeId;
 
   const applyRemoteStore = useCallback((remote: ChatStore) => {
-    if (!isFocusedRef.current || resettingInboxRef.current) {
+    if (!activeIdRef.current) {
       setStore({ ...remote, activeThreadId: null });
       setActiveId(null);
       return;
@@ -134,11 +135,33 @@ export function MessagesScreen() {
     setActiveId(pickActiveAfterSync(remote, activeIdRef.current));
   }, []);
 
+  const syncFromServer = useCallback(
+    async (opts?: { showLoading?: boolean; force?: boolean }) => {
+      if (!supabase || !uid) return;
+      if (refetchInFlightRef.current) return;
+      const hasCache = hydratedRef.current;
+      const showLoading = opts?.showLoading ?? !hasCache;
+      if (!opts?.force && hasCache && Date.now() - lastFetchMsRef.current < CHAT_REFRESH_FRESH_MS) {
+        return;
+      }
+      refetchInFlightRef.current = true;
+      if (showLoading) setLoading(true);
+      try {
+        const s = await loadChatStore(supabase, uid);
+        lastFetchMsRef.current = Date.now();
+        applyRemoteStore(s);
+        hydratedRef.current = true;
+      } finally {
+        refetchInFlightRef.current = false;
+        setLoading(false);
+      }
+    },
+    [uid, applyRemoteStore]
+  );
+
   const reloadFromServer = useCallback(async () => {
-    if (!supabase || !uid) return;
-    const s = await loadChatStore(supabase, uid);
-    applyRemoteStore(s);
-  }, [uid, applyRemoteStore]);
+    await syncFromServer({ showLoading: false, force: true });
+  }, [syncFromServer]);
 
   useEffect(() => {
     if (!supabase || !uid) {
@@ -146,17 +169,23 @@ export function MessagesScreen() {
       return;
     }
     let cancelled = false;
+    hydratedRef.current = false;
+    lastFetchMsRef.current = 0;
+    skipNextFocusRefreshRef.current = true;
     (async () => {
-      const s = await loadChatStore(supabase, uid);
-      if (!cancelled) {
-        applyRemoteStore(s);
+      const cached = await readChatStoreCache(uid);
+      if (cancelled) return;
+      if (cached) {
+        applyRemoteStore(cached);
+        hydratedRef.current = true;
         setLoading(false);
       }
+      await syncFromServer({ showLoading: !cached });
     })();
     return () => {
       cancelled = true;
     };
-  }, [uid, applyRemoteStore]);
+  }, [uid, applyRemoteStore, syncFromServer]);
 
   useEffect(() => {
     if (!supabase || !uid) return;
@@ -165,31 +194,24 @@ export function MessagesScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      resettingInboxRef.current = true;
       setActiveId(null);
       setSearch('');
       setInput('');
-      setStore((prev) => (prev ? { ...prev, activeThreadId: null } : prev));
-      void (async () => {
-        try {
-          if (!supabase || !uid) return;
-          const s = await loadChatStore(supabase, uid);
-          if (cancelled) return;
-          const inbox = { ...s, activeThreadId: null };
-          setStore(inbox);
-          setActiveId(null);
-          setLoading(false);
-          await flushChatStoreSave(supabase, uid, inbox);
-        } finally {
-          if (!cancelled) resettingInboxRef.current = false;
+      setStore((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, activeThreadId: null };
+        if (prev.activeThreadId != null && supabase && uid) {
+          queueChatStoreSave(supabase, uid, next);
         }
-      })();
-      return () => {
-        cancelled = true;
-        resettingInboxRef.current = false;
-      };
-    }, [uid, supabase])
+        return next;
+      });
+      if (skipNextFocusRefreshRef.current) {
+        skipNextFocusRefreshRef.current = false;
+      } else {
+        void syncFromServer({ showLoading: false });
+      }
+      return () => {};
+    }, [uid, syncFromServer])
   );
 
   const persist = useCallback(
@@ -302,10 +324,18 @@ export function MessagesScreen() {
     );
   }
 
-  if (loading || !store) {
+  if (loading && !store) {
     return (
       <View style={styles.centered}>
         <Text style={styles.muted}>Loading…</Text>
+      </View>
+    );
+  }
+
+  if (!store) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.muted}>Could not load messages.</Text>
       </View>
     );
   }

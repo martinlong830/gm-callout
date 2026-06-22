@@ -222,6 +222,91 @@ export async function portalGetAccount(): Promise<
   };
 }
 
+async function portalAuthedFetch<T extends Record<string, unknown>>(
+  method: string,
+  path: string,
+  body?: Record<string, unknown>
+): Promise<PortalOk<T> | PortalErr> {
+  if (!supabase) return { ok: false, message: 'Supabase is not configured.' };
+  const sess = await supabase.auth.getSession();
+  if (!sess.data.session?.access_token) {
+    return { ok: false, message: 'Sign in required.' };
+  }
+  const base = portalApiBase();
+  if (!base) {
+    return {
+      ok: false,
+      message:
+        'Set EXPO_PUBLIC_GM_WEB_URL in mobile/.env to your web server, then restart Expo.',
+    };
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+    const opts: RequestInit = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sess.data.session.access_token}`,
+      },
+      signal: controller.signal,
+    };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const res = await fetch(`${base}${path}`, opts);
+    const data = (await res.json()) as Record<string, unknown>;
+    if (!res.ok || !data.ok) {
+      return {
+        ok: false,
+        message: (data.message as string) || 'Request failed.',
+        status: res.status,
+      };
+    }
+    return { ok: true, ...(data as T) };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ok: false, message: 'Request timed out.' };
+    }
+    return { ok: false, message: 'Could not reach the web server.' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export type PortalCreateEmployeePayload = {
+  loginName: string;
+  password: string;
+  displayName: string;
+  phone?: string;
+  staffType?: string;
+  recoveryEmail?: string;
+};
+
+/** Manager-only: create portal login for a new employee without changing the current session. */
+export async function portalCreateEmployeeAccount(
+  payload: PortalCreateEmployeePayload
+): Promise<
+  | { ok: true; userId?: string; loginName?: string; displayName?: string; message?: string }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    userId?: string;
+    loginName?: string;
+    displayName?: string;
+    message?: string;
+  }>('POST', '/api/portal/admin/create-employee', payload as unknown as Record<string, unknown>);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    userId: r.userId,
+    loginName: r.loginName,
+    displayName: r.displayName,
+    message: r.message || 'Portal account created.',
+  };
+}
+
 export async function portalUpdateRecoveryEmail(
   recoveryEmail: string
 ): Promise<{ ok: true; recoveryEmail: string; message: string } | { ok: false; message: string }> {

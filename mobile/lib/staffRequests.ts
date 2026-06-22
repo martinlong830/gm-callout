@@ -128,6 +128,9 @@ export type NewStaffRequestInput = {
   submittedWeekIndex?: number;
   offeredShiftLabel?: string;
   swapOfferId?: string;
+  leaveType?: 'sick' | 'vacation';
+  timeoffStart?: string;
+  timeoffEnd?: string;
 };
 
 export async function insertStaffRequest(
@@ -150,6 +153,9 @@ export async function insertStaffRequest(
   if (full.submittedWeekIndex != null) payload.submittedWeekIndex = full.submittedWeekIndex;
   if (full.offeredShiftLabel) payload.offeredShiftLabel = full.offeredShiftLabel;
   if (full.swapOfferId) payload.swapOfferId = full.swapOfferId;
+  if (full.leaveType) payload.leaveType = full.leaveType;
+  if (full.timeoffStart) payload.timeoffStart = full.timeoffStart;
+  if (full.timeoffEnd) payload.timeoffEnd = full.timeoffEnd;
 
   const ins = await sb
     .from('staff_requests')

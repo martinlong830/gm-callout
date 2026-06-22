@@ -30,10 +30,11 @@ import {
   buildWeeksFromMonday,
   defaultRestaurants,
   getAvailabilityWeekOptions,
-  getThisMondayDate,
+  getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
   loadDraftFromTeamState,
   mergeRemoteAssignments,
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   type WorkerShiftRow,
 } from '../../lib/schedule/engine';
@@ -80,11 +81,14 @@ export default function EmployeeActions() {
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
-    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getThisMondayDate()),
+    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
     []
   );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
-  const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
+  const draftRows = useMemo(
+    () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
+    [teamState]
+  );
   const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
     return mergeRemoteAssignments(assignmentShell(restaurants), teamState?.schedule_assignments, ids);
@@ -97,13 +101,13 @@ export default function EmployeeActions() {
       workerName: nameForRequests,
       weekMeta,
       allWeekDays,
-      draftRows,
+      draftScheduleRaw: teamState?.draft_schedule,
       employees: lites,
       restaurants,
       assignmentStore,
     });
     return [...today, ...upcoming];
-  }, [nameForRequests, weekMeta, allWeekDays, draftRows, lites, restaurants, assignmentStore]);
+  }, [nameForRequests, weekMeta, allWeekDays, teamState?.draft_schedule, lites, restaurants, assignmentStore]);
 
   const availWeekOptions = useMemo(() => getAvailabilityWeekOptions(weekMeta), [weekMeta]);
   const [selectedAvailWeekIndex, setSelectedAvailWeekIndex] = useState(0);
@@ -119,6 +123,7 @@ export default function EmployeeActions() {
 
   const [timeoffStartDate, setTimeoffStartDate] = useState<Date | null>(null);
   const [timeoffEndDate, setTimeoffEndDate] = useState<Date | null>(null);
+  const [timeoffLeaveType, setTimeoffLeaveType] = useState<'vacation' | 'sick'>('vacation');
   const [timeoffNote, setTimeoffNote] = useState('');
 
   const [swapOfferShift, setSwapOfferShift] = useState<WorkerShiftRow | null>(null);
@@ -176,6 +181,7 @@ export default function EmployeeActions() {
       (r) =>
         r.type === 'swap' &&
         r.status === 'pending' &&
+        !r.swapOfferId &&
         String(r.employeeName || '')
           .trim()
           .toLowerCase() !== self &&
@@ -239,13 +245,17 @@ export default function EmployeeActions() {
       Alert.alert('Time off', 'End date must be on or after start.');
       return;
     }
+    const typeLabel = timeoffLeaveType === 'sick' ? 'Sick leave' : 'Vacation leave';
     setBusy(true);
     try {
       const res = await insertStaffRequest(supabase, {
         type: 'timeoff',
         employeeName: nameForRequests,
         role: roleCode,
-        summary: `Time Off: ${timeoffStart} to ${timeoffEnd}${timeoffNote.trim() ? `. Notes: ${timeoffNote.trim()}` : ''}`,
+        leaveType: timeoffLeaveType,
+        timeoffStart,
+        timeoffEnd,
+        summary: `${typeLabel}: ${timeoffStart} to ${timeoffEnd}${timeoffNote.trim() ? `. Notes: ${timeoffNote.trim()}` : ''}`,
       });
       if (!res.ok) Alert.alert('Error', res.message);
       else {
@@ -258,7 +268,7 @@ export default function EmployeeActions() {
     } finally {
       setBusy(false);
     }
-  }, [supabase, timeoffStartDate, timeoffEndDate, timeoffNote, nameForRequests, roleCode, refetch]);
+  }, [supabase, timeoffStartDate, timeoffEndDate, timeoffLeaveType, timeoffNote, nameForRequests, roleCode, refetch]);
 
   const submitSwapOffer = useCallback(async () => {
     if (!supabase) {
@@ -443,6 +453,26 @@ export default function EmployeeActions() {
       {activeForm === 'timeoff' ? (
         <View style={styles.card}>
           <Text style={styles.hint}>Select the day range you need off. This submits as full-day time off.</Text>
+          <Text style={styles.fieldLabel}>Leave type</Text>
+          <View style={styles.chipRow}>
+            {(
+              [
+                { value: 'vacation' as const, label: 'Vacation' },
+                { value: 'sick' as const, label: 'Sick' },
+              ] as const
+            ).map((opt) => {
+              const on = timeoffLeaveType === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  style={[styles.chip, on && styles.chipActive]}
+                  onPress={() => setTimeoffLeaveType(opt.value)}
+                >
+                  <Text style={[styles.chipText, on && styles.chipTextActive]}>{opt.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <DatePickerField label="Start date" value={timeoffStartDate} onChange={setTimeoffStartDate} />
           <DatePickerField
             label="End date"

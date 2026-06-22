@@ -29,11 +29,11 @@ import {
 } from '../lib/employeeSave';
 import {
   employeeDisplayName,
-  employeeUsualLocationLine,
   isCloudEmployeeId,
   staffTypeLabel,
   type EmployeeRow,
 } from '../lib/employees';
+import { isPortalAuthConfigured, portalCreateEmployeeAccount } from '../lib/portalAuth';
 import type { DraftGrid } from '../lib/schedule/types';
 import { employeePhotoUploadHint, clearEmployeePhoto, uploadEmployeePhotoFromUri } from '../lib/uploadEmployeePhoto';
 import { supabase } from '../lib/supabase';
@@ -107,12 +107,13 @@ function ChipRow({
 type Props = {
   employee: EmployeeRow | null;
   visible: boolean;
+  isCreate?: boolean;
   draftRows: DraftGrid;
   onClose: () => void;
   onSaved: () => void;
 };
 
-export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onSaved }: Props) {
+export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, onClose, onSaved }: Props) {
   const { height: windowHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(windowHeight * 0.9);
 
@@ -137,8 +138,33 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
   const [sickAllowanceDays, setSickAllowanceDays] = useState('5');
   const [sickAllowanceHours, setSickAllowanceHours] = useState('');
   const [sickHoursRemaining, setSickHoursRemaining] = useState('');
+  const [portalPassword, setPortalPassword] = useState('redpoke');
+  const [portalRecoveryEmail, setPortalRecoveryEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
+
+  const resetCreateForm = useCallback(() => {
+    setProfileEmployee(null);
+    setPhotoVersion((v) => v + 1);
+    setFirstName('');
+    setLastName('');
+    setStaffType('Kitchen');
+    setPhone('');
+    setUsualRestaurant('rp-9');
+    setHourlyRate('');
+    setTipPoint('');
+    setBreakPolicy('unpaid');
+    setWeeklyGrid(normalizeWeeklyGrid({}, 'Kitchen', draftRows));
+    setClockPin('');
+    setPinDraft('');
+    setVacAllowanceDays('0');
+    setSickAllowanceDays('5');
+    setSickAllowanceHours('');
+    setSickHoursRemaining('');
+    setPortalPassword('redpoke');
+    setPortalRecoveryEmail('');
+    setStatusMsg('');
+  }, [draftRows]);
 
   useEffect(() => {
     setProfileEmployee(employee);
@@ -178,8 +204,13 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
   );
 
   useEffect(() => {
-    if (employee && visible) resetFromEmployee(employee);
-  }, [employee?.id, visible, resetFromEmployee, employee]);
+    if (!visible) return;
+    if (isCreate) {
+      resetCreateForm();
+      return;
+    }
+    if (employee) resetFromEmployee(employee);
+  }, [employee?.id, visible, isCreate, resetFromEmployee, employee, resetCreateForm]);
 
   const normalizedGrid = useMemo(
     () => normalizeWeeklyGrid(weeklyGrid, staffType, draftRows),
@@ -245,7 +276,7 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
   }
 
   async function handleSaveEmployee() {
-    if (!employee || !supabase) {
+    if (!supabase) {
       Alert.alert('Save', 'Supabase is not configured.');
       return;
     }
@@ -253,6 +284,11 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
     const last = lastName.trim();
     if (!first || !last) {
       Alert.alert('Profile', 'First and last name are required.');
+      return;
+    }
+    const phoneTrim = phone.trim();
+    if (isCreate && !phoneTrim) {
+      Alert.alert('Profile', 'Phone number is required for new employees.');
       return;
     }
     const hrRaw = hourlyRate.trim();
@@ -268,7 +304,38 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
       return;
     }
 
-    const meta = { ...(employee.meta ?? {}) } as Record<string, unknown>;
+    let authUserId = employee?.authUserId;
+    if (isCreate) {
+      const pw = portalPassword.trim() || 'redpoke';
+      if (pw.length < 4) {
+        Alert.alert('App login', 'Password must be at least 4 characters.');
+        return;
+      }
+      if (isPortalAuthConfigured()) {
+        const displayNameNew = `${first} ${last}`.trim();
+        const portalPayload: Parameters<typeof portalCreateEmployeeAccount>[0] = {
+          loginName: displayNameNew,
+          password: pw,
+          displayName: displayNameNew,
+          phone: phoneTrim,
+          staffType,
+        };
+        const recovery = portalRecoveryEmail.trim();
+        if (recovery) portalPayload.recoveryEmail = recovery;
+        setBusy(true);
+        const portalRes = await portalCreateEmployeeAccount(portalPayload);
+        if (!portalRes.ok) {
+          setBusy(false);
+          Alert.alert('App login', portalRes.message);
+          return;
+        }
+        if (portalRes.userId) authUserId = portalRes.userId;
+      }
+    } else if (!employee) {
+      return;
+    }
+
+    const meta = { ...(employee?.meta ?? {}) } as Record<string, unknown>;
     meta.breakPolicy = breakPolicy;
     applyLeaveAllowancesToMeta(meta, {
       vacAllowanceDays,
@@ -278,12 +345,17 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
     });
 
     const updated: EmployeeRow = {
-      ...employee,
+      ...(employee ?? {
+        id:
+          typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
+            ? globalThis.crypto.randomUUID()
+            : `emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      }),
       firstName: first,
       lastName: last,
       displayName: `${first} ${last}`.trim(),
       staffType,
-      phone: phone.trim(),
+      phone: phoneTrim,
       usualRestaurant,
       hourlyRate: hrNum != null ? Math.round(hrNum * 100) / 100 : undefined,
       tipPoint: tpNum != null ? tpNum : undefined,
@@ -292,6 +364,7 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
         unknown
       >,
       clockPin: clockPin || undefined,
+      authUserId,
       meta,
     };
 
@@ -302,15 +375,15 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
       Alert.alert('Save', saved.message);
       return;
     }
-    if (isCloudEmployeeId(employee.id) && pinDraft && pinDraft !== clockPin) {
-      const pinRes = await setEmployeeClockPin(supabase, employee.id, pinDraft);
+    if (isCloudEmployeeId(updated.id) && pinDraft && pinDraft !== clockPin) {
+      const pinRes = await setEmployeeClockPin(supabase, updated.id, pinDraft);
       if (pinRes.ok) {
         updated.clockPin = pinRes.pin;
       }
-    } else if (isCloudEmployeeId(employee.id) && !clockPin && !pinDraft) {
-      void assignEmployeeClockPin(supabase, employee.id);
+    } else if (isCloudEmployeeId(updated.id) && !clockPin && !pinDraft) {
+      void assignEmployeeClockPin(supabase, updated.id);
     }
-    setStatusMsg('Employee saved.');
+    setStatusMsg(isCreate ? 'Employee added.' : 'Employee saved.');
     onSaved();
     onClose();
   }
@@ -380,10 +453,12 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
     ]);
   }
 
-  if (!employee) return null;
+  if (!visible) return null;
+  if (!isCreate && !employee) return null;
 
   const photoEmp = profileEmployee ?? employee;
-  const hasCustomPhoto = !!(photoEmp.meta?.photoUseCustom && photoEmp.meta?.photoUrl);
+  const hasCustomPhoto = !!(photoEmp?.meta?.photoUseCustom && photoEmp?.meta?.photoUrl);
+  const sheetTitle = isCreate ? 'Add employee' : employeeDisplayName(employee!);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -396,33 +471,43 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
           <View style={[styles.sheet, { height: sheetMaxHeight }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
-              <EmployeePhoto employee={photoEmp} size={72} version={photoVersion} />
+              {photoEmp ? (
+                <EmployeePhoto employee={photoEmp} size={72} version={photoVersion} />
+              ) : (
+                <View style={styles.photoPlaceholder} />
+              )}
               <View style={styles.sheetHeaderText}>
-                <Text style={styles.sheetTitle}>{employeeDisplayName(employee)}</Text>
+                <Text style={styles.sheetTitle}>{sheetTitle}</Text>
                 <Text style={styles.sheetSubtitle}>{staffTypeLabel(staffType)}</Text>
-                <View style={styles.photoActions}>
-                  <Pressable
-                    style={[styles.photoBtn, photoBusy && styles.photoBtnDisabled]}
-                    onPress={() => void pickPhoto()}
-                    disabled={photoBusy}
-                  >
-                    {photoBusy ? (
-                      <ActivityIndicator size="small" color="#c41230" />
-                    ) : (
-                      <Text style={styles.photoBtnText}>Upload photo</Text>
-                    )}
-                  </Pressable>
-                  {hasCustomPhoto ? (
+                {!isCreate && photoEmp ? (
+                  <View style={styles.photoActions}>
                     <Pressable
-                      style={styles.photoBtnSecondary}
-                      onPress={() => void removePhoto()}
+                      style={[styles.photoBtn, photoBusy && styles.photoBtnDisabled]}
+                      onPress={() => void pickPhoto()}
                       disabled={photoBusy}
                     >
-                      <Text style={styles.photoBtnSecondaryText}>Remove</Text>
+                      {photoBusy ? (
+                        <ActivityIndicator size="small" color="#c41230" />
+                      ) : (
+                        <Text style={styles.photoBtnText}>Upload photo</Text>
+                      )}
                     </Pressable>
-                  ) : null}
-                </View>
-                <Text style={styles.photoHint}>{employeePhotoUploadHint(photoEmp)}</Text>
+                    {hasCustomPhoto ? (
+                      <Pressable
+                        style={styles.photoBtnSecondary}
+                        onPress={() => void removePhoto()}
+                        disabled={photoBusy}
+                      >
+                        <Text style={styles.photoBtnSecondaryText}>Remove</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ) : isCreate ? (
+                  <Text style={styles.photoHint}>Save the employee, then upload a photo.</Text>
+                ) : null}
+                {photoEmp ? (
+                  <Text style={styles.photoHint}>{employeePhotoUploadHint(photoEmp)}</Text>
+                ) : null}
               </View>
             </View>
 
@@ -493,7 +578,32 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
                     />
                   </View>
                 </View>
-                {employee.authUserId ? (
+                {isCreate ? (
+                  <>
+                    <FieldLabel>App login password</FieldLabel>
+                    <TextInput
+                      style={styles.input}
+                      value={portalPassword}
+                      onChangeText={setPortalPassword}
+                      secureTextEntry
+                      placeholder="Default: redpoke"
+                    />
+                    <FieldLabel>Recovery email (optional)</FieldLabel>
+                    <TextInput
+                      style={styles.input}
+                      value={portalRecoveryEmail}
+                      onChangeText={setPortalRecoveryEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      placeholder="forgot-password link"
+                    />
+                    {!isPortalAuthConfigured() ? (
+                      <Text style={styles.readOnlyNote}>
+                        Set EXPO_PUBLIC_GM_WEB_URL to create portal login from mobile.
+                      </Text>
+                    ) : null}
+                  </>
+                ) : employee?.authUserId ? (
                   <Text style={styles.readOnlyNote}>App login: linked to portal account</Text>
                 ) : (
                   <Text style={styles.readOnlyNote}>App login: not linked</Text>
@@ -521,7 +631,11 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
                 <Text style={styles.sectionHint}>
                   Applies when a shift or punch does not specify otherwise.
                 </Text>
-                {isCloudEmployeeId(employee.id) ? (
+                {isCreate ? (
+                  <Text style={styles.readOnlyNote}>
+                    A random PIN is assigned automatically when the employee is saved.
+                  </Text>
+                ) : employee && isCloudEmployeeId(employee.id) ? (
                   <>
                     <FieldLabel>Time clock PIN</FieldLabel>
                     <Text style={styles.pinDisplay}>{clockPin || 'Not assigned'}</Text>
@@ -624,7 +738,7 @@ export function EmployeeEditorSheet({ employee, visible, draftRows, onClose, onS
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.primaryBtnText}>Save employee</Text>
+                  <Text style={styles.primaryBtnText}>{busy ? 'Saving…' : isCreate ? 'Add employee' : 'Save employee'}</Text>
                 )}
               </Pressable>
               <Pressable style={styles.ghostBtn} onPress={onClose} disabled={busy}>
@@ -673,6 +787,12 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e8eaed',
+  },
+  photoPlaceholder: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#e8ecf1',
   },
   sheetHeaderText: { flex: 1, minWidth: 0 },
   sheetTitle: { fontSize: 20, fontWeight: '800', color: '#0f172a' },

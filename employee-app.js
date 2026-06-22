@@ -966,6 +966,10 @@
       }
     }
 
+    window.gmCalloutEmployeeStaffRequestsRefreshUi = function () {
+      populateAvailableSwapOffersSelect();
+    };
+
     renderHome();
     showEmpNav('home');
   }

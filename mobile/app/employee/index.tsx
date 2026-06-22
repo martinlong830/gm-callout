@@ -11,9 +11,8 @@ import {
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
-  getThisMondayDate,
+  getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
-  loadDraftFromTeamState,
   mergeRemoteAssignments,
   SCHEDULE_VIEW_WEEK_COUNT,
 } from '../../lib/schedule/engine';
@@ -51,12 +50,10 @@ export default function EmployeeHome() {
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
-    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getThisMondayDate()),
+    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
     []
   );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
-
-  const draftRows = useMemo(() => loadDraftFromTeamState(teamState?.draft_schedule), [teamState]);
 
   const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
@@ -77,12 +74,12 @@ export default function EmployeeHome() {
       workerName,
       weekMeta,
       allWeekDays,
-      draftRows,
+      draftScheduleRaw: teamState?.draft_schedule,
       employees: lites,
       restaurants,
       assignmentStore,
     });
-  }, [workerName, weekMeta, allWeekDays, draftRows, lites, restaurants, assignmentStore]);
+  }, [workerName, weekMeta, allWeekDays, teamState?.draft_schedule, lites, restaurants, assignmentStore]);
 
   const upcomingGrouped = useMemo(
     () => partitionShiftsByWeekStart(buckets.upcoming),
@@ -94,7 +91,19 @@ export default function EmployeeHome() {
     return wk ? upcomingGrouped.byWeek[wk] ?? [] : [];
   }, [upcomingGrouped, upcomingWeekCursor]);
 
-  const recentRequests = useMemo(() => staffRequests.slice(0, 8), [staffRequests]);
+  const recentRequests = useMemo(() => {
+    const self = workerName.trim().toLowerCase();
+    if (!self) return [];
+    return staffRequests
+      .filter(
+        (r) =>
+          String(r.employeeName || '')
+            .trim()
+            .toLowerCase() === self
+      )
+      .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')))
+      .slice(0, 8);
+  }, [staffRequests, workerName]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);

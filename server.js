@@ -150,6 +150,7 @@ const NO_CACHE_ASSET = new Set([
   "styles.css",
   "app.js",
   "timecards-manager.js",
+  "timeclock-schedule-match.js",
   "timeclock-app.js",
   "break-policy.js",
   "employee-leave.js",

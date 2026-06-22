@@ -30,11 +30,11 @@ import { removeShiftDay } from '../../../../lib/timecards/shiftDayCleanup';
 import {
   buildShiftsForEmployeeInWeek,
   buildScheduledMinutesByDayForEmployee,
+  buildScheduleContext,
   getEmployeeDayLeave,
   getSuggestedDayLeave,
   setEmployeeDayLeave,
-  dailyRecordedMinutesForEmployee,
-  dayPayInPayWeek,
+  dailyRecordedMinutesForEmployeeAtRestaurant,
   decimalHoursFromMinutes,
   entriesForShiftDayCleanup,
   findEntriesForDay,
@@ -51,7 +51,8 @@ import {
   recordedPaidMinutes,
   roundToNearest5Minutes,
   scheduledPaidMinutes,
-  weekDayRecordedForEmployee,
+  shiftPayForShiftRow,
+  shiftRowAttributionRestaurant,
   type ShiftDayRow,
 } from '../../../../lib/timecards/engine';
 import {
@@ -98,15 +99,12 @@ export default function TimecardsShiftScreen() {
   );
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
+  const scheduleCtx = useMemo(() => buildScheduleContext(teamState), [teamState]);
+
   const weekShifts = useMemo(() => {
     if (!emp) return [];
-    return buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, undefined, { entries });
-  }, [emp, teamState, lites, bounds, entries]);
-
-  const weekDayRecorded = useMemo(
-    () => (emp ? weekDayRecordedForEmployee(weekShifts, emp, entries) : []),
-    [emp, weekShifts, entries]
-  );
+    return buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, scheduleCtx, { entries });
+  }, [emp, teamState, lites, bounds, entries, scheduleCtx]);
 
   const shiftRow = useMemo((): ShiftDayRow | null => {
     if (!emp || !iso) return null;
@@ -425,8 +423,12 @@ export default function TimecardsShiftScreen() {
   const s = shiftRow.shift;
   const offSchedule = isOffScheduleShiftDayRow(shiftRow);
   const schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
-  const dayMins = dailyRecordedMinutesForEmployee(entries, emp.id, shiftRow.iso);
-  const shiftPay = emp && iso ? dayPayInPayWeek(emp, weekDayRecorded, iso) : null;
+  const rowRest = emp && shiftRow ? shiftRowAttributionRestaurant(emp, shiftRow, entries, scheduleCtx) : 'rp-9';
+  const dayMins = emp && shiftRow
+    ? dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest, entries, scheduleCtx)
+    : 0;
+  const shiftPay =
+    emp && shiftRow ? shiftPayForShiftRow(emp, shiftRow, entries, scheduleCtx) : null;
   const history = editingEntry ? formatHistoryLines(editingEntry) : [];
 
   return (

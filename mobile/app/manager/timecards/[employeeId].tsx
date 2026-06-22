@@ -75,7 +75,7 @@ export default function TimecardsEmployeeScreen() {
     setExtrasSlice(extras);
     setDishwasherTipsSlice(tips);
     setListVersion((v) => v + 1);
-  }, [bounds]);
+  }, [bounds, teamState?.updated_at]);
 
   useFocusEffect(
     useCallback(() => {
@@ -111,7 +111,7 @@ export default function TimecardsEmployeeScreen() {
     if (!emp) return;
     const rosterRow = await buildRosterRow(emp, entries, teamState, staffRequests, lites, bounds);
     setWeekTotals(computeRosterTotals([rosterRow]));
-  }, [emp, staffRequests, bounds, entries, teamState, lites]);
+  }, [emp, staffRequests, bounds, entries, teamState, lites, teamState?.updated_at]);
 
   useEffect(() => {
     void loadWeekTotals();

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { useAppData } from '../../contexts/AppDataContext';
 import {
   decimalHoursFromMinutes,
   formatPayAmount,
@@ -57,6 +58,7 @@ export function GrandTotalsSection({
   metaLabel,
   hourlyRateLabel,
 }: Props) {
+  const { teamState } = useAppData();
   const [cash, setCash] = useState('0');
   const [sqGhDd, setSqGhDd] = useState('0');
   const [square, setSquare] = useState('0');
@@ -94,7 +96,7 @@ export function GrandTotalsSection({
 
   useEffect(() => {
     if (showTipPool) void loadTips();
-  }, [loadTips, showTipPool]);
+  }, [loadTips, showTipPool, teamState?.updated_at]);
 
   const payReg = totals.hasRegPay ? formatPayAmount(totals.regPay) : '—';
   const payOt = totals.hasOtPay ? formatPayAmount(totals.otPay) : '—';
