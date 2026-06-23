@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 const crypto = require("crypto");
 const dns = require("dns");
+const fs = require("fs");
 const http = require("http");
 const https = require("https");
 const path = require("path");
@@ -31,6 +32,7 @@ const TWILIO_FROM_NUMBER = stripEnv(process.env.TWILIO_FROM_NUMBER);
 const TWILIO_API_KEY_SID = stripEnv(process.env.TWILIO_API_KEY_SID);
 const TWILIO_API_KEY_SECRET = stripEnv(process.env.TWILIO_API_KEY_SECRET);
 const PUBLIC_BASE_URL = stripEnv(process.env.PUBLIC_BASE_URL);
+const SUPPORT_EMAIL = stripEnv(process.env.SUPPORT_EMAIL);
 const SUPABASE_URL = stripEnv(process.env.SUPABASE_URL);
 const SUPABASE_ANON_KEY = stripEnv(process.env.SUPABASE_ANON_KEY);
 const SUPABASE_SERVICE_ROLE_KEY = stripEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -164,6 +166,21 @@ app.use((req, res, next) => {
     res.setHeader("Expires", "0");
   }
   next();
+});
+
+app.get("/support.html", (_req, res) => {
+  const supportPath = path.join(__dirname, "support.html");
+  let html;
+  try {
+    html = fs.readFileSync(supportPath, "utf8");
+  } catch (err) {
+    console.error("[Support page]", err && err.message);
+    return res.status(500).send("Support page unavailable.");
+  }
+  const contactBlock = SUPPORT_EMAIL
+    ? `<p>Email: <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>`
+    : "<p>Contact your restaurant manager or app administrator for support.</p>";
+  res.type("html").send(html.replace("<!--SUPPORT_CONTACT-->", contactBlock));
 });
 
 app.use(express.static(__dirname));
@@ -842,7 +859,7 @@ app.get("*", (_req, res) => {
 });
 
 const server = app.listen(Number(PORT), LISTEN_HOST, () => {
-  console.log(`Red Poke Scheduler (gm-callout) listening on http://${LISTEN_HOST}:${PORT}`);
+  console.log(`Shiflow (gm-callout) listening on http://${LISTEN_HOST}:${PORT}`);
   if (!TWILIO_ACCOUNT_SID) {
     console.warn(
       "[Env] TWILIO_ACCOUNT_SID is not set — add it in Render → Environment (with auth token and from number), then redeploy. UI works; outbound calls will return 503 until then."

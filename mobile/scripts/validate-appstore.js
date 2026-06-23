@@ -30,8 +30,8 @@ if (!fs.existsSync(path.join(root, 'eas.json'))) fail('Missing eas.json');
 else pass('eas.json');
 
 const cfg = fs.readFileSync(path.join(root, 'app.config.ts'), 'utf8');
-if (!cfg.includes('com.redpoke.scheduler')) fail('com.redpoke.scheduler not in app.config.ts');
-else pass('Bundle ID / package com.redpoke.scheduler (iOS + Android)');
+if (!cfg.includes('com.shiflow.app')) fail('com.shiflow.app not in app.config.ts');
+else pass('Bundle ID / package com.shiflow.app (iOS + Android)');
 
 const eas = JSON.parse(fs.readFileSync(path.join(root, 'eas.json'), 'utf8'));
 if (eas.build?.production?.android?.buildType === 'app-bundle') pass('Android production builds AAB (Play Store)');

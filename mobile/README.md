@@ -1,4 +1,4 @@
-# Red Poke Scheduler — Expo (iOS & Android)
+# Shiflow — Expo (iOS & Android)
 
 This is the native shell for **gm-callout**, starting from **Supabase Auth** with the same project as the web app.
 
@@ -68,12 +68,12 @@ Use **`npm install --legacy-peer-deps`** in this folder if `npm install` errors 
 
 ## Project identity
 
-- App display name: **Red Poke Scheduler**
+- App display name: **Shiflow**
 - Expo slug: `gm-callout` (change in `app.config.ts` if you publish under another name)
 
 ## App Store / TestFlight
 
-Full checklist: **[../docs/APP_STORE.md](../docs/APP_STORE.md)** (bundle ID `com.redpoke.scheduler`).
+Full checklist: **[../docs/APP_STORE.md](../docs/APP_STORE.md)** (bundle ID `com.shiflow.app`).
 
 ```bash
 cd mobile
@@ -88,7 +88,7 @@ npm run submit:ios
 
 ## Google Play Store
 
-Full checklist: **[../docs/PLAY_STORE.md](../docs/PLAY_STORE.md)** (package `com.redpoke.scheduler`).
+Full checklist: **[../docs/PLAY_STORE.md](../docs/PLAY_STORE.md)** (package `com.shiflow.app`).
 
 ```bash
 cd mobile

@@ -230,7 +230,7 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={styles.title}>Red Poke Scheduler</Text>
+          <Text style={styles.title}>Shiflow</Text>
 
           {!supabaseOk ? (
             <View style={styles.card}>

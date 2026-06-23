@@ -1,13 +1,13 @@
 # Google Play Console listing (copy/paste)
 
-Use this when creating **Red Poke Scheduler** in [Google Play Console](https://play.google.com/console).
+Use this when creating **Shiflow** in [Google Play Console](https://play.google.com/console).
 
 ## App information
 
 | Field | Value |
 |--------|--------|
-| **App name** | Red Poke Scheduler |
-| **Package name** | `com.redpoke.scheduler` (set at create time — cannot change later) |
+| **App name** | Shiflow |
+| **Package name** | `com.shiflow.app` (set at create time — cannot change later) |
 | **Default language** | English (United States) |
 | **App or game** | App |
 | **Free or paid** | Free |
@@ -16,15 +16,15 @@ Use this when creating **Red Poke Scheduler** in [Google Play Console](https://p
 
 **Short description (80 chars max):**
 
-Staff scheduling, time-off requests, and manager messaging for Red Poke.
+Staff scheduling, time-off requests, and manager messaging.
 
 **Full description:**
 
-Red Poke Scheduler helps restaurant teams manage schedules, time-off and swap requests, manager messaging, and timecards.
+Shiflow helps restaurant teams manage schedules, time-off and swap requests, manager messaging, and timecards.
 
 Managers can review roster assignments and respond to staff requests from their phone. Employees can submit time-off, callouts, and availability notes.
 
-Sign-in uses your employer’s Red Poke account. Contact your administrator for access.
+Sign-in uses your employer-provided Shiflow account. Contact your administrator for access.
 
 **App category:** Business  
 **Tags (if offered):** scheduling, restaurant, staff, manager

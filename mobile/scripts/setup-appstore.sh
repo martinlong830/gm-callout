@@ -33,7 +33,7 @@ fi
 
 echo ""
 echo "==> Next steps (manual in Apple portals):"
-echo "  1. developer.apple.com → Identifiers → register com.redpoke.scheduler"
+echo "  1. developer.apple.com → Identifiers → register com.shiflow.app"
 echo "  2. appstoreconnect.apple.com → New App → same bundle ID"
 echo "  3. Deploy web app with HTTPS; privacy URL: https://YOUR-DOMAIN/privacy.html"
 echo "  4. npm run build:ios   (first time: EAS creates signing certs)"

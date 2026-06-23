@@ -1,6 +1,6 @@
-# Ship Red Poke Scheduler to the App Store
+# Ship Shiflow to the App Store
 
-This guide matches the **Expo SDK 54** app in `mobile/`. Bundle ID: **`com.redpoke.scheduler`**.
+This guide matches the **Expo SDK 54** app in `mobile/`. Bundle ID: **`com.shiflow.app`**.
 
 ## What is already configured in the repo
 
@@ -15,8 +15,8 @@ This guide matches the **Expo SDK 54** app in `mobile/`. Bundle ID: **`com.redpo
 1. **Apple Developer** — membership active (you signed up).
 2. **App Store Connect** — [create a new app](https://appstoreconnect.apple.com):
    - Platform: iOS
-   - Name: Red Poke Scheduler
-   - Bundle ID: **com.redpoke.scheduler** (register the same ID under [Certificates, Identifiers](https://developer.apple.com/account/resources/identifiers/list) if needed)
+   - Name: Shiflow
+   - Bundle ID: **com.shiflow.app** (register the same ID under [Certificates, Identifiers](https://developer.apple.com/account/resources/identifiers/list) if needed)
 3. **Production backend**
    - Supabase project with all migrations applied
    - Web server (`gm-callout`) deployed at **HTTPS** with `/api/portal/signin` working

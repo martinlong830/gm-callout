@@ -20,7 +20,7 @@ async function sendPasswordResetEmail({ to, resetUrl, loginName }) {
   const apiKey = stripEnv(process.env.RESEND_API_KEY);
   const from =
     stripEnv(process.env.PASSWORD_RESET_FROM_EMAIL) ||
-    "Red Poke Scheduler <onboarding@resend.dev>";
+    "Shiflow <onboarding@resend.dev>";
   const recipient = String(to || "").trim();
   if (!isValidEmail(recipient)) {
     return { ok: false, error: "Invalid recipient email." };
@@ -29,14 +29,14 @@ async function sendPasswordResetEmail({ to, resetUrl, loginName }) {
     return { ok: false, error: "Missing reset link." };
   }
 
-  const subject = "Reset your Red Poke Scheduler password";
+  const subject = "Reset your Shiflow password";
   const greeting = loginName ? `Hi ${loginName},` : "Hi,";
   const text =
     `${greeting}\n\n` +
     "We received a request to reset your password. Open this link to choose a new password:\n\n" +
     `${resetUrl}\n\n` +
     "This link expires in 1 hour. If you did not request a reset, you can ignore this email.\n\n" +
-    "— Red Poke Scheduler";
+    "— Shiflow";
 
   const html =
     `<p>${greeting}</p>` +

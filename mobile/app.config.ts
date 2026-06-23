@@ -4,11 +4,11 @@ import type { ExpoConfig } from 'expo/config';
  * iOS bundle ID — must match the app you create in App Store Connect.
  * Change only if you already registered a different bundle ID in Apple Developer.
  */
-const IOS_BUNDLE_ID = 'com.redpoke.scheduler';
-const ANDROID_PACKAGE = 'com.redpoke.scheduler';
+const IOS_BUNDLE_ID = 'com.shiflow.app';
+const ANDROID_PACKAGE = 'com.shiflow.app';
 
 const config: ExpoConfig = {
-  name: 'Red Poke Scheduler',
+  name: 'Shiflow',
   slug: 'gm-callout',
   version: '1.0.1',
   orientation: 'portrait',

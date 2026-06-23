@@ -1,6 +1,6 @@
-# Ship Red Poke Scheduler to Google Play
+# Ship Shiflow to Google Play
 
-This guide matches the **Expo SDK 54** app in `mobile/`. Android package: **`com.redpoke.scheduler`**.
+This guide matches the **Expo SDK 54** app in `mobile/`. Android package: **`com.shiflow.app`**.
 
 ## What is already configured in the repo
 
@@ -13,7 +13,7 @@ This guide matches the **Expo SDK 54** app in `mobile/`. Android package: **`com
 ## Before you build (required)
 
 1. **Google Play Developer account** — [play.google.com/console](https://play.google.com/console) ($25 one-time).
-2. **Play Console app** — create app **Red Poke Scheduler** with package **`com.redpoke.scheduler`** (must match `app.config.ts` exactly).
+2. **Play Console app** — create app **Shiflow** with package **`com.shiflow.app`** (must match `app.config.ts` exactly).
 3. **Production backend** — Supabase + web server on HTTPS (already on Render for this project).
 4. **EAS production env vars** — Supabase URL/key + `EXPO_PUBLIC_GM_WEB_URL` (see below).
 5. **Service account JSON** — for `eas submit` (one-time Play Console setup).
@@ -122,7 +122,7 @@ npm run submit:android
 |--------|-----|
 | Login fails on device | `EXPO_PUBLIC_GM_WEB_URL` must be production HTTPS, not LAN |
 | `serviceAccountKeyPath` missing | Save JSON to `mobile/google-play-service-account.json` |
-| Package name mismatch | Play app must use `com.redpoke.scheduler` |
+| Package name mismatch | Play app must use `com.shiflow.app` |
 | Upload rejected | Complete Data safety + Privacy policy in Play Console |
 | Keystore lost | Use `eas credentials --platform android` — never delete EAS keystore |
 

@@ -1,4 +1,4 @@
-# Red Poke Scheduler — How to Use the Web App
+# Shiflow — How to Use the Web App
 
 This guide is for **managers** and **employees**. It explains how to sign in, what each screen does, and how to use the shared time clock tablet.
 

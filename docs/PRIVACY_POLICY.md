@@ -1,8 +1,8 @@
-# Privacy Policy — Red Poke Scheduler
+# Privacy Policy — Shiflow
 
 **Last updated:** May 2026
 
-Red Poke Scheduler (“the App”) is used by restaurant staff and managers to view schedules, submit requests, exchange messages, and manage timecards.
+Shiflow (“the App”) is used by restaurant staff and managers to view schedules, submit requests, exchange messages, and manage timecards.
 
 ## Information we collect
 

@@ -1,14 +1,14 @@
 # App Store Connect listing (copy/paste)
 
-Use this when creating **Red Poke Scheduler** in [App Store Connect](https://appstoreconnect.apple.com).
+Use this when creating **Shiflow** in [App Store Connect](https://appstoreconnect.apple.com).
 
 ## App information
 
 | Field | Value |
 |--------|--------|
-| **Name** | Red Poke Scheduler |
-| **Bundle ID** | `com.redpoke.scheduler` |
-| **SKU** | `redpoke-scheduler` (any unique string you choose) |
+| **Name** | Shiflow |
+| **Bundle ID** | `com.shiflow.app` |
+| **SKU** | `shiflow-app` (any unique string you choose) |
 | **Primary language** | English (U.S.) |
 | **Category** | Business (primary), Productivity (secondary, optional) |
 | **Content rights** | Does not contain third-party content (unless you add licensed assets later) |
@@ -41,17 +41,17 @@ Declare what the app collects (adjust if your deployment differs):
 
 **Description:**
 
-Red Poke Scheduler helps restaurant teams manage schedules, time-off and swap requests, manager messaging, and timecards.
+Shiflow helps restaurant teams manage schedules, time-off and swap requests, manager messaging, and timecards.
 
 Managers can review roster assignments, edit punch times, and run pay-week timecards. Staff use the web portal or kiosk for clock-in; this app focuses on manager workflows on iPhone and iPad.
 
-Sign-in uses your employer’s Red Poke account. Contact your administrator for access.
+Sign-in uses your employer-provided Shiflow account. Contact your administrator for access.
 
 **Keywords:** schedule, restaurant, timecard, roster, shift, manager, staff
 
-**Support URL:** Your company support page (required)  
+**Support URL:** `https://your-domain/support.html` (static page in repo root; optional `SUPPORT_EMAIL` in server env for a mailto link)  
 **Marketing URL:** Optional  
-**Privacy Policy URL:** Public URL where you host `docs/PRIVACY_POLICY.md`
+**Privacy Policy URL:** `https://your-domain/privacy.html`
 
 ## Screenshots
 

@@ -58,7 +58,7 @@ fi
 
 echo ""
 echo "==> Next steps (manual in Google Play Console):"
-echo "  1. play.google.com/console → Create app → package com.redpoke.scheduler"
+echo "  1. play.google.com/console → Create app → package com.shiflow.app"
 echo "  2. Complete store listing + Data safety + Content rating"
 echo "  3. Privacy URL: https://gm-callout.onrender.com/privacy.html"
 echo "  4. npm run build:android"

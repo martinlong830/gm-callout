@@ -1,4 +1,4 @@
-# gm-callout (Red Poke Scheduler)
+# gm-callout (Shiflow)
 
 - **Web / server:** from this folder, `npm start` (see `docs/SUPABASE.md` for env). Sign-in includes **manager**, **employee**, and **time clock** (shared tablet + 6-digit employee PINs).
 - **Mobile (Expo):** lives in **`mobile/`**. From this same folder run:
