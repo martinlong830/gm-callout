@@ -245,9 +245,7 @@ export default function LoginScreen() {
                 Set EXPO_PUBLIC_GM_WEB_URL in mobile/.env (HTTPS production or LAN IP), then restart Expo with -c.
               </Text>
             </View>
-          ) : (
-            <Text style={styles.urlHint}>Sign-in server: {portalWebUrl()}</Text>
-          )}
+          ) : null}
 
           {panel === 'signin' ? (
             <>
@@ -520,7 +518,6 @@ const styles = StyleSheet.create({
   linkText: { color: '#c41230', fontWeight: '600', fontSize: 15 },
   footer: { marginTop: 20, gap: 12, alignItems: 'center' },
   warn: { fontSize: 14, color: '#444', lineHeight: 22 },
-  urlHint: { fontSize: 12, color: '#64748b', marginBottom: 12 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
   chip: {
     paddingHorizontal: 10,

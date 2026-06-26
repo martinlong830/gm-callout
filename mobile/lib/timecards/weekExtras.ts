@@ -79,6 +79,30 @@ function computeLeaveExtrasFromRequests(
   return { vl: vlMins / 60, sl: slMins / 60, manual: false };
 }
 
+type LeaveBalanceSide = { entries?: { date?: string; hours?: number }[] };
+type LeaveBalance = {
+  vacation?: LeaveBalanceSide;
+  sick?: LeaveBalanceSide;
+};
+
+function computeLeaveHoursFromBalance(emp: EmployeeRow, bounds: PayWeekBounds): WeekExtras {
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  const bal = emp.meta?.leaveBalance as LeaveBalance | undefined;
+  if (!bal) return { vl: 0, sl: 0, manual: false };
+  let vl = 0;
+  let sl = 0;
+  for (const e of bal.vacation?.entries ?? []) {
+    const d = String(e.date ?? '').slice(0, 10);
+    if (d >= weekStart && d <= weekEnd) vl += Math.max(0, parseFloat(String(e.hours)) || 0);
+  }
+  for (const e of bal.sick?.entries ?? []) {
+    const d = String(e.date ?? '').slice(0, 10);
+    if (d >= weekStart && d <= weekEnd) sl += Math.max(0, parseFloat(String(e.hours)) || 0);
+  }
+  return { vl, sl, manual: false };
+}
+
 /** Auto VL/SL for one calendar day from approved time off (not saved per-day storage). */
 export function getSuggestedDayLeaveSync(
   emp: EmployeeRow,
@@ -202,12 +226,14 @@ export function getEmployeeWeekExtrasSync(
   if (daySum) return daySum;
   const row = slice[emp.id];
   if (row?.manual) {
-    return {
-      vl: Math.max(0, parseFloat(String(row.vl)) || 0),
-      sl: Math.max(0, parseFloat(String(row.sl)) || 0),
-      manual: true,
-    };
+    const manualVl = Math.max(0, parseFloat(String(row.vl)) || 0);
+    const manualSl = Math.max(0, parseFloat(String(row.sl)) || 0);
+    if (manualVl > 0 || manualSl > 0) {
+      return { vl: manualVl, sl: manualSl, manual: true };
+    }
   }
+  const fromBalance = computeLeaveHoursFromBalance(emp, bounds);
+  if (fromBalance.vl > 0 || fromBalance.sl > 0) return fromBalance;
   return computeLeaveExtrasFromRequests(emp, displayName, bounds, staffRequests, schedMinsByDay);
 }
 

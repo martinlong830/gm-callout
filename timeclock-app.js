@@ -32,9 +32,23 @@
   var watchdogTimer = null;
   var RPC_TIMEOUT_MS = 15000;
   var BUSY_STUCK_MS = 20000;
-  var deviceRestaurantId = 'rp-9';
+  var urlRestaurantId = (function () {
+    var api = window.gmTimeclockScheduleMatch;
+    if (api && typeof api.restaurantFromPagePath === 'function') {
+      return api.restaurantFromPagePath();
+    }
+    return null;
+  })();
+  var deviceRestaurantId = (function () {
+    var api = window.gmTimeclockScheduleMatch;
+    if (api && typeof api.resolveDeviceRestaurantId === 'function') {
+      return api.resolveDeviceRestaurantId() || 'rp-9';
+    }
+    return urlRestaurantId || 'rp-9';
+  })();
   var scheduleAssignments = null;
   var scheduleContextReady = null;
+  var locationLabelEl = document.getElementById('timeclockLocationLabel');
 
   var MODE_LABELS = {
     in: 'Clock in',
@@ -94,12 +108,35 @@
   }
 
   function inferDeviceRestaurantId(displayName) {
+    if (urlRestaurantId) return urlRestaurantId;
     var api = scheduleMatchApi();
+    if (api && typeof api.storedRestaurantId === 'function') {
+      var stored = api.storedRestaurantId();
+      if (stored) return stored;
+    }
     if (api && typeof api.restaurantFromDeviceLabel === 'function') {
       var fromLabel = api.restaurantFromDeviceLabel(displayName);
       if (fromLabel) return fromLabel;
     }
     return 'rp-9';
+  }
+
+  function refreshDeviceRestaurantId() {
+    deviceRestaurantId = inferDeviceRestaurantId('');
+  }
+
+  function updateLocationLabel(restaurantId) {
+    if (!locationLabelEl) return;
+    var api = scheduleMatchApi();
+    var label =
+      api && typeof api.restaurantLabel === 'function' ? api.restaurantLabel(restaurantId) : '';
+    if (label) {
+      locationLabelEl.textContent = label;
+      locationLabelEl.hidden = false;
+    } else {
+      locationLabelEl.textContent = '';
+      locationLabelEl.hidden = true;
+    }
   }
 
   async function ensureScheduleContext() {
@@ -416,6 +453,17 @@
               ? 'Break ended'
               : 'Clocked in';
       setStatus(verb + ' — ' + name, 'ok');
+      if (
+        data.action === 'in' &&
+        data.employee_id &&
+        data.clock_restaurant_id &&
+        typeof window.gmCalloutExpandEmployeeRestaurantForPunch === 'function'
+      ) {
+        window.gmCalloutExpandEmployeeRestaurantForPunch(
+          data.employee_id,
+          data.clock_restaurant_id
+        );
+      }
       prependRecent(name, verb, data.at);
       pinBuffer = '';
       pendingLookup = null;
@@ -573,6 +621,7 @@
       if (prof.data && prof.data.display_name) {
         deviceRestaurantId = inferDeviceRestaurantId(prof.data.display_name);
         if (deviceLabelEl) deviceLabelEl.textContent = prof.data.display_name;
+        updateLocationLabel(deviceRestaurantId);
       }
     } catch (_ex) {
       /* ignore */
@@ -580,6 +629,7 @@
   }
 
   window.gmCalloutTimeclockBootstrap = function () {
+    refreshDeviceRestaurantId();
     if (resetTimer) clearTimeout(resetTimer);
     pinBuffer = '';
     setBusy(false);
@@ -605,6 +655,7 @@
       startWatchdog();
       uiBound = true;
     }
+    updateLocationLabel(deviceRestaurantId);
     void loadDeviceLabel();
     void ensureScheduleContext();
     if (hiddenInputEl) {

@@ -37,8 +37,9 @@ export function PayWeekPicker({ options, selectedStartIso, onSelect }: Props) {
       </Pressable>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
+        <View style={styles.backdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} accessibilityLabel="Close pay week picker" />
+          <View style={styles.sheet}>
             <Text style={styles.sheetTitle}>Select pay week</Text>
             <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
               {options.map((opt) => {
@@ -59,8 +60,8 @@ export function PayWeekPicker({ options, selectedStartIso, onSelect }: Props) {
             <Pressable style={styles.cancelBtn} onPress={() => setOpen(false)}>
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -94,6 +95,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
+    zIndex: 1,
   },
   sheetTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', marginBottom: 12 },
   list: { maxHeight: 360 },

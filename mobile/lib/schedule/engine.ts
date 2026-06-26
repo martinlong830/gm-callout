@@ -288,7 +288,44 @@ function sanitizeDraftRoleRows(
   return out.length ? out : JSON.parse(JSON.stringify(defaultRows));
 }
 
-export function loadDraftFromTeamState(raw: unknown, weekIndex?: number): DraftGrid {
+const DRAFT_ROLE_KEYS: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+
+function draftScheduleJsonHasLayers(obj: unknown): obj is DraftGrid {
+  if (!obj || typeof obj !== 'object') return false;
+  const p = obj as Record<string, unknown>;
+  return DRAFT_ROLE_KEYS.some((role) => Array.isArray(p[role]) && (p[role] as unknown[]).length > 0);
+}
+
+function draftScheduleWeekEntryIsPerRestaurant(weekEntry: unknown): boolean {
+  if (!weekEntry || typeof weekEntry !== 'object') return false;
+  if (draftScheduleJsonHasLayers(weekEntry)) return false;
+  const p = weekEntry as Record<string, unknown>;
+  return defaultRestaurants().some((r) => draftScheduleJsonHasLayers(p[r.id]));
+}
+
+function resolveDraftRestaurantId(restaurantId?: string): string {
+  const rests = defaultRestaurants();
+  if (restaurantId && rests.some((r) => r.id === restaurantId)) return restaurantId;
+  return rests[0]?.id ?? 'rp-9';
+}
+
+function draftLayersFromWeekEntry(weekEntry: unknown, restaurantId?: string): DraftGrid | null {
+  if (!weekEntry || typeof weekEntry !== 'object') return null;
+  if (draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
+    const rid = resolveDraftRestaurantId(restaurantId);
+    const perRest = (weekEntry as Record<string, unknown>)[rid];
+    if (draftScheduleJsonHasLayers(perRest)) {
+      return loadDraftFromTeamState(perRest);
+    }
+    return null;
+  }
+  if (draftScheduleJsonHasLayers(weekEntry)) {
+    return loadDraftFromTeamState(weekEntry);
+  }
+  return null;
+}
+
+export function loadDraftFromTeamState(raw: unknown, weekIndex?: number, restaurantId?: string): DraftGrid {
   const base = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   if (!raw || typeof raw !== 'object') return base;
   const p = raw as Record<string, unknown>;
@@ -299,14 +336,12 @@ export function loadDraftFromTeamState(raw: unknown, weekIndex?: number): DraftG
         ? String(weekIndex)
         : String(SCHEDULE_TEMPLATE_WEEK_INDEX);
     const weekLayers = byWeek[wi];
-    if (weekLayers && typeof weekLayers === 'object') {
-      return loadDraftFromTeamState(weekLayers);
-    }
+    const layers = draftLayersFromWeekEntry(weekLayers, restaurantId);
+    if (layers) return layers;
     if (wi !== String(SCHEDULE_TEMPLATE_WEEK_INDEX)) {
       const tplLayers = byWeek[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
-      if (tplLayers && typeof tplLayers === 'object') {
-        return loadDraftFromTeamState(tplLayers);
-      }
+      const tplDraft = draftLayersFromWeekEntry(tplLayers, restaurantId);
+      if (tplDraft) return tplDraft;
     }
     return base;
   }
@@ -365,9 +400,14 @@ export function getEmployeeVisibleWeekIndices(): number[] {
   );
 }
 
-function draftForWeek(draftScheduleRaw: unknown | undefined, draftRows: DraftGrid | undefined, weekIndex: number): DraftGrid {
+function draftForWeek(
+  draftScheduleRaw: unknown | undefined,
+  draftRows: DraftGrid | undefined,
+  weekIndex: number,
+  restaurantId?: string
+): DraftGrid {
   if (draftScheduleRaw != null) {
-    return loadDraftFromTeamState(draftScheduleRaw, weekIndex);
+    return loadDraftFromTeamState(draftScheduleRaw, weekIndex, restaurantId);
   }
   return draftRows ?? cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
 }
@@ -770,7 +810,7 @@ export function buildSchedule(params: {
   allWeekDays.forEach((dayStr, globalDayIdx) => {
     const wk = weekdayKeyFromScheduleDay(dayStr);
     const weekIdx = Math.floor(globalDayIdx / 7);
-    const weekDraft = draftForWeek(draftScheduleRaw, draftRows, weekIdx);
+    const weekDraft = draftForWeek(draftScheduleRaw, draftRows, weekIdx, currentRestaurantId);
     const usedToday: Record<string, boolean> = Object.create(null);
     ROLE_DEFS.forEach((rd, roleIdx) => {
       const n = slotCountForRole(weekDraft, rd.role);

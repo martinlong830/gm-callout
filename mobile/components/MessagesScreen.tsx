@@ -20,6 +20,7 @@ import {
   loadChatStore,
   queueChatStoreSave,
   readChatStoreCache,
+  sanitizeChatStore,
   subscribeChatStore,
   type ChatStore,
   type ChatThread,
@@ -216,8 +217,9 @@ export function MessagesScreen() {
 
   const persist = useCallback(
     (next: ChatStore) => {
-      setStore(next);
-      if (supabase && uid) queueChatStoreSave(supabase, uid, next);
+      const { next: cleaned } = sanitizeChatStore(next);
+      setStore(cleaned);
+      if (supabase && uid) queueChatStoreSave(supabase, uid, cleaned);
     },
     [uid]
   );
@@ -292,9 +294,10 @@ export function MessagesScreen() {
       threads: [thread, ...store.threads],
       activeThreadId: tid,
     };
-    setStore(next);
+    const { next: cleaned } = sanitizeChatStore(next);
+    setStore(cleaned);
     setActiveId(tid);
-    await flushChatStoreSave(supabase, uid, next);
+    await flushChatStoreSave(supabase, uid, cleaned);
   }
 
   async function sendMessage() {
@@ -311,9 +314,10 @@ export function MessagesScreen() {
       };
     });
     const next: ChatStore = { ...store, threads };
-    setStore(next);
+    const { next: cleaned } = sanitizeChatStore(next);
+    setStore(cleaned);
     setInput('');
-    await flushChatStoreSave(supabase, uid, next);
+    await flushChatStoreSave(supabase, uid, cleaned);
   }
 
   if (!uid || !supabase) {

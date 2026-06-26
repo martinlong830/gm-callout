@@ -335,6 +335,49 @@ html.authed .login-screen {
   border-radius: 2px;
 }
 
+.timeclock-login-location {
+  margin: -10px 0 16px;
+}
+
+.timeclock-location-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.timeclock-location-btn {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.timeclock-location-btn--active {
+  border-color: var(--primary);
+  background: var(--accent-soft, #fef2f2);
+  color: var(--primary);
+}
+
+.timeclock-location-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.timeclock-location-toggle--locked .timeclock-location-btn {
+  cursor: default;
+  opacity: 0.92;
+}
+
+.timeclock-location-toggle--locked .timeclock-location-btn:not(.timeclock-location-btn--active) {
+  opacity: 0.55;
+}
+
 .login-submit {
   margin-top: 4px;
 }
@@ -1907,13 +1950,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-slot-rp {
   box-sizing: border-box;
-  height: var(--calendar-slot-rp-h, 4.5rem);
-  min-height: var(--calendar-slot-rp-h, 4.5rem);
-  max-height: var(--calendar-slot-rp-h, 4.5rem);
+  min-height: 4.5rem;
   padding-bottom: 10px;
   border-bottom: 1px dashed var(--border);
   flex-shrink: 0;
-  overflow: hidden;
 }
 
 .calendar-slot-rp-time {
@@ -1922,10 +1962,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
   letter-spacing: 0.01em;
   line-height: 1.35;
-  min-height: calc(0.82rem * 1.35);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .calendar-slot-rp-break {
@@ -1934,10 +1972,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 500;
   color: var(--text-muted);
   line-height: 1.35;
-  min-height: calc(0.72rem * 1.35);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .calendar-slot-rp-hours {
@@ -1946,10 +1982,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 600;
   color: var(--text);
   line-height: 1.35;
-  min-height: calc(0.78rem * 1.35);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .emp-shift-rp {
@@ -2094,7 +2128,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-slot-wrap:not(.calendar-slot-empty) {
   display: grid;
-  grid-template-rows: var(--calendar-slot-rp-h, 4.5rem) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   align-content: stretch;
 }
 
@@ -2224,13 +2258,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  height: calc(1.35 * 0.72rem + 12px);
   min-height: calc(1.35 * 0.72rem + 12px);
-  max-height: calc(1.35 * 0.72rem + 12px);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .calendar-group-row td {
@@ -2357,7 +2389,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   .calendar-slot-wrap:not(.calendar-slot-empty) {
     min-height: 140px;
-    --calendar-slot-rp-h: 4.5rem;
   }
 
   .availability-modal-panel {
@@ -3939,34 +3970,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     padding: 8px 8px;
   }
 
-  .calendar-slot-wrap:not(.calendar-slot-empty) {
-    --calendar-slot-rp-h: 4.15rem;
-  }
-
-  /* One horizontal line per name; ellipsis instead of letter-stacking wraps */
   .calendar-slot-pills {
     flex: 0 0 auto;
-  }
-
-  .calendar-slot-wrap:not(.calendar-slot-empty) .role-pill-mini.calendar-worker-pill {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-    height: calc(1.35 * 0.72rem + 12px);
-    min-height: calc(1.35 * 0.72rem + 12px);
-    max-height: calc(1.35 * 0.72rem + 12px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: 1.35;
-  }
-
-  .calendar-slot-wrap:not(.calendar-slot-empty) .time-role-sub {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
   }
 
   .calendar-matrix thead th:not(.time-col) {
@@ -4069,6 +4074,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.85rem;
   color: var(--text-muted);
   margin-bottom: var(--space-tight);
+}
+
+.timeclock-location-label {
+  margin: 0;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .timeclock-pin-display {
@@ -5022,6 +5035,30 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .timecards-status--missing {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.timecards-clock-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.timecards-clock-status--in {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.timecards-clock-status--break {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.timecards-clock-status--off {
   background: #f3f4f6;
   color: #6b7280;
 }

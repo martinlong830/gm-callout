@@ -18,6 +18,7 @@
   };
   var rosterCache = null;
   var rosterSort = { col: 'schedule', dir: 'asc' };
+  var payWeekSelectorBound = false;
   var payWeekScheduleCache = { weekIso: null, rows: null, weekMetaByLabel: null };
   var weekEntriesByEmpDay = null;
   var weekEntriesByEmpId = null;
@@ -36,6 +37,7 @@
   var ROSTER_SORT_COLS = [
     'name',
     'role',
+    'clock',
     'scheduled',
     'regular',
     'overtime',
@@ -63,7 +65,7 @@
     feePercent: 0.03,
   };
   var selectedPayWeekStartIso = null;
-  var timecardsLocationFilter = 'all';
+  var timecardsLocationFilter = 'rp-9';
   var SOH_THRESHOLD_MINUTES = 10 * 60;
   var SOH_PAY_HOURS = 1;
   var SOH_DEFAULT_HOURLY_RATE = 15;
@@ -72,11 +74,12 @@
   function loadTimecardsLocationFilter() {
     try {
       var v = localStorage.getItem(TIMECARDS_LOCATION_KEY);
-      if (v === 'all' || v === 'rp-9' || v === 'rp-8') return v;
+      if (v === 'rp-9' || v === 'rp-8') return v;
+      if (v === 'all') return 'rp-9';
     } catch (_eLoc) {
       /* ignore */
     }
-    return 'all';
+    return 'rp-9';
   }
 
   function saveTimecardsLocationFilter(id) {
@@ -258,9 +261,6 @@
       '<div class="timecards-location-switcher" role="group" aria-label="Store location">' +
         '<span class="employee-filter-label">Location</span>' +
         '<div class="employee-filter-chips">',
-      '<button type="button" class="filter-chip' +
-        (timecardsLocationFilter === 'all' ? ' active' : '') +
-        '" data-timecards-location="all">All locations</button>',
     ];
     getRestaurantsList().forEach(function (r) {
       parts.push(
@@ -281,7 +281,7 @@
     if (!root) return;
     root.querySelectorAll('[data-timecards-location]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        var next = btn.getAttribute('data-timecards-location') || 'all';
+        var next = btn.getAttribute('data-timecards-location') || 'rp-9';
         if (next === timecardsLocationFilter) return;
         saveTimecardsLocationFilter(next);
         repaintRoster();
@@ -1649,11 +1649,11 @@
     if (daySum) return daySum;
     var row = slice[emp.id];
     if (row && row.manual) {
-      return {
-        vl: Math.max(0, parseFloat(row.vl) || 0),
-        sl: Math.max(0, parseFloat(row.sl) || 0),
-        manual: true,
-      };
+      var manualVl = Math.max(0, parseFloat(row.vl) || 0);
+      var manualSl = Math.max(0, parseFloat(row.sl) || 0);
+      if (manualVl > 0 || manualSl > 0) {
+        return { vl: manualVl, sl: manualSl, manual: true };
+      }
     }
     var fromBalance = computeLeaveHoursFromBalance(emp, bounds);
     var fromRequests = computeLeaveHoursFromRequests(emp, bounds);
@@ -1689,7 +1689,7 @@
       }
     }
     var wrap = document.getElementById('timecardsRosterWrap');
-    if (wrap && rosterCache) paintRosterTable(wrap);
+    if (wrap && rosterCache) paintRosterTableBody(wrap);
   }
 
   function readShiftDayLeaveFromForm() {
@@ -1724,6 +1724,9 @@
 
   /** One SoH premium per calendar day when 5-min-rounded paid time exceeds 10 hours (closed punches only). */
   function computeSpreadOfHours(emp) {
+    var bounds = payWeekBounds();
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
     var byDay = {};
     var list = weekEntriesByEmpId ? weekEntriesByEmpId[emp.id] || [] : weekEntries;
     list.forEach(function (e) {
@@ -1733,6 +1736,7 @@
         return;
       }
       var iso = punchDayIso(e);
+      if (!iso || iso < weekStart || iso > weekEnd) return;
       var mins = recordedPaidMinutesOnClockInDay(e, null, emp);
       byDay[iso] = (byDay[iso] || 0) + mins;
     });
@@ -1834,10 +1838,59 @@
     return 3;
   }
 
+  function findLatestOpenEntryForEmployee(empId) {
+    var latest = null;
+    weekEntries.forEach(function (e) {
+      if (!e || e.employee_id !== empId || !isEntryOpen(e)) return;
+      if (!latest || String(e.clock_in_at).localeCompare(String(latest.clock_in_at)) > 0) {
+        latest = e;
+      }
+    });
+    return latest;
+  }
+
+  function employeeClockStatus(emp) {
+    var open = findLatestOpenEntryForEmployee(emp.id);
+    if (!open) return 'off_clock';
+    if (timecardsLocationFilter !== 'all' && entryRestaurantId(emp, open) !== timecardsLocationFilter) {
+      return 'off_clock';
+    }
+    return isOnBreak(open) ? 'on_break' : 'clocked_in';
+  }
+
+  function clockStatusLabel(id) {
+    if (id === 'clocked_in') return 'Clocked in';
+    if (id === 'on_break') return 'On break';
+    return 'Not on clock';
+  }
+
+  function clockStatusClass(id) {
+    if (id === 'clocked_in') return 'timecards-clock-status--in';
+    if (id === 'on_break') return 'timecards-clock-status--break';
+    return 'timecards-clock-status--off';
+  }
+
+  function clockStatusSortRank(id) {
+    if (id === 'on_break') return 0;
+    if (id === 'clocked_in') return 1;
+    return 2;
+  }
+
+  function renderClockStatusCell(clockStatus) {
+    return (
+      '<td><span class="timecards-clock-status ' +
+      clockStatusClass(clockStatus) +
+      '">' +
+      d().escapeHtml(clockStatusLabel(clockStatus)) +
+      '</span></td>'
+    );
+  }
+
   function buildRosterRowData(emp) {
     var agg = aggregateEmployeeWeek(emp);
     var extras = getEmployeeWeekExtras(emp);
     var soh = computeSpreadOfHours(emp);
+    var clockStatus = employeeClockStatus(emp);
     var row = {
       emp: emp,
       name: d().employeeDisplayName(emp),
@@ -1862,6 +1915,9 @@
       dishwasherTipsPay: sumEmployeeWeekDishwasherTips(emp),
       status: agg.status,
       statusRank: statusSortRank(agg.status),
+      clockStatus: clockStatus,
+      clockStatusLabel: clockStatusLabel(clockStatus),
+      clockStatusRank: clockStatusSortRank(clockStatus),
     };
     row.grandTotalPay = rosterGrandTotalPay(row);
     return row;
@@ -2073,6 +2129,7 @@
     if (col === 'schedule') cmp = compareScheduleOrderRows(a, b);
     else if (col === 'name') cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     else if (col === 'role') cmp = a.role.localeCompare(b.role, undefined, { sensitivity: 'base' });
+    else if (col === 'clock') cmp = (a.clockStatusRank || 0) - (b.clockStatusRank || 0);
     else if (col === 'scheduled') cmp = a.schedMins - b.schedMins;
     else if (col === 'regular') cmp = a.regMins - b.regMins;
     else if (col === 'overtime') cmp = a.otMins - b.otMins;
@@ -2087,10 +2144,7 @@
   }
 
   function sortedRosterRows(rows) {
-    var list = rows.slice();
-    if (timecardsLocationFilter !== 'all') {
-      list = list.filter(rosterRowVisibleAtLocation);
-    }
+    var list = rows.slice().filter(rosterRowVisibleAtLocation);
     return list.sort(function (a, b) {
       if (rosterSort.col === 'schedule') {
         return compareRosterRows(a, b, 'schedule', rosterSort.dir);
@@ -2147,6 +2201,7 @@
       '<td>' +
       d().escapeHtml(row.role) +
       '</td>' +
+      renderClockStatusCell(row.clockStatus) +
       '<td class="timecards-num">' +
       d().escapeHtml(decimalHoursFromMinutes(row.schedMins)) +
       'h</td>' +
@@ -2733,14 +2788,39 @@
     );
   }
 
-  function wirePayWeekSelector() {
+  function syncPayWeekSelectorUi() {
     var sel = document.getElementById('timecardsPayWeekSelect');
     if (!sel) return;
-    sel.addEventListener('change', function () {
+    var options = buildPayWeekOptions();
+    var selectedIso = isoFromDate(getSelectedPayWeekMondayDate());
+    sel.innerHTML = options
+      .map(function (o) {
+        return (
+          '<option value="' +
+          d().escapeHtml(o.startIso) +
+          '"' +
+          (o.startIso === selectedIso ? ' selected' : '') +
+          '>' +
+          d().escapeHtml(o.label) +
+          '</option>'
+        );
+      })
+      .join('');
+    sel.value = selectedIso;
+  }
+
+  function bindPayWeekSelectorOnce() {
+    if (payWeekSelectorBound) return;
+    payWeekSelectorBound = true;
+    document.addEventListener('change', function (ev) {
+      var sel = ev.target;
+      if (!sel || sel.id !== 'timecardsPayWeekSelect') return;
       var iso = sel.value;
+      if (!iso) return;
       var thisIso = currentPayWeekMondayIso();
       selectedPayWeekStartIso = iso === thisIso ? null : iso;
       saveSelectedPayWeekStartIso(selectedPayWeekStartIso);
+      invalidatePayWeekScheduleCache();
       timecardState.employeeId = null;
       timecardState.shiftId = null;
       timecardState.shiftRow = null;
@@ -3446,6 +3526,28 @@
     payWeekScheduleCache.weekIso = null;
     payWeekScheduleCache.rows = null;
     payWeekScheduleCache.weekMetaByLabel = null;
+  }
+
+  /** Rebuild roster rows from the latest employee roster + week punches (keeps export in sync with Team leave edits). */
+  function rebuildRosterCacheRows() {
+    if (!deps || !d().employees.length) return false;
+    invalidatePayrollTipDistCache();
+    if (rosterCache) {
+      rosterCache.rows = d().employees.map(buildRosterRowData);
+      rosterCache.shiftRows = null;
+      return true;
+    }
+    return false;
+  }
+
+  /** Schedule assignments or draft changed — rebuild pay-week snapshot and refresh open timecards UI. */
+  function onScheduleChanged() {
+    invalidatePayWeekScheduleCache();
+    rebuildRosterCacheRows();
+    if (timecardsRosterScreenActive()) {
+      var wrap = document.getElementById('timecardsRosterWrap');
+      if (wrap) paintRosterTableBody(wrap);
+    }
   }
 
   function weekMetaByLabelMap() {
@@ -5936,16 +6038,7 @@
 
   async function downloadFullReportWorkbook(fileBase) {
     var fullSheets;
-    var prevLoc = timecardsLocationFilter;
     try {
-      if (prevLoc !== 'all') {
-        saveTimecardsLocationFilter('all');
-        invalidatePayWeekScheduleCache();
-        if (rosterCache) {
-          rosterCache.rows = d().employees.map(buildRosterRowData);
-          rosterCache.shiftRows = null;
-        }
-      }
       fullSheets = buildFullReportSheets();
     } catch (buildErr) {
       console.warn('Full report build failed', buildErr);
@@ -6022,20 +6115,12 @@
         console.warn('Full report fallback failed', fallbackErr);
         alert('Could not build full report. Try again.');
       }
-    } finally {
-      if (prevLoc !== 'all') {
-        saveTimecardsLocationFilter(prevLoc);
-        invalidatePayWeekScheduleCache();
-        if (rosterCache) {
-          rosterCache.rows = d().employees.map(buildRosterRowData);
-          rosterCache.shiftRows = null;
-        }
-      }
     }
   }
 
   function buildFullReportSheets() {
     invalidatePayWeekScheduleCache();
+    rebuildRosterCacheRows();
     var sheets = [];
     var laborWs = buildLaborCostWorksheet();
     var cpaWs = buildCpaWorksheet();
@@ -6180,12 +6265,16 @@
     if (aoa) downloadCsvFromAoa(rosterCache.fileBase, '-shifts', aoa);
   }
 
-  function wireRosterTable(wrap) {
+  function wireRosterTableRows(wrap) {
     wrap.querySelectorAll('tr[data-timecard-employee-id]').forEach(function (tr) {
       tr.addEventListener('click', function () {
         openEmployee(tr.getAttribute('data-timecard-employee-id'));
       });
     });
+  }
+
+  function wireRosterTable(wrap) {
+    wireRosterTableRows(wrap);
     wrap.querySelectorAll('[data-roster-sort]').forEach(function (btn) {
       btn.addEventListener('click', function (ev) {
         ev.stopPropagation();
@@ -6212,6 +6301,27 @@
     wireTimecardsLocationSwitcher(wrap);
   }
 
+  function paintRosterTableBody(wrap) {
+    if (!wrap || !rosterCache) return;
+    var table = wrap.querySelector('.timecards-table--roster');
+    if (!table) {
+      paintRosterTable(wrap);
+      return;
+    }
+    var sorted = sortedRosterRows(rosterCache.rows);
+    var totals = computeRosterTotals(sorted);
+    var tbody = table.querySelector('tbody');
+    if (tbody) {
+      tbody.innerHTML = sorted.map(renderRosterRowHtml).join('');
+    }
+    var gt = wrap.querySelector('.timecards-grand-totals');
+    if (gt) {
+      gt.outerHTML = renderGrandTotalsHtml(totals);
+    }
+    wireRosterTableRows(wrap);
+    wireGrandTotalsTipInputs(wrap);
+  }
+
   function paintRosterTable(wrap) {
     if (!rosterCache) return;
     var sorted = sortedRosterRows(rosterCache.rows);
@@ -6229,6 +6339,7 @@
       '<thead><tr>' +
       rosterSortHeader('name', 'Name') +
       rosterSortHeader('role', 'Role') +
+      rosterSortHeader('clock', 'Clock') +
       rosterSortHeader('scheduled', 'Scheduled') +
       rosterSortHeader('regular', 'Regular') +
       rosterSortHeader('overtime', 'Overtime') +
@@ -6242,7 +6353,7 @@
       body +
       '</tbody></table></div>';
     wireRosterTable(wrap);
-    wirePayWeekSelector();
+    syncPayWeekSelectorUi();
   }
 
   function rosterHoursCell(mins, pay) {
@@ -6427,7 +6538,7 @@
     if (!isDeliveryDishwasherStaff(shiftRow && shiftRow.emp)) return false;
     if (!shiftRow || !shiftRow.shift) return false;
     if (isOffScheduleShiftDayRow(shiftRow)) {
-      return timecardsLocationFilter === 'all' || timecardsLocationFilter === RP2_DELIVERY_TIP_LOCATION;
+      return timecardsLocationFilter === RP2_DELIVERY_TIP_LOCATION;
     }
     return shiftRestaurantId(shiftRow.shift) === RP2_DELIVERY_TIP_LOCATION;
   }
@@ -6520,17 +6631,13 @@
         var locMins = dailyRecordedMinutesForEmployee(emp, row.iso);
         var hasActivity = dayHasTimecardActivity(emp.id, row.iso);
         if (isOffScheduleShiftDayRow(row)) {
-          if (timecardsLocationFilter === 'all') return hasActivity;
           return locMins > 0;
         }
         var sched = scheduledPaidMinutes(row.shift, emp);
-        if (timecardsLocationFilter !== 'all') {
-          var home = employeeHomeRestaurant(emp);
-          var restId = shiftRestaurantId(row.shift);
-          if (home !== 'both' && home !== restId && locMins <= 0) return false;
-          return sched > 0 || locMins > 0;
-        }
-        return sched > 0 || hasActivity;
+        var home = employeeHomeRestaurant(emp);
+        var restId = shiftRestaurantId(row.shift);
+        if (home !== 'both' && home !== restId && locMins <= 0) return false;
+        return sched > 0 || locMins > 0;
       })
       .filter(function (row) {
         return shiftMatchesLocationFilter(row, emp);
@@ -6916,6 +7023,7 @@
       breakPaid: timecardSchema.breakPaid,
     };
     rebuildWeekEntriesIndex();
+    handleCrossRestaurantPunchesFromWeekEntries();
     return { ok: true };
   }
 
@@ -8350,16 +8458,30 @@
     return !!(screen && screen.classList.contains('active'));
   }
 
+  function handleCrossRestaurantPunchEntry(entry) {
+    if (!entry || !entry.employee_id || !entry.clock_in_at) return;
+    var rest = entry.clock_restaurant_id;
+    if (rest !== 'rp-8' && rest !== 'rp-9') return;
+    if (typeof d().expandEmployeeRestaurantForPunch === 'function') {
+      d().expandEmployeeRestaurantForPunch(entry.employee_id, rest);
+    }
+    var iso = punchDayIso(entry);
+    if (iso && entryHasMeaningfulPunch(entry, iso)) {
+      addOffScheduleDay(entry.employee_id, iso);
+    }
+  }
+
+  function handleCrossRestaurantPunchesFromWeekEntries() {
+    weekEntries.forEach(handleCrossRestaurantPunchEntry);
+  }
+
   function refreshRosterFromEmployees() {
     if (!deps || !d().employees.length) return false;
-    invalidatePayrollTipDistCache();
     var changed = false;
-    if (rosterCache) {
-      rosterCache.rows = d().employees.map(buildRosterRowData);
-      rosterCache.shiftRows = null;
+    if (rebuildRosterCacheRows()) {
       if (timecardsRosterScreenActive()) {
         var wrap = document.getElementById('timecardsRosterWrap');
-        if (wrap) paintRosterTable(wrap);
+        if (wrap) paintRosterTableBody(wrap);
         changed = true;
       }
     }
@@ -8413,15 +8535,18 @@
     bindTimecardsBackButtons();
     bindTimecardsDownloadModal();
     wireTimeclockSettings();
+    bindPayWeekSelectorOnce();
   }
 
   global.gmCalloutTimecards = {
     init: init,
     renderRoster: renderRoster,
     refreshRosterFromEmployees: refreshRosterFromEmployees,
+    rebuildRosterCacheRows: rebuildRosterCacheRows,
     handleBack: handleBack,
     reloadWeek: loadWeekEntries,
     invalidateScheduleCache: invalidatePayWeekScheduleCache,
+    onScheduleChanged: onScheduleChanged,
     applyRemoteTipPayroll: applyRemoteTipPayroll,
     applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
   };

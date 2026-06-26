@@ -26,8 +26,8 @@ import {
   loadTimecardsLocationFilter,
   saveTimecardsLocationFilter,
   TIMECARDS_LOCATION_OPTIONS,
+  type SelectedRestaurant,
 } from '../../../lib/timecards/locationFilter';
-import type { LocationFilter } from '../../../lib/timecards/restaurantAttribution';
 import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
@@ -61,6 +61,12 @@ function HoursPayStat({
   );
 }
 
+function clockBadgeStyle(status: RosterRow['clockStatus']) {
+  if (status === 'clocked_in') return styles.clockIn;
+  if (status === 'on_break') return styles.clockBreak;
+  return styles.clockOff;
+}
+
 function RosterRowCard({
   row,
   onPress,
@@ -72,6 +78,9 @@ function RosterRowCard({
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.cardTop}>
         <Text style={styles.name}>{row.name}</Text>
+        <Text style={[styles.clockBadge, clockBadgeStyle(row.clockStatus)]}>
+          {row.clockStatusLabel}
+        </Text>
       </View>
       <Text style={styles.role}>{row.role}</Text>
       <View style={styles.statsGrid}>
@@ -135,7 +144,7 @@ export default function TimecardsRosterScreen() {
   } = useTimecards();
   const [weekSlices, setWeekSlices] = useState<WeekSlices | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [locationFilter, setLocationFilter] = useState<LocationFilter>('all');
+  const [locationFilter, setLocationFilter] = useState<SelectedRestaurant>('rp-9');
   const [locationReady, setLocationReady] = useState(false);
 
   const boundsKey = weekBoundsStorageKey(bounds);
@@ -204,7 +213,7 @@ export default function TimecardsRosterScreen() {
     teamState?.updated_at,
   ]);
 
-  const onLocationChange = useCallback(async (next: LocationFilter) => {
+  const onLocationChange = useCallback(async (next: SelectedRestaurant) => {
     setLocationFilter(next);
     await saveTimecardsLocationFilter(next);
   }, []);
@@ -321,6 +330,17 @@ const styles = StyleSheet.create({
   },
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   name: { fontSize: 17, fontWeight: '700', color: '#0f172a', flex: 1 },
+  clockBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  clockIn: { backgroundColor: '#ecfdf5', color: '#047857' },
+  clockBreak: { backgroundColor: '#fffbeb', color: '#b45309' },
+  clockOff: { backgroundColor: '#f3f4f6', color: '#6b7280' },
   role: { fontSize: 13, color: '#64748b', marginTop: 4 },
   statsGrid: { marginTop: 10, gap: 6 },
   statRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },

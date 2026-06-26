@@ -854,6 +854,13 @@ app.post("/api/voice/call", async (req, res) => {
   }
 });
 
+/** Dedicated timeclock kiosk URLs (same SPA; path selects store for punches). */
+["/timeclock", "/timeclock-9th", "/timeclock-8th"].forEach((kioskPath) => {
+  app.get(kioskPath, (_req, res) => {
+    res.sendFile(path.join(__dirname, "index.html"));
+  });
+});
+
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });

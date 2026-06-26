@@ -37,6 +37,7 @@ import {
   formatPunchClock,
 } from './punch';
 import type {
+  EmployeeClockStatus,
   PayWeekBounds,
   RosterRow,
   RosterTotals,
@@ -52,7 +53,7 @@ import {
 } from './breakPolicy';
 import { entryRestaurantId, punchDayRestaurantId, type LocationFilter } from './restaurantAttribution';
 
-export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds };
+export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds, EmployeeClockStatus };
 
 const OT_RATE_MULTIPLIER = 1.5;
 const PAY_ROUND_MINUTES = 15;
@@ -360,6 +361,47 @@ export function isEntryOpen(entry: TimeClockEntry | null | undefined): boolean {
 
 export function isOnBreak(entry: TimeClockEntry | null | undefined): boolean {
   return !!(entry && entry.break_start_at && !entry.break_end_at);
+}
+
+export const CLOCK_STATUS_LABELS: Record<EmployeeClockStatus, string> = {
+  clocked_in: 'Clocked in',
+  on_break: 'On break',
+  off_clock: 'Not on clock',
+};
+
+export const CLOCK_STATUS_RANK: Record<EmployeeClockStatus, number> = {
+  on_break: 0,
+  clocked_in: 1,
+  off_clock: 2,
+};
+
+export function findLatestOpenEntryForEmployee(
+  entries: TimeClockEntry[],
+  empId: string
+): TimeClockEntry | null {
+  let latest: TimeClockEntry | null = null;
+  for (const e of entries) {
+    if (e.employee_id !== empId || !isEntryOpen(e)) continue;
+    if (!latest || String(e.clock_in_at).localeCompare(String(latest.clock_in_at)) > 0) {
+      latest = e;
+    }
+  }
+  return latest;
+}
+
+export function employeeClockStatus(
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext,
+  locationFilter: LocationFilter = 'all'
+): EmployeeClockStatus {
+  const open = findLatestOpenEntryForEmployee(entries, emp.id);
+  if (!open) return 'off_clock';
+  if (locationFilter !== 'all') {
+    const rest = entryRestaurantId(emp, open, entries, scheduleCtx);
+    if (rest !== locationFilter) return 'off_clock';
+  }
+  return isOnBreak(open) ? 'on_break' : 'clocked_in';
 }
 
 export function breakMinutesFromRange(
@@ -736,10 +778,17 @@ export function formatDayBreakLabel(
 export function computeSpreadOfHours(
   emp: EmployeeRow,
   entries: TimeClockEntry[],
-  options?: { locationFilter?: LocationFilter; scheduleCtx?: ScheduleContext }
+  options?: {
+    locationFilter?: LocationFilter;
+    scheduleCtx?: ScheduleContext;
+    bounds?: PayWeekBounds;
+  }
 ) {
   const locationFilter = options?.locationFilter ?? 'all';
   const scheduleCtx = options?.scheduleCtx;
+  const bounds = options?.bounds;
+  const weekStart = bounds ? isoFromDate(bounds.start) : null;
+  const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
   for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
@@ -752,6 +801,7 @@ export function computeSpreadOfHours(
       continue;
     }
     const iso = punchDayIso(e);
+    if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
   }
   const dates: string[] = [];
@@ -812,11 +862,19 @@ function rosterGrandTotalPay(row: {
 export function computeSpreadOfHoursIndexed(
   emp: EmployeeRow,
   empEntries: TimeClockEntry[],
-  options?: { locationFilter?: LocationFilter; scheduleCtx?: ScheduleContext; allEntries?: TimeClockEntry[] }
+  options?: {
+    locationFilter?: LocationFilter;
+    scheduleCtx?: ScheduleContext;
+    allEntries?: TimeClockEntry[];
+    bounds?: PayWeekBounds;
+  }
 ) {
   const locationFilter = options?.locationFilter ?? 'all';
   const scheduleCtx = options?.scheduleCtx;
   const allEntries = options?.allEntries ?? empEntries;
+  const bounds = options?.bounds;
+  const weekStart = bounds ? isoFromDate(bounds.start) : null;
+  const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
   for (const e of empEntries) {
     if (!e.clock_in_at || !e.clock_out_at) continue;
@@ -828,6 +886,7 @@ export function computeSpreadOfHoursIndexed(
       continue;
     }
     const iso = punchDayIso(e);
+    if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
   }
   const dates: string[] = [];
@@ -937,6 +996,7 @@ export function buildRosterRowSync(
     locationFilter,
     scheduleCtx,
     allEntries: entries,
+    bounds,
   });
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
@@ -949,6 +1009,7 @@ export function buildRosterRowSync(
       })
     : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
+  const clockStatus = employeeClockStatus(emp, entries, scheduleCtx, locationFilter);
   const partial = {
     regPay: pay.regPay,
     otPay: pay.otPay,
@@ -985,6 +1046,9 @@ export function buildRosterRowSync(
     dishwasherTipsPay,
     status,
     statusRank: statusSortRank(status),
+    clockStatus,
+    clockStatusLabel: CLOCK_STATUS_LABELS[clockStatus],
+    clockStatusRank: CLOCK_STATUS_RANK[clockStatus],
   };
 }
 
@@ -1163,7 +1227,7 @@ export async function buildRosterRow(
   }
 
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
-  const soh = computeSpreadOfHours(emp, entries);
+  const soh = computeSpreadOfHours(emp, entries, { bounds });
   const vlPay = leavePayFromHours(emp, extras.vl);
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
@@ -1174,6 +1238,7 @@ export async function buildRosterRow(
       })
     : 0;
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
+  const clockStatus = employeeClockStatus(emp, entries, scheduleCtx, 'all');
   const partial = {
     regPay: pay.regPay,
     otPay: pay.otPay,
@@ -1210,6 +1275,9 @@ export async function buildRosterRow(
     dishwasherTipsPay,
     status,
     statusRank: statusSortRank(status),
+    clockStatus,
+    clockStatusLabel: CLOCK_STATUS_LABELS[clockStatus],
+    clockStatusRank: CLOCK_STATUS_RANK[clockStatus],
   };
 }
 

@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { hydrateFromSupabase, type HydrationResult } from '../lib/hydrate';
+import type { AssignmentStore } from '../lib/schedule/types';
 import { subscribeEmployees } from '../lib/employeesSync';
 import { subscribeStaffRequests } from '../lib/staffRequestsSync';
 import { subscribeTeamState } from '../lib/teamStateSync';
@@ -21,6 +22,8 @@ type AppDataState = HydrationResult & {
   loading: boolean;
   error: string | null;
   refetch: (opts?: { silent?: boolean }) => Promise<void>;
+  /** Optimistic schedule assignment patch for timecards before cloud refetch completes. */
+  applyLocalScheduleAssignments: (assignments: AssignmentStore) => void;
   /** Logged-in employee roster row (by auth link or display name). */
   myEmployee: EmployeeRow | null;
 };
@@ -118,6 +121,17 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     await runRefetch({ showLoading: !opts?.silent });
   }, [runRefetch]);
 
+  const applyLocalScheduleAssignments = useCallback((assignments: AssignmentStore) => {
+    setTeamState((prev: HydrationResult['teamState']) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        schedule_assignments: JSON.parse(JSON.stringify(assignments)),
+        updated_at: new Date().toISOString(),
+      };
+    });
+  }, []);
+
   const scheduleSilentRefetch = useCallback(() => {
     if (silentRefetchTimerRef.current) clearTimeout(silentRefetchTimerRef.current);
     silentRefetchTimerRef.current = setTimeout(() => {
@@ -194,9 +208,10 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       loading,
       error,
       refetch,
+      applyLocalScheduleAssignments,
       myEmployee,
     }),
-    [employees, staffRequests, teamState, loading, error, refetch, myEmployee]
+    [employees, staffRequests, teamState, loading, error, refetch, applyLocalScheduleAssignments, myEmployee]
   );
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;

@@ -112,6 +112,83 @@
     return id === 'rp-8' || id === 'rp-9' ? id : null;
   }
 
+  var RESTAURANT_LABELS = {
+    'rp-9': '9th Ave',
+    'rp-8': '8th Ave',
+  };
+
+  var TIMECLOCK_RESTAURANT_KEY = 'gm-callout-timeclock-restaurant';
+
+  function storedRestaurantId() {
+    try {
+      return normalizeRestaurantId(sessionStorage.getItem(TIMECLOCK_RESTAURANT_KEY));
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function setStoredRestaurantId(id) {
+    var norm = normalizeRestaurantId(id);
+    if (!norm) return;
+    try {
+      sessionStorage.setItem(TIMECLOCK_RESTAURANT_KEY, norm);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  /** URL/query path wins; otherwise sessionStorage from tablet sign-in. */
+  function resolveDeviceRestaurantId() {
+    return restaurantFromPagePath() || storedRestaurantId();
+  }
+
+  function normalizePathname(pathname) {
+    return String(pathname || '')
+      .toLowerCase()
+      .replace(/\/+$/, '');
+  }
+
+  /** Kiosk URL path → rp-9 / rp-8 (null when not a dedicated timeclock path). */
+  function restaurantFromPagePath() {
+    var path = normalizePathname(
+      typeof window !== 'undefined' && window.location ? window.location.pathname : ''
+    );
+    if (path === '/timeclock-8th' || path.endsWith('/timeclock-8th')) return 'rp-8';
+    if (
+      path === '/timeclock' ||
+      path === '/timeclock-9th' ||
+      path.endsWith('/timeclock') ||
+      path.endsWith('/timeclock-9th')
+    ) {
+      return 'rp-9';
+    }
+    if (typeof window === 'undefined' || !window.location) return null;
+    var params = new URLSearchParams(window.location.search || '');
+    return (
+      normalizeRestaurantId(params.get('store')) ||
+      normalizeRestaurantId(params.get('location')) ||
+      normalizeRestaurantId(params.get('restaurant'))
+    );
+  }
+
+  function isTimeclockKioskPath() {
+    var path = normalizePathname(
+      typeof window !== 'undefined' && window.location ? window.location.pathname : ''
+    );
+    return (
+      path === '/timeclock' ||
+      path === '/timeclock-9th' ||
+      path === '/timeclock-8th' ||
+      path.endsWith('/timeclock') ||
+      path.endsWith('/timeclock-9th') ||
+      path.endsWith('/timeclock-8th')
+    );
+  }
+
+  function restaurantLabel(restaurantId) {
+    return RESTAURANT_LABELS[restaurantId] || '';
+  }
+
   /**
    * Find a published schedule shift for this employee on punchIso at deviceRestaurantId.
    * Returns null scheduleShiftId when the day is off-schedule (no assignment match).
@@ -172,6 +249,13 @@
     isoFromDate: isoFromDate,
     globalDayIndexForIso: globalDayIndexForIso,
     restaurantFromDeviceLabel: restaurantFromDeviceLabel,
+    restaurantFromPagePath: restaurantFromPagePath,
+    isTimeclockKioskPath: isTimeclockKioskPath,
+    restaurantLabel: restaurantLabel,
+    normalizeRestaurantId: normalizeRestaurantId,
+    storedRestaurantId: storedRestaurantId,
+    setStoredRestaurantId: setStoredRestaurantId,
+    resolveDeviceRestaurantId: resolveDeviceRestaurantId,
     resolvePunchScheduleContext: resolvePunchScheduleContext,
     workerNamesMatch: workerNamesMatch,
   };

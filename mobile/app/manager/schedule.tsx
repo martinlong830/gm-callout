@@ -64,7 +64,7 @@ function toLite(e: EmployeeRow): EmployeeLite {
 export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role } = useAuth();
-  const { employees, teamState, refetch, loading } = useAppData();
+  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
@@ -87,8 +87,8 @@ export default function ManagerScheduleScreen() {
 
   const draftScheduleRaw = teamState?.draft_schedule;
   const draftRows = useMemo(
-    () => loadDraftFromTeamState(draftScheduleRaw, weekIndex),
-    [draftScheduleRaw, weekIndex]
+    () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
+    [draftScheduleRaw, weekIndex, currentRestaurantId]
   );
 
   useEffect(() => {
@@ -166,6 +166,7 @@ export default function ManagerScheduleScreen() {
     if (!next[currentRestaurantId]) next[currentRestaurantId] = {};
     next[currentRestaurantId] = { ...next[currentRestaurantId], [shift.id]: list };
     setAssignmentStore(next);
+    applyLocalScheduleAssignments(next);
     queuePersist(next);
     setPickerShift(null);
   }
@@ -366,9 +367,7 @@ function CalendarCellView({
   if (cell.kind === 'dayoff') {
     return (
       <View style={styles.cellInnerMuted}>
-        <Text style={styles.slotTime} numberOfLines={1} ellipsizeMode="tail">
-          {cell.timeLabel}
-        </Text>
+        <Text style={styles.slotTime}>{cell.timeLabel}</Text>
         <Text style={styles.dayoffLabel}>DAY-OFF</Text>
       </View>
     );
@@ -378,17 +377,11 @@ function CalendarCellView({
   const label = names.length ? names.join(', ') : 'Unassigned';
   return (
     <Pressable style={styles.cellInner} onPress={() => onOpenShift(cell.shift)}>
-      <Text style={styles.slotTime} numberOfLines={1} ellipsizeMode="tail">
-        {cell.timeLabel}
-      </Text>
-      <Text style={styles.slotBreak} numberOfLines={2}>
-        {cell.breakText}
-      </Text>
+      <Text style={styles.slotTime}>{cell.timeLabel}</Text>
+      <Text style={styles.slotBreak}>{cell.breakText}</Text>
       <Text style={styles.slotHours}>{cell.hours}h</Text>
       <View style={[styles.pill, { backgroundColor: rd.bg, borderColor: rd.border }]}>
-        <Text style={[styles.pillText, { color: rd.fg }]} numberOfLines={3}>
-          {label}
-        </Text>
+        <Text style={[styles.pillText, { color: rd.fg }]}>{label}</Text>
       </View>
     </Pressable>
   );

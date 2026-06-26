@@ -311,7 +311,14 @@
         </p>
       </div>
       <div id="timeclockLoginPanel" hidden>
-        <p class="login-subtitle">Time clock device</p>
+        <p class="login-subtitle" id="timeclockLoginSubtitle">Time clock device</p>
+        <div class="login-field timeclock-login-location">
+          <span class="login-label">Location</span>
+          <div class="timeclock-location-toggle" id="timeclockLoginLocationToggle" role="group" aria-label="Store location">
+            <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
+            <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
+          </div>
+        </div>
         <p class="login-hint">
           Sign in with your <strong>device name</strong> and password (no email needed). Staff use their <strong>4-digit PIN</strong> on the next screen.
         </p>
@@ -335,7 +342,14 @@
         </p>
       </div>
       <div id="timeclockRegisterPanel" hidden>
-        <p class="login-subtitle">Register time clock device</p>
+        <p class="login-subtitle" id="timeclockRegisterSubtitle">Register time clock device</p>
+        <div class="login-field timeclock-login-location">
+          <span class="login-label">Location</span>
+          <div class="timeclock-location-toggle" id="timeclockRegisterLocationToggle" role="group" aria-label="Store location">
+            <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
+            <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
+          </div>
+        </div>
         <p class="login-hint">
           Enter the access code from your manager, then a device name and password. No email required.
         </p>
@@ -996,6 +1010,7 @@
       <header class="header">
         <img class="header-logo" src="assets/red-poke-logo.png" alt="red poke" width="64" height="64" decoding="async" />
         <h1 class="title">Time Clock</h1>
+        <p class="timeclock-location-label" id="timeclockLocationLabel" hidden></p>
         <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
       </header>
     </div>

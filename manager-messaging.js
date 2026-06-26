@@ -15,12 +15,27 @@
     return document.getElementById(id);
   }
 
+  /** Pre-May 2026 demo seed thread (id `jamie`, swap-offer message). */
+  function isLegacyJamieDemoThread(t) {
+    if (!t) return false;
+    if (String(t.id || '').trim().toLowerCase() === 'jamie') return true;
+    if (/^jamie\s+li$/i.test(String(t.peerName || '').trim())) return true;
+    var msgs = t.messages;
+    if (!Array.isArray(msgs)) return false;
+    for (var ji = 0; ji < msgs.length; ji++) {
+      if (/want to trade a lunch shift/i.test(String((msgs[ji] && msgs[ji].body) || ''))) return true;
+    }
+    return false;
+  }
+
   /** Strip legacy prompt threads (peer "New message" / "ok" artifacts). */
   function sanitizeChatStoreThreads(o) {
     if (!o || typeof o !== 'object' || o.version !== 1 || !Array.isArray(o.threads)) return o;
     var re = /^new\s*message$/i;
     var threads = o.threads.filter(function (t) {
-      return !re.test(String((t && t.peerName) || '').trim());
+      return (
+        !re.test(String((t && t.peerName) || '').trim()) && !isLegacyJamieDemoThread(t)
+      );
     });
     var active = o.activeThreadId;
     if (active && !threads.some(function (t) {
@@ -59,9 +74,11 @@
     };
   }
 
-  function saveChatStore(store) {
+  function saveChatStore(storeIn) {
+    var cleaned = sanitizeChatStoreThreads(storeIn);
+    store = cleaned;
     try {
-      localStorage.setItem(CHAT_KEY, JSON.stringify(store));
+      localStorage.setItem(CHAT_KEY, JSON.stringify(cleaned));
     } catch (e1) {
       /* ignore */
     }
@@ -70,7 +87,7 @@
       window.gmSupabaseEnabled &&
       typeof window.gmCalloutQueueEmployeeChatCloudSave === 'function'
     ) {
-      window.gmCalloutQueueEmployeeChatCloudSave(store);
+      window.gmCalloutQueueEmployeeChatCloudSave(cleaned);
     }
   }
 

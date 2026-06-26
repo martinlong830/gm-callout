@@ -29,6 +29,7 @@ import {
   isOffScheduleShiftDayRow,
   offScheduleShiftIdForIso,
 } from '../../../lib/timecards/offScheduleShift';
+import { applyCrossRestaurantPunchSideEffects } from '../../../lib/timecards/crossRestaurantPunch';
 import { removeShiftDay } from '../../../lib/timecards/shiftDayCleanup';
 import { isDeliveryDishwasherStaff, loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
 import { getEmployeeDayLeaveSync, loadWeekExtrasSlice } from '../../../lib/timecards/weekExtras';
@@ -82,6 +83,15 @@ export default function TimecardsEmployeeScreen() {
       void loadShiftListData();
     }, [loadShiftListData])
   );
+
+  useEffect(() => {
+    if (!entries.length || !employees.length) return;
+    let changed = false;
+    applyCrossRestaurantPunchSideEffects(entries, employees, () => {
+      changed = true;
+    });
+    if (changed) setListVersion((v) => v + 1);
+  }, [entries, employees]);
 
   const addedDayIsos = useMemo(
     () => (emp ? getAddedOffScheduleDays(emp.id) : []),

@@ -33,11 +33,16 @@ export type ShiftDayRow = {
   isUpcoming: boolean;
 };
 
+export type EmployeeClockStatus = 'clocked_in' | 'on_break' | 'off_clock';
+
 export type RosterRow = {
   empId: string;
   name: string;
   role: string;
   deptRank: number;
+  clockStatus: EmployeeClockStatus;
+  clockStatusLabel: string;
+  clockStatusRank: number;
   schedMins: number;
   regMins: number;
   otMins: number;

@@ -30,13 +30,98 @@
   function showTimeclockLoginPanel() {
     hideAllLoginPanels();
     if (timeclockLoginPanel) timeclockLoginPanel.hidden = false;
-    if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+    syncTimeclockLocationUi();
+  }
+
+  function scheduleMatchApi() {
+    return window.gmTimeclockScheduleMatch || null;
+  }
+
+  function selectedTimeclockRestaurantId() {
+    var activeBtn = document.querySelector('.timeclock-location-btn--active');
+    var api = scheduleMatchApi();
+    if (activeBtn && activeBtn.getAttribute('data-tc-location')) {
+      return api && typeof api.normalizeRestaurantId === 'function'
+        ? api.normalizeRestaurantId(activeBtn.getAttribute('data-tc-location'))
+        : activeBtn.getAttribute('data-tc-location');
+    }
+    if (api && typeof api.resolveDeviceRestaurantId === 'function') {
+      return api.resolveDeviceRestaurantId() || 'rp-9';
+    }
+    return 'rp-9';
+  }
+
+  function applyTimeclockLocationSelection(restaurantId, locked) {
+    var api = scheduleMatchApi();
+    var norm =
+      api && typeof api.normalizeRestaurantId === 'function'
+        ? api.normalizeRestaurantId(restaurantId)
+        : restaurantId === 'rp-8'
+          ? 'rp-8'
+          : 'rp-9';
+    document.querySelectorAll('.timeclock-location-toggle').forEach(function (toggle) {
+      toggle.classList.toggle('timeclock-location-toggle--locked', !!locked);
+      toggle.querySelectorAll('.timeclock-location-btn').forEach(function (btn) {
+        var isActive = btn.getAttribute('data-tc-location') === norm;
+        btn.classList.toggle('timeclock-location-btn--active', isActive);
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        btn.disabled = !!locked;
+      });
+    });
+    if (api && typeof api.setStoredRestaurantId === 'function') {
+      api.setStoredRestaurantId(norm);
+    }
+    syncTimeclockLocationCopy(norm);
+  }
+
+  function syncTimeclockLocationCopy(restaurantId) {
+    var api = scheduleMatchApi();
+    var id = restaurantId || selectedTimeclockRestaurantId();
+    var label =
+      api && typeof api.restaurantLabel === 'function' && id ? api.restaurantLabel(id) : '';
+    var subtitleEl = document.getElementById('timeclockLoginSubtitle');
+    if (subtitleEl) {
+      subtitleEl.textContent = label ? 'Time clock — ' + label : 'Time clock device';
+    }
+    var regSubtitleEl = document.getElementById('timeclockRegisterSubtitle');
+    if (regSubtitleEl) {
+      regSubtitleEl.textContent = label
+        ? 'Register time clock device (' + label + ')'
+        : 'Register time clock device';
+    }
+  }
+
+  function syncTimeclockLocationUi() {
+    var api = scheduleMatchApi();
+    var fromPath =
+      api && typeof api.restaurantFromPagePath === 'function' ? api.restaurantFromPagePath() : null;
+    var initial =
+      fromPath ||
+      (api && typeof api.resolveDeviceRestaurantId === 'function'
+        ? api.resolveDeviceRestaurantId()
+        : null) ||
+      'rp-9';
+    applyTimeclockLocationSelection(initial, !!fromPath);
   }
 
   function showTimeclockRegisterPanel() {
     hideAllLoginPanels();
     if (timeclockRegisterPanel) timeclockRegisterPanel.hidden = false;
-    if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+    syncTimeclockLocationUi();
+  }
+
+  function bindTimeclockLocationToggles() {
+    document.querySelectorAll('.timeclock-location-toggle').forEach(function (toggle) {
+      toggle.addEventListener('click', function (e) {
+        var btn = e.target.closest('.timeclock-location-btn');
+        if (!btn || btn.disabled || toggle.classList.contains('timeclock-location-toggle--locked')) {
+          return;
+        }
+        var id = btn.getAttribute('data-tc-location');
+        if (!id) return;
+        applyTimeclockLocationSelection(id, false);
+      });
+    });
   }
 
   function showTcLoginError(msg, variant) {
@@ -65,6 +150,7 @@
   }
 
   async function finishTimeclockSignIn() {
+    applyTimeclockLocationSelection(selectedTimeclockRestaurantId(), false);
     try {
       sessionStorage.setItem(SESSION_KEY, 'timeclock');
     } catch (_e) {
@@ -82,6 +168,7 @@
 
   var showTcLoginBtn = document.getElementById('showTimeclockLoginPanelBtn');
   if (showTcLoginBtn) showTcLoginBtn.addEventListener('click', showTimeclockLoginPanel);
+  bindTimeclockLocationToggles();
   var showTcRegBtn = document.getElementById('showTimeclockRegisterPanelBtn');
   if (showTcRegBtn) showTcRegBtn.addEventListener('click', showTimeclockRegisterPanel);
   var backFromTc = document.getElementById('showLoginFromTimeclockPanelBtn');
@@ -225,5 +312,18 @@
     } catch (_ex) {
       /* ignore */
     }
+  })();
+
+  (function openTimeclockLoginOnKioskPath() {
+    var api = window.gmTimeclockScheduleMatch;
+    if (!api || typeof api.isTimeclockKioskPath !== 'function' || !api.isTimeclockKioskPath()) {
+      return;
+    }
+    try {
+      if (sessionStorage.getItem(SESSION_KEY) === 'timeclock') return;
+    } catch (_e) {
+      /* ignore */
+    }
+    showTimeclockLoginPanel();
   })();
 })();

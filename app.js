@@ -289,40 +289,92 @@
     return wi;
   }
 
-  function getDraftScheduleRowsForWeek(weekIndex) {
+  function resolveDraftRestaurantId(restaurantId) {
+    var rid = restaurantId;
+    if (
+      rid &&
+      restaurantsList.some(function (r) {
+        return r.id === rid;
+      })
+    ) {
+      return rid;
+    }
+    return restaurantsList.length ? restaurantsList[0].id : 'rp-9';
+  }
+
+  function draftScheduleWeekEntryIsPerRestaurant(weekEntry) {
+    if (!weekEntry || typeof weekEntry !== 'object') return false;
+    if (draftScheduleJsonHasLayers(weekEntry)) return false;
+    return restaurantsList.some(function (r) {
+      return weekEntry[r.id] && draftScheduleJsonHasLayers(weekEntry[r.id]);
+    });
+  }
+
+  function draftLayersFromWeekEntry(weekEntry, restaurantId) {
+    if (!weekEntry || typeof weekEntry !== 'object') return null;
+    if (draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
+      var rid = resolveDraftRestaurantId(restaurantId);
+      var perRest = weekEntry[rid];
+      if (perRest && draftScheduleJsonHasLayers(perRest)) {
+        return sanitizeDraftScheduleLayers(perRest);
+      }
+      return null;
+    }
+    if (draftScheduleJsonHasLayers(weekEntry)) {
+      return sanitizeDraftScheduleLayers(weekEntry);
+    }
+    return null;
+  }
+
+  function getDraftScheduleRowsForWeek(weekIndex, restaurantId) {
     var wi = resolveDraftWeekIndex(weekIndex);
     var saved = draftScheduleByWeekStore[String(wi)];
-    if (saved && draftScheduleJsonHasLayers(saved)) {
-      return sanitizeDraftScheduleLayers(saved);
-    }
+    var layers = draftLayersFromWeekEntry(saved, restaurantId);
+    if (layers) return layers;
     if (wi !== SCHEDULE_TEMPLATE_WEEK_INDEX) {
       var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
-      if (tplSaved && draftScheduleJsonHasLayers(tplSaved)) {
-        return sanitizeDraftScheduleLayers(tplSaved);
-      }
+      layers = draftLayersFromWeekEntry(tplSaved, restaurantId);
+      if (layers) return layers;
     }
     return cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   }
 
-  function saveDraftScheduleRowsForWeek(weekIndex, nextRows) {
+  function saveDraftScheduleRowsForWeek(weekIndex, nextRows, restaurantId) {
     var wi = resolveDraftWeekIndex(weekIndex);
-    draftScheduleByWeekStore[String(wi)] = sanitizeDraftScheduleLayers(nextRows);
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var weekKey = String(wi);
+    var sanitized = sanitizeDraftScheduleLayers(nextRows);
+    var weekEntry = draftScheduleByWeekStore[weekKey];
+    if (!draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
+      var shared =
+        weekEntry && draftScheduleJsonHasLayers(weekEntry)
+          ? sanitizeDraftScheduleLayers(weekEntry)
+          : cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+      var perRest = {};
+      restaurantsList.forEach(function (r) {
+        perRest[r.id] = cloneDraftSchedule(shared);
+      });
+      draftScheduleByWeekStore[weekKey] = perRest;
+      weekEntry = perRest;
+    }
+    weekEntry[rid] = sanitized;
     try {
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
     } catch (eDraftSave) {
       /* ignore */
     }
   }
 
-  function getDraftRowsForRole(role, weekIndex) {
-    var rows = getDraftScheduleRowsForWeek(weekIndex);
+  function getDraftRowsForRole(role, weekIndex, restaurantId) {
+    var rows = getDraftScheduleRowsForWeek(weekIndex, restaurantId);
     var r = rows[role];
     if (!r || !r.length) return DEFAULT_DRAFT_SCHEDULE_ROWS[role] || [];
     return r;
   }
 
-  function draftTimeSlotFor(role, weekdayKey, trIdx, weekIndex) {
-    var rows = getDraftRowsForRole(role, weekIndex);
+  function draftTimeSlotFor(role, weekdayKey, trIdx, weekIndex, restaurantId) {
+    var rows = getDraftRowsForRole(role, weekIndex, restaurantId);
     if (!rows || !rows[trIdx]) return null;
     var di = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(weekdayKey);
     if (di < 0) return null;
@@ -331,8 +383,8 @@
     return makeTimeSlot(cell[0], cell[1]);
   }
 
-  function slotCountForRole(role, weekIndex) {
-    return getDraftRowsForRole(role, weekIndex).length;
+  function slotCountForRole(role, weekIndex, restaurantId) {
+    return getDraftRowsForRole(role, weekIndex, restaurantId).length;
   }
 
   function buildAvailabilitySlotRangesUnion() {
@@ -340,14 +392,16 @@
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var dows = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     for (var w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
-      dows.forEach(function (wk) {
-        roles.forEach(function (role) {
-          var n = slotCountForRole(role, w);
-          for (var i = 0; i < n; i += 1) {
-            var tr = draftTimeSlotFor(role, wk, i, w);
-            if (!tr) continue;
-            if (!u[tr.slotKey]) u[tr.slotKey] = tr;
-          }
+      restaurantsList.forEach(function (rest) {
+        dows.forEach(function (wk) {
+          roles.forEach(function (role) {
+            var n = slotCountForRole(role, w, rest.id);
+            for (var i = 0; i < n; i += 1) {
+              var tr = draftTimeSlotFor(role, wk, i, w, rest.id);
+              if (!tr) continue;
+              if (!u[tr.slotKey]) u[tr.slotKey] = tr;
+            }
+          });
         });
       });
     }
@@ -361,7 +415,7 @@
     return out;
   }
 
-  var AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+  var AVAILABILITY_SLOT_RANGES;
 
   const STAFF_TYPE_LABELS = {
     Kitchen: 'Back of the House',
@@ -489,6 +543,7 @@
 
   let restaurantsList = loadRestaurants();
   saveRestaurantsList();
+  AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
 
   let currentRestaurantId = restaurantsList.length ? restaurantsList[0].id : 'rp-9';
   /** Shift slot screen: restaurant id or 'all'. */
@@ -1269,12 +1324,51 @@
 
   function notifyTimecardsEmployeesChanged() {
     if (!window.gmCalloutTimecards) return;
+    if (typeof window.gmCalloutTimecards.rebuildRosterCacheRows === 'function') {
+      window.gmCalloutTimecards.rebuildRosterCacheRows();
+    }
     var refreshed =
       typeof window.gmCalloutTimecards.refreshRosterFromEmployees === 'function' &&
       window.gmCalloutTimecards.refreshRosterFromEmployees();
     if (refreshed) return;
     if (currentScreen === 10 && typeof window.gmCalloutTimecards.renderRoster === 'function') {
       window.gmCalloutTimecards.renderRoster();
+    }
+  }
+
+  /** Clock-in at another store: widen team location to both so timecards can show the day. */
+  function expandEmployeeRestaurantForPunch(employeeId, restaurantId) {
+    if (!employeeId || !restaurantId) return false;
+    if (restaurantId !== 'rp-8' && restaurantId !== 'rp-9') return false;
+    var emp = employees.find(function (e) {
+      return e.id === employeeId;
+    });
+    if (!emp) return false;
+    var home = emp.usualRestaurant || 'rp-9';
+    if (home === 'both' || home === restaurantId) return false;
+    emp.usualRestaurant = 'both';
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+    } catch (_locExpand) {
+      /* ignore */
+    }
+    void saveEmployees({ singleEmployee: emp, awaitCloud: true }).then(function (res) {
+      if (res && res.ok) applySavedEmployeeRecord(emp);
+    });
+    notifyTimecardsEmployeesChanged();
+    return true;
+  }
+
+  window.gmCalloutExpandEmployeeRestaurantForPunch = expandEmployeeRestaurantForPunch;
+
+  function notifyTimecardsScheduleChanged() {
+    if (!window.gmCalloutTimecards) return;
+    if (typeof window.gmCalloutTimecards.onScheduleChanged === 'function') {
+      window.gmCalloutTimecards.onScheduleChanged();
+      return;
+    }
+    if (typeof window.gmCalloutTimecards.invalidateScheduleCache === 'function') {
+      window.gmCalloutTimecards.invalidateScheduleCache();
     }
   }
 
@@ -1336,6 +1430,8 @@
   }
 
   var teamStateSyncTimer = null;
+  /** True while local draft schedule edits are not yet confirmed on Supabase. */
+  var draftScheduleDirty = false;
   var tipPayrollPushTimer = null;
   var teamStateRemoteRefreshTimer = null;
   var teamStateRealtimeChannel = null;
@@ -1351,12 +1447,27 @@
     return !!(o && typeof o === 'object' && o.version === 1 && Array.isArray(o.threads));
   }
 
+  /** Pre-May 2026 demo seed thread (id `jamie`, swap-offer message). */
+  function isLegacyJamieDemoThread(t) {
+    if (!t) return false;
+    if (String(t.id || '').trim().toLowerCase() === 'jamie') return true;
+    if (/^jamie\s+li$/i.test(String((t && t.peerName) || '').trim())) return true;
+    var msgs = t.messages;
+    if (!Array.isArray(msgs)) return false;
+    for (var ji = 0; ji < msgs.length; ji++) {
+      if (/want to trade a lunch shift/i.test(String((msgs[ji] && msgs[ji].body) || ''))) return true;
+    }
+    return false;
+  }
+
   /** Remove legacy "New message" threads from stored chat (old prompt UI). */
   function sanitizeEmployeeChatPayload(payload) {
     if (!isValidEmployeeChatPayload(payload)) return payload;
     var re = /^new\s*message$/i;
     var threads = payload.threads.filter(function (t) {
-      return !re.test(String((t && t.peerName) || '').trim());
+      return (
+        !re.test(String((t && t.peerName) || '').trim()) && !isLegacyJamieDemoThread(t)
+      );
     });
     var active = payload.activeThreadId;
     if (active && !threads.some(function (t) {
@@ -1370,6 +1481,7 @@
   function queueEmployeeChatCloudSave(store) {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (!isValidEmployeeChatPayload(store)) return;
+    store = sanitizeEmployeeChatPayload(store);
     if (employeeChatCloudTimer) clearTimeout(employeeChatCloudTimer);
     employeeChatCloudTimer = setTimeout(function () {
       employeeChatCloudTimer = null;
@@ -1380,6 +1492,7 @@
   async function pushEmployeeChatStoreToSupabase(store) {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (!isValidEmployeeChatPayload(store)) return;
+    store = sanitizeEmployeeChatPayload(store);
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return;
@@ -1829,11 +1942,21 @@
               function (payload) {
                 if (!payload || !payload.new || !payload.new.payload) return;
                 if (!isValidEmployeeChatPayload(payload.new.payload)) return;
-                var store = sanitizeEmployeeChatPayload(payload.new.payload);
+                var raw = payload.new.payload;
+                var store = sanitizeEmployeeChatPayload(raw);
                 try {
                   localStorage.setItem(chatKey, JSON.stringify(store));
                 } catch (_ecRt) {
                   /* ignore */
+                }
+                if (
+                  store.threads.length !== raw.threads.length ||
+                  store.activeThreadId !== raw.activeThreadId
+                ) {
+                  void sb.from('employee_chat_store').upsert(
+                    { user_id: uid, payload: store },
+                    { onConflict: 'user_id' }
+                  );
                 }
                 if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
                   window.gmCalloutManagerMessagesRefreshUi();
@@ -1863,6 +1986,10 @@
     });
   }
 
+  function draftScheduleWeekHasLayers(weekEntry) {
+    return draftScheduleJsonHasLayers(weekEntry) || draftScheduleWeekEntryIsPerRestaurant(weekEntry);
+  }
+
   function scheduleTeamStateDebouncedSync() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (teamStateSyncTimer) clearTimeout(teamStateSyncTimer);
@@ -1870,6 +1997,15 @@
       teamStateSyncTimer = null;
       pushTeamStateToSupabase();
     }, 700);
+  }
+
+  function flushTeamStateSyncNow() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (teamStateSyncTimer) {
+      clearTimeout(teamStateSyncTimer);
+      teamStateSyncTimer = null;
+    }
+    void pushTeamStateToSupabase();
   }
 
   async function pushTeamStateToSupabase() {
@@ -1919,6 +2055,7 @@
     };
     var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' });
     if (res.error) console.warn('gm-callout: team_state upsert', res.error);
+    else draftScheduleDirty = false;
   }
 
   function applyTeamStateRowFromRemote(row, ctx) {
@@ -1938,7 +2075,13 @@
           restaurantsList.forEach(function (r) {
             if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
             if (!mergedSched[r.id]) mergedSched[r.id] = {};
-            if (replicateWeekZeroToFutureWeeksInStore(mergedSched[r.id], SCHEDULE_VIEW_WEEK_COUNT)) {
+            if (
+              replicateWeekZeroToFutureWeeksInStore(
+                mergedSched[r.id],
+                SCHEDULE_VIEW_WEEK_COUNT,
+                r.id
+              )
+            ) {
               schedChanged = true;
             }
           });
@@ -1973,7 +2116,13 @@
     }
 
     var dr = row.draft_schedule;
-    if (dr && typeof dr === 'object' && dr.byWeek && typeof dr.byWeek === 'object') {
+    if (
+      !draftScheduleDirty &&
+      dr &&
+      typeof dr === 'object' &&
+      dr.byWeek &&
+      typeof dr.byWeek === 'object'
+    ) {
       try {
         draftScheduleByWeekStore = dr.byWeek;
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(dr.byWeek));
@@ -1983,7 +2132,7 @@
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
       syncAllAssignmentTimesFromDraft();
       clearScheduleUndoStack();
-    } else if (draftScheduleJsonHasLayers(dr)) {
+    } else if (!draftScheduleDirty && draftScheduleJsonHasLayers(dr)) {
       try {
         var migratedRemote = {};
         var remoteLayers = sanitizeDraftScheduleLayers(dr);
@@ -1999,7 +2148,7 @@
       syncAllAssignmentTimesFromDraft();
       clearScheduleUndoStack();
     } else if (isMgr && Object.keys(draftScheduleByWeekStore).some(function (wk) {
-      return draftScheduleJsonHasLayers(draftScheduleByWeekStore[wk]);
+      return draftScheduleWeekHasLayers(draftScheduleByWeekStore[wk]);
     })) {
       scheduleTeamStateDebouncedSync();
     }
@@ -2067,6 +2216,7 @@
     if (typeof updateRestaurantSwitcherUI === 'function') updateRestaurantSwitcherUI();
     if (typeof renderHistory === 'function') renderHistory();
     if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
+    notifyTimecardsScheduleChanged();
   }
 
   function loadEmployeeSubmittedRequestsArray() {
@@ -3009,9 +3159,9 @@
       /* Auto-fill only: one person per slot (no multi-staff slots in default data) and at most one shift per person per day. Managers may add more people per shift or double-book days via edit / drag / saves. */
       var usedToday = Object.create(null);
       ROLE_DEFS.forEach(function (rd, roleIdx) {
-        var n = slotCountForRole(rd.role, weekIdx);
+        var n = slotCountForRole(rd.role, weekIdx, currentRestaurantId);
         for (var trIdx = 0; trIdx < n; trIdx += 1) {
-          var tr = draftTimeSlotFor(rd.role, wk, trIdx, weekIdx);
+          var tr = draftTimeSlotFor(rd.role, wk, trIdx, weekIdx, currentRestaurantId);
           if (!tr) continue;
           const seed = hashString(
             'shift|' +
@@ -3178,6 +3328,7 @@
       /* ignore */
     }
     scheduleTeamStateDebouncedSync();
+    notifyTimecardsScheduleChanged();
   }
 
   function loadScheduleTemplates() {
@@ -3217,9 +3368,10 @@
   }
 
   /** Keep assignment timeLabel/hours aligned with Shift Times draft grid (Mon–Sun pattern per slot). */
-  function syncAssignmentTimesFromDraftInStore(restAssignments, weekIndex) {
+  function syncAssignmentTimesFromDraftInStore(restAssignments, weekIndex, restaurantId) {
     if (!restAssignments || typeof restAssignments !== 'object') return false;
     var wi = resolveDraftWeekIndex(weekIndex);
+    var rid = resolveDraftRestaurantId(restaurantId);
     var weekStart = wi * 7;
     var weekEnd = weekStart + 7;
     var changed = false;
@@ -3232,7 +3384,7 @@
       var dayStr = ALL_WEEK_DAYS[p.globalDayIdx];
       if (!dayStr) return;
       var wk = weekdayKeyFromScheduleDay(dayStr);
-      var tr = draftTimeSlotFor(rd.role, wk, p.trIdx, wi);
+      var tr = draftTimeSlotFor(rd.role, wk, p.trIdx, wi, rid);
       var raw = restAssignments[shiftId];
       var entry = normalizeScheduleAssignment(raw);
       if (!tr) {
@@ -3263,12 +3415,17 @@
     return changed;
   }
 
-  function syncAssignmentTimesFromDraftForWeek(weekIndex) {
+  function syncAssignmentTimesFromDraftForWeek(weekIndex, restaurantId) {
     var store = loadScheduleAssignmentsStore();
     var any = false;
-    restaurantsList.forEach(function (r) {
+    var targets = restaurantId
+      ? restaurantsList.filter(function (r) {
+          return r.id === restaurantId;
+        })
+      : restaurantsList;
+    targets.forEach(function (r) {
       if (!store[r.id]) store[r.id] = {};
-      if (syncAssignmentTimesFromDraftInStore(store[r.id], weekIndex)) any = true;
+      if (syncAssignmentTimesFromDraftInStore(store[r.id], weekIndex, r.id)) any = true;
     });
     if (any) saveScheduleAssignmentsStore(store);
     return any;
@@ -3298,7 +3455,7 @@
           return;
         }
         var shiftWeekIdx = Math.floor(p.globalDayIdx / 7);
-        var maxTr = slotCountForRole(rd.role, shiftWeekIdx);
+        var maxTr = slotCountForRole(rd.role, shiftWeekIdx, rid);
         if (p.trIdx >= maxTr) {
           delete rs[shiftId];
           changed = true;
@@ -3308,18 +3465,21 @@
     if (changed) saveScheduleAssignmentsStore(store);
   }
 
-  function persistDraftScheduleRows(nextRows, weekIndex) {
-    var wi = resolveDraftWeekIndex(weekIndex != null ? weekIndex : scheduleCalendarWeekIndex);
+  function persistDraftScheduleRows(nextRows, weekIndex, restaurantId) {
+    var wi = resolveDraftWeekIndex(weekIndex != null ? weekIndex : draftModalWeekIndex);
+    var rid = resolveDraftRestaurantId(restaurantId != null ? restaurantId : draftModalRestaurantId);
     pushScheduleUndoSnapshot();
-    saveDraftScheduleRowsForWeek(wi, nextRows);
+    saveDraftScheduleRowsForWeek(wi, nextRows, rid);
     scheduleTeamStateDebouncedSync();
+    flushTeamStateSyncNow();
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    syncAssignmentTimesFromDraftForWeek(wi);
+    syncAssignmentTimesFromDraftForWeek(wi, rid);
     pruneScheduleAssignmentsInvalidSlots();
     rebuildEmployeeDerivedData();
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
+    notifyTimecardsScheduleChanged();
   }
 
   var SCHEDULE_UNDO_MAX = 40;
@@ -3367,6 +3527,7 @@
       if (snap.draftByWeek && typeof snap.draftByWeek === 'object') {
         draftScheduleByWeekStore = cloneDraftSchedule(snap.draftByWeek);
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+        if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
       } else if (snap.draft && draftScheduleJsonHasLayers(snap.draft)) {
         var legacyUndo = {};
         var legacyLayers = sanitizeDraftScheduleLayers(snap.draft);
@@ -3375,6 +3536,7 @@
         }
         draftScheduleByWeekStore = legacyUndo;
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(legacyUndo));
+        if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
       }
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
       syncAllAssignmentTimesFromDraft();
@@ -3384,10 +3546,12 @@
       renderCalendar();
       if (scheduleBody) renderSchedule();
       scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
     } finally {
       scheduleUndoSuppressPush = false;
     }
     updateScheduleUndoButtons();
+    notifyTimecardsScheduleChanged();
   }
 
   function undoScheduleChange() {
@@ -3395,7 +3559,9 @@
     var prev = scheduleUndoStack.pop();
     restoreScheduleUndoSnapshot(prev);
     if (typeof draftScheduleModal !== 'undefined' && draftScheduleModal && !draftScheduleModal.hidden) {
-      draftModalScratch = cloneDraftSchedule(getDraftScheduleRowsForWeek(draftModalWeekIndex));
+      draftModalScratch = cloneDraftSchedule(
+        getDraftScheduleRowsForWeek(draftModalWeekIndex, draftModalRestaurantId)
+      );
       if (typeof renderDraftScheduleTable === 'function') renderDraftScheduleTable();
     }
     if (typeof showScheduleNotice === 'function') {
@@ -3429,7 +3595,11 @@
     var targetStart = scheduleCalendarWeekIndex * 7;
     for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
       for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
-        var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role, scheduleCalendarWeekIndex);
+        var slotCount = slotCountForRole(
+          ROLE_DEFS[roleIdx].role,
+          scheduleCalendarWeekIndex,
+          currentRestaurantId
+        );
         for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
           var k = dayInWeek + '-' + roleIdx + '-' + trIdx;
           if (weekPattern[k] == null) continue;
@@ -3756,7 +3926,7 @@
     return changed;
   }
 
-  function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount) {
+  function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount, restaurantId) {
     weekCount = weekCount || SCHEDULE_VIEW_WEEK_COUNT;
     if (!restAssignments || typeof restAssignments !== 'object') return false;
     var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
@@ -3774,7 +3944,7 @@
       var weekStart = w * 7;
       for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
         for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
-          var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role, tpl);
+          var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role, tpl, restaurantId);
           for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
             var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
             var targetId = 'shift-' + (weekStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
@@ -3794,7 +3964,7 @@
     restaurantsList.forEach(function (r) {
       if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
       if (!store[r.id]) store[r.id] = {};
-      if (replicateWeekZeroToFutureWeeksInStore(store[r.id], weekCount)) any = true;
+      if (replicateWeekZeroToFutureWeeksInStore(store[r.id], weekCount, r.id)) any = true;
     });
     if (any) saveScheduleAssignmentsStore(store);
     return any;
@@ -3824,9 +3994,6 @@
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
-    if (window.gmCalloutTimecards && window.gmCalloutTimecards.invalidateScheduleCache) {
-      window.gmCalloutTimecards.invalidateScheduleCache();
-    }
     scheduleTeamStateDebouncedSync();
   }
 
@@ -4760,6 +4927,7 @@
   var draftModalScratch = null;
   var draftModalActiveRole = 'Bartender';
   var draftModalWeekIndex = SCHEDULE_TEMPLATE_WEEK_INDEX;
+  var draftModalRestaurantId = restaurantsList.length ? restaurantsList[0].id : 'rp-9';
 
   function closeDraftScheduleModal() {
     if (!draftScheduleModal) return;
@@ -4941,11 +5109,18 @@
       scheduleAddLocationModal.setAttribute('aria-hidden', 'true');
     }
     draftModalWeekIndex = scheduleCalendarWeekIndex;
-    draftModalScratch = cloneDraftSchedule(getDraftScheduleRowsForWeek(draftModalWeekIndex));
+    draftModalRestaurantId = currentRestaurantId;
+    draftModalScratch = cloneDraftSchedule(
+      getDraftScheduleRowsForWeek(draftModalWeekIndex, draftModalRestaurantId)
+    );
     draftModalActiveRole = 'Bartender';
     var titleEl = document.getElementById('draftScheduleModalTitle');
     if (titleEl) {
-      titleEl.textContent = 'Shift Times — ' + formatScheduleWeekRangeLabel(draftModalWeekIndex);
+      titleEl.textContent =
+        'Shift Times — ' +
+        formatScheduleWeekRangeLabel(draftModalWeekIndex) +
+        ' · ' +
+        restaurantLabel(draftModalRestaurantId);
     }
     bindDraftScheduleEditorOnce();
     renderDraftScheduleRoleChips();
@@ -5403,7 +5578,7 @@
         );
       }
 
-      var slotN = slotCountForRole(rd.role, scheduleCalendarWeekIndex);
+      var slotN = slotCountForRole(rd.role, scheduleCalendarWeekIndex, currentRestaurantId);
       for (var trIdx = 0; trIdx < slotN; trIdx += 1) {
         const tds = visibleDays.map(function (dayStr) {
           const shift = SCHEDULE.find(function (s) {
@@ -5412,7 +5587,7 @@
 
           if (!shift) {
             var wkOff = weekdayKeyFromScheduleDay(dayStr);
-            var trOff = draftTimeSlotFor(rd.role, wkOff, trIdx, scheduleCalendarWeekIndex);
+            var trOff = draftTimeSlotFor(rd.role, wkOff, trIdx, scheduleCalendarWeekIndex, currentRestaurantId);
             if (trOff) {
               var rpTimeOff = redPokeShiftTimeLabel(trOff.start, trOff.end);
               var offLabel =
@@ -7840,7 +8015,7 @@
   if (saveDraftScheduleBtn) {
     saveDraftScheduleBtn.addEventListener('click', function () {
       if (!draftModalScratch) return;
-      persistDraftScheduleRows(draftModalScratch);
+      persistDraftScheduleRows(draftModalScratch, draftModalWeekIndex, draftModalRestaurantId);
       closeDraftScheduleModal();
     });
   }
@@ -9014,6 +9189,9 @@
     if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
       window.gmCalloutManagerMessagesRefreshUi();
     }
+    if (typeof window.gmCalloutEmployeeMessagesRefreshUi === 'function') {
+      window.gmCalloutEmployeeMessagesRefreshUi();
+    }
     if (isManager && replicateWeekZeroToAllRestaurants(SCHEDULE_VIEW_WEEK_COUNT)) {
       rebuildSchedule();
       renderCalendar();
@@ -9074,6 +9252,7 @@
       loadTimeclockSettings: loadTimeclockSettings,
       saveTimeclockSettings: saveTimeclockSettings,
       scheduleTimecardPayrollDebouncedSync: scheduleTipPayrollDebouncedSync,
+      expandEmployeeRestaurantForPunch: expandEmployeeRestaurantForPunch,
       showScreen: showScreen,
       setTimecardTitle: setTimecardScreenTitle,
     });
@@ -9098,6 +9277,14 @@
           setupEmployeeChatRealtimeSubscription();
           if (document.documentElement.classList.contains('manager-app')) {
             gmCalloutManagerBootstrap();
+            if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+              window.gmCalloutManagerMessagingBootstrap();
+            }
+          }
+          if (document.documentElement.classList.contains('employee-app')) {
+            if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+              window.gmCalloutEmployeeBootstrap();
+            }
           }
           if (typeof window.gmCalloutPromptRecoveryEmailIfNeeded === 'function') {
             await window.gmCalloutPromptRecoveryEmailIfNeeded();
@@ -9148,6 +9335,16 @@
             setupTimeClockEntriesRealtimeSubscription();
             return gmCalloutSupabaseHydrateFromRemote().then(function () {
               setupEmployeeChatRealtimeSubscription();
+              if (document.documentElement.classList.contains('manager-app')) {
+                if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                  window.gmCalloutManagerMessagingBootstrap();
+                }
+              }
+              if (document.documentElement.classList.contains('employee-app')) {
+                if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                  window.gmCalloutEmployeeBootstrap();
+                }
+              }
             });
           })
           .catch(function (authErr) {

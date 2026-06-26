@@ -21,6 +21,18 @@ export type ChatStore = {
 /** Legacy prompt flow created threads titled "New message" with junk bodies (e.g. "OK"). */
 const LEGACY_NEW_MESSAGE_PEER = /^new\s*message$/i;
 
+/** Pre-May 2026 web demo seed thread (id `jamie`, swap-offer message). */
+const LEGACY_JAMIE_DEMO_BODY = /want to trade a lunch shift/i;
+
+function isLegacyJamieDemoThread(t: ChatThread | null | undefined): boolean {
+  if (!t) return false;
+  if (String(t.id || '').trim().toLowerCase() === 'jamie') return true;
+  if (/^jamie\s+li$/i.test(String(t.peerName || '').trim())) return true;
+  const msgs = t.messages;
+  if (!Array.isArray(msgs)) return false;
+  return msgs.some((m) => LEGACY_JAMIE_DEMO_BODY.test(String(m?.body || '')));
+}
+
 /** Empty threads — synced to Supabase so web/mobile share the same row (no placeholder welcome thread). */
 export function emptyChatStore(): ChatStore {
   return { version: 1, activeThreadId: null, threads: [] };
@@ -39,7 +51,10 @@ export function parseChatStorePayloadRaw(raw: unknown): ChatStore | null {
 
 export function sanitizeChatStore(store: ChatStore): { next: ChatStore; changed: boolean } {
   const threads = store.threads.filter(
-    (t) => t && !LEGACY_NEW_MESSAGE_PEER.test(String(t.peerName || '').trim())
+    (t) =>
+      t &&
+      !LEGACY_NEW_MESSAGE_PEER.test(String(t.peerName || '').trim()) &&
+      !isLegacyJamieDemoThread(t)
   );
   let activeThreadId = store.activeThreadId;
   if (activeThreadId != null && !threads.some((t) => t.id === activeThreadId)) {
@@ -126,22 +141,24 @@ function runUpsert(sb: SupabaseClient, userId: string, store: ChatStore) {
 }
 
 export function queueChatStoreSave(sb: SupabaseClient, userId: string, store: ChatStore) {
-  void writeChatStoreCache(userId, store);
+  const { next } = sanitizeChatStore(store);
+  void writeChatStoreCache(userId, next);
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void runUpsert(sb, userId, store);
+    void runUpsert(sb, userId, next);
   }, 600);
 }
 
 /** Persist immediately (e.g. after send) so web / other devices see the message without waiting on debounce. */
 export async function flushChatStoreSave(sb: SupabaseClient, userId: string, store: ChatStore): Promise<void> {
-  void writeChatStoreCache(userId, store);
+  const { next } = sanitizeChatStore(store);
+  void writeChatStoreCache(userId, next);
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const res = await runUpsert(sb, userId, store);
+  const res = await runUpsert(sb, userId, next);
   if (res.error) console.warn('employee_chat_store upsert', res.error);
 }
 
