@@ -36,45 +36,85 @@
       },
     };
     if (body !== undefined) opts.body = JSON.stringify(body);
-    var res = await fetch(path, opts);
-    var data = {};
+    var res;
     try {
-      data = await res.json();
-    } catch (_eJson) {
-      data = {};
+      res = await fetch(path, opts);
+    } catch (netErr) {
+      return {
+        ok: false,
+        message: (netErr && netErr.message) || "Network error. Check your connection and try again.",
+      };
     }
+    var data = await readPortalResponse(res);
     if (!res.ok || !data.ok) {
       return {
         ok: false,
-        message: (data && data.message) || "Request failed.",
+        message: portalErrorMessage(res, data, "Request failed."),
         status: res.status,
       };
     }
     return { ok: true, data: data };
   }
 
-  async function portalFetch(path, body) {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    let data = {};
-    try {
-      data = await res.json();
-    } catch (_e) {
-      data = {};
+  function portalErrorMessage(res, data, fallback) {
+    if (data && data.message) return data.message;
+    if (res.status === 503) {
+      return (
+        fallback ||
+        "Server auth is not configured. On Render, set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, then redeploy."
+      );
     }
-    if (!res.ok || !data.ok) {
-      var msg = (data && data.message) || "Request failed.";
-      if (res.status === 503) {
-        msg =
-          msg ||
-          "Server auth is not configured. On Render, set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, then redeploy.";
+    if (res.status === 404) {
+      return "Company signup is not available on this server. Restart npm start or redeploy the latest app.";
+    }
+    if (res.status >= 500) {
+      return fallback || "Server error (" + res.status + "). Try again in a moment.";
+    }
+    return fallback || "Request failed (" + res.status + ").";
+  }
+
+  async function readPortalResponse(res) {
+    const contentType = String((res.headers && res.headers.get("content-type")) || "");
+    if (contentType.indexOf("application/json") !== -1) {
+      try {
+        return await res.json();
+      } catch (_eJson) {
+        return {};
       }
+    }
+    let text = "";
+    try {
+      text = await res.text();
+    } catch (_eText) {
+      text = "";
+    }
+    const snippet = String(text || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+    return snippet ? { message: snippet } : {};
+  }
+
+  async function portalFetch(path, body) {
+    let res;
+    try {
+      res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (netErr) {
       return {
         ok: false,
-        message: msg,
+        message: (netErr && netErr.message) || "Network error. Check your connection and try again.",
+      };
+    }
+    const data = await readPortalResponse(res);
+    if (!res.ok || !data.ok) {
+      return {
+        ok: false,
+        message: portalErrorMessage(res, data, null),
         needsSignIn: !!(data && data.needsSignIn),
         status: res.status,
       };

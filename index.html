@@ -12,7 +12,18 @@
 <body>
   <div id="login-screen" class="login-screen" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="login-card">
-      <div class="login-brand" aria-hidden="true">
+      <div class="login-logo-wrap" id="loginCompanyLogoWrap" hidden>
+        <img
+          class="login-logo"
+          id="loginCompanyLogo"
+          src="assets/red-poke-logo.png"
+          alt="Red Poke"
+          width="120"
+          height="120"
+          decoding="async"
+        />
+      </div>
+      <div class="login-brand" id="loginBrandMark" aria-hidden="true">
         <span class="login-brand-mark">S</span>
       </div>
       <h1 class="login-title" id="loginTitle">Shiflow</h1>
@@ -64,7 +75,11 @@
           </label>
           <label class="login-field">
             <span class="login-label">Password</span>
-            <input type="password" id="createCompanyPassword" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="done" />
+            <input type="password" id="createCompanyPassword" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="next" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Confirm password</span>
+            <input type="password" id="createCompanyPasswordConfirm" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="done" />
           </label>
           <p class="login-error" id="createCompanyError" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary btn-block login-submit">Create company</button>
@@ -1579,6 +1594,8 @@
       var managerRegisterForm = document.getElementById('managerRegisterForm');
       var managerRegisterError = document.getElementById('managerRegisterError');
       var loginScreenEl = document.getElementById('login-screen');
+      var loginCompanyLogoWrap = document.getElementById('loginCompanyLogoWrap');
+      var loginBrandMark = document.getElementById('loginBrandMark');
       var accountSettingsModal = document.getElementById('accountSettingsModal');
       var accountSettingsForm = document.getElementById('accountSettingsForm');
       var accountSettingsLoginName = document.getElementById('accountSettingsLoginName');
@@ -1662,6 +1679,7 @@
         clearManagerRegisterError();
         clearForgotPasswordError();
         clearResetPasswordError();
+        updateLoginBranding();
       }
 
       function showAccessCodePanel() {
@@ -1672,9 +1690,10 @@
         hidePasswordResetPanels();
         hideTimeclockLoginPanels();
         if (accessCodePanel) accessCodePanel.hidden = false;
-        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
         clearAccessCodeError();
         if (accessCodeInput) accessCodeInput.focus();
+        updateLoginBranding();
       }
 
       function showCreateCompanyPanelFn() {
@@ -1683,8 +1702,9 @@
         hidePasswordResetPanels();
         hideTimeclockLoginPanels();
         if (createCompanyPanel) createCompanyPanel.hidden = false;
-        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
         clearCreateCompanyError();
+        updateLoginBranding();
       }
 
       function showCompanyPendingPanel(message) {
@@ -1692,7 +1712,8 @@
         if (loginPanel) loginPanel.hidden = true;
         if (companyPendingPanel) companyPendingPanel.hidden = false;
         if (companyPendingMessage && message) companyPendingMessage.textContent = message;
-        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
+        updateLoginBranding();
       }
 
       window.gmCalloutShowLandingPanel = showLandingPanel;
@@ -1703,6 +1724,30 @@
           .trim()
           .toLowerCase();
       }
+
+      function isRedPokeCompanyAccessCode(code) {
+        return norm(code) === 'redpoke';
+      }
+
+      function currentVerifiedAccessCode() {
+        if (verifiedAccessCode) return verifiedAccessCode;
+        try {
+          return sessionStorage.getItem(SESSION_ACCESS_CODE_KEY) || '';
+        } catch (_ac) {
+          return '';
+        }
+      }
+
+      function updateLoginBranding() {
+        var showRedPoke =
+          loginPanel &&
+          !loginPanel.hidden &&
+          isRedPokeCompanyAccessCode(currentVerifiedAccessCode());
+        if (loginCompanyLogoWrap) loginCompanyLogoWrap.hidden = !showRedPoke;
+        if (loginBrandMark) loginBrandMark.hidden = showRedPoke;
+      }
+
+      window.gmCalloutUpdateLoginBranding = updateLoginBranding;
 
       function showLoginError(msg, variant) {
         if (!loginError) return;
@@ -1999,6 +2044,7 @@
         clearManagerRegisterError();
         clearForgotPasswordError();
         clearResetPasswordError();
+        updateLoginBranding();
       }
 
       function showForgotPasswordPanel() {
@@ -2015,6 +2061,7 @@
         if (forgotPasswordLoginName && loginEmail && loginEmail.value) {
           forgotPasswordLoginName.value = String(loginEmail.value).trim();
         }
+        updateLoginBranding();
       }
 
       async function showResetPasswordPanel(token) {
@@ -2056,6 +2103,7 @@
           window.gmCalloutSetLoginGateOpen(true);
         }
         if (loginScreenEl) loginScreenEl.hidden = false;
+        updateLoginBranding();
       }
 
       function showRegisterPanel() {
@@ -2068,6 +2116,7 @@
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
         clearManagerRegisterError();
+        updateLoginBranding();
       }
 
       function showManagerRegisterPanelFn() {
@@ -2080,6 +2129,7 @@
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
         clearRegisterError();
+        updateLoginBranding();
       }
 
       if (showAccessCodePanelBtn) {
@@ -2168,12 +2218,18 @@
           var userEl = document.getElementById('createCompanyUsername');
           var emailEl = document.getElementById('createCompanyEmail');
           var pwEl = document.getElementById('createCompanyPassword');
+          var pw2El = document.getElementById('createCompanyPasswordConfirm');
           var companyName = nameEl ? String(nameEl.value || '').trim() : '';
           var username = userEl ? String(userEl.value || '').trim() : '';
           var email = emailEl ? String(emailEl.value || '').trim() : '';
           var password = pwEl ? String(pwEl.value || '') : '';
-          if (!companyName || !username || !email || !password) {
+          var passwordConfirm = pw2El ? String(pw2El.value || '') : '';
+          if (!companyName || !username || !email || !password || !passwordConfirm) {
             showCreateCompanyError('All fields are required.');
+            return;
+          }
+          if (password !== passwordConfirm) {
+            showCreateCompanyError('Passwords do not match.');
             return;
           }
           if (password.length < 4) {
@@ -2192,9 +2248,15 @@
               username: username,
               email: email,
               password: password,
+              passwordConfirm: passwordConfirm,
             });
             if (!res.ok) {
-              showCreateCompanyError(res.message || 'Could not create company.');
+              var errMsg = res.message || 'Could not create company.';
+              if (res.status === 503) {
+                errMsg =
+                  'Server auth is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to .env, then restart npm start.';
+              }
+              showCreateCompanyError(errMsg);
               return;
             }
             createCompanyForm.reset();

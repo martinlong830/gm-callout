@@ -168,6 +168,15 @@
         null,
         ['15:00', '22:00'],
       ],
+      [
+        ['11:30', '22:00'],
+        ['10:30', '20:30'],
+        ['10:30', '20:30'],
+        null,
+        null,
+        ['10:00', '18:00'],
+        ['10:00', '18:00'],
+      ],
     ],
   };
 
@@ -496,6 +505,16 @@
     return gmCalloutTeamStateRowId() === TEAM_STATE_ROW_ID;
   }
 
+  function resolveDefaultUnassignedSchedule(restaurantRow) {
+    if (!restaurantRow || typeof restaurantRow !== 'object') return false;
+    if (restaurantRow.defaultUnassignedSchedule === true) return true;
+    if (restaurantRow.defaultUnassignedSchedule === false) return false;
+    var def = defaultRestaurants().find(function (d) {
+      return d.id === restaurantRow.id;
+    });
+    return !!(def && def.defaultUnassignedSchedule);
+  }
+
   function gmCalloutApplyCompanyContext(payload) {
     payload = payload || {};
     if (payload.restaurantsConfig && payload.restaurantsConfig.length) {
@@ -504,7 +523,7 @@
           id: r.id,
           name: r.name || r.shortLabel || 'Location',
           shortLabel: r.shortLabel || r.name || 'Main',
-          defaultUnassignedSchedule: r.defaultUnassignedSchedule !== false,
+          defaultUnassignedSchedule: resolveDefaultUnassignedSchedule(r),
         };
       });
       currentRestaurantId = restaurantsList[0] ? restaurantsList[0].id : currentRestaurantId;
@@ -550,8 +569,18 @@
 
   function defaultRestaurants() {
     return [
-      { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
-      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave' },
+      {
+        id: 'rp-9',
+        shortLabel: '9th Ave',
+        name: 'Red Poke 598 9th Ave',
+        defaultUnassignedSchedule: false,
+      },
+      {
+        id: 'rp-8',
+        shortLabel: '8th Ave',
+        name: 'Red Poke 885 8th Ave',
+        defaultUnassignedSchedule: true,
+      },
     ];
   }
 
@@ -580,7 +609,10 @@
               id: def.id,
               shortLabel: s.shortLabel || def.shortLabel,
               name: String(s.name).trim(),
-              defaultUnassignedSchedule: def.defaultUnassignedSchedule,
+              defaultUnassignedSchedule: resolveDefaultUnassignedSchedule({
+                id: def.id,
+                defaultUnassignedSchedule: s.defaultUnassignedSchedule,
+              }),
             };
           });
         }
@@ -1842,11 +1874,17 @@
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     teardownTeamStateRealtimeSubscription();
     var sb = window.gmSupabase;
+    var teamStateId = gmCalloutTeamStateRowId();
     teamStateRealtimeChannel = sb
-      .channel('team_state_main')
+      .channel('team_state_' + teamStateId)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'team_state', filter: 'id=eq.main' },
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'team_state',
+          filter: 'id=eq.' + teamStateId,
+        },
         function (payload) {
           if (payload && payload.new) {
             applyTeamStateRowFromRemote(payload.new, { isManager: gmCalloutSessionIsManager });

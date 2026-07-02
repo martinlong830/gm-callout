@@ -476,6 +476,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       const username = String(body.username || body.loginName || "").trim();
       const email = normalizeRecoveryEmail(body.email || body.userEmail);
       const password = String(body.password || "");
+      const passwordConfirm = String(
+        body.passwordConfirm || body.confirmPassword || ""
+      );
 
       if (!companyName) {
         return res.status(400).json({ ok: false, message: "Company name is required." });
@@ -489,13 +492,20 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!password || password.length < 4) {
         return res.status(400).json({ ok: false, message: "Password must be at least 4 characters." });
       }
+      if (passwordConfirm && password !== passwordConfirm) {
+        return res.status(400).json({ ok: false, message: "Passwords do not match." });
+      }
 
       const loginNameNorm = normalizeLoginName(username);
-      const { data: nameTaken } = await admin
+      const { data: nameTaken, error: nameErr } = await admin
         .from("profiles")
         .select("id")
         .eq("login_name_norm", loginNameNorm)
+        .is("company_id", null)
         .maybeSingle();
+      if (nameErr) {
+        return res.status(400).json({ ok: false, message: nameErr.message || "Could not verify username." });
+      }
       if (nameTaken) {
         return res.status(409).json({
           ok: false,
@@ -517,7 +527,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         confirmed_at: null,
       });
       if (companyErr) {
-        return res.status(400).json({ ok: false, message: companyErr.message || "Could not create company." });
+        const raw = companyErr.message || "Could not create company.";
+        const needsMigration =
+          /companies/i.test(raw) &&
+          (/does not exist|schema cache|relation/i.test(raw) || companyErr.code === "42P01");
+        const message = needsMigration
+          ? `${raw} Apply supabase/migrations/20260702180000_companies_multi_tenant.sql in Supabase SQL editor, then retry.`
+          : raw;
+        return res.status(400).json({ ok: false, message });
       }
 
       const confirmRedirect = `${passwordResetBaseUrl()}/?company_pending=1`;
@@ -598,7 +615,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       });
     } catch (err) {
       console.warn("portal create-company", err);
-      return res.status(500).json({ ok: false, message: "Could not create company." });
+      const message =
+        (err && err.message) || "Could not create company. Check server logs and Supabase configuration.";
+      return res.status(500).json({ ok: false, message });
     }
   });
 

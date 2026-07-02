@@ -33,12 +33,18 @@
     hideAllLoginPanels();
     if (loginPanel) loginPanel.hidden = false;
     if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
+    if (typeof window.gmCalloutUpdateLoginBranding === 'function') {
+      window.gmCalloutUpdateLoginBranding();
+    }
   }
 
   function showTimeclockLoginPanel() {
     hideAllLoginPanels();
     if (timeclockLoginPanel) timeclockLoginPanel.hidden = false;
     syncTimeclockLocationUi();
+    if (typeof window.gmCalloutUpdateLoginBranding === 'function') {
+      window.gmCalloutUpdateLoginBranding();
+    }
   }
 
   function scheduleMatchApi() {
@@ -116,6 +122,9 @@
     hideAllLoginPanels();
     if (timeclockRegisterPanel) timeclockRegisterPanel.hidden = false;
     syncTimeclockLocationUi();
+    if (typeof window.gmCalloutUpdateLoginBranding === 'function') {
+      window.gmCalloutUpdateLoginBranding();
+    }
   }
 
   function bindTimeclockLocationToggles() {
