@@ -19,6 +19,7 @@
   var rosterCache = null;
   var rosterSort = { col: 'schedule', dir: 'asc' };
   var payWeekSelectorBound = false;
+  var sohRateControlBound = false;
   var payWeekScheduleCache = { weekIso: null, rows: null, weekMetaByLabel: null };
   var weekEntriesByEmpDay = null;
   var weekEntriesByEmpId = null;
@@ -33,6 +34,9 @@
   var cachedPayrollTipDistKey = null;
   var weekEntriesCacheByKey = Object.create(null);
   var weekEntriesSchemaCacheByKey = Object.create(null);
+  var loadWeekEntriesInFlight = null;
+  var loadWeekEntriesInFlightKey = null;
+  var exportLibsLoadPromise = null;
 
   var ROSTER_SORT_COLS = [
     'name',
@@ -68,7 +72,10 @@
   var timecardsLocationFilter = 'rp-9';
   var SOH_THRESHOLD_MINUTES = 10 * 60;
   var SOH_PAY_HOURS = 1;
-  var SOH_DEFAULT_HOURLY_RATE = 15;
+  /** Spread of Hours premium is paid at a fixed hourly rate (editable on the roster page), independent of base pay. */
+  var SOH_DEFAULT_RATE = 17;
+  var TIMECARDS_SOH_RATE_KEY = 'gm-timecard-soh-rate-v1';
+  var timecardsSohRate = SOH_DEFAULT_RATE;
   var LEAVE_DEFAULT_DAY_MINUTES = 8 * 60;
 
   function loadTimecardsLocationFilter() {
@@ -92,6 +99,40 @@
   }
 
   timecardsLocationFilter = loadTimecardsLocationFilter();
+
+  function normalizeSohRate(value) {
+    var n = typeof value === 'number' ? value : parseFloat(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.round(n * 100) / 100;
+  }
+
+  function loadSohRate() {
+    try {
+      var n = normalizeSohRate(localStorage.getItem(TIMECARDS_SOH_RATE_KEY));
+      if (n != null) return n;
+    } catch (_eSohLoad) {
+      /* ignore */
+    }
+    return SOH_DEFAULT_RATE;
+  }
+
+  function saveSohRate(value) {
+    var n = normalizeSohRate(value);
+    if (n == null) n = SOH_DEFAULT_RATE;
+    timecardsSohRate = n;
+    try {
+      localStorage.setItem(TIMECARDS_SOH_RATE_KEY, String(n));
+    } catch (_eSohSave) {
+      /* ignore */
+    }
+    return n;
+  }
+
+  function getSohRate() {
+    return timecardsSohRate;
+  }
+
+  timecardsSohRate = loadSohRate();
 
   function getRestaurantsList() {
     if (d().getRestaurantsList) return d().getRestaurantsList();
@@ -286,6 +327,41 @@
         saveTimecardsLocationFilter(next);
         repaintRoster();
       });
+    });
+  }
+
+  function renderSohRateControlHtml() {
+    return (
+      '<div class="timecards-soh-rate-control">' +
+      '<label class="employee-filter-label" for="timecardsSohRate">SoH rate</label>' +
+      '<div class="timecards-soh-rate-field">' +
+      '<span class="timecards-soh-rate-prefix">$</span>' +
+      '<input type="number" id="timecardsSohRate" class="timecards-soh-rate-input" min="0" step="0.25" inputmode="decimal" value="' +
+      d().escapeHtml(String(getSohRate())) +
+      '" aria-label="Spread of Hours hourly rate" />' +
+      '<span class="timecards-soh-rate-suffix">/hr</span>' +
+      '</div></div>'
+    );
+  }
+
+  /** Re-run SoH math and repaint roster pay totals after the manager edits the SoH rate. */
+  function refreshRosterForSohRate() {
+    if (!rebuildRosterCacheRows()) return;
+    if (timecardsRosterScreenActive()) {
+      var wrap = document.getElementById('timecardsRosterWrap');
+      if (wrap) paintRosterTableBody(wrap);
+    }
+  }
+
+  function bindSohRateControlOnce() {
+    if (sohRateControlBound) return;
+    sohRateControlBound = true;
+    document.addEventListener('change', function (ev) {
+      var el = ev.target;
+      if (!el || el.id !== 'timecardsSohRate') return;
+      var applied = saveSohRate(el.value);
+      el.value = String(applied);
+      refreshRosterForSohRate();
     });
   }
 
@@ -626,6 +702,18 @@
     return Math.max(0, gross - deduct);
   }
 
+  /** Wall-clock span (clock-in to clock-out, breaks included) attributed to the clock-in day. */
+  function recordedSpanMinutesOnClockInDay(entry) {
+    if (!entry || !entry.clock_in_at || !entry.clock_out_at) return 0;
+    if (isStaleOpenPunch(entry)) return 0;
+    var inTs = new Date(entry.clock_in_at).getTime();
+    var outTs = new Date(entry.clock_out_at).getTime();
+    if (Number.isNaN(inTs) || Number.isNaN(outTs)) return 0;
+    var dayEnd = endOfLocalDayFromIso(punchDayIso(entry));
+    if (dayEnd && outTs > dayEnd.getTime()) outTs = dayEnd.getTime();
+    return Math.max(0, Math.floor((outTs - inTs) / 60000));
+  }
+
   function recordedPaidMinutes(entry, shiftRowOpt, emp) {
     if (!entry) return 0;
     if (isStaleOpenPunch(entry)) return 0;
@@ -646,8 +734,12 @@
     return Math.max(0, gross - deduct);
   }
 
+  /** Shifts of 6 hours or less use full scheduled span; longer shifts deduct unpaid break. */
+  var SHORT_SHIFT_NO_BREAK_DEDUCT_MINUTES = 6 * 60;
+
   function scheduledPaidMinutes(shift, emp) {
     var gross = Math.round(parseScheduledHoursDecimal(shift) * 60);
+    if (gross <= SHORT_SHIFT_NO_BREAK_DEDUCT_MINUTES) return gross;
     var br = parseBreakMinutesFromAnnotation(shift.redPokeBreak);
     var isPaid = bp() ? bp().resolveBreakPaid({ shift: shift, emp: emp }) : false;
     var deduct = bp() ? bp().unpaidBreakMinutes(br, isPaid) : br;
@@ -885,7 +977,8 @@
       (row.vlPay || 0) +
       (row.slPay || 0) +
       (row.sohPay || 0) +
-      (row.dishwasherTipsPay || 0)
+      (row.dishwasherTipsPay || 0) +
+      (row.additionalCashTip || 0)
     );
   }
 
@@ -986,7 +1079,8 @@
   var DISHWASHER_TIP_REQUIRES_SHIFT_MSG =
     'Save a punch or vacation/sick hours before entering dishwasher tips.';
 
-  function sumEmployeeWeekDishwasherTips(emp, bounds, locationFilter) {
+  function sumEmployeeWeekDishwasherTips(emp, bounds, locationFilter, precomputed) {
+    if (precomputed && emp && emp.id && precomputed[emp.id] != null) return precomputed[emp.id];
     bounds = bounds || payWeekBounds();
     if (!emp || !isDeliveryDishwasherStaff(emp)) return 0;
     var slice = getDishwasherTipsSlice(bounds);
@@ -1003,6 +1097,28 @@
       sum += normalizeDishwasherTipAmount(slice[k]);
     });
     return Math.round(sum * 100) / 100;
+  }
+
+  /** One pass over dishwasher-tip keys → per-employee week totals for the active location filter. */
+  function buildWeekDishwasherTipsByEmp(bounds, locationFilter) {
+    bounds = bounds || payWeekBounds();
+    var slice = getDishwasherTipsSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var loc = locationFilter != null ? locationFilter : timecardsLocationFilter;
+    var byEmp = Object.create(null);
+    Object.keys(slice).forEach(function (k) {
+      var parsed = parseDishwasherTipStorageKey(k);
+      if (!parsed) return;
+      if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
+      if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
+      if (!dayHasBackingShiftForDishwasherTips(parsed.empId, parsed.iso)) return;
+      byEmp[parsed.empId] = (byEmp[parsed.empId] || 0) + normalizeDishwasherTipAmount(slice[k]);
+    });
+    Object.keys(byEmp).forEach(function (empId) {
+      byEmp[empId] = Math.round(byEmp[empId] * 100) / 100;
+    });
+    return byEmp;
   }
 
   function sumWeekDishwasherTips(bounds, locationFilter) {
@@ -1142,9 +1258,11 @@
     var vlEl = document.getElementById('tcDayVl');
     var slEl = document.getElementById('tcDaySl');
     var tipEl = document.getElementById('tcDishwasherTip');
+    var cashTipEl = document.getElementById('tcAdditionalCashTip');
     if (vlEl) vlEl.value = '0';
     if (slEl) slEl.value = '0';
     if (tipEl) tipEl.value = '0';
+    if (cashTipEl) cashTipEl.value = '0';
   }
 
   function clearAllPunchDateTimeFields() {
@@ -1680,6 +1798,73 @@
     saveWeekExtrasMap(bounds, slice);
   }
 
+  /**
+   * Additional cash tip (per employee per day, all roles). Stored inside the synced week-extras
+   * slice under a pipe-delimited key so the existing VL/SL leave parsers (which key on "@" or a
+   * bare employee id) ignore it entirely. Flows into the payroll Cash column + tips section.
+   */
+  function additionalCashTipStorageKey(empId, iso) {
+    return 'acash|' + String(empId || '') + '|' + String(iso || '');
+  }
+
+  function getEmployeeDayAdditionalCashTip(emp, iso, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp || !iso) return 0;
+    var slice = getWeekExtrasSlice(bounds);
+    return normalizeDishwasherTipAmount(slice[additionalCashTipStorageKey(emp.id, iso)]);
+  }
+
+  function setEmployeeDayAdditionalCashTip(empId, iso, amount, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!empId || !iso) return;
+    var slice = loadWeekExtrasMap(bounds);
+    var key = additionalCashTipStorageKey(empId, iso);
+    var val = normalizeDishwasherTipAmount(amount);
+    if (val <= 0) delete slice[key];
+    else slice[key] = val;
+    saveWeekExtrasMap(bounds, slice);
+  }
+
+  function sumEmployeeWeekAdditionalCashTips(emp, bounds, precomputed) {
+    if (precomputed && emp && emp.id && precomputed[emp.id] != null) return precomputed[emp.id];
+    bounds = bounds || payWeekBounds();
+    if (!emp) return 0;
+    var slice = getWeekExtrasSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var prefix = 'acash|' + emp.id + '|';
+    var sum = 0;
+    Object.keys(slice).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
+      var iso = k.slice(prefix.length);
+      if (iso < weekStart || iso > weekEnd) return;
+      sum += normalizeDishwasherTipAmount(slice[k]);
+    });
+    return Math.round(sum * 100) / 100;
+  }
+
+  /** One pass over week-extras keys → per-employee additional cash tip totals. */
+  function buildWeekAdditionalCashTipsByEmp(bounds) {
+    bounds = bounds || payWeekBounds();
+    var slice = getWeekExtrasSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var byEmp = Object.create(null);
+    Object.keys(slice).forEach(function (k) {
+      if (k.indexOf('acash|') !== 0) return;
+      var parts = k.split('|');
+      if (parts.length < 3) return;
+      var empId = parts[1];
+      var iso = parts[2];
+      if (!empId || iso < weekStart || iso > weekEnd) return;
+      byEmp[empId] = (byEmp[empId] || 0) + normalizeDishwasherTipAmount(slice[k]);
+    });
+    Object.keys(byEmp).forEach(function (empId) {
+      byEmp[empId] = Math.round(byEmp[empId] * 100) / 100;
+    });
+    return byEmp;
+  }
+
   function syncRosterRowForEmployee(emp) {
     if (!emp || !rosterCache) return;
     for (var ri = 0; ri < rosterCache.rows.length; ri += 1) {
@@ -1706,9 +1891,23 @@
     return el ? normalizeDishwasherTipAmount(el.value) : 0;
   }
 
-  function spreadOfHoursHourlyRate(emp) {
-    var r = employeeHourlyRate(emp);
-    return r != null ? r : SOH_DEFAULT_HOURLY_RATE;
+  function readShiftAdditionalCashTipFromForm() {
+    var el = document.getElementById('tcAdditionalCashTip');
+    return el ? normalizeDishwasherTipAmount(el.value) : 0;
+  }
+
+  function persistShiftDayTipsFromForm(emp, shiftRow) {
+    if (!emp || !shiftRow || !shiftRow.iso) return;
+    setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, readShiftAdditionalCashTipFromForm());
+    if (isDeliveryDishwasherStaff(emp)) {
+      setEmployeeDayDishwasherTip(
+        emp.id,
+        shiftRow.iso,
+        readShiftDishwasherTipFromForm(),
+        undefined,
+        dishwasherTipRestaurantForShiftRow(shiftRow)
+      );
+    }
   }
 
   function formatSoHDatesList(dates) {
@@ -1722,12 +1921,17 @@
       .join(', ');
   }
 
-  /** One SoH premium per calendar day when 5-min-rounded paid time exceeds 10 hours (closed punches only). */
+  /**
+   * One SoH premium per calendar day. Qualifies only when the full shift span (clock-in to
+   * clock-out, breaks included) exceeds 10 hours AND worked (break-deducted, 5-min rounded) time
+   * also exceeds 10 hours — so break padding alone in the over-10 portion never triggers SoH.
+   */
   function computeSpreadOfHours(emp) {
     var bounds = payWeekBounds();
     var weekStart = isoFromDate(bounds.start);
     var weekEnd = isoFromDate(bounds.end);
     var byDay = {};
+    var spanByDay = {};
     var list = weekEntriesByEmpId ? weekEntriesByEmpId[emp.id] || [] : weekEntries;
     list.forEach(function (e) {
       if (!e.clock_in_at) return;
@@ -1737,24 +1941,24 @@
       }
       var iso = punchDayIso(e);
       if (!iso || iso < weekStart || iso > weekEnd) return;
-      var mins = recordedPaidMinutesOnClockInDay(e, null, emp);
-      byDay[iso] = (byDay[iso] || 0) + mins;
+      byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
+      spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
     });
     var dates = [];
     var count = 0;
     var pay = 0;
-    var rate = spreadOfHoursHourlyRate(emp);
+    var rate = getSohRate();
     Object.keys(byDay)
       .sort()
       .forEach(function (iso) {
         var roundedDay = roundToNearest5Minutes(byDay[iso]);
-        if (roundedDay > SOH_THRESHOLD_MINUTES) {
+        if (roundedDay > SOH_THRESHOLD_MINUTES && (spanByDay[iso] || 0) > SOH_THRESHOLD_MINUTES) {
           count += 1;
           dates.push(iso);
           pay += SOH_PAY_HOURS * rate;
         }
       });
-    return { count: count, dates: dates, pay: pay, hasRate: employeeHourlyRate(emp) != null };
+    return { count: count, dates: dates, pay: pay, hasRate: true };
   }
 
   function isSoHDateForEmployee(emp, iso) {
@@ -1886,7 +2090,8 @@
     );
   }
 
-  function buildRosterRowData(emp) {
+  function buildRosterRowData(emp, tipSums) {
+    tipSums = tipSums || {};
     var agg = aggregateEmployeeWeek(emp);
     var extras = getEmployeeWeekExtras(emp);
     var soh = computeSpreadOfHours(emp);
@@ -1912,7 +2117,8 @@
       sohDates: soh.dates,
       sohDatesLabel: formatSoHDatesList(soh.dates),
       sohPay: soh.hasRate ? soh.pay : null,
-      dishwasherTipsPay: sumEmployeeWeekDishwasherTips(emp),
+      dishwasherTipsPay: sumEmployeeWeekDishwasherTips(emp, undefined, undefined, tipSums.dishwasher),
+      additionalCashTip: sumEmployeeWeekAdditionalCashTips(emp, undefined, tipSums.additionalCash),
       status: agg.status,
       statusRank: statusSortRank(agg.status),
       clockStatus: clockStatus,
@@ -1985,12 +2191,14 @@
       sohCount: 0,
       sohPay: 0,
       dishwasherTipsPay: 0,
+      additionalCashTip: 0,
       grandTotalPay: 0,
       hasRegPay: false,
       hasOtPay: false,
       hasVlSlPay: false,
       hasSohPay: false,
       hasDishwasherTips: false,
+      hasAdditionalCashTip: false,
       hasGrandTotal: false,
       headcount: rows.length,
     };
@@ -2029,19 +2237,25 @@
         t.dishwasherTipsPay += r.dishwasherTipsPay;
         t.hasDishwasherTips = true;
       }
+      if (r.additionalCashTip > 0) {
+        t.additionalCashTip += r.additionalCashTip;
+        t.hasAdditionalCashTip = true;
+      }
       if (r.regPay != null) t.grandTotalPay += r.regPay;
       if (r.otPay != null) t.grandTotalPay += r.otPay;
       if (r.vlPay != null) t.grandTotalPay += r.vlPay;
       if (r.slPay != null) t.grandTotalPay += r.slPay;
       if (r.sohPay != null) t.grandTotalPay += r.sohPay;
       if (r.dishwasherTipsPay > 0) t.grandTotalPay += r.dishwasherTipsPay;
+      if (r.additionalCashTip > 0) t.grandTotalPay += r.additionalCashTip;
       if (
         r.regPay != null ||
         r.otPay != null ||
         r.vlPay != null ||
         r.slPay != null ||
         r.sohPay != null ||
-        r.dishwasherTipsPay > 0
+        r.dishwasherTipsPay > 0 ||
+        r.additionalCashTip > 0
       ) {
         t.hasGrandTotal = true;
       }
@@ -2102,6 +2316,10 @@
       '<div class="timecards-total-card"><span class="timecards-total-label">Dishwasher tips</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(totals.hasDishwasherTips ? formatPayAmount(totals.dishwasherTipsPay) : '—') +
+      '</span></div>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">Additional cash tip</span>' +
+      '<span class="timecards-total-value">' +
+      d().escapeHtml(totals.hasAdditionalCashTip ? formatPayAmount(totals.additionalCashTip) : '—') +
       '</span></div>' +
       (opts.hourlyRateLabel != null
         ? '<div class="timecards-total-card"><span class="timecards-total-label">Pay/hr</span>' +
@@ -2255,6 +2473,48 @@
 
   function downloadCsvFromAoa(fileBase, suffix, aoa) {
     downloadCsvFile(fileBase, suffix, aoaToCsvLines(aoa));
+  }
+
+  function loadExportScript(url) {
+    return new Promise(function (resolve, reject) {
+      if (
+        (url.indexOf('xlsx') !== -1 && global.XLSX) ||
+        (url.indexOf('jszip') !== -1 && global.JSZip) ||
+        (url.indexOf('exceljs') !== -1 && global.ExcelJS)
+      ) {
+        resolve();
+        return;
+      }
+      var script = document.createElement('script');
+      script.src = url;
+      script.async = true;
+      script.onload = function () {
+        resolve();
+      };
+      script.onerror = function () {
+        reject(new Error('Failed to load ' + url));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function ensureExportLibsLoaded() {
+    if (global.XLSX && global.JSZip && global.ExcelJS) return Promise.resolve();
+    if (exportLibsLoadPromise) return exportLibsLoadPromise;
+    exportLibsLoadPromise = loadExportScript(
+      'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js'
+    )
+      .then(function () {
+        return loadExportScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+      })
+      .then(function () {
+        return loadExportScript('https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
+      })
+      .catch(function (err) {
+        exportLibsLoadPromise = null;
+        throw err;
+      });
+    return exportLibsLoadPromise;
   }
 
   var XL_BORDER_COLOR = { rgb: 'B8B0A4' };
@@ -2494,22 +2754,24 @@
   }
 
   function downloadExcelWorkbook(fileBase, suffix, sheets) {
-    var XLSX = global.XLSX;
-    if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
-      alert('Excel export could not load. Check your connection and try again.');
-      return false;
-    }
-    var wb = XLSX.utils.book_new();
-    sheets.forEach(function (sheet) {
-      var name = String(sheet.name || 'Sheet').slice(0, 31);
-      var ws;
-      if (sheet.worksheet) ws = sheet.worksheet;
-      else if (typeof sheet.buildWorksheet === 'function') ws = sheet.buildWorksheet();
-      else ws = XLSX.utils.aoa_to_sheet(sheet.rows || []);
-      xlSanitizeSheetForExport(ws);
-      XLSX.utils.book_append_sheet(wb, ws, name);
+    void ensureExportLibsLoaded().then(function () {
+      var XLSX = global.XLSX;
+      if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
+        alert('Excel export could not load. Check your connection and try again.');
+        return;
+      }
+      var wb = XLSX.utils.book_new();
+      sheets.forEach(function (sheet) {
+        var name = String(sheet.name || 'Sheet').slice(0, 31);
+        var ws;
+        if (sheet.worksheet) ws = sheet.worksheet;
+        else if (typeof sheet.buildWorksheet === 'function') ws = sheet.buildWorksheet();
+        else ws = XLSX.utils.aoa_to_sheet(sheet.rows || []);
+        xlSanitizeSheetForExport(ws);
+        XLSX.utils.book_append_sheet(wb, ws, name);
+      });
+      XLSX.writeFile(wb, fileBase + suffix + '.xlsx');
     });
-    XLSX.writeFile(wb, fileBase + suffix + '.xlsx');
     return true;
   }
 
@@ -2541,6 +2803,7 @@
       'SoH dates',
       'SoH pay',
       'Dishwasher tips',
+      'Additional cash tip',
       'Total pay',
       'Status',
       'Hourly rate',
@@ -2564,6 +2827,7 @@
         row.sohDatesLabel,
         payCsv(row.sohPay),
         payCsv(row.dishwasherTipsPay > 0 ? row.dishwasherTipsPay : null),
+        payCsv(row.additionalCashTip > 0 ? row.additionalCashTip : null),
         payCsv(row.grandTotalPay),
         row.status,
         rate != null ? rate.toFixed(2) : '',
@@ -2587,6 +2851,7 @@
         '',
         payCsv(totals.hasSohPay ? totals.sohPay : null),
         payCsv(totals.hasDishwasherTips ? totals.dishwasherTipsPay : null),
+        payCsv(totals.hasAdditionalCashTip ? totals.additionalCashTip : null),
         payCsv(totals.hasGrandTotal ? totals.grandTotalPay : null),
         '',
         '',
@@ -3039,6 +3304,7 @@
   var PAYROLL_COL_REG_H = 3;
   var PAYROLL_COL_OT_H = 4;
   var PAYROLL_COL_TIP_PT = 2;
+  var PAYROLL_COL_CASH = 14;
   var PAYROLL_COL_TOTAL_TIP_PT = 15;
   var PAYROLL_COL_TIP_CALC = 16;
   var PAYROLL_COL_TIP = 17;
@@ -3050,7 +3316,9 @@
       '=' +
       payrollExcelNumber(r, PAYROLL_COL_TIP) +
       '+' +
-      payrollExcelNumber(r, PAYROLL_COL_DELIVERY)
+      payrollExcelNumber(r, PAYROLL_COL_DELIVERY) +
+      '+' +
+      payrollExcelNumber(r, PAYROLL_COL_CASH)
     );
   }
 
@@ -3372,13 +3640,13 @@
       gross: gross,
       sohCount: isOngi ? 0 : row.sohCount || 0,
       sohPay: sohPay,
-      sohHr: isOngi ? null : rate,
+      sohHr: isOngi ? null : getSohRate(),
       grossWithSoh: grossWithSoh,
       check: check,
       totalTipPoints: totalTipPoints,
       tipCalculation: null,
       tipRounded: null,
-      cash: null,
+      cash: isOngi ? 0 : row.additionalCashTip || 0,
       dishwasherTipsPay: isOngi
         ? 0
         : sumEmployeeWeekDishwasherTips(row.emp, undefined, RP2_DELIVERY_TIP_LOCATION),
@@ -3435,7 +3703,7 @@
       S.money,
       PAYROLL_MONEY_Z
     );
-    xlSetMoney(ws, r, 15, m.cash, S.money);
+    xlSetMoney(ws, r, PAYROLL_COL_CASH, m.cash > 0 ? m.cash : null, S.money);
 
     xlSetFormula(ws, r, PAYROLL_COL_TOTAL_TIP_PT, '=IF(' + tipPtsExpr + '=0,"",' + tipPtsExpr + ')', S.num2, '0.00');
     xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
@@ -3531,9 +3799,15 @@
   /** Rebuild roster rows from the latest employee roster + week punches (keeps export in sync with Team leave edits). */
   function rebuildRosterCacheRows() {
     if (!deps || !d().employees.length) return false;
-    invalidatePayrollTipDistCache();
+    if (!rosterCache && !timecardsModuleScreenActive()) return false;
     if (rosterCache) {
-      rosterCache.rows = d().employees.map(buildRosterRowData);
+      var tipSums = {
+        dishwasher: buildWeekDishwasherTipsByEmp(),
+        additionalCash: buildWeekAdditionalCashTipsByEmp(),
+      };
+      rosterCache.rows = d().employees.map(function (emp) {
+        return buildRosterRowData(emp, tipSums);
+      });
       rosterCache.shiftRows = null;
       return true;
     }
@@ -3543,6 +3817,7 @@
   /** Schedule assignments or draft changed — rebuild pay-week snapshot and refresh open timecards UI. */
   function onScheduleChanged() {
     invalidatePayWeekScheduleCache();
+    if (!timecardsModuleScreenActive()) return;
     rebuildRosterCacheRows();
     if (timecardsRosterScreenActive()) {
       var wrap = document.getElementById('timecardsRosterWrap');
@@ -3955,6 +4230,14 @@
     xlSetFormula(
       ws,
       r,
+      PAYROLL_COL_CASH,
+      '=' + payrollSumFormula(PAYROLL_COL_CASH, sumFirst, sumLast),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
+    xlSetFormula(
+      ws,
+      r,
       PAYROLL_COL_TIP_CALC,
       '=' + payrollSumFormula(PAYROLL_COL_TIP_CALC, sumFirst, sumLast),
       S.money,
@@ -4122,6 +4405,14 @@
       '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_TIP_PT, fohTotalRow, bohTotalRow),
       S.num2,
       '0.00'
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_CASH,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_CASH, fohTotalRow, bohTotalRow),
+      S.money,
+      PAYROLL_MONEY_Z
     );
     xlSetFormula(
       ws,
@@ -4441,8 +4732,10 @@
     var pooled = payrollTipAmountForRosterRow(rosterRow);
     if (!rosterRow || !rosterRow.emp) return pooled;
     var delivery = sumEmployeeWeekDishwasherTips(rosterRow.emp, undefined, RP2_DELIVERY_TIP_LOCATION);
-    if (delivery <= 0) return pooled;
-    return (pooled || 0) + delivery;
+    var additionalCash = sumEmployeeWeekAdditionalCashTips(rosterRow.emp);
+    var extra = delivery + additionalCash;
+    if (extra <= 0) return pooled;
+    return (pooled || 0) + extra;
   }
 
   function payStubEnsureRect(ws, r1, c1, r2, c2) {
@@ -6050,6 +6343,13 @@
       return;
     }
 
+    try {
+      await ensureExportLibsLoaded();
+    } catch (_exportLoadErr) {
+      alert('Excel export could not load. Check your connection and try again.');
+      return;
+    }
+
     var XLSX = global.XLSX;
     if (!XLSX || !XLSX.utils || !XLSX.write) {
       alert('Excel export could not load. Check your connection and try again.');
@@ -6331,6 +6631,7 @@
       '<div class="timecards-roster-toolbar">' +
       renderPayWeekSelectorHtml() +
       renderTimecardsLocationSwitcherHtml() +
+      renderSohRateControlHtml() +
       '<div class="timecards-download-group">' +
       '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-open>Download</button>' +
       '</div></div>' +
@@ -6532,15 +6833,6 @@
       if (normalizeDishwasherTipAmount(slice[k]) > 0) found = true;
     });
     return found;
-  }
-
-  function shiftAllowsDishwasherTipEntry(shiftRow) {
-    if (!isDeliveryDishwasherStaff(shiftRow && shiftRow.emp)) return false;
-    if (!shiftRow || !shiftRow.shift) return false;
-    if (isOffScheduleShiftDayRow(shiftRow)) {
-      return timecardsLocationFilter === RP2_DELIVERY_TIP_LOCATION;
-    }
-    return shiftRestaurantId(shiftRow.shift) === RP2_DELIVERY_TIP_LOCATION;
   }
 
   function dishwasherTipRestaurantForShiftRow(shiftRow) {
@@ -6964,11 +7256,25 @@
 
   async function loadWeekEntries() {
     if (!d().gmSupabaseReadyNow()) return { ok: false, reason: 'no_client' };
+    var bounds = payWeekBounds();
+    var cacheKey = weekExtrasStorageKey(bounds);
+    if (loadWeekEntriesInFlight && loadWeekEntriesInFlightKey === cacheKey) {
+      return loadWeekEntriesInFlight;
+    }
+    loadWeekEntriesInFlightKey = cacheKey;
+    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey).finally(function () {
+      if (loadWeekEntriesInFlightKey === cacheKey) {
+        loadWeekEntriesInFlight = null;
+        loadWeekEntriesInFlightKey = null;
+      }
+    });
+    return loadWeekEntriesInFlight;
+  }
+
+  async function fetchWeekEntriesFromSupabase(bounds, cacheKey) {
     var sb = global.gmSupabase;
     var session = await ensureSupabaseSession(sb);
     if (!session) return { ok: false, reason: 'no_session' };
-    var bounds = payWeekBounds();
-    var cacheKey = weekExtrasStorageKey(bounds);
     var sel =
       'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, clock_restaurant_id, edit_history, updated_at';
     var res = await sb
@@ -7023,7 +7329,7 @@
       breakPaid: timecardSchema.breakPaid,
     };
     rebuildWeekEntriesIndex();
-    handleCrossRestaurantPunchesFromWeekEntries();
+    scheduleCrossRestaurantPunchProcessing();
     return { ok: true };
   }
 
@@ -7064,13 +7370,18 @@
       ' – ' +
       bounds.end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     var emps = d().employees.slice();
+    var tipSums = {
+      dishwasher: buildWeekDishwasherTipsByEmp(bounds),
+      additionalCash: buildWeekAdditionalCashTipsByEmp(bounds),
+    };
     rosterCache = {
       weekLabel: weekLabel,
       fileBase: 'timecards-' + isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end),
-      rows: emps.map(buildRosterRowData),
+      rows: emps.map(function (emp) {
+        return buildRosterRowData(emp, tipSums);
+      }),
       shiftRows: null,
     };
-    invalidatePayrollTipDistCache();
   }
 
   function paintRosterWrap(wrap) {
@@ -7117,11 +7428,19 @@
       }
       buildRosterCacheFromCurrentWeek();
       paintRosterWrap(wrap);
-      loadWeekEntries().then(function (loadRes) {
+      var refreshAfterFetch = function (loadRes) {
         if (!loadRes.ok) return;
         buildRosterCacheFromCurrentWeek();
-        paintRosterWrap(wrap);
-      });
+        paintRosterTableBody(wrap);
+      };
+      var scheduleFetch = function () {
+        loadWeekEntries().then(refreshAfterFetch);
+      };
+      if (typeof global.requestAnimationFrame === 'function') {
+        global.requestAnimationFrame(scheduleFetch);
+      } else {
+        setTimeout(scheduleFetch, 0);
+      }
       return;
     }
     wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
@@ -7257,6 +7576,8 @@
             }
             setEmployeeDayDishwasherTip(emp.id, iso, val, undefined, rid);
           }
+        } else if (field === 'additionalCashTip') {
+          setEmployeeDayAdditionalCashTip(emp.id, iso, val);
         } else {
           var dayLeave = getEmployeeDayLeave(emp, iso);
           if (field === 'vl') setEmployeeDayLeave(emp.id, iso, val, dayLeave.sl);
@@ -7714,8 +8035,8 @@
       '<div><dt>Shift total</dt><dd><strong>' +
       d().escapeHtml(shiftPay.totalPay != null ? formatPayAmount(shiftPay.totalPay) : '—') +
       '</strong></dd></div>' +
-      (shiftAllowsDishwasherTipEntry({ emp: emp, shift: shiftRow.shift, iso: shiftRow.iso })
-        ? '<div><dt>Delivery tip / RP2 ($)</dt><dd>' +
+      (isDeliveryDishwasherStaff(emp)
+        ? '<div><dt>Dishwasher tip ($)</dt><dd>' +
           '<input type="number" class="timecards-extra-input" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
           d().escapeHtml(shiftRow.iso) +
           '" data-timecard-restaurant-id="' +
@@ -7735,6 +8056,14 @@
           ) +
           '" /></dd></div>'
         : '') +
+      '<div><dt>Additional cash tip ($)</dt><dd>' +
+      '<input type="number" class="timecards-extra-input" id="tcAdditionalCashTip" data-timecard-extra="additionalCashTip" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
+      d().escapeHtml(emp.id) +
+      '" min="0" step="0.01" inputmode="decimal" value="' +
+      d().escapeHtml(String(getEmployeeDayAdditionalCashTip(emp, shiftRow.iso))) +
+      '" /></dd></div>' +
       (sohDay
         ? '<div><dt>SoH premium</dt><dd>' +
           d().escapeHtml(
@@ -8120,7 +8449,8 @@
       removeLocalDayEntries(emp.id, dayEntryIds);
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
-    if (isDeliveryDishwasherStaff(emp) && shiftAllowsDishwasherTipEntry(shiftRow)) {
+    setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, 0);
+    if (isDeliveryDishwasherStaff(emp)) {
       setEmployeeDayDishwasherTip(
         emp.id,
         shiftRow.iso,
@@ -8177,9 +8507,13 @@
     }
     if (!hasPunch) {
       var dishwasherTip = isDeliveryDishwasherStaff(emp) ? readShiftDishwasherTipFromForm() : 0;
+      var additionalCashTip = readShiftAdditionalCashTipFromForm();
       var removingDay =
         timecardState.punchesCleared ||
-        (dayLeave.vl <= 0 && dayLeave.sl <= 0 && normalizeDishwasherTipAmount(dishwasherTip) <= 0);
+        (dayLeave.vl <= 0 &&
+          dayLeave.sl <= 0 &&
+          normalizeDishwasherTipAmount(dishwasherTip) <= 0 &&
+          normalizeDishwasherTipAmount(additionalCashTip) <= 0);
       if (removingDay) {
         await finishClearedShiftDaySave(sb, emp, shiftRow, { vl: 0, sl: 0 }, 0);
         return;
@@ -8215,15 +8549,7 @@
         removeLocalDayEntries(emp.id, dayEntryIds);
       }
       setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
-      if (isDeliveryDishwasherStaff(emp) && shiftAllowsDishwasherTipEntry(shiftRow)) {
-        setEmployeeDayDishwasherTip(
-          emp.id,
-          shiftRow.iso,
-          dishwasherTip,
-          undefined,
-          dishwasherTipRestaurantForShiftRow(shiftRow)
-        );
-      }
+      persistShiftDayTipsFromForm(emp, shiftRow);
       await loadWeekEntries();
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
@@ -8381,15 +8707,7 @@
       timecardState.entryId = rpcRes.data.id;
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
-    if (isDeliveryDishwasherStaff(emp) && shiftAllowsDishwasherTipEntry(shiftRow)) {
-      setEmployeeDayDishwasherTip(
-        emp.id,
-        shiftRow.iso,
-        readShiftDishwasherTipFromForm(),
-        undefined,
-        dishwasherTipRestaurantForShiftRow(shiftRow)
-      );
-    }
+    persistShiftDayTipsFromForm(emp, shiftRow);
     await loadWeekEntries();
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
@@ -8471,6 +8789,37 @@
     }
   }
 
+  function timecardsShiftScreenActive() {
+    var el = document.getElementById('timecardsShiftDetail');
+    if (!el) return false;
+    var screen = el.closest('.screen');
+    return !!(screen && screen.classList.contains('active'));
+  }
+
+  function timecardsModuleScreenActive() {
+    return (
+      timecardsRosterScreenActive() ||
+      timecardsEmployeeScreenActive() ||
+      timecardsShiftScreenActive()
+    );
+  }
+
+  function scheduleCrossRestaurantPunchProcessing() {
+    var run = function () {
+      global.__gmTimecardsSuppressEmployeeNotify = true;
+      try {
+        handleCrossRestaurantPunchesFromWeekEntries();
+      } finally {
+        global.__gmTimecardsSuppressEmployeeNotify = false;
+      }
+    };
+    if (typeof global.requestIdleCallback === 'function') {
+      global.requestIdleCallback(run, { timeout: 2000 });
+    } else {
+      setTimeout(run, 0);
+    }
+  }
+
   function handleCrossRestaurantPunchesFromWeekEntries() {
     weekEntries.forEach(handleCrossRestaurantPunchEntry);
   }
@@ -8536,6 +8885,7 @@
     bindTimecardsDownloadModal();
     wireTimeclockSettings();
     bindPayWeekSelectorOnce();
+    bindSohRateControlOnce();
   }
 
   global.gmCalloutTimecards = {

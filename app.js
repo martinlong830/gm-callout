@@ -442,8 +442,13 @@
   const RESTAURANT_STORAGE_KEY = 'gm-callout-current-restaurant-v1';
   const RESTAURANTS_LIST_KEY = 'gm-callout-restaurants-v1';
   const SCHEDULE_TEMPLATES_KEY = 'gm-callout-schedule-templates-v1';
-  /** Supabase `public.team_state` row id (single-store). */
+  /** Supabase `public.team_state` row id (single-store legacy = main; new companies use company UUID). */
   const TEAM_STATE_ROW_ID = 'main';
+  const RED_POKE_COMPANY_ID = 'a0000000-0000-4000-8000-000000000001';
+  const SESSION_COMPANY_ID_KEY = 'gm-callout-company-id';
+  const SESSION_TEAM_STATE_ID_KEY = 'gm-callout-team-state-id';
+  const SESSION_COMPANY_RESTAURANTS_KEY = 'gm-callout-company-restaurants';
+  const SESSION_ACCESS_CODE_KEY = 'gm-callout-access-code';
   const MESSAGING_STORAGE_KEY = 'gm-callout-messaging-templates-v1';
   const TIMECLOCK_SETTINGS_KEY = 'gm-callout-timeclock-settings-v1';
   const TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
@@ -469,6 +474,66 @@
   /** When true, roster + staff requests load/save via Supabase (see gmCalloutSupabaseHydrateFromRemote). */
   const GM_SUPABASE_DATA = typeof window !== 'undefined' && !!window.gmSupabaseEnabled;
 
+  function gmCalloutTeamStateRowId() {
+    try {
+      var fromSession = sessionStorage.getItem(SESSION_TEAM_STATE_ID_KEY);
+      if (fromSession && String(fromSession).trim()) return String(fromSession).trim();
+    } catch (_ts) {
+      /* ignore */
+    }
+    return TEAM_STATE_ROW_ID;
+  }
+
+  function gmCalloutIsRedPokeCompany() {
+    try {
+      var code = sessionStorage.getItem(SESSION_ACCESS_CODE_KEY) || '';
+      if (normPortalLoginKey(code) === 'redpoke') return true;
+      var cid = sessionStorage.getItem(SESSION_COMPANY_ID_KEY) || '';
+      if (cid === RED_POKE_COMPANY_ID) return true;
+    } catch (_rp) {
+      /* ignore */
+    }
+    return gmCalloutTeamStateRowId() === TEAM_STATE_ROW_ID;
+  }
+
+  function gmCalloutApplyCompanyContext(payload) {
+    payload = payload || {};
+    if (payload.restaurantsConfig && payload.restaurantsConfig.length) {
+      restaurantsList = payload.restaurantsConfig.map(function (r) {
+        return {
+          id: r.id,
+          name: r.name || r.shortLabel || 'Location',
+          shortLabel: r.shortLabel || r.name || 'Main',
+          defaultUnassignedSchedule: r.defaultUnassignedSchedule !== false,
+        };
+      });
+      currentRestaurantId = restaurantsList[0] ? restaurantsList[0].id : currentRestaurantId;
+      slotStaffFilter = currentRestaurantId;
+      saveRestaurantsList();
+      try {
+        localStorage.setItem(RESTAURANT_STORAGE_KEY, currentRestaurantId);
+      } catch (_rest) {
+        /* ignore */
+      }
+      renderRestaurantSwitcher();
+      renderSlotLocationFilterChips();
+      syncSlotLocationFilterChips();
+      renderEmployeeRestaurantFilterChips();
+      syncEmployeeFilterControls();
+    }
+    if (!gmCalloutIsRedPokeCompany()) {
+      employees = [];
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+      } catch (_clr) {
+        /* ignore */
+      }
+      rebuildEmployeeDerivedData();
+    }
+  }
+  window.gmCalloutApplyCompanyContext = gmCalloutApplyCompanyContext;
+  window.gmCalloutTeamStateRowId = gmCalloutTeamStateRowId;
+
   function gmCalloutCurrentSessionRole() {
     try {
       return sessionStorage.getItem('gm-callout-session') || '';
@@ -482,18 +547,11 @@
   }
 
   var KNOWN_RESTAURANT_IDS = { 'rp-9': true, 'rp-8': true };
-  /** Locations that must never show stored or auto-filled shift workers. */
-  var DEFAULT_UNASSIGNED_SCHEDULE_RESTAURANT_IDS = { 'rp-8': true };
 
   function defaultRestaurants() {
     return [
       { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
-      {
-        id: 'rp-8',
-        shortLabel: '8th Ave',
-        name: 'Red Poke 885 8th Ave',
-        defaultUnassignedSchedule: true,
-      },
+      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave' },
     ];
   }
 
@@ -642,6 +700,7 @@
   }
 
   const SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY = 'gm_schedule_past_weeks_migrated_v2';
+  const SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY = 'gm_schedule_rp8_assignments_reset_v1';
   let scheduleCalendarWeekIndex = SCHEDULE_TEMPLATE_WEEK_INDEX;
 
   function getThisMondayDate() {
@@ -1322,8 +1381,38 @@
     return true;
   }
 
+  function timecardsScreenActive() {
+    return currentScreen === 10 || currentScreen === 11 || currentScreen === 12;
+  }
+
+  var timecardsManagerLoadPromise = null;
+  function ensureTimecardsManagerLoaded() {
+    if (window.gmCalloutTimecards) return Promise.resolve();
+    if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
+    timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      script.src = 'timecards-manager.js?v=pto-export-2';
+      script.async = true;
+      script.onload = function () {
+        if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
+          window.__gmCalloutTimecardsInitPending();
+          window.__gmCalloutTimecardsInitPending = null;
+        }
+        resolve();
+      };
+      script.onerror = function () {
+        timecardsManagerLoadPromise = null;
+        reject(new Error('timecards-manager.js failed to load'));
+      };
+      document.head.appendChild(script);
+    });
+    return timecardsManagerLoadPromise;
+  }
+  window.gmCalloutEnsureTimecardsManagerLoaded = ensureTimecardsManagerLoaded;
+
   function notifyTimecardsEmployeesChanged() {
-    if (!window.gmCalloutTimecards) return;
+    if (window.__gmTimecardsSuppressEmployeeNotify) return;
+    if (!timecardsScreenActive() || !window.gmCalloutTimecards) return;
     if (typeof window.gmCalloutTimecards.rebuildRosterCacheRows === 'function') {
       window.gmCalloutTimecards.rebuildRosterCacheRows();
     }
@@ -1355,7 +1444,7 @@
     void saveEmployees({ singleEmployee: emp, awaitCloud: true }).then(function (res) {
       if (res && res.ok) applySavedEmployeeRecord(emp);
     });
-    notifyTimecardsEmployeesChanged();
+    if (!window.__gmTimecardsSuppressEmployeeNotify) notifyTimecardsEmployeesChanged();
     return true;
   }
 
@@ -1363,12 +1452,12 @@
 
   function notifyTimecardsScheduleChanged() {
     if (!window.gmCalloutTimecards) return;
-    if (typeof window.gmCalloutTimecards.onScheduleChanged === 'function') {
-      window.gmCalloutTimecards.onScheduleChanged();
-      return;
-    }
     if (typeof window.gmCalloutTimecards.invalidateScheduleCache === 'function') {
       window.gmCalloutTimecards.invalidateScheduleCache();
+    }
+    if (!timecardsScreenActive()) return;
+    if (typeof window.gmCalloutTimecards.onScheduleChanged === 'function') {
+      window.gmCalloutTimecards.onScheduleChanged();
     }
   }
 
@@ -1442,6 +1531,8 @@
   var timeClockEntriesRealtimeChannel = null;
   var timeClockEntriesRemoteRefreshTimer = null;
   var gmCalloutSessionIsManager = false;
+  /** After first manager bootstrap, avoid forcing Schedule when async hydrate finishes. */
+  var gmManagerShellBootstrapped = false;
 
   function isValidEmployeeChatPayload(o) {
     return !!(o && typeof o === 'object' && o.version === 1 && Array.isArray(o.threads));
@@ -1590,7 +1681,7 @@
     var res = await sb
       .from('team_state')
       .select('timecard_week_tip_pool, timecard_dishwasher_tips, timecard_week_extras')
-      .eq('id', TEAM_STATE_ROW_ID)
+      .eq('id', gmCalloutTeamStateRowId())
       .maybeSingle();
     if (res.error) {
       console.warn('gm-callout: team_state tip payroll select', res.error);
@@ -1647,7 +1738,7 @@
     }
     var res = await sb.from('team_state').upsert(
       {
-        id: TEAM_STATE_ROW_ID,
+        id: gmCalloutTeamStateRowId(),
         timecard_week_tip_pool: merged.tipPool,
         timecard_dishwasher_tips: merged.dishwasher,
         timecard_week_extras: merged.weekExtras,
@@ -1671,7 +1762,7 @@
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
-    var res = await sb.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle();
+    var res = await sb.from('team_state').select('*').eq('id', gmCalloutTeamStateRowId()).maybeSingle();
     if (res.error) {
       console.warn('gm-callout: team_state refresh', res.error);
       return { ok: false, error: res.error };
@@ -1690,7 +1781,7 @@
     var res = await sb
       .from('team_state')
       .select('timecard_week_tip_pool, timecard_dishwasher_tips, updated_at')
-      .eq('id', TEAM_STATE_ROW_ID)
+      .eq('id', gmCalloutTeamStateRowId())
       .maybeSingle();
     if (res.error) {
       console.warn('gm-callout: team_state tip payroll refresh', res.error);
@@ -1876,11 +1967,13 @@
     timeClockEntriesRemoteRefreshTimer = setTimeout(function () {
       timeClockEntriesRemoteRefreshTimer = null;
       if (
-        window.gmCalloutTimecards &&
-        typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
+        !timecardsScreenActive() ||
+        !window.gmCalloutTimecards ||
+        typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries !== 'function'
       ) {
-        void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
+        return;
       }
+      void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
     }, 350);
   }
 
@@ -2041,7 +2134,7 @@
       /* ignore */
     }
     var payload = {
-      id: TEAM_STATE_ROW_ID,
+      id: gmCalloutTeamStateRowId(),
       schedule_assignments: assign,
       schedule_templates: Array.isArray(templates) ? templates : [],
       draft_schedule: draftObj,
@@ -2092,6 +2185,8 @@
         if (purgeDefaultUnassignedRestaurantAssignments(mergedSched)) {
           schedChanged = true;
         }
+        var rp8ResetRemote = resetRp8ScheduleAssignmentsOnce(mergedSched);
+        if (rp8ResetRemote.changed) schedChanged = true;
         localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
         if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
         clearScheduleUndoStack();
@@ -2168,11 +2263,23 @@
     }
 
     var cr = row.current_restaurant_id;
-    if (cr && typeof cr === 'string' && restaurantsList.some(function (r) { return r.id === cr; })) {
-      currentRestaurantId = cr;
-      slotStaffFilter = cr;
+    var localRest = null;
+    try {
+      localRest = localStorage.getItem(RESTAURANT_STORAGE_KEY);
+    } catch (_lr) {
+      /* ignore */
+    }
+    var nextRest = null;
+    if (localRest && restaurantsList.some(function (r) { return r.id === localRest; })) {
+      nextRest = localRest;
+    } else if (cr && typeof cr === 'string' && restaurantsList.some(function (r) { return r.id === cr; })) {
+      nextRest = cr;
+    }
+    if (nextRest && nextRest !== currentRestaurantId) {
+      currentRestaurantId = nextRest;
+      slotStaffFilter = nextRest;
       try {
-        localStorage.setItem(RESTAURANT_STORAGE_KEY, cr);
+        localStorage.setItem(RESTAURANT_STORAGE_KEY, nextRest);
       } catch (_r) {
         /* ignore */
       }
@@ -3097,11 +3204,38 @@
   }
 
   function restaurantUsesDefaultUnassignedSchedule(restaurantId) {
-    if (DEFAULT_UNASSIGNED_SCHEDULE_RESTAURANT_IDS[restaurantId]) return true;
     var r = restaurantsList.find(function (x) {
       return x.id === restaurantId;
     });
     return !!(r && r.defaultUnassignedSchedule);
+  }
+
+  /** One-time wipe of stray 8th Ave shift workers; rp-9 assignments are untouched. */
+  function resetRp8ScheduleAssignmentsOnce(store) {
+    if (!store || typeof store !== 'object') return { store: store, changed: false };
+    try {
+      if (localStorage.getItem(SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY) === '1') {
+        return { store: store, changed: false };
+      }
+    } catch (eFlag) {
+      /* ignore */
+    }
+    var hadWorkers =
+      store['rp-8'] &&
+      typeof store['rp-8'] === 'object' &&
+      Object.keys(store['rp-8']).some(function (shiftId) {
+        var entry = normalizeScheduleAssignment(store['rp-8'][shiftId]);
+        return (entry.workers || []).some(function (n) {
+          return n && n !== 'Unassigned';
+        });
+      });
+    store['rp-8'] = {};
+    try {
+      localStorage.setItem(SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY, '1');
+    } catch (eSave) {
+      /* ignore */
+    }
+    return { store: store, changed: true, hadWorkers: hadWorkers };
   }
 
   /** Drop saved worker rows for locations that must stay unassigned (e.g. rp-8). */
@@ -3152,7 +3286,9 @@
 
   function rebuildSchedule() {
     SCHEDULE.length = 0;
-    var forceUnassigned = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
+    var forceUnassigned =
+      restaurantUsesDefaultUnassignedSchedule(currentRestaurantId) ||
+      currentRestaurantId === 'rp-8';
     ALL_WEEK_DAYS.forEach(function (dayStr, globalDayIdx) {
       var wk = weekdayKeyFromScheduleDay(dayStr);
       var weekIdx = Math.floor(globalDayIdx / 7);
@@ -3233,6 +3369,7 @@
     if (!parsed || typeof parsed !== 'object' || !parsed['rp-8'] || typeof parsed['rp-8'] !== 'object') {
       return false;
     }
+    if (restaurantsList.some(function (r) { return r.id === 'rp-8'; })) return false;
     var n9 = parsed['rp-9'] && typeof parsed['rp-9'] === 'object' ? Object.assign({}, parsed['rp-9']) : {};
     var e8 = parsed['rp-8'];
     Object.keys(e8).forEach(function (shiftId) {
@@ -3294,6 +3431,8 @@
             }
           }
           var mig = migrateScheduleAssignmentsForPastWeeks(p);
+          var rp8Reset = resetRp8ScheduleAssignmentsOnce(mig.store);
+          if (rp8Reset.changed) mig.changed = true;
           if (purgeDefaultUnassignedRestaurantAssignments(mig.store)) mig.changed = true;
           if (mig.changed) {
             try {
@@ -4109,6 +4248,7 @@
     renderCalendar();
     if (scheduleBody) renderSchedule();
     updateRestaurantSwitcherUI();
+    scheduleTeamStateDebouncedSync();
     if (currentScreen === 2 && currentShift) {
       if (shiftMode === 'edit') openShiftEdit();
       else openEligible();
@@ -5407,12 +5547,25 @@
       window.gmCalloutManagerMessagesRefreshUi();
     }
     if (num === 10) {
-      if (window.gmCalloutTimecards) {
-        window.gmCalloutTimecards.renderRoster();
-      } else if (document.getElementById('timecardsRosterWrap')) {
-        document.getElementById('timecardsRosterWrap').innerHTML =
-          '<p class="calendar-hint">Timecards module did not load. Hard-refresh the page.</p>';
+      var timecardsWrap = document.getElementById('timecardsRosterWrap');
+      if (timecardsWrap) {
+        timecardsWrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
       }
+      ensureTimecardsManagerLoaded()
+        .then(function () {
+          if (window.gmCalloutTimecards) {
+            window.gmCalloutTimecards.renderRoster();
+          } else if (timecardsWrap) {
+            timecardsWrap.innerHTML =
+              '<p class="calendar-hint">Timecards module did not load. Hard-refresh the page.</p>';
+          }
+        })
+        .catch(function () {
+          if (timecardsWrap) {
+            timecardsWrap.innerHTML =
+              '<p class="calendar-hint">Timecards module did not load. Check your connection and hard-refresh.</p>';
+          }
+        });
     }
   }
 
@@ -7957,7 +8110,7 @@
       }
       persistStaffRequestStatuses();
       renderRequestsList();
-      if (req.type === 'timeoff' && window.gmCalloutTimecards) {
+      if (req.type === 'timeoff' && timecardsScreenActive() && window.gmCalloutTimecards) {
         window.gmCalloutTimecards.renderRoster();
       }
     });
@@ -9017,8 +9170,19 @@
 
   function gmCalloutReturnToLogin() {
     var root = document.documentElement;
+    try {
+      sessionStorage.removeItem(SESSION_COMPANY_ID_KEY);
+      sessionStorage.removeItem(SESSION_TEAM_STATE_ID_KEY);
+      sessionStorage.removeItem(SESSION_COMPANY_RESTAURANTS_KEY);
+      sessionStorage.removeItem(SESSION_ACCESS_CODE_KEY);
+    } catch (_coClr) {
+      /* ignore */
+    }
     if (!root.classList.contains('authed')) {
       gmCalloutSetLoginGateOpen(true);
+      if (typeof window.gmCalloutShowLandingPanel === 'function') {
+        window.gmCalloutShowLandingPanel();
+      }
       return;
     }
     if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
@@ -9033,7 +9197,11 @@
       /* ignore */
     }
     root.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
+    gmManagerShellBootstrapped = false;
     gmCalloutSetLoginGateOpen(true);
+    if (typeof window.gmCalloutShowLandingPanel === 'function') {
+      window.gmCalloutShowLandingPanel();
+    }
   }
 
   async function gmCalloutRestoreAuthedShellFromSupabase() {
@@ -9048,12 +9216,47 @@
     }
     var profRes = await window.gmSupabase
       .from('profiles')
-      .select('role, display_name')
+      .select('role, display_name, company_id')
       .eq('id', session.user.id)
       .maybeSingle();
     var role = (profRes.data && profRes.data.role) || 'manager';
     if (role !== 'manager' && role !== 'employee' && role !== 'timeclock') {
       role = 'employee';
+    }
+    if (profRes.data && profRes.data.company_id) {
+      try {
+        sessionStorage.setItem(SESSION_COMPANY_ID_KEY, profRes.data.company_id);
+      } catch (_cidSet) {
+        /* ignore */
+      }
+      var coRes = await window.gmSupabase
+        .from('companies')
+        .select('id, name, access_code, team_state_id, restaurants_config')
+        .eq('id', profRes.data.company_id)
+        .maybeSingle();
+      if (coRes.data) {
+        try {
+          sessionStorage.setItem(SESSION_TEAM_STATE_ID_KEY, coRes.data.team_state_id || coRes.data.id);
+          sessionStorage.setItem(SESSION_ACCESS_CODE_KEY, coRes.data.access_code || '');
+          sessionStorage.setItem(SESSION_COMPANY_RESTAURANTS_KEY, JSON.stringify(coRes.data.restaurants_config || []));
+        } catch (_coSet) {
+          /* ignore */
+        }
+        gmCalloutApplyCompanyContext({
+          companyId: coRes.data.id,
+          companyName: coRes.data.name,
+          accessCode: coRes.data.access_code,
+          teamStateId: coRes.data.team_state_id || coRes.data.id,
+          restaurantsConfig: coRes.data.restaurants_config || [],
+        });
+      }
+    } else if (gmCalloutTeamStateRowId() === TEAM_STATE_ROW_ID) {
+      try {
+        sessionStorage.setItem(SESSION_ACCESS_CODE_KEY, 'redpoke');
+        sessionStorage.setItem(SESSION_TEAM_STATE_ID_KEY, TEAM_STATE_ROW_ID);
+      } catch (_rpSet) {
+        /* ignore */
+      }
     }
     try {
       sessionStorage.setItem('gm-callout-session', role);
@@ -9106,7 +9309,7 @@
         sb.from('staff_requests').select('*').order('created_at', { ascending: false }),
         sb.from('employees').select('*').order('display_name', { ascending: true }),
         sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle(),
-        sb.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle(),
+        sb.from('team_state').select('*').eq('id', gmCalloutTeamStateRowId()).maybeSingle(),
       ]);
       reqRes = batch[0];
       empRes = batch[1];
@@ -9135,7 +9338,8 @@
       Array.isArray(empRes.data) &&
       empRes.data.length === 0 &&
       isManager &&
-      employees.length > 0
+      employees.length > 0 &&
+      gmCalloutIsRedPokeCompany()
     ) {
       /** First-time cloud roster: DB table exists but has no rows; push in-memory roster (demo seed or local). */
       var reassigned = false;
@@ -9203,12 +9407,20 @@
   window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
   window.gmCalloutSetupEmployeesRealtime = setupEmployeesRealtimeSubscription;
   window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
-  window.gmCalloutManagerBootstrap = function () {
+  window.gmCalloutManagerBootstrap = function (opts) {
+    opts = opts || {};
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
-    showScreen(1);
     renderEmployeeList();
+    if (!gmManagerShellBootstrapped) {
+      if (opts.navigateToSchedule || currentScreen === 1) {
+        showScreen(1);
+      }
+      gmManagerShellBootstrapped = true;
+    } else if (opts.navigateToSchedule) {
+      showScreen(1);
+    }
   };
   window.gmCalloutQueueEmployeeChatCloudSave = queueEmployeeChatCloudSave;
 

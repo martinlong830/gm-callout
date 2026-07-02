@@ -6,6 +6,10 @@
 
   var SESSION_KEY = 'gm-callout-session';
 
+  var landingPanel = document.getElementById('landingPanel');
+  var accessCodePanel = document.getElementById('accessCodePanel');
+  var createCompanyPanel = document.getElementById('createCompanyPanel');
+  var companyPendingPanel = document.getElementById('companyPendingPanel');
   var loginPanel = document.getElementById('loginPanel');
   var registerPanel = document.getElementById('registerPanel');
   var managerRegisterPanel = document.getElementById('managerRegisterPanel');
@@ -14,6 +18,10 @@
   var loginScreenEl = document.getElementById('login-screen');
 
   function hideAllLoginPanels() {
+    if (landingPanel) landingPanel.hidden = true;
+    if (accessCodePanel) accessCodePanel.hidden = true;
+    if (createCompanyPanel) createCompanyPanel.hidden = true;
+    if (companyPendingPanel) companyPendingPanel.hidden = true;
     if (loginPanel) loginPanel.hidden = true;
     if (registerPanel) registerPanel.hidden = true;
     if (managerRegisterPanel) managerRegisterPanel.hidden = true;

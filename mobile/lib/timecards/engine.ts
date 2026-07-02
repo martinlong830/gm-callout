@@ -61,7 +61,8 @@ const PAY_ROUND_MINUTES = 15;
 export const WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 const SOH_THRESHOLD_MINUTES = 10 * 60;
 const SOH_PAY_HOURS = 1;
-const SOH_DEFAULT_HOURLY_RATE = 15;
+/** Spread of Hours premium is paid at a fixed hourly rate, independent of base pay (matches web default). */
+const SOH_RATE = 17;
 
 const ROSTER_DEPT_RANK: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
 
@@ -100,8 +101,12 @@ export function parseBreakMinutesFromAnnotation(text: string | undefined): numbe
   return 0;
 }
 
+/** Shifts of 6 hours or less use full scheduled span; longer shifts deduct unpaid break. */
+const SHORT_SHIFT_NO_BREAK_DEDUCT_MINUTES = 6 * 60;
+
 export function scheduledPaidMinutes(shift: WorkerShiftRow, emp?: EmployeeRow | null): number {
   const gross = Math.round(parseScheduledHoursDecimal(shift) * 60);
+  if (gross <= SHORT_SHIFT_NO_BREAK_DEDUCT_MINUTES) return gross;
   const br = parseBreakMinutesFromAnnotation(shift.redPokeBreak);
   const isPaid = resolveBreakPaid({ shift, emp: emp ?? null });
   return Math.max(0, gross - unpaidBreakMinutes(br, isPaid));
@@ -501,6 +506,18 @@ export function recordedPaidMinutesOnClockInDay(
   return Math.max(0, gross - unpaidBreakMinutes(br, isPaid));
 }
 
+/** Wall-clock span (clock-in to clock-out, breaks included) attributed to the clock-in day. */
+export function recordedSpanMinutesOnClockInDay(entry: TimeClockEntry): number {
+  if (!entry.clock_in_at || !entry.clock_out_at) return 0;
+  if (isStaleOpenPunch(entry)) return 0;
+  const inTs = new Date(entry.clock_in_at).getTime();
+  let outTs = new Date(entry.clock_out_at).getTime();
+  if (Number.isNaN(inTs) || Number.isNaN(outTs)) return 0;
+  const dayEnd = endOfLocalDayFromIso(punchDayIso(entry));
+  if (dayEnd && outTs > dayEnd.getTime()) outTs = dayEnd.getTime();
+  return Math.max(0, Math.floor((outTs - inTs) / 60000));
+}
+
 export function recordedPaidMinutes(
   entry: TimeClockEntry,
   shiftRow?: ShiftDayRow | null,
@@ -790,6 +807,7 @@ export function computeSpreadOfHours(
   const weekStart = bounds ? isoFromDate(bounds.start) : null;
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
+  const spanByDay: Record<string, number> = {};
   for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
     if (!e.clock_out_at) continue;
@@ -803,20 +821,20 @@ export function computeSpreadOfHours(
     const iso = punchDayIso(e);
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
+    spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
-  const rate = employeeHourlyRate(emp) ?? SOH_DEFAULT_HOURLY_RATE;
   for (const iso of Object.keys(byDay).sort()) {
     const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (roundedDay > SOH_THRESHOLD_MINUTES) {
+    if (roundedDay > SOH_THRESHOLD_MINUTES && (spanByDay[iso] || 0) > SOH_THRESHOLD_MINUTES) {
       count += 1;
       dates.push(iso);
-      pay += SOH_PAY_HOURS * rate;
+      pay += SOH_PAY_HOURS * SOH_RATE;
     }
   }
-  return { count, dates, pay, hasRate: employeeHourlyRate(emp) != null };
+  return { count, dates, pay, hasRate: true };
 }
 
 export function formatSoHDatesList(dates: string[]): string {
@@ -876,6 +894,7 @@ export function computeSpreadOfHoursIndexed(
   const weekStart = bounds ? isoFromDate(bounds.start) : null;
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
+  const spanByDay: Record<string, number> = {};
   for (const e of empEntries) {
     if (!e.clock_in_at || !e.clock_out_at) continue;
     if (
@@ -888,20 +907,20 @@ export function computeSpreadOfHoursIndexed(
     const iso = punchDayIso(e);
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
+    spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
-  const rate = employeeHourlyRate(emp) ?? SOH_DEFAULT_HOURLY_RATE;
   for (const iso of Object.keys(byDay).sort()) {
     const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (roundedDay > SOH_THRESHOLD_MINUTES) {
+    if (roundedDay > SOH_THRESHOLD_MINUTES && (spanByDay[iso] || 0) > SOH_THRESHOLD_MINUTES) {
       count += 1;
       dates.push(iso);
-      pay += SOH_PAY_HOURS * rate;
+      pay += SOH_PAY_HOURS * SOH_RATE;
     }
   }
-  return { count, dates, pay, hasRate: employeeHourlyRate(emp) != null };
+  return { count, dates, pay, hasRate: true };
 }
 
 function shiftRestaurantId(shift: WorkerShiftRow): string {

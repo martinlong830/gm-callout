@@ -195,6 +195,44 @@ html.authed .login-screen {
   margin: 0 0 12px;
 }
 
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 12px;
+}
+
+.login-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 0.9rem;
+  background: linear-gradient(145deg, #1e3a5f, #2d5a8c);
+  color: #fff;
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  box-shadow: 0 8px 24px rgba(30, 58, 95, 0.22);
+}
+
+.landing-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.landing-secondary-btn {
+  background: #fff;
+  color: #1e3a5f;
+  border: 1px solid rgba(30, 58, 95, 0.22);
+}
+
+.landing-secondary-btn:hover {
+  background: #f8fafc;
+}
+
 .login-logo {
   height: clamp(4.5rem, 24vw, 5.75rem);
   width: auto;
@@ -2127,9 +2165,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-wrap:not(.calendar-slot-empty) {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .calendar-slot-wrap:hover,
@@ -2147,6 +2185,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   flex: 0 0 auto;
   min-width: 0;
   align-self: stretch;
+  margin-top: auto;
 }
 
 .calendar-cell-edit-host {
@@ -4616,6 +4655,43 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   justify-content: space-between;
   gap: 10px 16px;
   margin: 0 0 10px;
+}
+
+.timecards-soh-rate-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timecards-soh-rate-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.timecards-soh-rate-prefix,
+.timecards-soh-rate-suffix {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.timecards-soh-rate-input {
+  width: 4.5rem;
+  border: none;
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+
+.timecards-soh-rate-input:focus {
+  outline: none;
 }
 
 .timecards-download-group {

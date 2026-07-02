@@ -101,8 +101,10 @@
       return !!(window.gmSupabaseEnabled && window.gmSupabase);
     },
 
-    signIn: async function (loginName, password) {
-      const r = await portalFetch("/api/portal/signin", { loginName, password });
+    signIn: async function (loginName, password, companyId) {
+      const payload = { loginName, password };
+      if (companyId) payload.companyId = companyId;
+      const r = await portalFetch("/api/portal/signin", payload);
       if (!r.ok) return r;
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;
@@ -110,6 +112,38 @@
         ok: true,
         role: r.data.role,
         displayName: r.data.displayName,
+        companyId: r.data.companyId || "",
+        companyName: r.data.companyName || "",
+        accessCode: r.data.accessCode || "",
+        teamStateId: r.data.teamStateId || "",
+        restaurantsConfig: r.data.restaurantsConfig || [],
+      };
+    },
+
+    verifyAccessCode: async function (accessCode) {
+      const r = await portalFetch("/api/portal/verify-access-code", { accessCode });
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        companyId: r.data.companyId || "",
+        companyName: r.data.companyName || "",
+        accessCode: r.data.accessCode || "",
+        teamStateId: r.data.teamStateId || "",
+        restaurantsConfig: r.data.restaurantsConfig || [],
+      };
+    },
+
+    createCompany: async function (payload) {
+      const r = await portalFetch("/api/portal/create-company", payload || {});
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        pending: !!r.data.pending,
+        message: r.data.message || "Check your email to confirm company creation.",
+        companyId: r.data.companyId || "",
+        accessCode: r.data.accessCode || "",
+        emailSent: !!r.data.emailSent,
+        dev: !!r.data.dev,
       };
     },
 

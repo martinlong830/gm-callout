@@ -3,10 +3,11 @@ const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 
 const PORTAL_ACCESS_CODE = "redpoke";
+const RED_POKE_COMPANY_ID = "a0000000-0000-4000-8000-000000000001";
 const INTERNAL_EMAIL_DOMAIN = "example.org";
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 
-const { sendPasswordResetEmail, isValidEmail } = require("./portal-email");
+const { sendPasswordResetEmail, sendCompanyConfirmationEmail, isValidEmail } = require("./portal-email");
 
 function stripEnv(value) {
   if (value == null || value === "") return "";
@@ -22,6 +23,156 @@ function normalizeLoginName(name) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+}
+
+function slugifyAccessCode(name) {
+  const base = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return base || "company";
+}
+
+async function findCompanyByAccessCode(admin, accessCode) {
+  const raw = String(accessCode || "").trim().toLowerCase();
+  if (!raw) return { error: "Enter your company access code." };
+  if (raw === PORTAL_ACCESS_CODE) {
+    const { data, error } = await admin
+      .from("companies")
+      .select("id, name, access_code, team_state_id, restaurants_config, confirmed_at")
+      .eq("id", RED_POKE_COMPANY_ID)
+      .maybeSingle();
+    if (error) return { error: error.message };
+    if (data) return { company: data };
+    return {
+      company: {
+        id: RED_POKE_COMPANY_ID,
+        name: "Red Poke",
+        access_code: PORTAL_ACCESS_CODE,
+        team_state_id: "main",
+        restaurants_config: [],
+        confirmed_at: new Date().toISOString(),
+      },
+    };
+  }
+  const { data, error } = await admin
+    .from("companies")
+    .select("id, name, access_code, team_state_id, restaurants_config, confirmed_at")
+    .eq("access_code", raw)
+    .maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { notFound: true };
+  return { company: data };
+}
+
+async function uniqueAccessCodeForCompany(admin, companyName) {
+  let slug = slugifyAccessCode(companyName);
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = i === 0 ? slug : `${slug}-${crypto.randomBytes(2).toString("hex")}`;
+    const { data } = await admin
+      .from("companies")
+      .select("id")
+      .eq("access_code", candidate)
+      .maybeSingle();
+    if (!data) return candidate;
+  }
+  return `${slug}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function defaultRestaurantsForCompany(companyName) {
+  const locId = `loc-${crypto.randomUUID().slice(0, 8)}`;
+  return [
+    {
+      id: locId,
+      name: String(companyName || "Main Location").trim() || "Main Location",
+      shortLabel: "Main",
+      defaultUnassignedSchedule: true,
+    },
+  ];
+}
+
+async function seedCompanyTeamState(admin, company) {
+  if (!company || !company.id) return { error: "Missing company." };
+  const rowId = String(company.team_state_id || company.id);
+  const { data: existing, error: exErr } = await admin
+    .from("team_state")
+    .select("id")
+    .eq("id", rowId)
+    .maybeSingle();
+  if (exErr) return { error: exErr.message };
+  if (existing) return { ok: true, seeded: false };
+
+  const restaurants =
+    Array.isArray(company.restaurants_config) && company.restaurants_config.length
+      ? company.restaurants_config
+      : defaultRestaurantsForCompany(company.name);
+  const primaryLoc = restaurants[0] && restaurants[0].id ? restaurants[0].id : "loc-main";
+  const assignments = {};
+  restaurants.forEach((r) => {
+    if (r && r.id) assignments[r.id] = {};
+  });
+  if (!Object.keys(assignments).length) assignments[primaryLoc] = {};
+
+  const { error } = await admin.from("team_state").insert({
+    id: rowId,
+    company_id: company.id,
+    schedule_assignments: assignments,
+    schedule_templates: [],
+    draft_schedule: {},
+    messaging_templates: { voice: "" },
+    current_restaurant_id: primaryLoc,
+    callout_history: [],
+  });
+  if (error) return { error: error.message };
+  return { ok: true, seeded: true };
+}
+
+function companyClientPayload(company) {
+  if (!company) return null;
+  return {
+    companyId: company.id,
+    companyName: company.name,
+    accessCode: company.access_code,
+    teamStateId: company.team_state_id || company.id,
+    restaurantsConfig: company.restaurants_config || [],
+    confirmed: !!company.confirmed_at,
+  };
+}
+
+async function loadCompanyForProfile(admin, profile) {
+  if (!profile || !profile.company_id) {
+    const { data } = await admin
+      .from("companies")
+      .select("id, name, access_code, team_state_id, restaurants_config, confirmed_at")
+      .eq("id", RED_POKE_COMPANY_ID)
+      .maybeSingle();
+    return data || null;
+  }
+  const { data, error } = await admin
+    .from("companies")
+    .select("id, name, access_code, team_state_id, restaurants_config, confirmed_at")
+    .eq("id", profile.company_id)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+
+async function ensureCompanyReadyOnLogin(admin, profile) {
+  const company = await loadCompanyForProfile(admin, profile);
+  if (!company) return { company: null };
+  if (!company.confirmed_at && profile.role === "manager") {
+    await admin
+      .from("companies")
+      .update({ confirmed_at: new Date().toISOString(), owner_user_id: profile.id })
+      .eq("id", company.id);
+    company.confirmed_at = new Date().toISOString();
+  }
+  if (profile.role === "manager") {
+    await seedCompanyTeamState(admin, company);
+  }
+  return { company };
 }
 
 function makeInternalEmail() {
@@ -58,7 +209,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   });
 
   const profileSelect =
-    "id, role, display_name, internal_auth_email, login_name, login_name_norm, recovery_email, recovery_email_norm";
+    "id, role, display_name, internal_auth_email, login_name, login_name_norm, recovery_email, recovery_email_norm, company_id";
 
   function passwordResetBaseUrl() {
     const base = String(publicBaseUrl || "").replace(/\/$/, "");
@@ -165,15 +316,18 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       .eq("id", profile.id);
   }
 
-  async function findProfileByLoginName(loginName) {
+  async function findProfileByLoginName(loginName, companyId) {
     const norm = normalizeLoginName(loginName);
     if (!norm) return { error: "Enter your name." };
-    const { data, error } = await admin
-      .from("profiles")
-      .select(profileSelect)
-      .eq("login_name_norm", norm)
-      .maybeSingle();
+    let query = admin.from("profiles").select(profileSelect).eq("login_name_norm", norm);
+    if (companyId) {
+      query = query.eq("company_id", companyId);
+    }
+    const { data, error } = await query.maybeSingle();
     if (error) return { error: error.message };
+    if (!data && companyId) {
+      return findProfileByLoginName(loginName, null);
+    }
     if (!data) return { notFound: true };
     if (!data.internal_auth_email) return { profile: data, needsAuthEmail: true };
     return { profile: data };
@@ -248,6 +402,16 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return { error: "Account is missing sign-in data. Ask a manager to reset your account." };
       }
     }
+    const { data: userData, error: userErr } = await admin.auth.admin.getUserById(profile.id);
+    if (userErr || !userData.user) {
+      return { error: "Could not verify account." };
+    }
+    if (!userData.user.email_confirmed_at) {
+      return {
+        error:
+          "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+      };
+    }
     const { data, error } = await admin.auth.signInWithPassword({
       email: authEmail,
       password,
@@ -261,10 +425,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       profile.display_name ||
       authEmail.split("@")[0];
     await backfillProfileLoginFields(profile, authEmail, backfillName);
+    const ready = await ensureCompanyReadyOnLogin(admin, profile);
     return {
       session: data.session,
       role: profile.role,
       displayName: profile.display_name || profile.login_name || backfillName,
+      company: ready.company,
     };
   }
 
@@ -283,16 +449,170 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     return sessionForProfile(legacy.profile, pw, raw);
   }
 
+  router.post("/verify-access-code", async (req, res) => {
+    try {
+      const accessCode = req.body && req.body.accessCode;
+      const found = await findCompanyByAccessCode(admin, accessCode);
+      if (found.error) {
+        return res.status(400).json({ ok: false, message: found.error });
+      }
+      if (found.notFound) {
+        return res.status(404).json({ ok: false, message: "Access code is incorrect." });
+      }
+      return res.json({
+        ok: true,
+        ...companyClientPayload(found.company),
+      });
+    } catch (err) {
+      console.warn("portal verify-access-code", err);
+      return res.status(500).json({ ok: false, message: "Could not verify access code." });
+    }
+  });
+
+  router.post("/create-company", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const companyName = String(body.companyName || "").trim();
+      const username = String(body.username || body.loginName || "").trim();
+      const email = normalizeRecoveryEmail(body.email || body.userEmail);
+      const password = String(body.password || "");
+
+      if (!companyName) {
+        return res.status(400).json({ ok: false, message: "Company name is required." });
+      }
+      if (!username) {
+        return res.status(400).json({ ok: false, message: "Username is required." });
+      }
+      if (!email || !isValidEmail(email)) {
+        return res.status(400).json({ ok: false, message: "Enter a valid email address." });
+      }
+      if (!password || password.length < 4) {
+        return res.status(400).json({ ok: false, message: "Password must be at least 4 characters." });
+      }
+
+      const loginNameNorm = normalizeLoginName(username);
+      const { data: nameTaken } = await admin
+        .from("profiles")
+        .select("id")
+        .eq("login_name_norm", loginNameNorm)
+        .maybeSingle();
+      if (nameTaken) {
+        return res.status(409).json({
+          ok: false,
+          message: "That username is already taken. Choose a different one.",
+        });
+      }
+
+      const accessCode = await uniqueAccessCodeForCompany(admin, companyName);
+      const companyId = crypto.randomUUID();
+      const teamStateId = companyId;
+      const restaurantsConfig = defaultRestaurantsForCompany(companyName);
+
+      const { error: companyErr } = await admin.from("companies").insert({
+        id: companyId,
+        name: companyName,
+        access_code: accessCode,
+        team_state_id: teamStateId,
+        restaurants_config: restaurantsConfig,
+        confirmed_at: null,
+      });
+      if (companyErr) {
+        return res.status(400).json({ ok: false, message: companyErr.message || "Could not create company." });
+      }
+
+      const confirmRedirect = `${passwordResetBaseUrl()}/?company_pending=1`;
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: false,
+        user_metadata: {
+          role: "manager",
+          display_name: username,
+          login_name: username,
+          login_name_norm: loginNameNorm,
+          company_id: companyId,
+          company_name: companyName,
+        },
+      });
+
+      if (createErr || !created.user) {
+        await admin.from("companies").delete().eq("id", companyId);
+        const msg = createErr && createErr.message ? createErr.message : "Could not create account.";
+        return res.status(400).json({ ok: false, message: msg });
+      }
+
+      const userId = created.user.id;
+      await admin
+        .from("profiles")
+        .update({
+          login_name: username,
+          login_name_norm: loginNameNorm,
+          internal_auth_email: email,
+          display_name: username,
+          role: "manager",
+          company_id: companyId,
+          recovery_email: email,
+          recovery_email_norm: email,
+        })
+        .eq("id", userId);
+
+      await admin.from("companies").update({ owner_user_id: userId }).eq("id", companyId);
+
+      let confirmUrl = confirmRedirect;
+      try {
+        const linkRes = await admin.auth.admin.generateLink({
+          type: "signup",
+          email,
+          password,
+          options: { redirectTo: confirmRedirect },
+        });
+        const actionLink =
+          linkRes &&
+          linkRes.data &&
+          linkRes.data.properties &&
+          linkRes.data.properties.action_link;
+        if (actionLink) confirmUrl = actionLink;
+      } catch (linkErr) {
+        console.warn("create-company generateLink", linkErr);
+      }
+
+      const mailed = await sendCompanyConfirmationEmail({
+        to: email,
+        companyName,
+        confirmUrl,
+        loginName: username,
+      });
+      if (!mailed.ok) {
+        console.warn("create-company email", mailed.error);
+      }
+
+      return res.json({
+        ok: true,
+        pending: true,
+        message:
+          "Check your email to confirm company creation. After confirming, sign in with your username and password.",
+        companyId,
+        accessCode,
+        emailSent: !!mailed.ok,
+        dev: !!mailed.dev,
+      });
+    } catch (err) {
+      console.warn("portal create-company", err);
+      return res.status(500).json({ ok: false, message: "Could not create company." });
+    }
+  });
+
   router.post("/signin", async (req, res) => {
     try {
       const loginName = req.body && req.body.loginName;
       const password = req.body && req.body.password;
+      const companyId = req.body && req.body.companyId ? String(req.body.companyId).trim() : "";
       if (!loginName || !password) {
         return res.status(400).json({ ok: false, message: "Name and password are required." });
       }
 
       let sess = null;
-      const found = await findProfileByLoginName(loginName);
+      const found = await findProfileByLoginName(loginName, companyId || null);
       if (found.error) {
         return res.status(401).json({ ok: false, message: found.error });
       }
@@ -304,12 +624,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!sess || sess.error) {
         return res.status(401).json({ ok: false, message: (sess && sess.error) || "Name or password is incorrect." });
       }
+      const companyPayload = companyClientPayload(sess.company);
       return res.json({
         ok: true,
         role: sess.role,
         displayName: sess.displayName,
         access_token: sess.session.access_token,
         refresh_token: sess.session.refresh_token,
+        ...(companyPayload || {}),
       });
     } catch (err) {
       console.warn("portal signin", err);
@@ -346,11 +668,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           message: "Manager sign-in is only for Martin Long or Ongi Management. Ask an owner to run account setup.",
         });
       }
-      const { data: existing } = await admin
-        .from("profiles")
-        .select("id")
-        .eq("login_name_norm", loginNameNorm)
-        .maybeSingle();
+      let companyId = body.companyId ? String(body.companyId).trim() : "";
+      if (!companyId && accessCode) {
+        const co = await findCompanyByAccessCode(admin, accessCode);
+        if (co.company) companyId = co.company.id;
+      }
+      let nameQuery = admin.from("profiles").select("id").eq("login_name_norm", loginNameNorm);
+      if (companyId) nameQuery = nameQuery.eq("company_id", companyId);
+      const { data: existing } = await nameQuery.maybeSingle();
       if (existing) {
         return res.status(409).json({
           ok: false,
@@ -377,6 +702,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           login_name_norm: loginNameNorm,
           phone: body.phone ? String(body.phone).trim() : "",
           staff_type: body.staffType ? String(body.staffType).trim() : "",
+          company_id: companyId || null,
         },
       });
 
@@ -398,6 +724,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             ? body.staffType
             : null,
       };
+      if (companyId) profilePatch.company_id = companyId;
       const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
       if (saved.error) {
         await admin.auth.admin.deleteUser(userId);
@@ -686,4 +1013,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   return router;
 }
 
-module.exports = { createPortalAuthRouter, normalizeLoginName, PORTAL_ACCESS_CODE };
+module.exports = {
+  createPortalAuthRouter,
+  normalizeLoginName,
+  PORTAL_ACCESS_CODE,
+  RED_POKE_COMPANY_ID,
+};

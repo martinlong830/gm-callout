@@ -12,18 +12,77 @@
 <body>
   <div id="login-screen" class="login-screen" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="login-card">
-      <div class="login-logo-wrap">
-        <img
-          class="login-logo"
-          src="assets/red-poke-logo.png"
-          alt="red poke"
-          width="120"
-          height="120"
-          decoding="async"
-        />
+      <div class="login-brand" aria-hidden="true">
+        <span class="login-brand-mark">S</span>
       </div>
       <h1 class="login-title" id="loginTitle">Shiflow</h1>
-      <div id="loginPanel">
+      <div id="landingPanel">
+        <p class="login-subtitle">Staff scheduling for restaurants</p>
+        <div class="landing-actions">
+          <button type="button" class="btn btn-primary btn-block login-submit" id="showAccessCodePanelBtn">Log in</button>
+          <button type="button" class="btn btn-secondary btn-block landing-secondary-btn" id="showCreateCompanyPanelBtn">Create company</button>
+        </div>
+      </div>
+      <div id="accessCodePanel" hidden>
+        <p class="login-subtitle">Enter your company access code</p>
+        <p class="login-hint">Your manager can share this code with you.</p>
+        <form id="accessCodeForm" class="login-form" autocomplete="off" novalidate>
+          <label class="login-field">
+            <span class="login-label">Access code</span>
+            <input
+              type="text"
+              id="accessCodeInput"
+              class="login-input"
+              required
+              autocapitalize="none"
+              spellcheck="false"
+              enterkeyhint="go"
+            />
+          </label>
+          <p class="login-error" id="accessCodeError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Continue</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLandingFromAccessCodeBtn">Back</button>
+        </p>
+      </div>
+      <div id="createCompanyPanel" hidden>
+        <p class="login-subtitle">Create your company</p>
+        <p class="login-hint">Set up Shiflow for your team. We will email you to confirm before you can sign in.</p>
+        <form id="createCompanyForm" class="login-form" autocomplete="on" novalidate>
+          <label class="login-field">
+            <span class="login-label">Company name</span>
+            <input type="text" id="createCompanyName" class="login-input" required maxlength="120" enterkeyhint="next" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Your username</span>
+            <input type="text" id="createCompanyUsername" class="login-input" required autocomplete="username" maxlength="80" enterkeyhint="next" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Your email</span>
+            <input type="email" id="createCompanyEmail" class="login-input" required autocomplete="email" inputmode="email" maxlength="120" enterkeyhint="next" />
+          </label>
+          <label class="login-field">
+            <span class="login-label">Password</span>
+            <input type="password" id="createCompanyPassword" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="done" />
+          </label>
+          <p class="login-error" id="createCompanyError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Create company</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLandingFromCreateCompanyBtn">Back</button>
+        </p>
+      </div>
+      <div id="companyPendingPanel" hidden>
+        <p class="login-subtitle">Confirm your email</p>
+        <p class="login-hint" id="companyPendingMessage">
+          We sent a confirmation link to your email. After you confirm, return here and use <strong>Log in</strong> with your company access code, username, and password.
+        </p>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLandingFromPendingBtn">Back to home</button>
+        </p>
+      </div>
+      <div id="loginPanel" hidden>
         <p class="login-subtitle">Sign in to continue</p>
         <p class="login-hint">Sign in with your <strong>name</strong> and password. Managers: <strong>Martin Long</strong> or <strong>Ongi Management</strong>.</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
@@ -54,6 +113,9 @@
           <p class="login-error" id="loginError" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
         </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLandingFromLoginBtn">Back to home</button>
+        </p>
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showForgotPasswordPanelBtn">Forgot password?</button>
         </p>
@@ -1445,13 +1507,9 @@
 
   <script src="/gm-supabase-config.js?v=2"></script>
   <script src="/vendor/supabase-js.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="gm-supabase-init.js"></script>
   <script src="employee-leave.js?v=timecards-tips-1"></script>
   <script src="break-policy.js?v=timecards-tips-1"></script>
-  <script src="timecards-manager.js?v=pto-export-2"></script>
   <script src="app.js?v=timecards-tips-1"></script>
   <script src="employee-app.js?v=timecards-tips-1"></script>
   <script src="manager-messaging.js?v=timecards-tips-1"></script>
@@ -1463,6 +1521,35 @@
     (function () {
       var SESSION_KEY = 'gm-callout-session';
       var SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
+
+      var SESSION_KEY = 'gm-callout-session';
+      var SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
+      var SESSION_COMPANY_ID_KEY = 'gm-callout-company-id';
+      var SESSION_TEAM_STATE_ID_KEY = 'gm-callout-team-state-id';
+      var SESSION_COMPANY_RESTAURANTS_KEY = 'gm-callout-company-restaurants';
+      var SESSION_ACCESS_CODE_KEY = 'gm-callout-access-code';
+      var SESSION_COMPANY_NAME_KEY = 'gm-callout-company-name';
+
+      var landingPanel = document.getElementById('landingPanel');
+      var accessCodePanel = document.getElementById('accessCodePanel');
+      var createCompanyPanel = document.getElementById('createCompanyPanel');
+      var companyPendingPanel = document.getElementById('companyPendingPanel');
+      var accessCodeForm = document.getElementById('accessCodeForm');
+      var accessCodeInput = document.getElementById('accessCodeInput');
+      var accessCodeError = document.getElementById('accessCodeError');
+      var createCompanyForm = document.getElementById('createCompanyForm');
+      var createCompanyError = document.getElementById('createCompanyError');
+      var companyPendingMessage = document.getElementById('companyPendingMessage');
+      var showAccessCodePanelBtn = document.getElementById('showAccessCodePanelBtn');
+      var showCreateCompanyPanelBtn = document.getElementById('showCreateCompanyPanelBtn');
+      var showLandingFromAccessCodeBtn = document.getElementById('showLandingFromAccessCodeBtn');
+      var showLandingFromCreateCompanyBtn = document.getElementById('showLandingFromCreateCompanyBtn');
+      var showLandingFromPendingBtn = document.getElementById('showLandingFromPendingBtn');
+      var showLandingFromLoginBtn = document.getElementById('showLandingFromLoginBtn');
+      var verifiedCompanyId = '';
+      var verifiedTeamStateId = '';
+      var verifiedAccessCode = '';
+      var verifiedCompanyName = '';
 
       var loginPanel = document.getElementById('loginPanel');
       var registerPanel = document.getElementById('registerPanel');
@@ -1501,6 +1588,115 @@
       var accountSettingsLoaded = false;
       var recoveryEmailPromptInFlight = false;
       var RECOVERY_EMAIL_PROMPT_SNOOZE_KEY = 'gm_recovery_email_prompt_snoozed';
+
+      function storeCompanySession(payload) {
+        payload = payload || {};
+        try {
+          if (payload.companyId) sessionStorage.setItem(SESSION_COMPANY_ID_KEY, payload.companyId);
+          if (payload.teamStateId) sessionStorage.setItem(SESSION_TEAM_STATE_ID_KEY, payload.teamStateId);
+          if (payload.accessCode) sessionStorage.setItem(SESSION_ACCESS_CODE_KEY, payload.accessCode);
+          if (payload.companyName) sessionStorage.setItem(SESSION_COMPANY_NAME_KEY, payload.companyName);
+          if (payload.restaurantsConfig && payload.restaurantsConfig.length) {
+            sessionStorage.setItem(
+              SESSION_COMPANY_RESTAURANTS_KEY,
+              JSON.stringify(payload.restaurantsConfig)
+            );
+          }
+        } catch (_storeCo) {
+          /* ignore */
+        }
+        if (typeof window.gmCalloutApplyCompanyContext === 'function') {
+          window.gmCalloutApplyCompanyContext(payload);
+        }
+      }
+
+      function readStoredCompanyId() {
+        try {
+          return sessionStorage.getItem(SESSION_COMPANY_ID_KEY) || verifiedCompanyId || '';
+        } catch (_cid) {
+          return verifiedCompanyId || '';
+        }
+      }
+
+      function showAccessCodeError(msg) {
+        if (!accessCodeError) return;
+        accessCodeError.textContent = msg || '';
+        accessCodeError.hidden = !msg;
+      }
+
+      function clearAccessCodeError() {
+        showAccessCodeError('');
+      }
+
+      function showCreateCompanyError(msg) {
+        if (!createCompanyError) return;
+        createCompanyError.textContent = msg || '';
+        createCompanyError.hidden = !msg;
+      }
+
+      function clearCreateCompanyError() {
+        showCreateCompanyError('');
+      }
+
+      function hideOnboardingPanels() {
+        if (landingPanel) landingPanel.hidden = true;
+        if (accessCodePanel) accessCodePanel.hidden = true;
+        if (createCompanyPanel) createCompanyPanel.hidden = true;
+        if (companyPendingPanel) companyPendingPanel.hidden = true;
+      }
+
+      function showLandingPanel() {
+        hideOnboardingPanels();
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hidePasswordResetPanels();
+        hideTimeclockLoginPanels();
+        if (landingPanel) landingPanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
+        activeResetToken = null;
+        clearLoginError();
+        clearAccessCodeError();
+        clearCreateCompanyError();
+        clearRegisterError();
+        clearManagerRegisterError();
+        clearForgotPasswordError();
+        clearResetPasswordError();
+      }
+
+      function showAccessCodePanel() {
+        hideOnboardingPanels();
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hidePasswordResetPanels();
+        hideTimeclockLoginPanels();
+        if (accessCodePanel) accessCodePanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        clearAccessCodeError();
+        if (accessCodeInput) accessCodeInput.focus();
+      }
+
+      function showCreateCompanyPanelFn() {
+        hideOnboardingPanels();
+        if (loginPanel) loginPanel.hidden = true;
+        hidePasswordResetPanels();
+        hideTimeclockLoginPanels();
+        if (createCompanyPanel) createCompanyPanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+        clearCreateCompanyError();
+      }
+
+      function showCompanyPendingPanel(message) {
+        hideOnboardingPanels();
+        if (loginPanel) loginPanel.hidden = true;
+        if (companyPendingPanel) companyPendingPanel.hidden = false;
+        if (companyPendingMessage && message) companyPendingMessage.textContent = message;
+        if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
+      }
+
+      window.gmCalloutShowLandingPanel = showLandingPanel;
+      window.gmCalloutShowAccessCodePanel = showAccessCodePanel;
 
       function norm(s) {
         return String(s || '')
@@ -1562,7 +1758,8 @@
         if (loginEl) loginEl.hidden = true;
       }
 
-      async function finishPortalLogin(role, displayName) {
+      async function finishPortalLogin(role, displayName, companyPayload) {
+        if (companyPayload) storeCompanySession(companyPayload);
         if (role === 'manager') {
           try {
             sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
@@ -1582,7 +1779,7 @@
             window.gmCalloutManagerMessagingBootstrap();
           }
           if (typeof window.gmCalloutManagerBootstrap === 'function') {
-            window.gmCalloutManagerBootstrap();
+            window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
           }
           return;
         }
@@ -1790,6 +1987,7 @@
       }
 
       function showLoginPanel() {
+        hideOnboardingPanels();
         if (loginPanel) loginPanel.hidden = false;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
@@ -1804,6 +2002,7 @@
       }
 
       function showForgotPasswordPanel() {
+        hideOnboardingPanels();
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
@@ -1860,6 +2059,7 @@
       }
 
       function showRegisterPanel() {
+        hideOnboardingPanels();
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = false;
         if (managerRegisterPanel) managerRegisterPanel.hidden = true;
@@ -1871,6 +2071,7 @@
       }
 
       function showManagerRegisterPanelFn() {
+        hideOnboardingPanels();
         if (loginPanel) loginPanel.hidden = true;
         if (registerPanel) registerPanel.hidden = true;
         if (managerRegisterPanel) managerRegisterPanel.hidden = false;
@@ -1879,6 +2080,137 @@
         if (loginScreenEl) loginScreenEl.classList.add('login-screen--register');
         clearLoginError();
         clearRegisterError();
+      }
+
+      if (showAccessCodePanelBtn) {
+        showAccessCodePanelBtn.addEventListener('click', function () {
+          showAccessCodePanel();
+        });
+      }
+      if (showCreateCompanyPanelBtn) {
+        showCreateCompanyPanelBtn.addEventListener('click', function () {
+          showCreateCompanyPanelFn();
+        });
+      }
+      if (showLandingFromAccessCodeBtn) {
+        showLandingFromAccessCodeBtn.addEventListener('click', showLandingPanel);
+      }
+      if (showLandingFromCreateCompanyBtn) {
+        showLandingFromCreateCompanyBtn.addEventListener('click', showLandingPanel);
+      }
+      if (showLandingFromPendingBtn) {
+        showLandingFromPendingBtn.addEventListener('click', showLandingPanel);
+      }
+      if (showLandingFromLoginBtn) {
+        showLandingFromLoginBtn.addEventListener('click', showLandingPanel);
+      }
+
+      if (accessCodeForm && accessCodeInput) {
+        accessCodeForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearAccessCodeError();
+          var code = String(accessCodeInput.value || '').trim();
+          if (!code) {
+            showAccessCodeError('Enter your company access code.');
+            return;
+          }
+          if (window.gmPortalAuth && window.gmPortalAuth.verifyAccessCode) {
+            (async function () {
+              var res = await window.gmPortalAuth.verifyAccessCode(code);
+              if (!res.ok) {
+                if (norm(code) === 'redpoke') {
+                  verifiedCompanyId = '';
+                  verifiedTeamStateId = 'main';
+                  verifiedAccessCode = 'redpoke';
+                  verifiedCompanyName = 'Red Poke';
+                  storeCompanySession({
+                    companyId: '',
+                    teamStateId: 'main',
+                    accessCode: 'redpoke',
+                    companyName: 'Red Poke',
+                  });
+                  showLoginPanel();
+                  return;
+                }
+                showAccessCodeError(res.message || 'Access code is incorrect.');
+                return;
+              }
+              verifiedCompanyId = res.companyId || '';
+              verifiedTeamStateId = res.teamStateId || 'main';
+              verifiedAccessCode = res.accessCode || code;
+              verifiedCompanyName = res.companyName || '';
+              storeCompanySession(res);
+              showLoginPanel();
+            })();
+            return;
+          }
+          if (norm(code) === 'redpoke') {
+            verifiedAccessCode = 'redpoke';
+            verifiedTeamStateId = 'main';
+            verifiedCompanyName = 'Red Poke';
+            storeCompanySession({
+              teamStateId: 'main',
+              accessCode: 'redpoke',
+              companyName: 'Red Poke',
+            });
+            showLoginPanel();
+            return;
+          }
+          showAccessCodeError('Access code is incorrect.');
+        });
+      }
+
+      if (createCompanyForm) {
+        createCompanyForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearCreateCompanyError();
+          var nameEl = document.getElementById('createCompanyName');
+          var userEl = document.getElementById('createCompanyUsername');
+          var emailEl = document.getElementById('createCompanyEmail');
+          var pwEl = document.getElementById('createCompanyPassword');
+          var companyName = nameEl ? String(nameEl.value || '').trim() : '';
+          var username = userEl ? String(userEl.value || '').trim() : '';
+          var email = emailEl ? String(emailEl.value || '').trim() : '';
+          var password = pwEl ? String(pwEl.value || '') : '';
+          if (!companyName || !username || !email || !password) {
+            showCreateCompanyError('All fields are required.');
+            return;
+          }
+          if (password.length < 4) {
+            showCreateCompanyError('Password must be at least 4 characters.');
+            return;
+          }
+          if (!window.gmPortalAuth || !window.gmPortalAuth.createCompany) {
+            showCreateCompanyError(
+              'Company signup needs Supabase on this server. Add SUPABASE_* keys and redeploy.'
+            );
+            return;
+          }
+          (async function () {
+            var res = await window.gmPortalAuth.createCompany({
+              companyName: companyName,
+              username: username,
+              email: email,
+              password: password,
+            });
+            if (!res.ok) {
+              showCreateCompanyError(res.message || 'Could not create company.');
+              return;
+            }
+            createCompanyForm.reset();
+            var pendingMsg =
+              res.message ||
+              'Check your email to confirm company creation. After confirming, use Log in with your access code, username, and password.';
+            if (res.accessCode) {
+              pendingMsg +=
+                ' Your company access code will be "' + res.accessCode + '" after confirmation.';
+            }
+            if (res.dev) {
+              pendingMsg += ' (Dev: confirmation link was logged on the server.)';
+            }
+            showCompanyPendingPanel(pendingMsg);
+          })();
+        });
       }
 
       if (showRegisterPanelBtn) {
@@ -1990,10 +2322,27 @@
       }
 
       try {
-        var resetParams = new URLSearchParams(window.location.search);
-        var resetTokenFromUrl = resetParams.get('reset_token');
+        var bootParams = new URLSearchParams(window.location.search);
+        var resetTokenFromUrl = bootParams.get('reset_token');
         if (resetTokenFromUrl) {
           showResetPasswordPanel(resetTokenFromUrl);
+        } else if (bootParams.get('company_pending') === '1') {
+          showCompanyPendingPanel(
+            'Email confirmed! Use Log in, enter your company access code, then sign in with your username and password.'
+          );
+          try {
+            var cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete('company_pending');
+            window.history.replaceState(
+              {},
+              '',
+              cleanUrl.pathname + (cleanUrl.search ? cleanUrl.search : '') + cleanUrl.hash
+            );
+          } catch (_cp) {
+            /* ignore */
+          }
+        } else if (!document.documentElement.classList.contains('authed')) {
+          showLandingPanel();
         }
       } catch (_rt) {
         /* ignore */
@@ -2032,13 +2381,19 @@
 
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
-              var res = await window.gmPortalAuth.signIn(loginTrim, password);
+              var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
               if (!res.ok) {
                 if (tryLegacyEmployeeLogin(rawLogin, password)) return;
                 showLoginError(res.message || 'Sign in failed.');
                 return;
               }
-              await finishPortalLogin(res.role, res.displayName);
+              await finishPortalLogin(res.role, res.displayName, {
+                companyId: res.companyId,
+                companyName: res.companyName,
+                accessCode: res.accessCode,
+                teamStateId: res.teamStateId,
+                restaurantsConfig: res.restaurantsConfig,
+              });
             })();
             return;
           }
@@ -2102,6 +2457,8 @@
                   phone: ph && ph.value ? String(ph.value).trim() : '',
                   staffType: st && st.value ? String(st.value) : '',
                   recoveryEmail: re && re.value ? String(re.value).trim() : '',
+                  companyId: readStoredCompanyId(),
+                  accessCode: verifiedAccessCode || '',
                 });
                 if (!up.ok) {
                   showRegisterError(up.message || 'Could not create account.');
