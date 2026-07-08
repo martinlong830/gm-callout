@@ -1623,7 +1623,11 @@
           /* ignore */
         }
         if (typeof window.gmCalloutApplyCompanyContext === 'function') {
-          window.gmCalloutApplyCompanyContext(payload);
+          try {
+            window.gmCalloutApplyCompanyContext(payload);
+          } catch (ctxErr) {
+            console.warn('gm-callout: apply company context', ctxErr);
+          }
         }
       }
 
@@ -2173,13 +2177,13 @@
                   verifiedTeamStateId = 'main';
                   verifiedAccessCode = 'redpoke';
                   verifiedCompanyName = 'Red Poke';
+                  showLoginPanel();
                   storeCompanySession({
                     companyId: '',
                     teamStateId: 'main',
                     accessCode: 'redpoke',
                     companyName: 'Red Poke',
                   });
-                  showLoginPanel();
                   return;
                 }
                 showAccessCodeError(res.message || 'Access code is incorrect.');
@@ -2189,8 +2193,8 @@
               verifiedTeamStateId = res.teamStateId || 'main';
               verifiedAccessCode = res.accessCode || code;
               verifiedCompanyName = res.companyName || '';
-              storeCompanySession(res);
               showLoginPanel();
+              storeCompanySession(res);
             })();
             return;
           }
@@ -2198,12 +2202,12 @@
             verifiedAccessCode = 'redpoke';
             verifiedTeamStateId = 'main';
             verifiedCompanyName = 'Red Poke';
+            showLoginPanel();
             storeCompanySession({
               teamStateId: 'main',
               accessCode: 'redpoke',
               companyName: 'Red Poke',
             });
-            showLoginPanel();
             return;
           }
           showAccessCodeError('Access code is incorrect.');

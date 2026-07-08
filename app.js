@@ -447,6 +447,8 @@
   /** v9: weekly availability chips scoped by staff type. */
   const STORAGE_KEY = 'gm-callout-employees-v13-delivery-sheet';
   const SCHEDULE_ASSIGN_KEY = 'gm-callout-schedule-assignments-v9-redpoke';
+  /** JSON snapshot last confirmed on Supabase — blocks stale remote refresh from reverting edits. */
+  const SCHEDULE_ASSIGN_CONFIRMED_JSON_KEY = 'gm-callout-schedule-assignments-confirmed-v1';
   const SCHEDULE_ASSIGN_LEGACY_V2 = 'gm-callout-schedule-assignments-v2';
   const RESTAURANT_STORAGE_KEY = 'gm-callout-current-restaurant-v1';
   const RESTAURANTS_LIST_KEY = 'gm-callout-restaurants-v1';
@@ -507,11 +509,15 @@
 
   function resolveDefaultUnassignedSchedule(restaurantRow) {
     if (!restaurantRow || typeof restaurantRow !== 'object') return false;
-    if (restaurantRow.defaultUnassignedSchedule === true) return true;
-    if (restaurantRow.defaultUnassignedSchedule === false) return false;
     var def = defaultRestaurants().find(function (d) {
       return d.id === restaurantRow.id;
     });
+    /* Canonical defaults for Red Poke locations — ignore polluted localStorage/remote flags. */
+    if (def && KNOWN_RESTAURANT_IDS[restaurantRow.id]) {
+      return !!def.defaultUnassignedSchedule;
+    }
+    if (restaurantRow.defaultUnassignedSchedule === true) return true;
+    if (restaurantRow.defaultUnassignedSchedule === false) return false;
     return !!(def && def.defaultUnassignedSchedule);
   }
 
@@ -534,11 +540,15 @@
       } catch (_rest) {
         /* ignore */
       }
-      renderRestaurantSwitcher();
-      renderSlotLocationFilterChips();
-      syncSlotLocationFilterChips();
-      renderEmployeeRestaurantFilterChips();
-      syncEmployeeFilterControls();
+      try {
+        renderRestaurantSwitcher();
+        renderSlotLocationFilterChips();
+        syncSlotLocationFilterChips();
+        renderEmployeeRestaurantFilterChips();
+        syncEmployeeFilterControls();
+      } catch (ctxUiErr) {
+        console.warn('gm-callout: company context UI refresh', ctxUiErr);
+      }
     }
     if (!gmCalloutIsRedPokeCompany()) {
       employees = [];
@@ -648,6 +658,12 @@
     /* ignore */
   }
   slotStaffFilter = currentRestaurantId;
+  let currentScreen = 1;
+  let currentShift = null;
+  let editingEmployeeId = null;
+  let employeeRoleFilter = 'all';
+  /** Employees screen: 'all' or a restaurant id — staff with usualRestaurant 'both' match any location. */
+  let employeeRestaurantFilter = 'all';
   const DEFAULT_VOICE_TEMPLATE =
     "Hi {{firstName}}. We need {{roleLabel}} coverage on {{shiftDay}} for {{shiftTime}}. If you're available, say YES. If not, say NO.";
   const MESSAGING_PREVIEW_SHIFT = (function () {
@@ -1551,8 +1567,12 @@
   }
 
   var teamStateSyncTimer = null;
+  /** Blocks remote assignment merge while a debounced or in-flight team_state push is active. */
+  var teamStatePushInFlight = false;
   /** True while local draft schedule edits are not yet confirmed on Supabase. */
   var draftScheduleDirty = false;
+  /** True while local schedule assignment edits are not yet confirmed on Supabase. */
+  var scheduleAssignmentsDirty = false;
   var tipPayrollPushTimer = null;
   var teamStateRemoteRefreshTimer = null;
   var teamStateRealtimeChannel = null;
@@ -2110,6 +2130,40 @@
     });
   }
 
+  function getScheduleAssignmentsConfirmedJson() {
+    try {
+      return localStorage.getItem(SCHEDULE_ASSIGN_CONFIRMED_JSON_KEY) || '';
+    } catch (_cJson) {
+      return '';
+    }
+  }
+
+  function setScheduleAssignmentsConfirmedJson(json) {
+    try {
+      if (json) localStorage.setItem(SCHEDULE_ASSIGN_CONFIRMED_JSON_KEY, json);
+      else localStorage.removeItem(SCHEDULE_ASSIGN_CONFIRMED_JSON_KEY);
+    } catch (_cSet) {
+      /* ignore */
+    }
+  }
+
+  /** True when remote schedule_assignments must not replace local (unpushed edits or stale fetch). */
+  function scheduleAssignmentsRemoteMergeIsStale(remoteSched) {
+    if (!remoteSched || typeof remoteSched !== 'object') return false;
+    var local = loadScheduleAssignmentsStore();
+    var localJson = JSON.stringify(local);
+    var remoteJson = JSON.stringify(
+      mergeAssignmentStoreWithShell(assignmentStoreShell(), remoteSched)
+    );
+    if (localJson === remoteJson) return false;
+    var confirmed = getScheduleAssignmentsConfirmedJson();
+    if (!confirmed) {
+      return scheduleAssignmentsStoreIsPopulated(local);
+    }
+    if (localJson !== confirmed) return true;
+    return remoteJson !== confirmed;
+  }
+
   function draftScheduleJsonHasLayers(obj) {
     if (!obj || typeof obj !== 'object') return false;
     return ['Bartender', 'Kitchen', 'Server'].some(function (role) {
@@ -2139,6 +2193,10 @@
     void pushTeamStateToSupabase();
   }
 
+  function teamStateAssignmentMergeLocked() {
+    return !!(teamStateSyncTimer || teamStatePushInFlight || scheduleAssignmentsDirty);
+  }
+
   async function pushTeamStateToSupabase() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     var sb = window.gmSupabase;
@@ -2147,46 +2205,55 @@
     var uid = sessRes.data.session.user.id;
     var prof = await sb.from('profiles').select('role').eq('id', uid).maybeSingle();
     if (prof.error || !prof.data || prof.data.role !== 'manager') return;
-    var assign = loadScheduleAssignmentsStore();
-    var templates = loadScheduleTemplates();
-    var draftObj = {
-      v: 2,
-      byWeek: cloneDraftSchedule(draftScheduleByWeekStore),
-    };
-    var msg = loadMessagingTemplates();
-    var tcSettings = loadTimeclockSettings();
-    var remote = await fetchRemoteTipPayrollStores(sb);
-    var mergedTipPayroll = mergeTipPayrollStoresForPush(
-      loadTimecardWeekTipPoolStore(),
-      loadTimecardDishwasherTipsStore(),
-      remote.tipPool,
-      remote.dishwasher,
-      loadTimecardWeekExtrasStore(),
-      remote.weekExtras
-    );
+    teamStatePushInFlight = true;
     try {
-      localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(mergedTipPayroll.tipPool));
-      localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(mergedTipPayroll.dishwasher));
-      localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(mergedTipPayroll.weekExtras));
-    } catch (_ls) {
-      /* ignore */
+      var assign = loadScheduleAssignmentsStore();
+      var templates = loadScheduleTemplates();
+      var draftObj = {
+        v: 2,
+        byWeek: cloneDraftSchedule(draftScheduleByWeekStore),
+      };
+      var msg = loadMessagingTemplates();
+      var tcSettings = loadTimeclockSettings();
+      var remote = await fetchRemoteTipPayrollStores(sb);
+      var mergedTipPayroll = mergeTipPayrollStoresForPush(
+        loadTimecardWeekTipPoolStore(),
+        loadTimecardDishwasherTipsStore(),
+        remote.tipPool,
+        remote.dishwasher,
+        loadTimecardWeekExtrasStore(),
+        remote.weekExtras
+      );
+      try {
+        localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(mergedTipPayroll.tipPool));
+        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(mergedTipPayroll.dishwasher));
+        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(mergedTipPayroll.weekExtras));
+      } catch (_ls) {
+        /* ignore */
+      }
+      var payload = {
+        id: gmCalloutTeamStateRowId(),
+        schedule_assignments: assign,
+        schedule_templates: Array.isArray(templates) ? templates : [],
+        draft_schedule: draftObj,
+        messaging_templates: { voice: msg.voice != null ? String(msg.voice) : '' },
+        current_restaurant_id: currentRestaurantId || 'rp-9',
+        callout_history: buildCalloutHistoryPayload(),
+        timeclock_settings: { auto_clock_out_time: tcSettings.autoClockOutTime || '00:00' },
+        timecard_week_tip_pool: mergedTipPayroll.tipPool,
+        timecard_dishwasher_tips: mergedTipPayroll.dishwasher,
+        timecard_week_extras: mergedTipPayroll.weekExtras,
+      };
+      var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' }).select('id').single();
+      if (res.error) console.warn('gm-callout: team_state upsert', res.error);
+      else {
+        draftScheduleDirty = false;
+        scheduleAssignmentsDirty = false;
+        setScheduleAssignmentsConfirmedJson(JSON.stringify(assign));
+      }
+    } finally {
+      teamStatePushInFlight = false;
     }
-    var payload = {
-      id: gmCalloutTeamStateRowId(),
-      schedule_assignments: assign,
-      schedule_templates: Array.isArray(templates) ? templates : [],
-      draft_schedule: draftObj,
-      messaging_templates: { voice: msg.voice != null ? String(msg.voice) : '' },
-      current_restaurant_id: currentRestaurantId || 'rp-9',
-      callout_history: buildCalloutHistoryPayload(),
-      timeclock_settings: { auto_clock_out_time: tcSettings.autoClockOutTime || '00:00' },
-      timecard_week_tip_pool: mergedTipPayroll.tipPool,
-      timecard_dishwasher_tips: mergedTipPayroll.dishwasher,
-      timecard_week_extras: mergedTipPayroll.weekExtras,
-    };
-    var res = await sb.from('team_state').upsert(payload, { onConflict: 'id' });
-    if (res.error) console.warn('gm-callout: team_state upsert', res.error);
-    else draftScheduleDirty = false;
   }
 
   function applyTeamStateRowFromRemote(row, ctx) {
@@ -2195,43 +2262,52 @@
     if (!row || typeof row !== 'object') return;
 
     var sched = row.schedule_assignments;
-    if (scheduleAssignmentsStoreIsPopulated(sched)) {
-      try {
-        var mig = migrateScheduleAssignmentsForPastWeeks(
-          mergeAssignmentStoreWithShell(assignmentStoreShell(), sched)
-        );
-        var mergedSched = mig.store;
-        var schedChanged = mig.changed;
-        if (isMgr) {
-          restaurantsList.forEach(function (r) {
-            if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
-            if (!mergedSched[r.id]) mergedSched[r.id] = {};
-            if (
-              replicateWeekZeroToFutureWeeksInStore(
-                mergedSched[r.id],
-                SCHEDULE_VIEW_WEEK_COUNT,
-                r.id
-              )
-            ) {
-              schedChanged = true;
-            }
-          });
+    if (scheduleAssignmentsStoreIsPopulated(sched) && !teamStateAssignmentMergeLocked()) {
+      if (scheduleAssignmentsRemoteMergeIsStale(sched)) {
+        if (isMgr) flushTeamStateSyncNow();
+      } else {
+        try {
+          var mig = migrateScheduleAssignmentsForPastWeeks(
+            mergeAssignmentStoreWithShell(assignmentStoreShell(), sched)
+          );
+          var mergedSched = mig.store;
+          var schedChanged = mig.changed;
+          if (isMgr) {
+            restaurantsList.forEach(function (r) {
+              if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
+              if (!mergedSched[r.id]) mergedSched[r.id] = {};
+              if (
+                replicateWeekZeroToFutureWeeksInStore(
+                  mergedSched[r.id],
+                  SCHEDULE_VIEW_WEEK_COUNT,
+                  r.id
+                )
+              ) {
+                schedChanged = true;
+              }
+            });
+          }
+          if (backfillScheduleAssignmentBreakHours(mergedSched)) {
+            schedChanged = true;
+          }
+          if (purgeDefaultUnassignedRestaurantAssignments(mergedSched)) {
+            schedChanged = true;
+          }
+          var rp8ResetRemote = resetRp8ScheduleAssignmentsOnce(mergedSched);
+          if (rp8ResetRemote.changed) schedChanged = true;
+          localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
+          setScheduleAssignmentsConfirmedJson(JSON.stringify(mergedSched));
+          if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
+          clearScheduleUndoStack();
+        } catch (_s) {
+          /* ignore */
         }
-        if (backfillScheduleAssignmentBreakHours(mergedSched)) {
-          schedChanged = true;
-        }
-        if (purgeDefaultUnassignedRestaurantAssignments(mergedSched)) {
-          schedChanged = true;
-        }
-        var rp8ResetRemote = resetRp8ScheduleAssignmentsOnce(mergedSched);
-        if (rp8ResetRemote.changed) schedChanged = true;
-        localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
-        if (isMgr && schedChanged) scheduleTeamStateDebouncedSync();
-        clearScheduleUndoStack();
-      } catch (_s) {
-        /* ignore */
       }
     } else if (isMgr && scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
+      if (scheduleAssignmentsDirty) {
+        scheduleTeamStateDebouncedSync();
+        flushTeamStateSyncNow();
+      }
       if (replicateWeekZeroToAllRestaurants(SCHEDULE_VIEW_WEEK_COUNT)) {
         scheduleTeamStateDebouncedSync();
       }
@@ -2355,9 +2431,13 @@
       /* ignore */
     }
     rebuildEmployeeDerivedData();
-    rebuildSchedule();
-    renderCalendar();
-    if (scheduleBody) renderSchedule();
+    if (calendarInlineWorkerEditIsOpen()) {
+      calendarInlineEditDeferredRemoteRefresh = true;
+    } else {
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+    }
     if (typeof updateRestaurantSwitcherUI === 'function') updateRestaurantSwitcherUI();
     if (typeof renderHistory === 'function') renderHistory();
     if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
@@ -3245,7 +3325,7 @@
     var r = restaurantsList.find(function (x) {
       return x.id === restaurantId;
     });
-    return !!(r && r.defaultUnassignedSchedule);
+    return resolveDefaultUnassignedSchedule(r || { id: restaurantId });
   }
 
   /** One-time wipe of stray 8th Ave shift workers; rp-9 assignments are untouched. */
@@ -3384,6 +3464,7 @@
       });
     });
     applyScheduleAssignmentsMerge();
+    rebindCurrentShiftFromSchedule();
   }
 
   function assignmentStoreShell() {
@@ -3504,8 +3585,22 @@
     } catch (err) {
       /* ignore */
     }
+    if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
     scheduleTeamStateDebouncedSync();
+    flushTeamStateSyncNow();
     notifyTimecardsScheduleChanged();
+  }
+
+  function replicateTemplateWeekAssignmentsInStore(store, restaurantId) {
+    if (!store || typeof store !== 'object') return false;
+    var rid = restaurantId || currentRestaurantId;
+    if (restaurantUsesDefaultUnassignedSchedule(rid)) return false;
+    if (!store[rid]) store[rid] = {};
+    return replicateWeekZeroToFutureWeeksInStore(
+      store[rid],
+      SCHEDULE_VIEW_WEEK_COUNT,
+      rid
+    );
   }
 
   function loadScheduleTemplates() {
@@ -3701,6 +3796,7 @@
     scheduleUndoSuppressPush = true;
     try {
       localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(snap.assignments));
+      if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
       if (snap.draftByWeek && typeof snap.draftByWeek === 'object') {
         draftScheduleByWeekStore = cloneDraftSchedule(snap.draftByWeek);
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
@@ -4176,6 +4272,7 @@
 
   function saveScheduleAssignments() {
     if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return;
+    if (currentShift) syncShiftWorkersOnSchedule(currentShift);
     pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
@@ -4201,6 +4298,7 @@
       if (s.timeLabel) entry.timeLabel = s.timeLabel;
       rs[s.id] = entry;
     });
+    replicateTemplateWeekAssignmentsInStore(store, currentRestaurantId);
     saveScheduleAssignmentsStore(store);
   }
 
@@ -4826,17 +4924,34 @@
     };
   }
 
-  let currentScreen = 1;
-  let currentShift = null;
-  let editingEmployeeId = null;
-  let employeeRoleFilter = 'all';
-  /** Employees screen: 'all' or a restaurant id — staff with usualRestaurant 'both' match any location. */
-  let employeeRestaurantFilter = 'all';
   let employeeSearchQuery = '';
   let scheduleDragState = null;
   let calendarDragListenersBound = false;
   /** Tear down listeners when closing the calendar cell name editor. */
   let calendarInlineEditCleanup = null;
+  /** Pending document click listener for inline edit; must be cleared before renderCalendar. */
+  let calendarInlineOutsideListenerTimer = null;
+  /** Remote team_state refresh deferred while a calendar cell editor is open. */
+  let calendarInlineEditDeferredRemoteRefresh = false;
+
+  function clearCalendarInlineOutsideListenerTimer() {
+    if (calendarInlineOutsideListenerTimer != null) {
+      clearTimeout(calendarInlineOutsideListenerTimer);
+      calendarInlineOutsideListenerTimer = null;
+    }
+  }
+
+  function calendarInlineWorkerEditIsOpen() {
+    return !!(calendarInlineEditCleanup || calendarInlineOutsideListenerTimer);
+  }
+
+  function flushDeferredCalendarRemoteRefresh() {
+    if (!calendarInlineEditDeferredRemoteRefresh) return;
+    calendarInlineEditDeferredRemoteRefresh = false;
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+  }
   function findShift(dayStr, role, start, end) {
     return SCHEDULE.find(function (s) {
       return (
@@ -4846,6 +4961,32 @@
         (end == null || s.end === end)
       );
     });
+  }
+
+  /** Copy workers from a shift object onto the live SCHEDULE row (same id). */
+  function syncShiftWorkersOnSchedule(shift) {
+    if (!shift || !shift.id) return;
+    var live = SCHEDULE.find(function (s) {
+      return s.id === shift.id;
+    });
+    if (!live || live === shift) return;
+    var workers = (shift.workers || []).filter(function (n) {
+      return n && n !== 'Unassigned';
+    });
+    if (!workers.length) {
+      var one = shift.worker || 'Unassigned';
+      workers = one && one !== 'Unassigned' ? [one] : ['Unassigned'];
+    }
+    live.workers = workers.slice();
+    live.worker = live.workers[0];
+  }
+
+  function rebindCurrentShiftFromSchedule() {
+    if (!currentShift || !currentShift.id) return;
+    var live = SCHEDULE.find(function (s) {
+      return s.id === currentShift.id;
+    });
+    if (live) currentShift = live;
   }
 
   function findShiftByWeekdayKey(weekdayKey, role, start, end) {
@@ -5557,6 +5698,9 @@
       updateRestaurantSwitcherUI();
       updateScheduleWeekNav();
       populateScheduleTemplateSelect();
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
     }
     if (num === 5) {
       renderEmployeeRestaurantFilterChips();
@@ -5706,9 +5850,13 @@
 
   function renderCalendar() {
     closeCalendarInlineWorkerEdit();
-    if (!calendarGrid) return;
+    if (!calendarGrid) {
+      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+      return;
+    }
     if (!SCHEDULE.length) {
       calendarGrid.innerHTML = '<p class="calendar-hint">No shifts to show.</p>';
+      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
       return;
     }
 
@@ -5884,6 +6032,7 @@
       '</tbody></table>';
 
     ensureCalendarInteraction();
+    if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
   }
 
   function setScheduleDragHighlights(draggedWorkerName) {
@@ -5909,6 +6058,7 @@
   }
 
   function closeCalendarInlineWorkerEdit() {
+    clearCalendarInlineOutsideListenerTimer();
     if (typeof calendarInlineEditCleanup === 'function') {
       calendarInlineEditCleanup();
     }
@@ -5978,11 +6128,17 @@
       var hit = poolFull.find(function (n) {
         return String(n).toLowerCase() === t.toLowerCase();
       });
+      if (!hit) {
+        hit = poolFull.find(function (n) {
+          return workerNamesMatch(n, t);
+        });
+      }
       return hit || null;
     }
 
     function tearDownListeners() {
-      document.removeEventListener('mousedown', onDocMouseDown, true);
+      clearCalendarInlineOutsideListenerTimer();
+      document.removeEventListener('click', onDocOutsideClick, true);
     }
 
     function finishAndRerender() {
@@ -6010,6 +6166,7 @@
       });
       shift.workers = row2;
       shift.worker = nonU.length ? nonU[0] : 'Unassigned';
+      syncShiftWorkersOnSchedule(shift);
       saveScheduleAssignments();
       finishAndRerender();
     }
@@ -6020,7 +6177,8 @@
       renderCalendar();
     }
 
-    function onDocMouseDown(e) {
+    /** Use click (not mousedown) so toolbar/nav buttons still receive one click while closing. */
+    function onDocOutsideClick(e) {
       if (host.contains(e.target)) return;
       cancel();
     }
@@ -6059,11 +6217,14 @@
       }, 150);
     });
 
-    setTimeout(function () {
-      document.addEventListener('mousedown', onDocMouseDown, true);
-    }, 0);
-
     calendarInlineEditCleanup = tearDownListeners;
+    clearCalendarInlineOutsideListenerTimer();
+    calendarInlineOutsideListenerTimer = setTimeout(function () {
+      calendarInlineOutsideListenerTimer = null;
+      if (calendarInlineEditCleanup !== tearDownListeners) return;
+      if (!document.body.contains(host)) return;
+      document.addEventListener('click', onDocOutsideClick, true);
+    }, 0);
 
     renderDd();
     input.focus();
@@ -7686,7 +7847,11 @@
             : '—';
           const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
           const seed = hashString(currentShift.role + '|' + name + '|' + i);
-          const checked = currentNames.indexOf(name) !== -1 ? ' checked' : '';
+          const checked = currentNames.some(function (n) {
+            return workerNamesMatch(n, name);
+          })
+            ? ' checked'
+            : '';
           return (
             '<li class="worker-item">' +
             '<input type="checkbox" class="edit-shift-worker-cb" id="edit-' +
@@ -7834,6 +7999,8 @@
 
       currentShift.workers = selected;
       currentShift.worker = selected[0];
+      syncShiftWorkersOnSchedule(currentShift);
+      rebindCurrentShiftFromSchedule();
 
       saveScheduleAssignments();
       renderCalendar();
