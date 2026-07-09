@@ -429,6 +429,97 @@ export function breakMinutesFromRange(
   return Math.max(0, Math.floor((endTs - startTs) / 60000));
 }
 
+function breakMinutesOverlappingWallTsRange(
+  entry: TimeClockEntry,
+  rangeStartTs: number,
+  rangeEndTs: number
+): number {
+  if (rangeEndTs <= rangeStartTs) return 0;
+  let total = 0;
+  const segs = entry.break_segments;
+  if (Array.isArray(segs)) {
+    segs.forEach((seg) => {
+      if (!seg?.start) return;
+      const segStart = new Date(seg.start).getTime();
+      const segEnd = new Date(seg.end || entry.clock_out_at || 0).getTime();
+      if (Number.isNaN(segStart) || Number.isNaN(segEnd) || segEnd <= segStart) return;
+      const start = Math.max(segStart, rangeStartTs);
+      const end = Math.min(segEnd, rangeEndTs);
+      if (end > start) total += Math.floor((end - start) / 60000);
+    });
+  }
+  if (entry.break_start_at) {
+    const brStart = new Date(entry.break_start_at).getTime();
+    const brEnd = new Date(entry.break_end_at || entry.clock_out_at || 0).getTime();
+    if (!Number.isNaN(brStart) && !Number.isNaN(brEnd) && brEnd > brStart) {
+      const overlapStart = Math.max(brStart, rangeStartTs);
+      const overlapEnd = Math.min(brEnd, rangeEndTs);
+      if (overlapEnd > overlapStart) total += Math.floor((overlapEnd - overlapStart) / 60000);
+    }
+  }
+  let stored = entry.break_minutes != null ? Number(entry.break_minutes) : 0;
+  if (Number.isNaN(stored)) stored = 0;
+  if (
+    stored > 0 &&
+    !entry.break_start_at &&
+    !(Array.isArray(segs) && segs.length) &&
+    entry.clock_out_at
+  ) {
+    const outTs = new Date(entry.clock_out_at).getTime();
+    if (!Number.isNaN(outTs)) {
+      const assumedBreakStart = outTs - stored * 60000;
+      const assumedStart = Math.max(assumedBreakStart, rangeStartTs);
+      const assumedEnd = Math.min(outTs, rangeEndTs);
+      if (assumedEnd > assumedStart) total += Math.floor((assumedEnd - assumedStart) / 60000);
+    }
+  }
+  return total;
+}
+
+function sohWallClockThresholdTs(entry: TimeClockEntry): number | null {
+  if (!entry.clock_in_at) return null;
+  const inTs = new Date(entry.clock_in_at).getTime();
+  if (Number.isNaN(inTs)) return null;
+  return inTs + SOH_THRESHOLD_MINUTES * 60000;
+}
+
+/** True when paid work (not break-only) continues after clock-in + 10h wall-clock. */
+export function entryExtendsPaidWorkPastSohThreshold(
+  entry: TimeClockEntry,
+  shiftRow?: ShiftDayRow | null,
+  emp?: EmployeeRow | null
+): boolean {
+  if (!entry.clock_in_at || !entry.clock_out_at) return false;
+  if (isStaleOpenPunch(entry)) return false;
+  const thresholdTs = sohWallClockThresholdTs(entry);
+  if (thresholdTs == null) return false;
+  let outTs = new Date(entry.clock_out_at).getTime();
+  if (Number.isNaN(outTs) || outTs <= thresholdTs) return false;
+  const dayEnd = endOfLocalDayFromIso(punchDayIso(entry));
+  if (dayEnd && outTs > dayEnd.getTime()) outTs = dayEnd.getTime();
+  if (outTs <= thresholdTs) return false;
+  const postWallMins = Math.floor((outTs - thresholdTs) / 60000);
+  if (postWallMins <= 0) return false;
+  const breakMins = breakMinutesOverlappingWallTsRange(entry, thresholdTs, outTs);
+  const isPaid = resolveBreakPaid({ entry, shift: shiftRow?.shift, emp: emp ?? null });
+  const unpaidBreak = unpaidBreakMinutes(breakMins, isPaid);
+  return postWallMins > unpaidBreak;
+}
+
+/**
+ * SoH day qualifies when span > 10h and either worked > 10h or paid work extends past the
+ * 10h wall-clock point (break-only padding past 10h does not qualify).
+ * Juan 11:30–22:00 (10.5h span) → qualifies unless break fills 21:30–22:00 with no work after.
+ */
+export function dayQualifiesForSpreadOfHours(
+  workedMinutesRounded: number,
+  spanMinutes: number,
+  hasPaidWorkPastThreshold: boolean
+): boolean {
+  if (spanMinutes <= SOH_THRESHOLD_MINUTES) return false;
+  return workedMinutesRounded > SOH_THRESHOLD_MINUTES || hasPaidWorkPastThreshold;
+}
+
 export function effectiveBreakMinutes(entry: TimeClockEntry): number {
   let stored = entry.break_minutes != null ? Number(entry.break_minutes) : 0;
   if (Number.isNaN(stored)) stored = 0;
@@ -808,6 +899,7 @@ export function computeSpreadOfHours(
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
   const spanByDay: Record<string, number> = {};
+  const extendsPastByDay: Record<string, boolean> = {};
   for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
     if (!e.clock_out_at) continue;
@@ -822,13 +914,16 @@ export function computeSpreadOfHours(
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
     spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
+    if (entryExtendsPaidWorkPastSohThreshold(e, null, emp)) extendsPastByDay[iso] = true;
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
   for (const iso of Object.keys(byDay).sort()) {
     const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (roundedDay > SOH_THRESHOLD_MINUTES && (spanByDay[iso] || 0) > SOH_THRESHOLD_MINUTES) {
+    if (
+      dayQualifiesForSpreadOfHours(roundedDay, spanByDay[iso] || 0, !!extendsPastByDay[iso])
+    ) {
       count += 1;
       dates.push(iso);
       pay += SOH_PAY_HOURS * SOH_RATE;
@@ -895,6 +990,7 @@ export function computeSpreadOfHoursIndexed(
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
   const byDay: Record<string, number> = {};
   const spanByDay: Record<string, number> = {};
+  const extendsPastByDay: Record<string, boolean> = {};
   for (const e of empEntries) {
     if (!e.clock_in_at || !e.clock_out_at) continue;
     if (
@@ -908,13 +1004,16 @@ export function computeSpreadOfHoursIndexed(
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
     byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
     spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
+    if (entryExtendsPaidWorkPastSohThreshold(e, null, emp)) extendsPastByDay[iso] = true;
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
   for (const iso of Object.keys(byDay).sort()) {
     const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (roundedDay > SOH_THRESHOLD_MINUTES && (spanByDay[iso] || 0) > SOH_THRESHOLD_MINUTES) {
+    if (
+      dayQualifiesForSpreadOfHours(roundedDay, spanByDay[iso] || 0, !!extendsPastByDay[iso])
+    ) {
       count += 1;
       dates.push(iso);
       pay += SOH_PAY_HOURS * SOH_RATE;

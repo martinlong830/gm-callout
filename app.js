@@ -978,6 +978,111 @@
     { first: 'ABEL', last: 'MALDONADO LUJAN', rate: 12.5 },
   ];
 
+  /** Payroll CSV employee info — merged into employee.meta on load when fields are empty. */
+  var EMPLOYEE_INFO_PRESETS = [
+    { name: 'MARK ONG', position: 'STORE MANAGER', hiringDate: '3/25/2023', emergencyContact: 'ELLOISA ONG · 347 526 9910', ssn: '', itin: '990 - 98 - 5260', birthDate: '3/17/1989', hoursRate: 22, payAdjustment: 28.5, tipPoint: 5 },
+    { name: 'SEID SUMOG - OY', position: 'SERVICE REP', hiringDate: '4/9/2023', emergencyContact: 'BARBARA WESS · 404 980 0319‬', ssn: '713 - 11 - 6099', itin: '', birthDate: '10/23/2000', hoursRate: 19, payAdjustment: 20, tipPoint: 2 },
+    { name: 'EUGENE VILLARRUZ', position: 'SERVICE REP', hiringDate: '4/28/2025', emergencyContact: 'EVA GUZMAN · 515 993 0795', ssn: '916 - 66 - 2562', itin: '', birthDate: '11/6/1999', hoursRate: 18, payAdjustment: 0, tipPoint: 2 },
+    { name: 'ANGEL GELLA', position: 'SERVICE REP', hiringDate: '1/1/2026', emergencyContact: 'LALAINE BRIONNES · 305 587 8299', ssn: '788 - 04 - 4444', itin: '', birthDate: '1/14/2002', hoursRate: 17, payAdjustment: 18, tipPoint: 2 },
+    { name: 'JONG SARDUA', position: 'SERVICE REP', hiringDate: '3/17/2026', emergencyContact: 'RONA LUKBAN · 929 836 5956', ssn: '245 - 95 - 5801', itin: '', birthDate: '10/4/1989', hoursRate: 17, payAdjustment: 17.5, tipPoint: 2 },
+    { name: 'BALTAZAR LUCAS', position: 'KITCHEN MANAGER', hiringDate: '10/7/2019', emergencyContact: 'LOURDES LUCAS · 929 391 7813', ssn: '', itin: '985 - 95 - 1637', birthDate: '6/6/1996', hoursRate: 20, payAdjustment: 25.5, tipPoint: 4 },
+    { name: 'ENRIQUE CUMES', position: 'SERVICE REP', hiringDate: '7/1/2024', emergencyContact: 'GRACIELA COXOLCA · 929 751 3313', ssn: '085 - 39 - 2876', itin: '', birthDate: '8/2/2002', hoursRate: 19, payAdjustment: 20, tipPoint: 3 },
+    { name: 'ARMANDO CUMES', position: 'SERVICE REP', hiringDate: '10/18/2024', emergencyContact: 'ANDRES CUMES · 929 608 5892', ssn: '387 - 39 - 1029', itin: '', birthDate: '7/27/2002', hoursRate: 18, payAdjustment: 19, tipPoint: 2 },
+    { name: 'JOEL HERNANDES', position: 'SERVICE REP', hiringDate: '4/17/2025', emergencyContact: 'ISIDRO BERNABE · 347 684 5461', ssn: '372 - 40 - 8742', itin: '', birthDate: '11/19/2001', hoursRate: 18, payAdjustment: 19, tipPoint: 2 },
+    { name: 'ZEFERINO FLORES', position: 'SERVICE REP', hiringDate: '11/9/2025', emergencyContact: 'SORAYA CUELLAR · 917 826 3647', ssn: '187 - 02 - 7754', itin: '', birthDate: '9/16/1994', hoursRate: 17, payAdjustment: 18, tipPoint: 2 },
+    { name: 'IRINEO PINEDA', position: 'SERVICE REP', hiringDate: '4/9/2026', emergencyContact: 'JOSEFINA POLICARPIO · 646 833 5991', ssn: '', itin: '400 - 53 - 4472', birthDate: '6/27/1996', hoursRate: 17, payAdjustment: 17.5, tipPoint: 2 },
+    { name: 'JUAN SALVATIERRA', position: 'PREP / DISHWASHER', hiringDate: '1/1/2016', emergencyContact: 'DAVID SALVATIERRA · 908 266 3845', ssn: '077 - 86 - 2345', itin: '', birthDate: '1/13/1960', hoursRate: 13.5, payAdjustment: 15, tipPoint: null },
+    { name: 'NATALIO DE LA CRUZ', position: 'PREP / DISHWASHER', hiringDate: '3/1/2024', emergencyContact: 'LEO BASURTO · 646 303 1675', ssn: '153 - 82 - 2740', itin: '', birthDate: '7/5/1996', hoursRate: 12.5, payAdjustment: 13.5, tipPoint: null },
+    { name: 'ABEL LUJON', position: 'PREP / DISHWASHER', hiringDate: '11/24/2025', emergencyContact: 'BENJAMIN LUJON · 347 227 9475', ssn: '265 - 42 - 8916', itin: '', birthDate: '12/13/1997', hoursRate: 12.5, payAdjustment: 13, tipPoint: null },
+  ];
+
+  var EMPLOYEE_INFO_NAME_ALIASES = {
+    'seid sumog oy': 'sied sumog oy',
+    'angel gella': 'angelyn gella',
+    'abel lujon': 'abel lujan',
+  };
+
+  function normCsvInfoNameKey(name) {
+    var n = String(name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return EMPLOYEE_INFO_NAME_ALIASES[n] || n;
+  }
+
+  function employeeInfoNamesLooselyMatch(a, b) {
+    var na = normCsvInfoNameKey(a);
+    var nb = normCsvInfoNameKey(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    var fa = nameFirstToken(na);
+    var fb = nameFirstToken(nb);
+    var la = nameLastToken(na);
+    var lb = nameLastToken(nb);
+    if (fa === fb && la === lb) return true;
+    if (la === lb && (fa.indexOf(fb) === 0 || fb.indexOf(fa) === 0)) return true;
+    if (fa === fb && (la.indexOf(lb) === 0 || lb.indexOf(la) === 0)) return true;
+    return false;
+  }
+
+  function employeeInfoPresetForEmployee(emp) {
+    if (!emp) return null;
+    var dn = normCsvInfoNameKey(employeeDisplayName(emp));
+    var fn = normCsvInfoNameKey(emp.firstName);
+    var ln = normCsvInfoNameKey(emp.lastName);
+    for (var i = 0; i < EMPLOYEE_INFO_PRESETS.length; i += 1) {
+      var p = EMPLOYEE_INFO_PRESETS[i];
+      var pn = normCsvInfoNameKey(p.name);
+      if (dn === pn || employeeInfoNamesLooselyMatch(dn, pn)) return p;
+      if (employeeInfoNamesLooselyMatch(fn + ' ' + ln, pn)) return p;
+    }
+    return null;
+  }
+
+  function mergeEmployeeInfoPresetInto(emp, preset, onlyMissing) {
+    if (!emp || !preset) return;
+    emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    function setMeta(key, val) {
+      if (val == null || val === '') return;
+      if (onlyMissing && emp.meta[key] != null && String(emp.meta[key]).trim() !== '') return;
+      emp.meta[key] = val;
+    }
+    setMeta('position', preset.position);
+    setMeta('hiringDate', preset.hiringDate);
+    setMeta('emergencyContact', preset.emergencyContact);
+    setMeta('ssn', preset.ssn);
+    setMeta('itin', preset.itin);
+    setMeta('birthDate', preset.birthDate);
+    if (preset.payAdjustment != null && !Number.isNaN(Number(preset.payAdjustment))) {
+      setMeta('payAdjustment', Math.round(Number(preset.payAdjustment) * 100) / 100);
+    }
+    if (preset.hoursRate != null && (emp.hourlyRate == null || !onlyMissing)) {
+      emp.hourlyRate = preset.hoursRate;
+    }
+    if (preset.tipPoint != null && (emp.tipPoint == null || !onlyMissing)) {
+      emp.tipPoint = normalizeTipPointValue(preset.tipPoint);
+      emp.meta.tipPoint = emp.tipPoint;
+    }
+  }
+
+  function applyEmployeeInfoPresetIfMissing(emp) {
+    var preset = employeeInfoPresetForEmployee(emp);
+    if (!preset) return;
+    mergeEmployeeInfoPresetInto(emp, preset, true);
+  }
+
+  function applyEmployeeInfoPresetsToAllEmployees() {
+    var n = 0;
+    employees.forEach(function (emp) {
+      var before = JSON.stringify(emp.meta || {});
+      applyEmployeeInfoPresetIfMissing(emp);
+      if (JSON.stringify(emp.meta || {}) !== before) n += 1;
+    });
+    if (n > 0) saveEmployees();
+  }
+
   function normNameKey(s) {
     return String(s || '')
       .trim()
@@ -1417,6 +1522,7 @@
     });
     applyHourlyRatePresetsToAllEmployees();
     applyTipPointPresetsToAllEmployees();
+    applyEmployeeInfoPresetsToAllEmployees();
     seedAllEmployeeLeaveBalances();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
@@ -1424,6 +1530,7 @@
       /* ignore */
     }
     rebuildEmployeeDerivedData();
+    gmCalloutEmployeeDataReady = true;
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     notifyTimecardsEmployeesChanged();
     return true;
@@ -1439,7 +1546,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=pto-export-2';
+      script.src = 'timecards-manager.js?v=full-report-3';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -2274,7 +2381,6 @@
           var schedChanged = mig.changed;
           if (isMgr) {
             restaurantsList.forEach(function (r) {
-              if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
               if (!mergedSched[r.id]) mergedSched[r.id] = {};
               if (
                 replicateWeekZeroToFutureWeeksInStore(
@@ -2288,9 +2394,6 @@
             });
           }
           if (backfillScheduleAssignmentBreakHours(mergedSched)) {
-            schedChanged = true;
-          }
-          if (purgeDefaultUnassignedRestaurantAssignments(mergedSched)) {
             schedChanged = true;
           }
           var rp8ResetRemote = resetRp8ScheduleAssignmentsOnce(mergedSched);
@@ -2525,12 +2628,13 @@
     );
   }
 
-  /** Sheet hours when set; otherwise gross hours from shift times (ignore empty strings). */
+  /** Gross hours from draft shift times; assignment sheet hours only when times are missing. */
   function scheduleAssignedHoursString(shift) {
     if (!shift) return '';
+    if (shift.start && shift.end) return redPokeShiftHoursDecimal(shift.start, shift.end);
     var h = shift.redPokeHours;
     if (h != null && String(h).trim() !== '') return String(h);
-    return redPokeShiftHoursDecimal(shift.start, shift.end);
+    return '';
   }
 
   /** Calendar-style slot lines (assigned break/office + sheet fallback). */
@@ -3217,6 +3321,7 @@
     }
     applyHourlyRatePresetIfMissing(out);
     applyTipPointPresetIfMissing(out);
+    applyEmployeeInfoPresetIfMissing(out);
     return out;
   }
 
@@ -3268,8 +3373,6 @@
   }
 
   let employees = loadEmployees();
-  applyHourlyRatePresetsToAllEmployees();
-  applyTipPointPresetsToAllEmployees();
 
   const empLeaveBalanceMount = document.getElementById('empLeaveBalanceMount');
 
@@ -3290,8 +3393,6 @@
     var n = L.applySeedsToEmployees(employees, employeeDisplayName);
     if (n > 0) saveEmployees();
   }
-
-  seedAllEmployeeLeaveBalances();
 
   let EMPLOYEE_POOLS = { Kitchen: [], Bartender: [], Server: [] };
   let SCHEDULE = [];
@@ -3321,6 +3422,7 @@
       .map(employeeDisplayName);
   }
 
+  /** True when a location should seed empty schedule slots as Unassigned (not a save block). */
   function restaurantUsesDefaultUnassignedSchedule(restaurantId) {
     var r = restaurantsList.find(function (x) {
       return x.id === restaurantId;
@@ -3354,22 +3456,6 @@
       /* ignore */
     }
     return { store: store, changed: true, hadWorkers: hadWorkers };
-  }
-
-  /** Drop saved worker rows for locations that must stay unassigned (e.g. rp-8). */
-  function purgeDefaultUnassignedRestaurantAssignments(store) {
-    if (!store || typeof store !== 'object') return false;
-    var changed = false;
-    restaurantsList.forEach(function (r) {
-      if (!restaurantUsesDefaultUnassignedSchedule(r.id)) return;
-      if (store[r.id] && Object.keys(store[r.id]).length) {
-        store[r.id] = {};
-        changed = true;
-      } else if (!store[r.id]) {
-        store[r.id] = {};
-      }
-    });
-    return changed;
   }
 
   /** FOH/BOH/Delivery rows map trIdx → one roster name (sheet-style), not random per day. */
@@ -3552,7 +3638,6 @@
           var mig = migrateScheduleAssignmentsForPastWeeks(p);
           var rp8Reset = resetRp8ScheduleAssignmentsOnce(mig.store);
           if (rp8Reset.changed) mig.changed = true;
-          if (purgeDefaultUnassignedRestaurantAssignments(mig.store)) mig.changed = true;
           if (mig.changed) {
             try {
               localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mig.store));
@@ -3594,7 +3679,6 @@
   function replicateTemplateWeekAssignmentsInStore(store, restaurantId) {
     if (!store || typeof store !== 'object') return false;
     var rid = restaurantId || currentRestaurantId;
-    if (restaurantUsesDefaultUnassignedSchedule(rid)) return false;
     if (!store[rid]) store[rid] = {};
     return replicateWeekZeroToFutureWeeksInStore(
       store[rid],
@@ -3861,7 +3945,6 @@
 
   function applyWeekPatternToCurrentRestaurant(weekPattern) {
     if (!weekPattern || typeof weekPattern !== 'object') return false;
-    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return false;
     pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
@@ -4235,7 +4318,6 @@
     var store = loadScheduleAssignmentsStore();
     var any = false;
     restaurantsList.forEach(function (r) {
-      if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
       if (!store[r.id]) store[r.id] = {};
       if (replicateWeekZeroToFutureWeeksInStore(store[r.id], weekCount, r.id)) any = true;
     });
@@ -4271,7 +4353,6 @@
   }
 
   function saveScheduleAssignments() {
-    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return;
     if (currentShift) syncShiftWorkersOnSchedule(currentShift);
     pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
@@ -4304,7 +4385,6 @@
 
   function applyScheduleAssignmentsMerge() {
     var stored = getCurrentRestaurantAssignments();
-    var skipWorkers = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
     SCHEDULE.forEach(function (s) {
       var entry = lookupScheduleAssignment(stored, s.id);
       var slotLabel = redPokeShiftTimeLabel(s.start, s.end);
@@ -4320,22 +4400,7 @@
       } else {
         delete s.breakPaid;
       }
-      if (entry.hours != null && String(entry.hours).trim() !== '') {
-        var entryH = parseFloat(entry.hours);
-        var slotH = parseFloat(slotHours);
-        if (!Number.isNaN(entryH) && !Number.isNaN(slotH) && Math.abs(entryH - slotH) > 0.02) {
-          s.redPokeHours = slotHours;
-        } else {
-          s.redPokeHours = entry.hours;
-        }
-      } else {
-        s.redPokeHours = slotHours;
-      }
-      if (skipWorkers) {
-        s.workers = ['Unassigned'];
-        s.worker = 'Unassigned';
-        return;
-      }
+      s.redPokeHours = slotHours;
       var list = entry.workers.filter(function (n) {
         return n && n !== 'Unassigned';
       });
@@ -4692,7 +4757,6 @@
   }
 
   function moveWorkerToShift(workerName, sourceShiftId, targetShiftId) {
-    if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) return;
     if (!workerName || workerName === 'Unassigned' || sourceShiftId === targetShiftId) return;
     const src = SCHEDULE.find(function (s) {
       return s.id === sourceShiftId;
@@ -4777,7 +4841,36 @@
     ELIGIBLE_BY_ROLE.Server = buildEligibleByRole('Server');
   }
 
-  rebuildEmployeeDerivedData();
+  var gmCalloutEmployeeDataReady = false;
+  var gmCalloutShellUiRendered = false;
+
+  function gmCalloutEnsureEmployeeDataReady() {
+    if (gmCalloutEmployeeDataReady) return;
+    gmCalloutEmployeeDataReady = true;
+    applyHourlyRatePresetsToAllEmployees();
+    applyTipPointPresetsToAllEmployees();
+    applyEmployeeInfoPresetsToAllEmployees();
+    seedAllEmployeeLeaveBalances();
+    rebuildEmployeeDerivedData();
+  }
+
+  function gmCalloutEnsureShellUiRendered() {
+    if (gmCalloutShellUiRendered) return;
+    gmCalloutShellUiRendered = true;
+    if (scheduleBody) renderSchedule();
+    renderCalendar();
+    renderHistory();
+    renderEmployeeList();
+    updateRestaurantSwitcherUI();
+    renderSlotLocationFilterChips();
+    syncSlotLocationFilterChips();
+    renderEmployeeRestaurantFilterChips();
+    syncEmployeeFilterControls();
+    initScheduleWeekNav();
+    populateScheduleTemplateSelect();
+    populateRemoveRestaurantSelect();
+    renderEmployeeLocationSelectOptions('both');
+  }
 
   function employeeByDisplayName(name) {
     return employees.find(function (e) { return employeeDisplayName(e) === name; });
@@ -5291,6 +5384,55 @@
     span.textContent = redPokeShiftHoursDecimal(s, e) + ' h';
   }
 
+  /** Read visible Shift Times inputs into scratch before save (picker may only fire change). */
+  function flushDraftScheduleScratchFromDom() {
+    if (!draftModalScratch || !draftScheduleTableMount) return;
+    var role = draftModalActiveRole;
+    if (!draftModalScratch[role]) return;
+    draftScheduleTableMount.querySelectorAll('tr[data-draft-row]').forEach(function (tr) {
+      var ri = parseInt(tr.getAttribute('data-draft-row'), 10);
+      if (isNaN(ri) || !draftModalScratch[role][ri]) return;
+      tr.querySelectorAll('td[data-draft-day]').forEach(function (td) {
+        var di = parseInt(td.getAttribute('data-draft-day'), 10);
+        if (isNaN(di)) return;
+        var dayOff = td.querySelector('.draft-dayoff');
+        if (dayOff && dayOff.checked) {
+          draftModalScratch[role][ri][di] = null;
+          return;
+        }
+        var sInp = td.querySelector('.draft-time-start');
+        var eInp = td.querySelector('.draft-time-end');
+        var s = normalizeHHMM(sInp && sInp.value);
+        var e = normalizeHHMM(eInp && eInp.value);
+        if (s && e) draftModalScratch[role][ri][di] = [s, e];
+      });
+    });
+  }
+
+  function syncDraftCellFromInputs(td, tr, role) {
+    if (!td || !tr || !draftModalScratch) return;
+    var di = parseInt(td.getAttribute('data-draft-day'), 10);
+    var ri = parseInt(tr.getAttribute('data-draft-row'), 10);
+    if (isNaN(di) || isNaN(ri) || !draftModalScratch[role] || !draftModalScratch[role][ri]) return;
+    var dayOff = td.querySelector('.draft-dayoff');
+    if (dayOff && dayOff.checked) {
+      draftModalScratch[role][ri][di] = null;
+      updateDraftCellHoursEl(td, null, null);
+      return;
+    }
+    var sInp = td.querySelector('.draft-time-start');
+    var eInp = td.querySelector('.draft-time-end');
+    var s = normalizeHHMM(sInp && sInp.value);
+    var e = normalizeHHMM(eInp && eInp.value);
+    if (s && e) {
+      draftModalScratch[role][ri][di] = [s, e];
+      updateDraftCellHoursEl(td, s, e);
+    } else {
+      draftModalScratch[role][ri][di] = null;
+      updateDraftCellHoursEl(td, null, null);
+    }
+  }
+
   function renderDraftScheduleRoleChips() {
     if (!draftScheduleRoleChips) return;
     draftScheduleRoleChips.innerHTML = ROLE_DEFS.map(function (rd) {
@@ -5397,22 +5539,13 @@
         var t = e.target;
         if (!t || !t.classList) return;
         if (!t.classList.contains('draft-time-start') && !t.classList.contains('draft-time-end')) return;
-        var td = t.closest('td');
-        var tr = t.closest('tr');
-        if (!td || !tr || !draftModalScratch) return;
-        var di = parseInt(td.getAttribute('data-draft-day'), 10);
-        var ri = parseInt(tr.getAttribute('data-draft-row'), 10);
-        var sInp = td.querySelector('.draft-time-start');
-        var eInp = td.querySelector('.draft-time-end');
-        var s = normalizeHHMM(sInp && sInp.value);
-        var e = normalizeHHMM(eInp && eInp.value);
-        if (s && e) {
-          draftModalScratch[draftModalActiveRole][ri][di] = [s, e];
-          updateDraftCellHoursEl(td, s, e);
-        } else {
-          draftModalScratch[draftModalActiveRole][ri][di] = null;
-          updateDraftCellHoursEl(td, null, null);
-        }
+        syncDraftCellFromInputs(t.closest('td'), t.closest('tr'), draftModalActiveRole);
+      });
+      draftScheduleTableMount.addEventListener('change', function (e) {
+        var t = e.target;
+        if (!t || !t.classList) return;
+        if (!t.classList.contains('draft-time-start') && !t.classList.contains('draft-time-end')) return;
+        syncDraftCellFromInputs(t.closest('td'), t.closest('tr'), draftModalActiveRole);
       });
     }
   }
@@ -5730,7 +5863,7 @@
     }
     if (num === 10) {
       var timecardsWrap = document.getElementById('timecardsRosterWrap');
-      if (timecardsWrap) {
+      if (timecardsWrap && !window.gmCalloutTimecards) {
         timecardsWrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
       }
       ensureTimecardsManagerLoaded()
@@ -6148,10 +6281,6 @@
     }
 
     function commit() {
-      if (restaurantUsesDefaultUnassignedSchedule(currentRestaurantId)) {
-        cancel();
-        return;
-      }
       var chosen = pickCanonical(input.value);
       if (!chosen && String(input.value || '').trim()) {
         renderDd();
@@ -7400,6 +7529,26 @@
               '">View submitted grid</button>' +
               '</div>'
             : '';
+        var swapDetailHtml = '';
+        if (r.type === 'swap') {
+          if (r.offeredShiftLabel) {
+            swapDetailHtml +=
+              '<p class="history-item-meta request-swap-offer">Offered shift: ' +
+              escapeHtml(r.offeredShiftLabel) +
+              '</p>';
+          }
+          if (r.swapOfferId) {
+            var offerRow = staffRequests.find(function (o) {
+              return o.id === r.swapOfferId;
+            });
+            var acceptLabel =
+              offerRow && offerRow.offeredShiftLabel
+                ? 'Accepting offer: ' + offerRow.offeredShiftLabel
+                : 'Accepting offer #' + String(r.swapOfferId).slice(0, 8) + '…';
+            swapDetailHtml +=
+              '<p class="history-item-meta">' + escapeHtml(acceptLabel) + '</p>';
+          }
+        }
         return (
           '<li class="history-item">' +
           '<div class="history-item-header">' +
@@ -7419,6 +7568,7 @@
           ' · Submitted ' +
           escapeHtml(formatRequestSubmittedDate(r.submittedAt)) +
           '</p>' +
+          swapDetailHtml +
           '<p class="history-item-notes">' +
           escapeHtml(r.summary) +
           '</p>' +
@@ -7437,6 +7587,13 @@
   const empRegeneratePinBtn = document.getElementById('empRegeneratePinBtn');
   const empHourlyRate = document.getElementById('empHourlyRate');
   const empTipPoint = document.getElementById('empTipPoint');
+  const empPosition = document.getElementById('empPosition');
+  const empHiringDate = document.getElementById('empHiringDate');
+  const empEmergencyContact = document.getElementById('empEmergencyContact');
+  const empSsn = document.getElementById('empSsn');
+  const empItin = document.getElementById('empItin');
+  const empBirthDate = document.getElementById('empBirthDate');
+  const empPayAdjustment = document.getElementById('empPayAdjustment');
   const empBreakPolicy = document.getElementById('empBreakPolicy');
   const empPortalAccountBlock = document.getElementById('empPortalAccountBlock');
   const empPortalPassword = document.getElementById('empPortalPassword');
@@ -7712,6 +7869,21 @@
       empTipPoint.value =
         emp && emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))
           ? String(emp.tipPoint)
+          : '';
+    }
+    var empMeta = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    if (empPosition) empPosition.value = empMeta.position ? String(empMeta.position) : '';
+    if (empHiringDate) empHiringDate.value = empMeta.hiringDate ? String(empMeta.hiringDate) : '';
+    if (empEmergencyContact) {
+      empEmergencyContact.value = empMeta.emergencyContact ? String(empMeta.emergencyContact) : '';
+    }
+    if (empSsn) empSsn.value = empMeta.ssn ? String(empMeta.ssn) : '';
+    if (empItin) empItin.value = empMeta.itin ? String(empMeta.itin) : '';
+    if (empBirthDate) empBirthDate.value = empMeta.birthDate ? String(empMeta.birthDate) : '';
+    if (empPayAdjustment) {
+      empPayAdjustment.value =
+        empMeta.payAdjustment != null && !Number.isNaN(Number(empMeta.payAdjustment))
+          ? String(empMeta.payAdjustment)
           : '';
     }
     if (empBreakPolicy) {
@@ -8373,6 +8545,7 @@
   if (saveDraftScheduleBtn) {
     saveDraftScheduleBtn.addEventListener('click', function () {
       if (!draftModalScratch) return;
+      flushDraftScheduleScratchFromDom();
       persistDraftScheduleRows(draftModalScratch, draftModalWeekIndex, draftModalRestaurantId);
       closeDraftScheduleModal();
     });
@@ -8711,6 +8884,7 @@
       } else {
         applyHourlyRatePresetIfMissing(rec);
         applyTipPointPresetIfMissing(rec);
+        applyEmployeeInfoPresetIfMissing(rec);
         employees.push(rec);
       }
       var L = gmLeave();
@@ -8721,6 +8895,45 @@
       rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
       if (empBreakPolicy) {
         rec.meta.breakPolicy = empBreakPolicy.value === 'paid' ? 'paid' : 'unpaid';
+      }
+      if (empPosition) {
+        var posVal = String(empPosition.value || '').trim();
+        if (posVal) rec.meta.position = posVal;
+        else if (rec.meta.position) delete rec.meta.position;
+      }
+      if (empHiringDate) {
+        var hireVal = String(empHiringDate.value || '').trim();
+        if (hireVal) rec.meta.hiringDate = hireVal;
+        else if (rec.meta.hiringDate) delete rec.meta.hiringDate;
+      }
+      if (empEmergencyContact) {
+        var emergVal = String(empEmergencyContact.value || '').trim();
+        if (emergVal) rec.meta.emergencyContact = emergVal;
+        else if (rec.meta.emergencyContact) delete rec.meta.emergencyContact;
+      }
+      if (empSsn) {
+        var ssnVal = String(empSsn.value || '').trim();
+        if (ssnVal) rec.meta.ssn = ssnVal;
+        else if (rec.meta.ssn) delete rec.meta.ssn;
+      }
+      if (empItin) {
+        var itinVal = String(empItin.value || '').trim();
+        if (itinVal) rec.meta.itin = itinVal;
+        else if (rec.meta.itin) delete rec.meta.itin;
+      }
+      if (empBirthDate) {
+        var bdayVal = String(empBirthDate.value || '').trim();
+        if (bdayVal) rec.meta.birthDate = bdayVal;
+        else if (rec.meta.birthDate) delete rec.meta.birthDate;
+      }
+      if (empPayAdjustment) {
+        var paRaw = String(empPayAdjustment.value || '').trim();
+        var paNum = paRaw === '' ? null : parseFloat(paRaw);
+        if (paNum != null && !Number.isNaN(paNum) && paNum >= 0) {
+          rec.meta.payAdjustment = Math.round(paNum * 100) / 100;
+        } else if (rec.meta.payAdjustment != null) {
+          delete rec.meta.payAdjustment;
+        }
       }
       if (rec.tipPoint != null) {
         rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
@@ -8885,19 +9098,10 @@
     });
   }
 
-  if (scheduleBody) renderSchedule();
-  renderCalendar();
-  renderHistory();
-  renderEmployeeList();
-  updateRestaurantSwitcherUI();
-  renderSlotLocationFilterChips();
-  syncSlotLocationFilterChips();
-  renderEmployeeRestaurantFilterChips();
-  syncEmployeeFilterControls();
-  initScheduleWeekNav();
-  populateScheduleTemplateSelect();
-  populateRemoveRestaurantSelect();
-  renderEmployeeLocationSelectOptions('both');
+  if (document.documentElement.classList.contains('authed')) {
+    gmCalloutEnsureEmployeeDataReady();
+    gmCalloutEnsureShellUiRendered();
+  }
 
   function normPortalLoginKey(s) {
     return String(s || '')
@@ -9221,9 +9425,14 @@
     },
     getOpenSwapOffers: function (workerName) {
       mergeEmployeeSubmittedFromStorage();
+      var selfKey = String(workerName || '').trim().toLowerCase();
       return staffRequests
         .filter(function (r) {
-          return r && r.type === 'swap' && r.status === 'pending' && r.employeeName !== workerName && r.offeredShiftLabel;
+          if (!r || r.type !== 'swap' || r.status !== 'pending' || r.swapOfferId) return false;
+          if (!r.offeredShiftLabel) return false;
+          var nameKey = String(r.employeeName || '').trim().toLowerCase();
+          if (selfKey && nameKey === selfKey) return false;
+          return true;
         })
         .map(function (r) {
           return {
@@ -9298,7 +9507,7 @@
           saveEmployeeSubmittedRequestsArray(arr);
         }
         mergeEmployeeSubmittedFromStorage();
-        renderRequestsList();
+        notifyStaffRequestsUiRefresh();
       }
 
       if (!GM_SUPABASE_DATA || !window.gmSupabase) {
@@ -9373,8 +9582,27 @@
     }
   }
 
+  function gmCalloutHasVerifiedCompanyAccessCode() {
+    try {
+      return !!(sessionStorage.getItem(SESSION_ACCESS_CODE_KEY) || '').trim();
+    } catch (_vac) {
+      return false;
+    }
+  }
+
   function gmCalloutReturnToLogin() {
     var root = document.documentElement;
+    if (!root.classList.contains('authed')) {
+      gmCalloutSetLoginGateOpen(true);
+      if (gmCalloutHasVerifiedCompanyAccessCode()) {
+        if (typeof window.gmCalloutShowLoginPanel === 'function') {
+          window.gmCalloutShowLoginPanel();
+        }
+      } else if (typeof window.gmCalloutShowLandingPanel === 'function') {
+        window.gmCalloutShowLandingPanel();
+      }
+      return;
+    }
     try {
       sessionStorage.removeItem(SESSION_COMPANY_ID_KEY);
       sessionStorage.removeItem(SESSION_TEAM_STATE_ID_KEY);
@@ -9382,13 +9610,6 @@
       sessionStorage.removeItem(SESSION_ACCESS_CODE_KEY);
     } catch (_coClr) {
       /* ignore */
-    }
-    if (!root.classList.contains('authed')) {
-      gmCalloutSetLoginGateOpen(true);
-      if (typeof window.gmCalloutShowLandingPanel === 'function') {
-        window.gmCalloutShowLandingPanel();
-      }
-      return;
     }
     if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
       window.gmSupabase.auth.signOut().catch(function () {
@@ -9411,12 +9632,10 @@
 
   async function gmCalloutRestoreAuthedShellFromSupabase() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
-      gmCalloutReturnToLogin();
       return false;
     }
     var session = await gmCalloutEnsureSupabaseSession(window.gmSupabase);
     if (!session) {
-      gmCalloutReturnToLogin();
       return false;
     }
     var profRes = await window.gmSupabase
@@ -9590,7 +9809,11 @@
       isManager ? MANAGER_CHAT_STORAGE_KEY : EMPLOYEE_CHAT_STORAGE_KEY
     );
     mergeEmployeeSubmittedFromStorage();
-    rebuildEmployeeDerivedData();
+    if (!gmCalloutEmployeeDataReady) {
+      gmCalloutEnsureEmployeeDataReady();
+    } else {
+      rebuildEmployeeDerivedData();
+    }
     renderCalendar();
     if (scheduleBody) renderSchedule();
     notifyStaffRequestsUiRefresh();
@@ -9606,6 +9829,7 @@
       renderCalendar();
       if (scheduleBody) renderSchedule();
     }
+    gmCalloutShellUiRendered = true;
     return { ok: true };
   }
   window.gmCalloutSupabaseHydrateFromRemote = gmCalloutSupabaseHydrateFromRemote;
@@ -9614,6 +9838,8 @@
   window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
   window.gmCalloutManagerBootstrap = function (opts) {
     opts = opts || {};
+    gmCalloutEnsureEmployeeDataReady();
+    gmCalloutEnsureShellUiRendered();
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
@@ -9626,7 +9852,11 @@
     } else if (opts.navigateToSchedule) {
       showScreen(1);
     }
+    void ensureTimecardsManagerLoaded().catch(function () {});
   };
+  if (typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('gm-callout-app-ready'));
+  }
   window.gmCalloutQueueEmployeeChatCloudSave = queueEmployeeChatCloudSave;
 
   function initGmCalloutTimecardsModule() {
@@ -9682,6 +9912,9 @@
   }
 
   (async function () {
+    if (!gmCalloutIsTimeclockKiosk()) {
+      gmCalloutSetLoginGateOpen(true);
+    }
     if (GM_SUPABASE_DATA) {
       try {
         var restored = await gmCalloutRestoreAuthedShellFromSupabase();
@@ -9710,8 +9943,6 @@
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
       }
-    } else {
-      gmCalloutSetLoginGateOpen(true);
     }
     if (!gmCalloutIsTimeclockKiosk() && document.documentElement.classList.contains('authed')) {
       if (document.documentElement.classList.contains('manager-app')) {

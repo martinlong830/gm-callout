@@ -138,11 +138,39 @@ app.get("/vendor/supabase-js.js", (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=86400");
   res.sendFile(supabaseUmdPath, { etag: false, lastModified: false }, (err) => {
     if (err) {
+      if (res.headersSent) return;
       res
         .status(404)
         .type("text/plain")
         .send("Supabase browser bundle missing. Run npm install on the server.");
     }
+  });
+});
+
+const exportVendorBundles = {
+  "xlsx-js-style.min.js": path.join(
+    __dirname,
+    "node_modules",
+    "xlsx-js-style",
+    "dist",
+    "xlsx.min.js"
+  ),
+  "jszip.min.js": path.join(__dirname, "node_modules", "jszip", "dist", "jszip.min.js"),
+  "exceljs.min.js": path.join(__dirname, "node_modules", "exceljs", "dist", "exceljs.min.js"),
+};
+
+Object.keys(exportVendorBundles).forEach(function (fileName) {
+  app.get("/vendor/" + fileName, function (req, res) {
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.sendFile(exportVendorBundles[fileName], { etag: false, lastModified: false }, function (err) {
+      if (err) {
+        if (res.headersSent) return;
+        res
+          .status(404)
+          .type("text/plain")
+          .send("Export bundle missing: " + fileName + ". Run npm install on the server.");
+      }
+    });
   });
 });
 

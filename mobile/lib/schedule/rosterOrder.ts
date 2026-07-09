@@ -1,6 +1,9 @@
 import { employeeDisplayName, type EmployeeRow } from '../employees';
 
-/** Matches app.js schedule sheet row order (FOH → BOH → Delivery). */
+/** Matches web `SCHEDULE_GRID_ROLE_ORDER` / calendar section order (FOH → BOH → Delivery). */
+export const SCHEDULE_GRID_ROLE_ORDER = ['Bartender', 'Kitchen', 'Server'] as const;
+
+/** Front of House (Bartender) — matches FOH schedule sheet / web `TEAM_ROSTER_BARTENDER`. */
 export const TEAM_ROSTER_BARTENDER = [
   'MARK ONG',
   'CHARLES JAKOB ZACANI',
@@ -20,13 +23,19 @@ export const TEAM_ROSTER_KITCHEN = [
 
 export const TEAM_ROSTER_SERVER = ['JUAN SALVATIERRA', 'NATALIO DE LA CRUZ', 'ABEL LUJAN'] as const;
 
-const SHEET_ROSTER_ORDER = [
-  ...TEAM_ROSTER_BARTENDER,
-  ...TEAM_ROSTER_KITCHEN,
-  ...TEAM_ROSTER_SERVER,
-];
+const ROSTER_BY_ROLE: Record<(typeof SCHEDULE_GRID_ROLE_ORDER)[number], readonly string[]> = {
+  Bartender: TEAM_ROSTER_BARTENDER,
+  Kitchen: TEAM_ROSTER_KITCHEN,
+  Server: TEAM_ROSTER_SERVER,
+};
 
-const ROSTER_DEPT_RANK: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
+const SHEET_ROSTER_ORDER = SCHEDULE_GRID_ROLE_ORDER.flatMap((role) => [...ROSTER_BY_ROLE[role]]);
+
+const ROSTER_DEPT_RANK: Record<string, number> = {
+  Bartender: SCHEDULE_GRID_ROLE_ORDER.indexOf('Bartender'),
+  Kitchen: SCHEDULE_GRID_ROLE_ORDER.indexOf('Kitchen'),
+  Server: SCHEDULE_GRID_ROLE_ORDER.indexOf('Server'),
+};
 
 function normNameKey(s: string): string {
   return String(s || '')

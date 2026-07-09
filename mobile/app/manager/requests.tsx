@@ -335,7 +335,14 @@ export default function ManagerRequests() {
           <Text style={styles.highlight}>Offered shift: {r.offeredShiftLabel}</Text>
         ) : null}
         {r.type === 'swap' && r.swapOfferId ? (
-          <Text style={styles.meta}>Accepting offer #{r.swapOfferId.slice(0, 8)}…</Text>
+          <Text style={styles.meta}>
+            {(() => {
+              const offer = staffRequests.find((o) => o.id === r.swapOfferId);
+              return offer?.offeredShiftLabel
+                ? `Accepting offer: ${offer.offeredShiftLabel}`
+                : `Accepting offer #${r.swapOfferId.slice(0, 8)}…`;
+            })()}
+          </Text>
         ) : null}
         <Text style={styles.notes}>{r.summary}</Text>
         {r.type === 'availability' &&

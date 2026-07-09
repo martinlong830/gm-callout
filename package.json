@@ -16,7 +16,10 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.105.1",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "twilio": "^5.3.6"
+    "jszip": "^3.10.1",
+    "twilio": "^5.3.6",
+    "xlsx-js-style": "^1.2.0"
   }
 }

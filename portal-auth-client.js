@@ -344,4 +344,7 @@
       };
     },
   };
+  if (typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('gm-callout-portal-auth-ready'));
+  }
 })();

@@ -10,23 +10,23 @@ const { createClient } = require("@supabase/supabase-js");
 
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
-/** [display name, 4-digit PIN] */
+/** [display name, 4-digit PIN] — birthday MMDD where known */
 const PIN_ASSIGNMENTS = [
   ["MARK ONG", "0317"],
-  ["CHARLES JAKOB ZACANI", "1023"],
+  ["SIED SUMOG - OY", "1023"],
+  ["ANGELYN GELLA", "0114"],
+  ["JONG SARDUA", "1004"],
   ["EUGENE VILLARRUZ", "1225"],
-  ["MAEVE WILLIAMS", "1106"],
-  ["JON ARELLANO", "1004"],
   ["BALTAZAR LUCAS", "0606"],
   ["ENRIQUE CUMES", "0802"],
   ["ARMANDO CUMES", "0727"],
-  ["JOEL HERNANDES", "1119"],
   ["ZEFERINO FLORES", "0916"],
   ["IRINEO PINEDA", "0627"],
   ["JUAN SALVATIERRA", "0113"],
   ["NATALIO DE LA CRUZ", "0705"],
-  ["ABEL LUJON", "1213"],
   ["ABEL LUJAN", "1213"],
+  ["ABEL LUJON", "1213"],
+  ["BERNABE DE LEON", "0501"],
 ];
 
 function normName(s) {

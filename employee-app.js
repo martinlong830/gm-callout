@@ -681,6 +681,10 @@
       document.querySelectorAll('[data-req-form]').forEach(function (c) {
         c.classList.toggle('active', c.getAttribute('data-req-form') === formKey);
       });
+      if (formKey === 'swap') {
+        populateSwapShiftOfferSelect();
+        populateAvailableSwapOffersSelect();
+      }
     }
 
     function renderAvailWeekChips() {

@@ -6,7 +6,7 @@
   <title>Shiflow</title>
   <link rel="stylesheet" href="styles.css?v=timeclock-pad-1" />
   <script>
-    /* Authed shell is applied in app.js after Supabase session is verified (avoids a blocking login overlay). */
+    /* Login shell is interactive before deferred app bundles finish loading. */
   </script>
 </head>
 <body>
@@ -842,6 +842,54 @@
             </label>
           </div>
 
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">Position</span>
+              <input type="text" name="position" id="empPosition" placeholder="e.g. Service rep" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">Hiring date</span>
+              <input type="text" name="hiringDate" id="empHiringDate" placeholder="e.g. 3/25/2023" />
+            </label>
+          </div>
+          <label class="form-field form-field-block">
+            <span class="form-label">Emergency #</span>
+            <input
+              type="text"
+              name="emergencyContact"
+              id="empEmergencyContact"
+              placeholder="Contact name · phone"
+            />
+          </label>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">SSN</span>
+              <input type="text" name="ssn" id="empSsn" placeholder="e.g. 123 - 45 - 6789" autocomplete="off" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">ITIN</span>
+              <input type="text" name="itin" id="empItin" placeholder="e.g. 900 - 70 - 1234" autocomplete="off" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">B-Day</span>
+              <input type="text" name="birthDate" id="empBirthDate" placeholder="e.g. 3/17/1989" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">Pay adjustment ($)</span>
+              <input
+                type="number"
+                name="payAdjustment"
+                id="empPayAdjustment"
+                min="0"
+                step="0.01"
+                inputmode="decimal"
+                placeholder="e.g. 20.00"
+              />
+            </label>
+          </div>
+
           <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
             <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below.</p>
             <label class="form-field form-field-block">
@@ -1521,17 +1569,23 @@
   </div>
 
   <script src="/gm-supabase-config.js?v=2"></script>
-  <script src="/vendor/supabase-js.js"></script>
-  <script src="gm-supabase-init.js"></script>
-  <script src="employee-leave.js?v=timecards-tips-1"></script>
-  <script src="break-policy.js?v=timecards-tips-1"></script>
-  <script src="app.js?v=timecards-tips-1"></script>
-  <script src="employee-app.js?v=timecards-tips-1"></script>
-  <script src="manager-messaging.js?v=timecards-tips-1"></script>
-  <script src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
-  <script src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
-  <script src="portal-auth-client.js?v=recovery-email-self-2"></script>
-  <script src="login-timeclock.js?v=timecards-tips-1"></script>
+  <script>
+    /* Login gate opens before heavy app bundles parse (app.js is deferred below). */
+    window.gmCalloutSetLoginGateOpen = function (isOpen) {
+      var loginEl = document.getElementById('login-screen');
+      if (!loginEl) return;
+      if (isOpen) {
+        loginEl.hidden = false;
+        loginEl.removeAttribute('aria-hidden');
+        loginEl.removeAttribute('inert');
+      } else {
+        loginEl.hidden = true;
+        loginEl.setAttribute('aria-hidden', 'true');
+        loginEl.setAttribute('inert', '');
+      }
+    };
+    window.gmCalloutSetLoginGateOpen(true);
+  </script>
   <script>
     (function () {
       var SESSION_KEY = 'gm-callout-session';
@@ -1544,6 +1598,58 @@
       var SESSION_COMPANY_RESTAURANTS_KEY = 'gm-callout-company-restaurants';
       var SESSION_ACCESS_CODE_KEY = 'gm-callout-access-code';
       var SESSION_COMPANY_NAME_KEY = 'gm-callout-company-name';
+
+      function whenManagerAppReady() {
+        if (typeof window.gmCalloutManagerBootstrap === 'function') {
+          return Promise.resolve();
+        }
+        return new Promise(function (resolve) {
+          var settled = false;
+          function done() {
+            if (settled) return;
+            settled = true;
+            resolve();
+          }
+          window.addEventListener('gm-callout-app-ready', done, { once: true });
+          var tries = 0;
+          (function poll() {
+            if (typeof window.gmCalloutManagerBootstrap === 'function') {
+              done();
+              return;
+            }
+            if (++tries > 400) {
+              done();
+              return;
+            }
+            setTimeout(poll, 25);
+          })();
+        });
+      }
+
+      function whenPortalAuthReady() {
+        if (window.gmPortalAuth && window.gmSupabase) return Promise.resolve();
+        return new Promise(function (resolve) {
+          var settled = false;
+          function done() {
+            if (settled) return;
+            settled = true;
+            resolve();
+          }
+          window.addEventListener('gm-callout-portal-auth-ready', done, { once: true });
+          var tries = 0;
+          (function poll() {
+            if (window.gmPortalAuth && window.gmSupabase) {
+              done();
+              return;
+            }
+            if (++tries > 400) {
+              done();
+              return;
+            }
+            setTimeout(poll, 25);
+          })();
+        });
+      }
 
       var landingPanel = document.getElementById('landingPanel');
       var accessCodePanel = document.getElementById('accessCodePanel');
@@ -1722,6 +1828,7 @@
 
       window.gmCalloutShowLandingPanel = showLandingPanel;
       window.gmCalloutShowAccessCodePanel = showAccessCodePanel;
+      window.gmCalloutShowLoginPanel = showLoginPanel;
 
       function norm(s) {
         return String(s || '')
@@ -1808,6 +1915,7 @@
       }
 
       async function finishPortalLogin(role, displayName, companyPayload) {
+        await whenManagerAppReady();
         if (companyPayload) storeCompanySession(companyPayload);
         if (role === 'manager') {
           try {
@@ -2049,6 +2157,7 @@
         clearForgotPasswordError();
         clearResetPasswordError();
         updateLoginBranding();
+        if (loginEmail) loginEmail.focus();
       }
 
       function showForgotPasswordPanel() {
@@ -2069,6 +2178,7 @@
       }
 
       async function showResetPasswordPanel(token) {
+        await whenPortalAuthReady();
         var raw = String(token || '').trim();
         if (!raw) {
           showLoginPanel();
@@ -2159,6 +2269,20 @@
         showLandingFromLoginBtn.addEventListener('click', showLandingPanel);
       }
 
+      function finishRedPokeAccessCode() {
+        verifiedCompanyId = '';
+        verifiedTeamStateId = 'main';
+        verifiedAccessCode = 'redpoke';
+        verifiedCompanyName = 'Red Poke';
+        showLoginPanel();
+        storeCompanySession({
+          companyId: '',
+          teamStateId: 'main',
+          accessCode: 'redpoke',
+          companyName: 'Red Poke',
+        });
+      }
+
       if (accessCodeForm && accessCodeInput) {
         accessCodeForm.addEventListener('submit', function (e) {
           e.preventDefault();
@@ -2168,24 +2292,15 @@
             showAccessCodeError('Enter your company access code.');
             return;
           }
+          if (norm(code) === 'redpoke') {
+            finishRedPokeAccessCode();
+            return;
+          }
           if (window.gmPortalAuth && window.gmPortalAuth.verifyAccessCode) {
             (async function () {
+              await whenPortalAuthReady();
               var res = await window.gmPortalAuth.verifyAccessCode(code);
               if (!res.ok) {
-                if (norm(code) === 'redpoke') {
-                  verifiedCompanyId = '';
-                  verifiedTeamStateId = 'main';
-                  verifiedAccessCode = 'redpoke';
-                  verifiedCompanyName = 'Red Poke';
-                  showLoginPanel();
-                  storeCompanySession({
-                    companyId: '',
-                    teamStateId: 'main',
-                    accessCode: 'redpoke',
-                    companyName: 'Red Poke',
-                  });
-                  return;
-                }
                 showAccessCodeError(res.message || 'Access code is incorrect.');
                 return;
               }
@@ -2195,19 +2310,8 @@
               verifiedCompanyName = res.companyName || '';
               showLoginPanel();
               storeCompanySession(res);
+              if (loginEmail) loginEmail.focus();
             })();
-            return;
-          }
-          if (norm(code) === 'redpoke') {
-            verifiedAccessCode = 'redpoke';
-            verifiedTeamStateId = 'main';
-            verifiedCompanyName = 'Red Poke';
-            showLoginPanel();
-            storeCompanySession({
-              teamStateId: 'main',
-              accessCode: 'redpoke',
-              companyName: 'Red Poke',
-            });
             return;
           }
           showAccessCodeError('Access code is incorrect.');
@@ -2247,6 +2351,7 @@
             return;
           }
           (async function () {
+            await whenPortalAuthReady();
             var res = await window.gmPortalAuth.createCompany({
               companyName: companyName,
               username: username,
@@ -2332,6 +2437,7 @@
             return;
           }
           (async function () {
+            await whenPortalAuthReady();
             var res = await window.gmPortalAuth.requestPasswordReset(loginName);
             if (!res.ok) {
               showForgotPasswordError(res.message || 'Could not send reset email.');
@@ -2368,6 +2474,7 @@
             return;
           }
           (async function () {
+            await whenPortalAuthReady();
             var res = await window.gmPortalAuth.resetPassword(activeResetToken, p1);
             if (!res.ok) {
               showResetPasswordError(res.message || 'Could not reset password.');
@@ -2414,7 +2521,8 @@
         /* ignore */
       }
 
-      function tryLegacyEmployeeLogin(rawLogin, password) {
+      async function tryLegacyEmployeeLogin(rawLogin, password) {
+        await whenManagerAppReady();
         var portal =
           typeof window.gmCalloutPortalEmployeeLogin === 'function'
             ? window.gmCalloutPortalEmployeeLogin(rawLogin, password)
@@ -2447,9 +2555,10 @@
 
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
+              await whenPortalAuthReady();
               var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
               if (!res.ok) {
-                if (tryLegacyEmployeeLogin(rawLogin, password)) return;
+                if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
                 showLoginError(res.message || 'Sign in failed.');
                 return;
               }
@@ -2471,8 +2580,10 @@
             return;
           }
 
-          if (tryLegacyEmployeeLogin(rawLogin, password)) return;
-          showLoginError('Name or password is incorrect. Managers: Martin Long or Ongi Management.');
+          (async function () {
+            if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
+            showLoginError('Name or password is incorrect. Managers: Martin Long or Ongi Management.');
+          })();
         });
       }
 
@@ -2515,6 +2626,8 @@
             }
             (async function () {
               try {
+                await whenPortalAuthReady();
+                await whenManagerAppReady();
                 var up = await window.gmPortalAuth.signUp({
                   loginName: displayName,
                   password: p1,
@@ -2566,25 +2679,28 @@
             showRegisterError('Registration is not available yet. Refresh the page and try again.');
             return;
           }
-          var res = window.gmCalloutRegisterEmployeeAccount({
-            firstName: fn && fn.value,
-            lastName: ln && ln.value,
-            phone: ph && ph.value,
-            staffType: st && st.value,
-            password: p1,
-          });
-          if (!res || !res.ok) {
-            showRegisterError((res && res.message) || 'Could not create account.');
-            return;
-          }
-          registerForm.reset();
-          showLoginPanel();
-          if (loginEmail) loginEmail.value = res.displayName || '';
-          if (loginPassword) loginPassword.value = '';
-          showLoginError(
-            res.message || 'Account created. Sign in with your name and password.',
-            'success'
-          );
+          (async function () {
+            await whenManagerAppReady();
+            var res = window.gmCalloutRegisterEmployeeAccount({
+              firstName: fn && fn.value,
+              lastName: ln && ln.value,
+              phone: ph && ph.value,
+              staffType: st && st.value,
+              password: p1,
+            });
+            if (!res || !res.ok) {
+              showRegisterError((res && res.message) || 'Could not create account.');
+              return;
+            }
+            registerForm.reset();
+            showLoginPanel();
+            if (loginEmail) loginEmail.value = res.displayName || '';
+            if (loginPassword) loginPassword.value = '';
+            showLoginError(
+              res.message || 'Account created. Sign in with your name and password.',
+              'success'
+            );
+          })();
         });
       }
 
@@ -2617,6 +2733,8 @@
             }
             (async function () {
               try {
+                await whenPortalAuthReady();
+                await whenManagerAppReady();
                 var up = await window.gmPortalAuth.signUp({
                   loginName: mgrName,
                   password: p1,
@@ -2649,22 +2767,25 @@
             showManagerRegisterError('Registration is not available yet. Refresh the page and try again.');
             return;
           }
-          var mgrNameElLegacy = document.getElementById('mgrRegName');
-          var res = window.gmCalloutRegisterManagerAccount({
-            signupCode: codeEl && codeEl.value,
-            email: mgrNameElLegacy && mgrNameElLegacy.value,
-            password: p1,
-          });
-          if (!res || !res.ok) {
-            showManagerRegisterError((res && res.message) || 'Could not create account.');
-            return;
-          }
-          var savedName = mgrNameElLegacy ? String(mgrNameElLegacy.value || '').trim() : '';
-          managerRegisterForm.reset();
-          showLoginPanel();
-          if (loginEmail) loginEmail.value = savedName;
-          if (loginPassword) loginPassword.value = '';
-          showLoginError(res.message || 'Manager account created. Sign in with your name and password.', 'success');
+          (async function () {
+            await whenManagerAppReady();
+            var mgrNameElLegacy = document.getElementById('mgrRegName');
+            var res = window.gmCalloutRegisterManagerAccount({
+              signupCode: codeEl && codeEl.value,
+              email: mgrNameElLegacy && mgrNameElLegacy.value,
+              password: p1,
+            });
+            if (!res || !res.ok) {
+              showManagerRegisterError((res && res.message) || 'Could not create account.');
+              return;
+            }
+            var savedName = mgrNameElLegacy ? String(mgrNameElLegacy.value || '').trim() : '';
+            managerRegisterForm.reset();
+            showLoginPanel();
+            if (loginEmail) loginEmail.value = savedName;
+            if (loginPassword) loginPassword.value = '';
+            showLoginError(res.message || 'Manager account created. Sign in with your name and password.', 'success');
+          })();
         });
       }
 
@@ -2737,5 +2858,16 @@
       }
     })();
   </script>
+  <script defer src="/vendor/supabase-js.js"></script>
+  <script defer src="gm-supabase-init.js"></script>
+  <script defer src="employee-leave.js?v=timecards-tips-1"></script>
+  <script defer src="break-policy.js?v=timecards-tips-1"></script>
+  <script defer src="app.js?v=timecards-tips-1"></script>
+  <script defer src="employee-app.js?v=timecards-tips-1"></script>
+  <script defer src="manager-messaging.js?v=timecards-tips-1"></script>
+  <script defer src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
+  <script defer src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
+  <script defer src="portal-auth-client.js?v=recovery-email-self-2"></script>
+  <script defer src="login-timeclock.js?v=timecards-tips-1"></script>
 </body>
 </html>
