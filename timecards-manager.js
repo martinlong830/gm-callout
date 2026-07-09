@@ -2698,15 +2698,22 @@
     });
   }
 
-  function ensureExportLibsLoaded() {
-    if (global.XLSX && global.JSZip && global.ExcelJS) return Promise.resolve();
+  function ensureExportLibsLoaded(options) {
+    options = options || {};
+    var requireExcelJs = options.excelJs === true;
+    if (global.XLSX && global.JSZip && (!requireExcelJs || global.ExcelJS)) {
+      return Promise.resolve();
+    }
     if (exportLibsLoadPromise) return exportLibsLoadPromise;
     exportLibsLoadPromise = loadExportScript('/vendor/xlsx-js-style.min.js')
       .then(function () {
         return loadExportScript('/vendor/jszip.min.js');
       })
       .then(function () {
-        return loadExportScript('/vendor/exceljs.min.js');
+        if (!requireExcelJs || global.ExcelJS) return;
+        return loadExportScript('/vendor/exceljs.min.js').catch(function (excelErr) {
+          console.warn('ExcelJS optional load failed; PTO photos disabled', excelErr);
+        });
       })
       .catch(function (err) {
         exportLibsLoadPromise = null;
@@ -2809,7 +2816,13 @@
   function xlSanitizeSheetForExport(ws) {
     if (!ws) return ws;
     delete ws['!views'];
-    var range = ws['!ref'] ? global.XLSX.utils.decode_range(ws['!ref']) : xlDecodeRange(ws);
+    var range;
+    try {
+      range = ws['!ref'] ? global.XLSX.utils.decode_range(ws['!ref']) : xlDecodeRange(ws);
+    } catch (rangeErr) {
+      console.warn('xlSanitizeSheetForExport: invalid sheet range skipped', rangeErr);
+      return ws;
+    }
     if (ws['!merges'] && ws['!merges'].length) {
       ws['!merges'] = ws['!merges'].filter(function (m) {
         if (!m || !m.s || !m.e) return false;
@@ -6807,7 +6820,7 @@
 
   async function downloadFullReportWorkbook(fileBase) {
     try {
-      await ensureExportLibsLoaded();
+      await ensureExportLibsLoaded({ excelJs: true });
     } catch (exportLoadErr) {
       console.warn('Full report: export libraries failed to load', exportLoadErr);
       alert('Excel export could not load. Hard-refresh the page and try again.');
@@ -6826,7 +6839,10 @@
       fullSheets = buildFullReportSheets();
     } catch (buildErr) {
       console.warn('Full report build failed', buildErr);
-      alert('Could not build full report. Try again.');
+      alert(
+        'Could not build full report. ' +
+          (buildErr && buildErr.message ? buildErr.message : 'Try again.')
+      );
       return;
     }
     if (!fullSheets.length) {
@@ -6836,26 +6852,10 @@
 
     try {
       setFullReportExportProgress('Writing Excel file…');
-      var wb = XLSX.utils.book_new();
-      var payslipPrintMeta = null;
-      fullSheets.forEach(function (sheet) {
-        var ws = sheet.worksheet;
-        if (ws && ws['!payslipPrintMeta']) {
-          if (sheet.name === 'Payslip') {
-            payslipPrintMeta = {
-              pageBreakCols: (ws['!payslipPrintMeta'].pageBreakCols || []).slice(),
-              printLastExcelRow: ws['!payslipPrintMeta'].printLastExcelRow,
-              printLastCol: ws['!payslipPrintMeta'].printLastCol,
-            };
-          }
-          delete ws['!payslipPrintMeta'];
-        }
-        if (ws) xlSanitizeSheetForExport(ws);
-        var name = String(sheet.name || 'Sheet').slice(0, 31);
-        XLSX.utils.book_append_sheet(wb, ws, name);
-      });
-      var out = XLSX.write(wb, { bookType: 'xlsx', type: 'array', bookSST: false });
-      var sanitizedOut = xlsxBytesFromOutput(out);
+      var written = writeFullReportWorkbookBytes(fullSheets);
+      var out = written.bytes;
+      var payslipPrintMeta = written.payslipPrintMeta;
+      var sanitizedOut = out;
 
       // Photos need ExcelJS; keep sanitized sheet XML and splice PTO drawing parts only.
       var ExcelJS = global.ExcelJS;
@@ -6893,11 +6893,15 @@
     } catch (err) {
       console.warn('Full report export failed', err);
       try {
-        downloadExcelWorkbook(fileBase, '-full-report', fullSheets);
+        var fallbackWritten = writeFullReportWorkbookBytes(fullSheets);
+        downloadExcelBuffer(fileBase + '-full-report.xlsx', fallbackWritten.bytes);
         closeTimecardsDownloadModal();
       } catch (fallbackErr) {
         console.warn('Full report fallback failed', fallbackErr);
-        alert('Could not build full report. Try again.');
+        alert(
+          'Could not build full report. ' +
+            (fallbackErr && fallbackErr.message ? fallbackErr.message : 'Try again.')
+        );
       }
     }
   }
@@ -7001,22 +7005,59 @@
     ensurePayWeekScheduleRows();
     ensureRosterCacheRowsFresh();
     var sheets = [];
-    var laborWs = buildLaborCostWorksheet();
-    var cpaWs = buildCpaWorksheet();
-    var payrollWs = buildPayrollWorksheet();
-    var payslipWs = buildPayslipWorksheet();
-    var ptoWs = buildPtoWorksheet();
-    var scheduleWs = buildScheduleWorksheet();
-    var employeeInfoWs = buildEmployeeInfoWorksheet();
-    if (laborWs) sheets.push({ name: 'Labor Cost', worksheet: laborWs });
-    if (cpaWs) sheets.push({ name: 'CPA', worksheet: cpaWs });
-    if (payrollWs) sheets.push({ name: 'Payroll', worksheet: payrollWs });
-    if (payslipWs) sheets.push({ name: 'Payslip', worksheet: payslipWs });
-    if (scheduleWs) sheets.push({ name: 'Schedule', worksheet: scheduleWs });
-    if (ptoWs) sheets.push({ name: 'PTO', worksheet: ptoWs });
-    if (employeeInfoWs) sheets.push({ name: 'Employee Information', worksheet: employeeInfoWs });
+    var builders = [
+      { name: 'Labor Cost', build: buildLaborCostWorksheet },
+      { name: 'CPA', build: buildCpaWorksheet },
+      { name: 'Payroll', build: buildPayrollWorksheet },
+      { name: 'Payslip', build: buildPayslipWorksheet },
+      { name: 'Schedule', build: buildScheduleWorksheet },
+      { name: 'PTO', build: buildPtoWorksheet },
+      { name: 'Employee Information', build: buildEmployeeInfoWorksheet },
+    ];
+    builders.forEach(function (spec) {
+      var ws;
+      try {
+        ws = spec.build();
+      } catch (sheetErr) {
+        var detail = sheetErr && sheetErr.message ? sheetErr.message : String(sheetErr);
+        throw new Error(spec.name + ' sheet failed: ' + detail);
+      }
+      if (ws) sheets.push({ name: spec.name, worksheet: ws });
+    });
     cacheFullReportSheets(sheets);
     return cloneFullReportSheets(sheets);
+  }
+
+  /** Clone worksheets, strip payslip print meta, sanitize, and write to an xlsx byte buffer. */
+  function writeFullReportWorkbookBytes(fullSheets) {
+    var XLSX = global.XLSX;
+    if (!XLSX || !XLSX.utils || !XLSX.write) {
+      throw new Error('Excel library not loaded');
+    }
+    var wb = XLSX.utils.book_new();
+    var payslipPrintMeta = null;
+    fullSheets.forEach(function (sheet) {
+      var ws = sheet.worksheet ? cloneWorksheetForExport(sheet.worksheet) : null;
+      if (!ws) return;
+      if (ws['!payslipPrintMeta']) {
+        if (sheet.name === 'Payslip') {
+          payslipPrintMeta = {
+            pageBreakCols: (ws['!payslipPrintMeta'].pageBreakCols || []).slice(),
+            printLastExcelRow: ws['!payslipPrintMeta'].printLastExcelRow,
+            printLastCol: ws['!payslipPrintMeta'].printLastCol,
+          };
+        }
+        delete ws['!payslipPrintMeta'];
+      }
+      xlSanitizeSheetForExport(ws);
+      var name = String(sheet.name || 'Sheet').slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    });
+    var out = XLSX.write(wb, { bookType: 'xlsx', type: 'array', bookSST: false });
+    return {
+      bytes: xlsxBytesFromOutput(out),
+      payslipPrintMeta: payslipPrintMeta,
+    };
   }
 
   function showDownloadStep(step) {

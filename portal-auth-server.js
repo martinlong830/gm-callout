@@ -190,6 +190,19 @@ function hashResetToken(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+/** Supabase Auth hides trigger failures behind this generic 500 message. */
+function humanizeAuthCreateUserError(msg) {
+  const m = String(msg || "").trim();
+  if (/database error (creating|saving) new user/i.test(m)) {
+    return (
+      "Supabase rejected the new account (auth profile trigger failed). " +
+      "Apply the latest SQL in supabase/migrations/ (especially 20260702180000_companies_multi_tenant.sql and 20260517120000_portal_login_names.sql), " +
+      "then retry. If it still fails, choose a different login name or check Supabase Auth logs."
+    );
+  }
+  return m || "Could not create account.";
+}
+
 function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBaseUrl }) {
   const router = require("express").Router();
 
@@ -298,6 +311,21 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       .eq("id", profileId);
     if (error) return { error: error.message };
     return { ok: true, recoveryEmail: norm };
+  }
+
+  async function findDuplicateProfileByLoginName(loginNameNorm, companyId) {
+    let query = admin.from("profiles").select("id").eq("login_name_norm", loginNameNorm);
+    if (companyId) {
+      query = query.eq("company_id", companyId);
+    } else {
+      query = query.is("company_id", null);
+    }
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      return { error: error.message || "Could not verify login name." };
+    }
+    if (data) return { existing: data };
+    return {};
   }
 
   async function backfillProfileLoginFields(profile, authEmail, loginName) {
@@ -554,7 +582,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
       if (createErr || !created.user) {
         await admin.from("companies").delete().eq("id", companyId);
-        const msg = createErr && createErr.message ? createErr.message : "Could not create account.";
+        const msg = humanizeAuthCreateUserError(
+          createErr && createErr.message ? createErr.message : "Could not create account."
+        );
         return res.status(400).json({ ok: false, message: msg });
       }
 
@@ -692,10 +722,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         const co = await findCompanyByAccessCode(admin, accessCode);
         if (co.company) companyId = co.company.id;
       }
-      let nameQuery = admin.from("profiles").select("id").eq("login_name_norm", loginNameNorm);
-      if (companyId) nameQuery = nameQuery.eq("company_id", companyId);
-      const { data: existing } = await nameQuery.maybeSingle();
-      if (existing) {
+      const nameTaken = await findDuplicateProfileByLoginName(loginNameNorm, companyId || null);
+      if (nameTaken.error) {
+        return res.status(400).json({ ok: false, message: nameTaken.error });
+      }
+      if (nameTaken.existing) {
         return res.status(409).json({
           ok: false,
           message: "That name is already taken. Sign in instead, or choose a different name.",
@@ -726,7 +757,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       });
 
       if (createErr || !created.user) {
-        const msg = createErr && createErr.message ? createErr.message : "Could not create account.";
+        const msg = humanizeAuthCreateUserError(
+          createErr && createErr.message ? createErr.message : "Could not create account."
+        );
         return res.status(400).json({ ok: false, message: msg });
       }
 
@@ -811,12 +844,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
 
       const loginNameNorm = normalizeLoginName(loginName);
-      const { data: existing } = await admin
-        .from("profiles")
-        .select("id")
-        .eq("login_name_norm", loginNameNorm)
-        .maybeSingle();
-      if (existing) {
+      const managerCompanyId = mgr.profile.company_id || null;
+      const nameTaken = await findDuplicateProfileByLoginName(loginNameNorm, managerCompanyId);
+      if (nameTaken.error) {
+        return res.status(400).json({ ok: false, message: nameTaken.error });
+      }
+      if (nameTaken.existing) {
         return res.status(409).json({
           ok: false,
           message: "A portal account already exists for that name.",
@@ -824,22 +857,26 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
 
       const internalEmail = makeInternalEmail();
+      const userMetadata = {
+        role: "employee",
+        display_name: displayName,
+        login_name: loginName,
+        login_name_norm: loginNameNorm,
+        phone: body.phone ? String(body.phone).trim() : "",
+        staff_type: body.staffType ? String(body.staffType).trim() : "",
+      };
+      if (managerCompanyId) userMetadata.company_id = managerCompanyId;
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email: internalEmail,
         password,
         email_confirm: true,
-        user_metadata: {
-          role: "employee",
-          display_name: displayName,
-          login_name: loginName,
-          login_name_norm: loginNameNorm,
-          phone: body.phone ? String(body.phone).trim() : "",
-          staff_type: body.staffType ? String(body.staffType).trim() : "",
-        },
+        user_metadata: userMetadata,
       });
 
       if (createErr || !created.user) {
-        const msg = createErr && createErr.message ? createErr.message : "Could not create account.";
+        const msg = humanizeAuthCreateUserError(
+          createErr && createErr.message ? createErr.message : "Could not create account."
+        );
         return res.status(400).json({ ok: false, message: msg });
       }
 
@@ -856,6 +893,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             ? body.staffType
             : null,
       };
+      if (managerCompanyId) profilePatch.company_id = managerCompanyId;
       if (recoveryEmailRaw) {
         const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
         if (saved.error) {

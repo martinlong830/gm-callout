@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { TEAM_STATE_ROW_ID } from '../constants';
+import { broadcastTeamStateChanged } from '../teamStateSync';
 
 export const TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
 export const TIMECARD_DISHWASHER_TIPS_KEY = 'gm-timecard-dishwasher-tips-v1';
@@ -120,7 +121,7 @@ export function queueTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
   pushTimer = setTimeout(() => {
     pushTimer = null;
     void pushTipPayrollToSupabase(sb);
-  }, 700);
+  }, 1500);
 }
 
 export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void> {
@@ -150,5 +151,15 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
     },
     { onConflict: 'id' }
   );
-  if (res.error) console.warn('team_state tip payroll upsert', res.error);
+  if (res.error) {
+    console.warn('team_state tip payroll upsert', res.error);
+    return;
+  }
+  const sess = await sb.auth.getSession();
+  await broadcastTeamStateChanged(
+    sb,
+    TEAM_STATE_ROW_ID,
+    ['timecard_week_tip_pool', 'timecard_dishwasher_tips', 'timecard_week_extras'],
+    sess.data.session?.user.id
+  );
 }

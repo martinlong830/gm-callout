@@ -12,6 +12,7 @@ import { hydrateFromSupabase, type HydrationResult } from '../lib/hydrate';
 import type { AssignmentStore } from '../lib/schedule/types';
 import { subscribeEmployees } from '../lib/employeesSync';
 import { subscribeStaffRequests } from '../lib/staffRequestsSync';
+import { TEAM_STATE_ROW_ID } from '../lib/constants';
 import { subscribeTeamState } from '../lib/teamStateSync';
 import { applyTipPayrollFromTeamState, loadDishwasherTipsStore, loadTipPoolStore, loadWeekExtrasStore, queueTipPayrollPushToSupabase } from '../lib/timecards/tipPayrollSync';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
@@ -147,13 +148,15 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   }, [runRefetch, role, session?.user?.id]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    if (!isSupabaseConfigured || !supabase || !session?.user || role !== 'manager') return;
     return subscribeEmployees(supabase, scheduleSilentRefetch);
-  }, [session?.user?.id, scheduleSilentRefetch]);
+  }, [session?.user?.id, role, scheduleSilentRefetch]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !session?.user) return;
-    return subscribeTeamState(supabase, scheduleSilentRefetch);
+    return subscribeTeamState(supabase, TEAM_STATE_ROW_ID, () => {
+      scheduleSilentRefetch();
+    });
   }, [session?.user?.id, scheduleSilentRefetch]);
 
   useEffect(() => {

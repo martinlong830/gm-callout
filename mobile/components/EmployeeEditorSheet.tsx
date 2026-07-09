@@ -305,6 +305,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     }
 
     let authUserId = employee?.authUserId;
+    let portalCreateWarning: string | null = null;
     if (isCreate) {
       const pw = portalPassword.trim() || 'redpoke';
       if (pw.length < 4) {
@@ -325,11 +326,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
         setBusy(true);
         const portalRes = await portalCreateEmployeeAccount(portalPayload);
         if (!portalRes.ok) {
-          setBusy(false);
-          Alert.alert('App login', portalRes.message);
-          return;
+          portalCreateWarning = portalRes.message;
+        } else if (portalRes.userId) {
+          authUserId = portalRes.userId;
         }
-        if (portalRes.userId) authUserId = portalRes.userId;
       }
     } else if (!employee) {
       return;
@@ -382,6 +382,12 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       }
     } else if (isCloudEmployeeId(updated.id) && !clockPin && !pinDraft) {
       void assignEmployeeClockPin(supabase, updated.id);
+    }
+    if (portalCreateWarning) {
+      Alert.alert(
+        isCreate ? 'Employee added' : 'Employee saved',
+        `Saved to the roster, but app login was not created: ${portalCreateWarning}`
+      );
     }
     setStatusMsg(isCreate ? 'Employee added.' : 'Employee saved.');
     onSaved();

@@ -17,6 +17,7 @@ import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
 import { TEAM_STATE_ROW_ID } from '../../lib/constants';
+import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
 import type {
   AssignmentStore,
@@ -63,7 +64,7 @@ function toLite(e: EmployeeRow): EmployeeLite {
 
 export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
-  const { role } = useAuth();
+  const { role, session } = useAuth();
   const { employees, teamState, refetch, loading, applyLocalScheduleAssignments } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
@@ -125,27 +126,30 @@ export default function ManagerScheduleScreen() {
       if (!supabase || role !== 'manager') return;
       setSaving(true);
       try {
-        const cur = await supabase.from('team_state').select('*').eq('id', TEAM_STATE_ROW_ID).maybeSingle();
-        if (cur.error || !cur.data) return;
-        const row = cur.data as Record<string, unknown>;
         const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
         purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
-        const up = await supabase.from('team_state').upsert({
-          id: row.id,
-          schedule_assignments: toSave,
-          schedule_templates: row.schedule_templates ?? [],
-          draft_schedule: row.draft_schedule ?? {},
-          messaging_templates: row.messaging_templates ?? { voice: '' },
-          current_restaurant_id: String(row.current_restaurant_id ?? 'rp-9'),
-          callout_history: row.callout_history ?? [],
-        });
+        const up = await supabase.from('team_state').upsert(
+          {
+            id: TEAM_STATE_ROW_ID,
+            schedule_assignments: toSave,
+          },
+          { onConflict: 'id' }
+        );
         if (up.error) console.warn('team_state upsert', up.error);
-        else void refetch({ silent: true });
+        else {
+          await broadcastTeamStateChanged(
+            supabase,
+            TEAM_STATE_ROW_ID,
+            ['schedule_assignments'],
+            session?.user?.id
+          );
+          void refetch({ silent: true });
+        }
       } finally {
         setSaving(false);
       }
     },
-    [role, refetch, restaurants]
+    [role, refetch, restaurants, session?.user?.id]
   );
 
   const queuePersist = useCallback(
@@ -154,7 +158,7 @@ export default function ManagerScheduleScreen() {
       saveTimer.current = setTimeout(() => {
         saveTimer.current = null;
         void persistCloud(store);
-      }, 900);
+      }, 1800);
     },
     [persistCloud]
   );

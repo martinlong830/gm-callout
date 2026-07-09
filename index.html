@@ -891,7 +891,7 @@
           </div>
 
           <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
-            <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below.</p>
+            <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below. If app login fails (duplicate name, etc.), the employee is still saved to the roster.</p>
             <label class="form-field form-field-block">
               <span class="form-label">App login password</span>
               <input
@@ -1410,7 +1410,7 @@
         </button>
       </div>
       <p class="availability-modal-meta">
-        Apply a saved staffing pattern or save the current schedule (all locations and weeks).
+        Apply a saved staffing pattern to the week shown on the schedule, or save the current location&rsquo;s week as a new template.
       </p>
       <div class="schedule-sheet-stack">
         <label class="schedule-sheet-field">
@@ -1420,6 +1420,7 @@
           </select>
         </label>
         <button type="button" class="btn btn-primary btn-block" id="applyScheduleTemplateBtn">Apply template</button>
+        <button type="button" class="btn btn-secondary btn-block" id="deleteScheduleTemplateBtn" disabled>Delete template</button>
         <label class="schedule-sheet-field">
           <span class="employee-filter-label">Save current schedule as</span>
           <input
