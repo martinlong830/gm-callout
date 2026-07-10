@@ -23,8 +23,10 @@ function toLite(e: EmployeeRow): EmployeeLite {
   return {
     firstName: e.firstName,
     lastName: e.lastName,
+    displayName: e.displayName,
     staffType: e.staffType as RoleKey,
     usualRestaurant: e.usualRestaurant || 'both',
+    meta: e.meta,
   };
 }
 

@@ -238,10 +238,10 @@ export function hashString(str: string): number {
 
 export function redPokeBreakAnnotation(trStart: string, trEnd: string, role: string, dayStr: string): string {
   const seed = hashString(`${trStart}|${trEnd}|${role}|${dayStr}`);
+  /* Office break is Mark-only — never assign via hash placeholder. */
   const opts = [
     '(3:00PM BREAK TIME)',
     '(3:30PM BREAK TIME)',
-    '(2:00PM OFFICE)',
     '(NO BREAK TIME)',
     '(4:00PM BREAK TIME)',
     '(4:30PM BREAK TIME)',
@@ -464,6 +464,54 @@ function cloneScheduleAssignment(val: ScheduleAssignmentEntry | null | undefined
   return JSON.parse(JSON.stringify(normalizeScheduleAssignment(val)));
 }
 
+function workerNamesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const wc = String(a || '').trim().toLowerCase();
+  const target = String(b || '').trim().toLowerCase();
+  if (!wc || !target) return false;
+  if (wc === target) return true;
+  const wa = wc.split(/\s+/).filter(Boolean);
+  const ta = target.split(/\s+/).filter(Boolean);
+  if (!wa.length || !ta.length) return false;
+  if (wa[0] !== ta[0]) return false;
+  if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
+  const wl = wa[wa.length - 1].replace(/\.$/, '');
+  const tl = ta[ta.length - 1].replace(/\.$/, '');
+  if (wl === tl) return true;
+  if (wl.length && tl.length && wl[0] === tl[0]) return true;
+  return false;
+}
+
+function scheduleAssignmentPrimaryWorker(entry: NormalizedScheduleAssignment | null | undefined): string | null {
+  const workers = (entry?.workers || []).filter((w) => w && w !== 'Unassigned');
+  return workers.length ? workers[0] : null;
+}
+
+/** Template-week break metadata applies only when the staffed worker matches that slot's pattern. */
+function scheduleAssignmentWorkersAlignedForBreakInherit(
+  direct: NormalizedScheduleAssignment | null | undefined,
+  pattern: NormalizedScheduleAssignment | null | undefined
+): boolean {
+  if (!pattern) return false;
+  const directWorker = scheduleAssignmentPrimaryWorker(direct);
+  const patternWorker = scheduleAssignmentPrimaryWorker(pattern);
+  if (!directWorker || !patternWorker) return true;
+  return workerNamesMatch(directWorker, patternWorker);
+}
+
+function resolveInheritedScheduleBreak(
+  direct: NormalizedScheduleAssignment | null | undefined,
+  pattern: NormalizedScheduleAssignment | null | undefined,
+  resolvedWorkers?: string[]
+): string | undefined {
+  if (direct?.break) return direct.break;
+  if (!pattern?.break) return undefined;
+  const directLike = direct || { workers: resolvedWorkers || ['Unassigned'] };
+  if (scheduleAssignmentWorkersAlignedForBreakInherit(directLike, pattern)) {
+    return pattern.break;
+  }
+  return undefined;
+}
+
 /** Mon–Sun pattern from the template ("this") week — used for all calendar weeks. */
 function lookupScheduleAssignmentPattern(
   stored: Record<string, ScheduleAssignmentEntry>,
@@ -498,7 +546,8 @@ function mergeScheduleAssignmentEntries(
   if (!pattern) return direct;
   if (!direct) return pattern;
   const out: NormalizedScheduleAssignment = { workers: direct.workers };
-  if (direct.break || pattern.break) out.break = direct.break || pattern.break;
+  const inheritedBreak = resolveInheritedScheduleBreak(direct, pattern, out.workers);
+  if (inheritedBreak) out.break = inheritedBreak;
   if (direct.hours != null && direct.hours !== '') out.hours = direct.hours;
   else if (pattern.hours != null && pattern.hours !== '') out.hours = pattern.hours;
   if (direct.timeLabel || pattern.timeLabel) out.timeLabel = direct.timeLabel || pattern.timeLabel;
@@ -554,10 +603,134 @@ export function weekdayKeyFromScheduleDay(dayStr: string): WeekdayKey {
   return (parts[0] || 'Mon') as WeekdayKey;
 }
 
+function normNameKeyLite(s: string): string {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function nameFirstTokenLite(s: string): string {
+  const parts = normNameKeyLite(s).split(' ').filter(Boolean);
+  return parts.length ? parts[0] : '';
+}
+
+function nameLastTokenLite(s: string): string {
+  const parts = normNameKeyLite(s).split(' ').filter(Boolean);
+  return parts.length ? parts[parts.length - 1].replace(/\.$/, '') : '';
+}
+
+function employeeMatchesSheetNameLite(emp: EmployeeLite, sheetName: string): boolean {
+  const a = normNameKeyLite(employeeDisplayNameLite(emp));
+  const b = normNameKeyLite(sheetName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return nameFirstTokenLite(a) === nameFirstTokenLite(b) && nameLastTokenLite(a) === nameLastTokenLite(b);
+}
+
+function scheduleIndexForEmployeeLite(emp: EmployeeLite): number {
+  const sheetOrder = [
+    ...TEAM_ROSTER_BARTENDER,
+    ...TEAM_ROSTER_KITCHEN,
+    ...TEAM_ROSTER_SERVER,
+  ];
+  for (let i = 0; i < sheetOrder.length; i += 1) {
+    if (employeeMatchesSheetNameLite(emp, sheetOrder[i])) return i;
+  }
+  const deptRank: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
+  return 1000 + (deptRank[emp.staffType] ?? 99) * 100;
+}
+
+function compareEmployeesByScheduleOrderLite(a: EmployeeLite, b: EmployeeLite): number {
+  const ia = scheduleIndexForEmployeeLite(a);
+  const ib = scheduleIndexForEmployeeLite(b);
+  if (ia !== ib) return ia - ib;
+  return employeeDisplayNameLite(a).localeCompare(employeeDisplayNameLite(b), undefined, { sensitivity: 'base' });
+}
+
 function employeeDisplayNameLite(emp: EmployeeLite): string {
+  if (emp.displayName) return emp.displayName.trim();
   const f = (emp.firstName || '').trim();
   const l = (emp.lastName || '').trim();
   return [f, l].filter(Boolean).join(' ') || 'Unnamed';
+}
+
+function employeeMatchesScheduleRestaurantLite(emp: EmployeeLite, restaurantId: string): boolean {
+  const u = emp.usualRestaurant || 'both';
+  if (u === 'both') return true;
+  return u === restaurantId;
+}
+
+function employeeByDisplayNameLite(employees: EmployeeLite[], name: string): EmployeeLite | null {
+  if (!name) return null;
+  const exact = employees.find((e) => employeeDisplayNameLite(e) === name);
+  if (exact) return exact;
+  const fuzzy = employees.find((e) => workerNamesMatch(name, employeeDisplayNameLite(e)));
+  if (fuzzy) return fuzzy;
+  return (
+    employees.find((e) => {
+      const aliases = e.meta?.scheduleAliases;
+      if (!Array.isArray(aliases)) return false;
+      return aliases.some((alias) => alias && workerNamesMatch(name, alias));
+    }) || null
+  );
+}
+
+function employeeAtScheduleSlot(
+  employees: EmployeeLite[],
+  role: RoleKey,
+  trIdx: number,
+  restaurantId: string
+): EmployeeLite | null {
+  if (!employees.length) return null;
+  return (
+    employees
+      .filter((e) => e.staffType === role && employeeMatchesScheduleRestaurantLite(e, restaurantId))
+      .sort(compareEmployeesByScheduleOrderLite)[trIdx] || null
+  );
+}
+
+function canonicalScheduleWorkerNameLite(
+  employees: EmployeeLite[],
+  name: string,
+  restaurantId: string
+): string {
+  if (!name || name === 'Unassigned') return name;
+  const emp = employeeByDisplayNameLite(employees, name);
+  if (!emp) return name;
+  if (!employeeMatchesScheduleRestaurantLite(emp, restaurantId)) return name;
+  return employeeDisplayNameLite(emp);
+}
+
+function canonicalizeScheduleWorkerListLite(
+  employees: EmployeeLite[],
+  workers: string[],
+  restaurantId: string
+): string[] {
+  const seen: Record<string, boolean> = Object.create(null);
+  const out: string[] = [];
+  (workers || []).forEach((w) => {
+    if (!w || w === 'Unassigned') return;
+    const canon = canonicalScheduleWorkerNameLite(employees, w, restaurantId);
+    if (!canon || canon === 'Unassigned') return;
+    const key = canon.trim().toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(canon);
+  });
+  return out.length ? out : ['Unassigned'];
+}
+
+function scheduleWorkerIsOnTeamLite(employees: EmployeeLite[], name: string, restaurantId: string): boolean {
+  if (!name || name === 'Unassigned') return false;
+  if (!employees.length) return true;
+  return employees.some((emp) => {
+    if (!employeeMatchesScheduleRestaurantLite(emp, restaurantId)) return false;
+    if (workerNamesMatch(name, employeeDisplayNameLite(emp))) return true;
+    const aliases = emp.meta?.scheduleAliases;
+    if (!Array.isArray(aliases)) return false;
+    return aliases.some((alias) => alias && workerNamesMatch(name, alias));
+  });
 }
 
 function refreshPools(employees: EmployeeLite[]): Record<RoleKey, string[]> {
@@ -607,8 +780,15 @@ function normalizeWorkerKey(name: string): string {
     .toLowerCase();
 }
 
-/** FOH/BOH/Delivery rows map trIdx → one roster name (sheet-style), not random per day. */
-function scheduleRowRosterDefault(role: RoleKey, trIdx: number): string | null {
+/** FOH/BOH/Delivery rows map trIdx → Team page name at that slot (sheet row order). */
+function scheduleRowRosterDefault(
+  employees: EmployeeLite[],
+  role: RoleKey,
+  trIdx: number,
+  restaurantId: string
+): string | null {
+  const emp = employeeAtScheduleSlot(employees, role, trIdx, restaurantId);
+  if (emp) return employeeDisplayNameLite(emp);
   if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
   if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
   if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
@@ -623,13 +803,15 @@ function workerAllowedOnScheduleRow(name: string, basePool: string[]): boolean {
 }
 
 function pickDefaultScheduleWorkers(
+  employees: EmployeeLite[],
   role: RoleKey,
   trIdx: number,
   basePool: string[],
   usedToday: Record<string, boolean>,
-  seed: number
+  seed: number,
+  restaurantId: string
 ): string[] {
-  const rowName = scheduleRowRosterDefault(role, trIdx);
+  const rowName = scheduleRowRosterDefault(employees, role, trIdx, restaurantId);
   if (rowName && workerAllowedOnScheduleRow(rowName, basePool) && !usedToday[normalizeWorkerKey(rowName)]) {
     return [rowName];
   }
@@ -759,6 +941,8 @@ function getCurrentRestaurantAssignments(
 function applyScheduleAssignmentsMerge(
   schedule: ScheduleRow[],
   stored: Record<string, ScheduleAssignmentEntry>,
+  employees: EmployeeLite[],
+  restaurantId: string,
   skipWorkers?: boolean
 ) {
   schedule.forEach((s) => {
@@ -770,7 +954,11 @@ function applyScheduleAssignmentsMerge(
       s.redPokeHours = slotHours;
       return;
     }
-    if (entry.break) s.redPokeBreak = entry.break;
+    if (entry.break) {
+      s.redPokeBreak = entry.break;
+    } else {
+      s.redPokeBreak = redPokeBreakAnnotation(s.start, s.end, s.role, s.day);
+    }
     if (entry.breakPaid === true || entry.breakPaid === false) {
       s.breakPaid = !!entry.breakPaid;
     } else {
@@ -793,9 +981,12 @@ function applyScheduleAssignmentsMerge(
       s.worker = 'Unassigned';
       return;
     }
-    const list = entry.workers.filter((n) => n && n !== 'Unassigned');
+    const list = entry.workers.filter(
+      (n) => n && n !== 'Unassigned' && scheduleWorkerIsOnTeamLite(employees, n, restaurantId)
+    );
     if (!list.length) return;
-    s.workers = list.slice();
+    const canon = canonicalizeScheduleWorkerListLite(employees, list, restaurantId);
+    s.workers = canon.slice();
     s.worker = s.workers[0];
   });
 }
@@ -835,7 +1026,15 @@ export function buildSchedule(params: {
         if (forceUnassigned) {
           workers = ['Unassigned'];
         } else {
-          workers = pickDefaultScheduleWorkers(rd.role, trIdx, basePool, usedToday, seed);
+          workers = pickDefaultScheduleWorkers(
+            employees,
+            rd.role,
+            trIdx,
+            basePool,
+            usedToday,
+            seed,
+            currentRestaurantId
+          );
           if (!workers.length) workers = ['Unassigned'];
           const chosen = workers[0];
           if (chosen && chosen !== 'Unassigned') {
@@ -863,7 +1062,7 @@ export function buildSchedule(params: {
     });
   });
 
-  applyScheduleAssignmentsMerge(schedule, stored, forceUnassigned);
+  applyScheduleAssignmentsMerge(schedule, stored, employees, currentRestaurantId, forceUnassigned);
   return schedule;
 }
 

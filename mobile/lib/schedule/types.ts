@@ -36,8 +36,10 @@ export type Restaurant = { id: string; name: string; shortLabel: string; default
 export type EmployeeLite = {
   firstName: string;
   lastName: string;
+  displayName?: string;
   staffType: RoleKey;
   usualRestaurant: string;
+  meta?: { scheduleAliases?: string[] };
 };
 
 export type DraftGrid = Record<RoleKey, (Array<string | null> | null)[][]>;
