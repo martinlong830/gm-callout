@@ -27,7 +27,8 @@ type AuthState = {
   loading: boolean;
   signIn: (
     loginName: string,
-    password: string
+    password: string,
+    companyId?: string
   ) => Promise<{ ok: true; role: AppRole } | { ok: false; message: string }>;
   signUp: (
     payload: PortalSignUpPayload,
@@ -118,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [applySession]);
 
   const signIn = useCallback(
-    async (loginName: string, password: string) => {
+    async (loginName: string, password: string, companyId?: string) => {
       if (!supabase) {
         return { ok: false as const, message: 'Supabase is not configured.' };
       }
@@ -131,7 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       signInInFlightRef.current = true;
       try {
-        const portal = await portalSignIn(loginName, password);
+        const portal = await portalSignIn(loginName, password, companyId);
         if (!portal.ok) return portal;
 
         const { data } = await supabase.auth.getSession();

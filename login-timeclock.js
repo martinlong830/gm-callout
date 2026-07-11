@@ -10,6 +10,7 @@
   var accessCodePanel = document.getElementById('accessCodePanel');
   var createCompanyPanel = document.getElementById('createCompanyPanel');
   var companyPendingPanel = document.getElementById('companyPendingPanel');
+  var setupAccessCodePanel = document.getElementById('setupAccessCodePanel');
   var loginPanel = document.getElementById('loginPanel');
   var registerPanel = document.getElementById('registerPanel');
   var managerRegisterPanel = document.getElementById('managerRegisterPanel');
@@ -22,6 +23,7 @@
     if (accessCodePanel) accessCodePanel.hidden = true;
     if (createCompanyPanel) createCompanyPanel.hidden = true;
     if (companyPendingPanel) companyPendingPanel.hidden = true;
+    if (setupAccessCodePanel) setupAccessCodePanel.hidden = true;
     if (loginPanel) loginPanel.hidden = true;
     if (registerPanel) registerPanel.hidden = true;
     if (managerRegisterPanel) managerRegisterPanel.hidden = true;

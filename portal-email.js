@@ -111,7 +111,7 @@ async function sendCompanyConfirmationEmail({ to, companyName, confirmUrl, login
   const text =
     `${greeting}\n\n` +
     `You started creating "${companyName || "your company"}" on Shiflow. ` +
-    "Confirm your email to finish setup and sign in with your username and password:\n\n" +
+    "Confirm your email to continue. After confirming, you will choose your company access code, then sign in with the normal login flow:\n\n" +
     `${confirmUrl}\n\n` +
     "If you did not request this, you can ignore this email.\n\n" +
     "— Shiflow";
@@ -119,8 +119,8 @@ async function sendCompanyConfirmationEmail({ to, companyName, confirmUrl, login
   const html =
     `<p>${greeting}</p>` +
     `<p>You started creating <strong>${companyName || "your company"}</strong> on Shiflow. ` +
-    "Confirm your email to finish setup, then sign in with your username and password.</p>" +
-    `<p><a href="${confirmUrl}" style="display:inline-block;padding:10px 16px;background:#1e3a5f;color:#fff;text-decoration:none;border-radius:6px;">Confirm company</a></p>` +
+    "Confirm your email to continue. After confirming, you will choose your company access code, then sign in normally.</p>" +
+    `<p><a href="${confirmUrl}" style="display:inline-block;padding:10px 16px;background:#1e3a5f;color:#fff;text-decoration:none;border-radius:6px;">Confirm and set access code</a></p>` +
     `<p style="font-size:13px;color:#475569;">Or copy this link:<br><a href="${confirmUrl}">${confirmUrl}</a></p>` +
     `<p style="font-size:13px;color:#475569;">If you did not request this, you can ignore this email.</p>`;
 

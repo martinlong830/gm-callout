@@ -87,24 +87,173 @@ export async function applyPortalSession(tokens: {
 
 export async function portalSignIn(
   loginName: string,
-  password: string
+  password: string,
+  companyId?: string
 ): Promise<
-  | { ok: true; role?: string; displayName?: string }
+  | { ok: true; role?: string; displayName?: string; companyId?: string; companyName?: string }
   | { ok: false; message: string }
 > {
+  const body: Record<string, unknown> = {
+    loginName: loginName.trim(),
+    password,
+  };
+  if (companyId) body.companyId = companyId;
   const r = await portalPost<{
     access_token: string;
     refresh_token?: string;
     role?: string;
     displayName?: string;
-  }>('/api/portal/signin', { loginName: loginName.trim(), password });
+    companyId?: string;
+    companyName?: string;
+  }>('/api/portal/signin', body);
   if (!r.ok) return r;
   const applied = await applyPortalSession({
     access_token: r.access_token,
     refresh_token: r.refresh_token,
   });
   if (!applied.ok) return applied;
-  return { ok: true, role: r.role, displayName: r.displayName };
+  return {
+    ok: true,
+    role: r.role,
+    displayName: r.displayName,
+    companyId: r.companyId,
+    companyName: r.companyName,
+  };
+}
+
+export async function portalVerifyAccessCode(accessCode: string): Promise<
+  | {
+      ok: true;
+      companyId: string;
+      companyName: string;
+      accessCode: string;
+      teamStateId: string;
+      restaurantsConfig: unknown[];
+    }
+  | { ok: false; message: string }
+> {
+  const r = await portalPost<{
+    companyId?: string;
+    companyName?: string;
+    accessCode?: string;
+    teamStateId?: string;
+    restaurantsConfig?: unknown[];
+  }>('/api/portal/verify-access-code', { accessCode: String(accessCode || '').trim() });
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    companyId: r.companyId || '',
+    companyName: r.companyName || '',
+    accessCode: r.accessCode || String(accessCode || '').trim(),
+    teamStateId: r.teamStateId || '',
+    restaurantsConfig: r.restaurantsConfig || [],
+  };
+}
+
+export async function portalCreateCompany(payload: {
+  companyName: string;
+  username: string;
+  email: string;
+  password: string;
+  passwordConfirm: string;
+}): Promise<
+  | {
+      ok: true;
+      pending?: boolean;
+      needsAccessCodeSetup?: boolean;
+      message: string;
+      companyId?: string;
+      accessCode?: string;
+      emailSent?: boolean;
+      dev?: boolean;
+    }
+  | { ok: false; message: string; status?: number }
+> {
+  const r = await portalPost<{
+    pending?: boolean;
+    needsAccessCodeSetup?: boolean;
+    message?: string;
+    companyId?: string;
+    accessCode?: string;
+    emailSent?: boolean;
+    dev?: boolean;
+  }>('/api/portal/create-company', payload as unknown as Record<string, unknown>);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    pending: !!r.pending,
+    needsAccessCodeSetup: !!r.needsAccessCodeSetup,
+    message: r.message || 'Check your email to confirm company creation.',
+    companyId: r.companyId,
+    accessCode: r.accessCode,
+    emailSent: !!r.emailSent,
+    dev: !!r.dev,
+  };
+}
+
+export async function portalSetupAccessCode(
+  accessCode: string
+): Promise<
+  | {
+      ok: true;
+      message: string;
+      companyId?: string;
+      companyName?: string;
+      accessCode?: string;
+      teamStateId?: string;
+      restaurantsConfig?: unknown[];
+    }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    message?: string;
+    companyId?: string;
+    companyName?: string;
+    accessCode?: string;
+    teamStateId?: string;
+    restaurantsConfig?: unknown[];
+  }>('POST', '/api/portal/setup-access-code', {
+    accessCode: String(accessCode || '').trim(),
+  });
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    message: r.message || 'Access code saved.',
+    companyId: r.companyId,
+    companyName: r.companyName,
+    accessCode: r.accessCode,
+    teamStateId: r.teamStateId,
+    restaurantsConfig: r.restaurantsConfig,
+  };
+}
+
+export async function portalUpdateCompany(payload: {
+  name?: string;
+  companyName?: string;
+}): Promise<
+  | { ok: true; message: string; companyId?: string; companyName?: string; accessCode?: string }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    message?: string;
+    companyId?: string;
+    companyName?: string;
+    accessCode?: string;
+  }>('PUT', '/api/portal/company', payload as unknown as Record<string, unknown>);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    message: r.message || 'Company updated.',
+    companyId: r.companyId,
+    companyName: r.companyName,
+    accessCode: r.accessCode,
+  };
 }
 
 export type PortalSignUpPayload = {
@@ -199,26 +348,66 @@ function isValidRecoveryEmail(email: string): boolean {
 }
 
 export async function portalGetAccount(): Promise<
-  | { ok: true; loginName: string; recoveryEmail: string; hasRecoveryEmail: boolean }
+  | {
+      ok: true;
+      loginName: string;
+      recoveryEmail: string;
+      hasRecoveryEmail: boolean;
+      role?: string;
+      companyId?: string;
+      companyName?: string;
+      accessCode?: string;
+      isCompanyCreator?: boolean;
+      needsAccessCodeSetup?: boolean;
+    }
   | { ok: false; message: string }
 > {
-  if (!supabase) return { ok: false, message: 'Supabase is not configured.' };
-  const sess = await supabase.auth.getSession();
-  if (!sess.data.session) return { ok: false, message: 'Sign in required.' };
-  const result = await supabase
-    .from('profiles')
-    .select('login_name, display_name, recovery_email, recovery_email_norm')
-    .eq('id', sess.data.session.user.id)
-    .maybeSingle();
-  if (result.error || !result.data) {
-    return { ok: false, message: result.error?.message || 'Could not load account.' };
+  if (!isPortalAuthConfigured()) {
+    // Fallback to direct profiles read when web API is not configured.
+    if (!supabase) return { ok: false, message: 'Supabase is not configured.' };
+    const sess = await supabase.auth.getSession();
+    if (!sess.data.session) return { ok: false, message: 'Sign in required.' };
+    const result = await supabase
+      .from('profiles')
+      .select('login_name, display_name, recovery_email, recovery_email_norm, role, company_id')
+      .eq('id', sess.data.session.user.id)
+      .maybeSingle();
+    if (result.error || !result.data) {
+      return { ok: false, message: result.error?.message || 'Could not load account.' };
+    }
+    const row = result.data;
+    return {
+      ok: true,
+      loginName: row.login_name || row.display_name || '',
+      recoveryEmail: row.recovery_email || '',
+      hasRecoveryEmail: !!row.recovery_email_norm,
+      role: row.role || '',
+      companyId: row.company_id || '',
+    };
   }
-  const row = result.data;
+  const r = await portalAuthedFetch<{
+    loginName?: string;
+    recoveryEmail?: string;
+    hasRecoveryEmail?: boolean;
+    role?: string;
+    companyId?: string;
+    companyName?: string;
+    accessCode?: string;
+    isCompanyCreator?: boolean;
+    needsAccessCodeSetup?: boolean;
+  }>('GET', '/api/portal/account');
+  if (!r.ok) return r;
   return {
     ok: true,
-    loginName: row.login_name || row.display_name || '',
-    recoveryEmail: row.recovery_email || '',
-    hasRecoveryEmail: !!row.recovery_email_norm,
+    loginName: r.loginName || '',
+    recoveryEmail: r.recoveryEmail || '',
+    hasRecoveryEmail: !!r.hasRecoveryEmail,
+    role: r.role || '',
+    companyId: r.companyId || '',
+    companyName: r.companyName || '',
+    accessCode: r.accessCode || '',
+    isCompanyCreator: !!r.isCompanyCreator,
+    needsAccessCodeSetup: !!r.needsAccessCodeSetup,
   };
 }
 
@@ -279,13 +468,21 @@ export type PortalCreateEmployeePayload = {
   phone?: string;
   staffType?: string;
   recoveryEmail?: string;
+  role?: 'employee' | 'manager';
 };
 
-/** Manager-only: create portal login for a new employee without changing the current session. */
+/** Manager-only: create portal login for a new employee/manager without changing the current session. */
 export async function portalCreateEmployeeAccount(
   payload: PortalCreateEmployeePayload
 ): Promise<
-  | { ok: true; userId?: string; loginName?: string; displayName?: string; message?: string }
+  | {
+      ok: true;
+      userId?: string;
+      loginName?: string;
+      displayName?: string;
+      role?: string;
+      message?: string;
+    }
   | { ok: false; message: string }
 > {
   if (!isPortalAuthConfigured()) {
@@ -295,6 +492,7 @@ export async function portalCreateEmployeeAccount(
     userId?: string;
     loginName?: string;
     displayName?: string;
+    role?: string;
     message?: string;
   }>('POST', '/api/portal/admin/create-employee', payload as unknown as Record<string, unknown>);
   if (!r.ok) return r;
@@ -303,6 +501,7 @@ export async function portalCreateEmployeeAccount(
     userId: r.userId,
     loginName: r.loginName,
     displayName: r.displayName,
+    role: r.role,
     message: r.message || 'Portal account created.',
   };
 }

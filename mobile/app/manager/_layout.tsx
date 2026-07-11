@@ -53,6 +53,15 @@ export default function ManagerLayout() {
         }}
       />
       <Tabs.Screen
+        name="availability"
+        options={{
+          title: 'Availability',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="grid-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="requests"
         options={{
           title: 'Actions',

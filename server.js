@@ -89,8 +89,8 @@ function appendNgrokBypassToPublicUrl(absoluteUrl) {
 // Allow gm-callout opened from another port (e.g. python http.server :8000) to call this API.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
   }
@@ -100,7 +100,11 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-const { createPortalAuthRouter } = require("./portal-auth-server");
+const {
+  createPortalAuthRouter,
+  diagnoseServiceRoleKey,
+} = require("./portal-auth-server");
+const serviceRoleKeyDiag = diagnoseServiceRoleKey(SUPABASE_SERVICE_ROLE_KEY);
 app.use(
   "/api/portal",
   createPortalAuthRouter({
@@ -508,14 +512,18 @@ function buildGreetingTwiML(firstName) {
 }
 
 app.get("/health", (_req, res) => {
+  const serviceRoleOk = !!(SUPABASE_SERVICE_ROLE_KEY && serviceRoleKeyDiag.ok);
   res.json({
     ok: true,
     supabase: {
       url: !!SUPABASE_URL,
       anonKey: !!SUPABASE_ANON_KEY,
       serviceRoleKey: !!SUPABASE_SERVICE_ROLE_KEY,
+      /** JWT/API key role claim — must be "service_role" for create-company. Never the secret itself. */
+      serviceRoleJwtRole: serviceRoleKeyDiag.role || null,
+      serviceRoleKeyOk: serviceRoleOk,
       browserReady: !!(SUPABASE_URL && SUPABASE_ANON_KEY),
-      portalSignInReady: !!(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY),
+      portalSignInReady: !!(SUPABASE_URL && serviceRoleOk),
     },
   });
 });

@@ -8,13 +8,29 @@ import React, {
   useState,
 } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
-import { hydrateFromSupabase, type HydrationResult } from '../lib/hydrate';
+import {
+  fetchEmployeesOnly,
+  fetchStaffRequestsOnly,
+  hydrateFromSupabase,
+  type HydrationResult,
+} from '../lib/hydrate';
 import type { AssignmentStore } from '../lib/schedule/types';
 import { subscribeEmployees } from '../lib/employeesSync';
 import { subscribeStaffRequests } from '../lib/staffRequestsSync';
-import { TEAM_STATE_ROW_ID } from '../lib/constants';
+import { readStoredTeamStateId } from '../lib/companySession';
 import { subscribeTeamState } from '../lib/teamStateSync';
-import { applyTipPayrollFromTeamState, loadDishwasherTipsStore, loadTipPoolStore, loadWeekExtrasStore, queueTipPayrollPushToSupabase } from '../lib/timecards/tipPayrollSync';
+import {
+  applyTipPayrollFromTeamState,
+  loadDishwasherTipsStore,
+  loadTipPoolStore,
+  loadWeekExtrasStore,
+  queueTipPayrollPushToSupabase,
+} from '../lib/timecards/tipPayrollSync';
+import {
+  fetchTeamStateColumns,
+  fetchTeamStateUpdatedAt,
+  mergeTeamStatePartial,
+} from '../lib/teamStateColumns';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
 import { useAuth } from './AuthContext';
@@ -31,6 +47,9 @@ type AppDataState = HydrationResult & {
 
 const AppDataContext = createContext<AppDataState | null>(null);
 
+/** Skip foreground REST when we hydrated recently and updated_at is unchanged. */
+const FOREGROUND_SKIP_IF_FRESH_MS = 90_000;
+
 export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const { session, displayName, role } = useAuth();
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
@@ -38,12 +57,20 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const [teamState, setTeamState] = useState<HydrationResult['teamState']>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [realtimePaused, setRealtimePaused] = useState(
+    () => AppState.currentState !== 'active'
+  );
   const hydratedRef = useRef(false);
   const refetchInFlightRef = useRef(false);
   const refetchAgainRef = useRef(false);
   const silentRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appActiveRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipPayrollHydratePushRef = useRef(false);
+  const teamStateRef = useRef<HydrationResult['teamState']>(null);
+  const lastHydrateAtRef = useRef(0);
+  const teamStateFieldsPendingRef = useRef<Set<string> | null>(null);
+
+  teamStateRef.current = teamState;
 
   const runRefetch = useCallback(
     async (opts?: { showLoading?: boolean }) => {
@@ -104,6 +131,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         setStaffRequests(data.staffRequests);
         setTeamState(data.teamState);
         hydratedRef.current = true;
+        lastHydrateAtRef.current = Date.now();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load data');
       } finally {
@@ -133,13 +161,68 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const scheduleSilentRefetch = useCallback(() => {
-    if (silentRefetchTimerRef.current) clearTimeout(silentRefetchTimerRef.current);
-    silentRefetchTimerRef.current = setTimeout(() => {
-      silentRefetchTimerRef.current = null;
-      void runRefetch({ showLoading: false });
-    }, 400);
-  }, [runRefetch]);
+  const refreshTeamStateSelective = useCallback(
+    async (fields?: string[]) => {
+      if (!isSupabaseConfigured || !supabase || !session?.user) return;
+      const known = teamStateRef.current?.updated_at
+        ? String(teamStateRef.current.updated_at)
+        : null;
+      if (known) {
+        const remoteAt = await fetchTeamStateUpdatedAt(supabase);
+        if (remoteAt && remoteAt === known) return;
+      }
+      const partial = await fetchTeamStateColumns(supabase, { role, fields });
+      if (!partial) return;
+      await applyTipPayrollFromTeamState(partial);
+      setTeamState((prev) => mergeTeamStatePartial(prev, partial));
+      lastHydrateAtRef.current = Date.now();
+    },
+    [session?.user?.id, role]
+  );
+
+  const scheduleTeamStateRemoteRefresh = useCallback(
+    (fields?: string[]) => {
+      if (fields?.length) {
+        if (!teamStateFieldsPendingRef.current) {
+          teamStateFieldsPendingRef.current = new Set();
+        }
+        fields.forEach((f) => teamStateFieldsPendingRef.current!.add(f));
+      } else {
+        teamStateFieldsPendingRef.current = null;
+      }
+      if (silentRefetchTimerRef.current) clearTimeout(silentRefetchTimerRef.current);
+      silentRefetchTimerRef.current = setTimeout(() => {
+        silentRefetchTimerRef.current = null;
+        const pending = teamStateFieldsPendingRef.current;
+        teamStateFieldsPendingRef.current = null;
+        void refreshTeamStateSelective(pending ? Array.from(pending) : undefined);
+      }, 400);
+    },
+    [refreshTeamStateSelective]
+  );
+
+  const refreshEmployeesOnly = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    try {
+      const list = await fetchEmployeesOnly(supabase, {
+        role,
+        userId: session.user.id,
+      });
+      setEmployees(list);
+    } catch (e) {
+      console.warn('employees selective refresh', e);
+    }
+  }, [session?.user?.id, role]);
+
+  const refreshStaffRequestsOnly = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    try {
+      const list = await fetchStaffRequestsOnly(supabase);
+      setStaffRequests(list);
+    } catch (e) {
+      console.warn('staff_requests selective refresh', e);
+    }
+  }, [session?.user?.id]);
 
   useEffect(() => {
     hydratedRef.current = false;
@@ -149,37 +232,80 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !session?.user || role !== 'manager') return;
-    return subscribeEmployees(supabase, scheduleSilentRefetch);
-  }, [session?.user?.id, role, scheduleSilentRefetch]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !session?.user) return;
-    return subscribeTeamState(supabase, TEAM_STATE_ROW_ID, () => {
-      scheduleSilentRefetch();
+    if (realtimePaused) return;
+    return subscribeEmployees(supabase, () => {
+      void refreshEmployeesOnly();
     });
-  }, [session?.user?.id, scheduleSilentRefetch]);
+  }, [session?.user?.id, role, realtimePaused, refreshEmployeesOnly]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !session?.user) return;
-    return subscribeStaffRequests(supabase, scheduleSilentRefetch);
-  }, [session?.user?.id, scheduleSilentRefetch]);
+    if (realtimePaused) return;
+    let cancelled = false;
+    let unsub: (() => void) | undefined;
+    void (async () => {
+      const teamStateId = await readStoredTeamStateId();
+      if (cancelled) return;
+      unsub = subscribeTeamState(supabase, teamStateId, (fields) => {
+        scheduleTeamStateRemoteRefresh(fields);
+      });
+    })();
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, [session?.user?.id, realtimePaused, scheduleTeamStateRemoteRefresh]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    if (realtimePaused) return;
+    return subscribeStaffRequests(supabase, () => {
+      void refreshStaffRequestsOnly();
+    });
+  }, [session?.user?.id, realtimePaused, refreshStaffRequestsOnly]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !session?.user) return;
     const onAppState = (state: AppStateStatus) => {
-      if (state !== 'active') return;
+      if (state !== 'active') {
+        setRealtimePaused(true);
+        return;
+      }
+      setRealtimePaused(false);
       if (appActiveRefetchTimerRef.current) clearTimeout(appActiveRefetchTimerRef.current);
       appActiveRefetchTimerRef.current = setTimeout(() => {
         appActiveRefetchTimerRef.current = null;
-        void runRefetch({ showLoading: false });
-      }, 500);
+        void (async () => {
+          const age = Date.now() - lastHydrateAtRef.current;
+          if (hydratedRef.current && age < FOREGROUND_SKIP_IF_FRESH_MS) {
+            const known = teamStateRef.current?.updated_at
+              ? String(teamStateRef.current.updated_at)
+              : null;
+            if (known) {
+              const remoteAt = await fetchTeamStateUpdatedAt(supabase!);
+              if (remoteAt && remoteAt === known) return;
+            }
+          }
+          // Prefer selective team_state + light roster/request refresh over full hydrate.
+          await Promise.all([
+            refreshTeamStateSelective(),
+            refreshEmployeesOnly(),
+            refreshStaffRequestsOnly(),
+          ]);
+        })();
+      }, 800);
     };
     const sub = AppState.addEventListener('change', onAppState);
     return () => {
       if (appActiveRefetchTimerRef.current) clearTimeout(appActiveRefetchTimerRef.current);
       sub.remove();
     };
-  }, [session?.user?.id, runRefetch]);
+  }, [
+    session?.user?.id,
+    refreshTeamStateSelective,
+    refreshEmployeesOnly,
+    refreshStaffRequestsOnly,
+  ]);
 
   useEffect(
     () => () => {

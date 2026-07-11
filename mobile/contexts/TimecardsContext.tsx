@@ -25,12 +25,19 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase';
 type CachedWeekEntries = {
   entries: TimeClockEntry[];
   schema: TimecardSchema;
+  fetchedAt: number;
+  maxUpdatedAt: string | null;
 };
+
+/** Skip punch refetch when Realtime fires but week cache is still fresh. */
+const WEEK_CACHE_FRESH_MS = 45_000;
 
 type TimecardsState = {
   entries: TimeClockEntry[];
   schema: TimecardSchema;
   loading: boolean;
+  /** True when entries + schema match the selected pay week (prevents false zeros). */
+  weekReady: boolean;
   error: string | null;
   bounds: PayWeekBounds;
   weekLabel: string;
@@ -50,6 +57,7 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
     payWeekBoundsFromMonday(new Date())
   );
   const [entries, setEntries] = useState<TimeClockEntry[]>([]);
+  const [entriesWeekKey, setEntriesWeekKey] = useState<string | null>(null);
   const [schema, setSchema] = useState<TimecardSchema>({
     breakMinutes: false,
     breakTimes: false,
@@ -59,7 +67,6 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const hydratedRef = useRef(false);
   const refetchInFlightRef = useRef(false);
   const refetchAgainRef = useRef(false);
   const entriesCacheRef = useRef<Map<string, CachedWeekEntries>>(new Map());
@@ -78,12 +85,13 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const weekLabel = useMemo(() => formatPayWeekLabel(bounds), [bounds]);
+  const boundsKey = weekBoundsStorageKey(bounds);
 
   const runRefresh = useCallback(
     async (opts?: { showLoading?: boolean; force?: boolean }) => {
       if (!isSupabaseConfigured || !supabase) {
-        hydratedRef.current = false;
         setEntries([]);
+        setEntriesWeekKey(null);
         setError('Supabase is not configured.');
         setLoading(false);
         return;
@@ -94,22 +102,25 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
       }
 
       const weekKey = weekBoundsStorageKey(bounds);
-      const cached = !opts?.force ? entriesCacheRef.current.get(weekKey) : undefined;
+      const cached = entriesCacheRef.current.get(weekKey);
       const hasCache = !!cached;
       const showLoading = opts?.showLoading ?? !hasCache;
 
       refetchInFlightRef.current = true;
       if (hasCache) {
+        // Keep prior week punches visible while refreshing — never flash empty zeros.
         setEntries(cached.entries);
         setSchema(cached.schema);
+        setEntriesWeekKey(weekKey);
         setError(null);
-        hydratedRef.current = true;
-      } else if (!opts?.force) {
+        setLoading(!!showLoading && !!opts?.force);
+      } else {
+        // Do not keep a different week's punches — that paints false zeros under the new week label.
         setEntries([]);
+        setEntriesWeekKey(null);
+        if (showLoading) setLoading(true);
+        setError(null);
       }
-      if (showLoading) setLoading(true);
-      else if (hasCache) setLoading(false);
-      if (!hasCache) setError(null);
 
       try {
         const res = await loadWeekEntries(supabase, bounds);
@@ -117,16 +128,25 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
           if (!hasCache) {
             setError(res.reason);
             setEntries([]);
+            setEntriesWeekKey(null);
           }
         } else {
+          const maxUpdatedAt = res.entries.reduce<string | null>((acc, e) => {
+            const at = e.updated_at ? String(e.updated_at) : null;
+            if (!at) return acc;
+            if (!acc || at > acc) return at;
+            return acc;
+          }, null);
           entriesCacheRef.current.set(weekKey, {
             entries: res.entries,
             schema: res.schema,
+            fetchedAt: Date.now(),
+            maxUpdatedAt,
           });
           setEntries(res.entries);
           setSchema(res.schema);
+          setEntriesWeekKey(weekKey);
           setError(null);
-          hydratedRef.current = true;
         }
       } finally {
         refetchInFlightRef.current = false;
@@ -153,7 +173,12 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
     return subscribeTimeClockEntries(supabase, () => {
-      entriesCacheRef.current.delete(weekBoundsStorageKey(bounds));
+      const weekKey = weekBoundsStorageKey(bounds);
+      const cached = entriesCacheRef.current.get(weekKey);
+      if (cached && Date.now() - cached.fetchedAt < WEEK_CACHE_FRESH_MS) {
+        return;
+      }
+      entriesCacheRef.current.delete(weekKey);
       void runRefreshRef.current({ showLoading: false, force: true });
     });
   }, [bounds]);
@@ -165,11 +190,14 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
     setBounds(payWeekBoundsFromMonday(mon));
   }, []);
 
+  const weekReady = ready && entriesWeekKey === boundsKey;
+
   const value = useMemo(
     () => ({
       entries,
       schema,
-      loading: !ready || (loading && !hydratedRef.current),
+      loading: !ready || (loading && !weekReady),
+      weekReady,
       error,
       bounds,
       weekLabel,
@@ -183,6 +211,7 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
       schema,
       ready,
       loading,
+      weekReady,
       error,
       bounds,
       weekLabel,

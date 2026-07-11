@@ -150,6 +150,27 @@ function payslipColBreaksXml(pageBreakCols) {
   );
 }
 
+function insertPayslipPrintXmlInSchemaOrder(xml, printXml) {
+  if (!xml || !printXml) return xml;
+  const markers = [
+    /<ignoredErrors\b/,
+    /<smartTags\b/,
+    /<drawing\b/,
+    /<drawingHF\b/,
+    /<picture\b/,
+    /<oleObjects\b/,
+    /<controls\b/,
+    /<\/worksheet>/,
+  ];
+  for (let i = 0; i < markers.length; i += 1) {
+    const match = xml.match(markers[i]);
+    if (match && match.index != null) {
+      return xml.slice(0, match.index) + printXml + xml.slice(match.index);
+    }
+  }
+  return xml + printXml;
+}
+
 function patchPayslipSheetPrintXml(xml, pageBreakCols) {
   if (!xml) return xml;
   let out = xml;
@@ -157,15 +178,10 @@ function patchPayslipSheetPrintXml(xml, pageBreakCols) {
   out = out.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
   out = out.replace(/<colBreaks\b[^>]*\/>/g, '');
   out = out.replace(/<colBreaks[\s\S]*?<\/colBreaks>/g, '');
-  if (/<pageSetup[^>]*\/>/.test(out)) {
-    out = out.replace(/<pageSetup([^>]*)\/>/, (_match, attrs) => {
-      return '<pageSetup' + patchPayslipPageSetupAttrs(attrs) + '/>';
-    });
-  } else if (/<pageSetup[^>]*>/.test(out)) {
-    out = out.replace(/<pageSetup([^>]*)>/, (_match, attrs) => {
-      return '<pageSetup' + patchPayslipPageSetupAttrs(attrs) + '>';
-    });
-  }
+  out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
+  out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
+  out = out.replace(/<pageSetup\b[^>]*\/>/g, '');
+  out = out.replace(/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/g, '');
   if (/<pageSetUpPr[^>]*\/>/.test(out)) {
     out = out.replace(/<pageSetUpPr([^>]*)\/>/, (_match, attrs) => {
       return '<pageSetUpPr' + patchPayslipPageSetUpPrAttrs(attrs) + '/>';
@@ -190,16 +206,10 @@ function patchPayslipSheetPrintXml(xml, pageBreakCols) {
       '<worksheet$1><sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/></sheetPr>'
     );
   }
-  out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
-  out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
-  let printTail = payslipPageMarginsXml();
-  if (!/<pageSetup\b/.test(out)) {
-    printTail += payslipPageSetupXml();
-  }
+  let printBlock = payslipPageMarginsXml() + payslipPageSetupXml();
   const colBreaksXml = payslipColBreaksXml(pageBreakCols);
-  if (colBreaksXml) printTail += colBreaksXml;
-  out = out.replace(/<\/worksheet>/, printTail + '</worksheet>');
-  return out;
+  if (colBreaksXml) printBlock += colBreaksXml;
+  return insertPayslipPrintXmlInSchemaOrder(out, printBlock);
 }
 
 function worksheetPathFromWorkbook(wbXml, relsXml, sheetName) {
@@ -240,6 +250,16 @@ function assertPatchedPayslipXml(patchedXml, pageBreakCols) {
   assert(!patchedXml.includes('fitToWidth'), 'fitToWidth must not be present');
   assert(!patchedXml.includes('fitToHeight'), 'fitToHeight must not be present');
   assert(patchedXml.includes('left="0.2"'), 'expected 0.2in margins in worksheet XML');
+  const marginsAt = patchedXml.indexOf('<pageMargins');
+  const ignoredAt = patchedXml.indexOf('<ignoredErrors');
+  const drawingAt = patchedXml.indexOf('<drawing');
+  assert(marginsAt >= 0, 'expected pageMargins in worksheet XML');
+  if (ignoredAt >= 0) {
+    assert(marginsAt < ignoredAt, 'pageMargins must come before ignoredErrors (OOXML order)');
+  }
+  if (drawingAt >= 0) {
+    assert(marginsAt < drawingAt, 'pageMargins must come before drawing (OOXML order)');
+  }
 }
 
 function assert(condition, message) {

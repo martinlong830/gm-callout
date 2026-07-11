@@ -14,7 +14,7 @@ export function subscribeTimeClockEntries(
     timer = setTimeout(() => {
       timer = null;
       onRemoteChange();
-    }, 350);
+    }, 800);
   };
 
   const channel: RealtimeChannel = sb

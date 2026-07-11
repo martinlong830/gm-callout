@@ -1,18 +1,22 @@
 /**
  * Smoke-test PTO photo embed path: sanitize → XLSX → ExcelJS → Uint8Array image → write.
+ * Also asserts non-square photos keep aspect ratio (contain-fit into max box).
  * Run: node scripts/verify-pto-photos.mjs
  */
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { execFileSync } from 'child_process';
 
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx-js-style');
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
+const PTO_PHOTO_PX = 72;
 
 function xlSanitizeSheetForExport(ws) {
   if (!ws) return ws;
@@ -88,7 +92,82 @@ function countZipEntries(buf, prefix) {
   return count;
 }
 
-async function runCase(label, imageBuffer, useUint8Array) {
+/** Mirror of timecards-manager.js ptoPhotoFitSize (contain into max box). */
+function ptoPhotoFitSize(natW, natH, maxW, maxH) {
+  const boxW = maxW > 0 ? maxW : PTO_PHOTO_PX;
+  const boxH = maxH > 0 ? maxH : PTO_PHOTO_PX;
+  if (!(natW > 0) || !(natH > 0)) return { width: boxW, height: boxH };
+  const scale = Math.min(boxW / natW, boxH / natH);
+  return {
+    width: Math.max(1, Math.round(natW * scale)),
+    height: Math.max(1, Math.round(natH * scale)),
+  };
+}
+
+function readJpegDimensions(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  if (u8[0] !== 0xff || u8[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < u8.length) {
+    if (u8[i] !== 0xff) {
+      i += 1;
+      continue;
+    }
+    const marker = u8[i + 1];
+    if (marker === 0xd9 || marker === 0xda) break;
+    const segLen = (u8[i + 2] << 8) | u8[i + 3];
+    if (segLen < 2) break;
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      const jh = (u8[i + 5] << 8) | u8[i + 6];
+      const jw = (u8[i + 7] << 8) | u8[i + 8];
+      if (jw > 0 && jh > 0) return { width: jw, height: jh };
+      return null;
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+/** Build a wide non-square JPEG via sips (macOS) for aspect-ratio assertions. */
+function makeWideTestJpeg(srcPath, destPath, width, height) {
+  fs.copyFileSync(srcPath, destPath);
+  execFileSync('sips', ['-z', String(height), String(width), destPath], { stdio: 'pipe' });
+}
+
+async function assertDrawingAspect(outBuf, expectedW, expectedH, label) {
+  const zip = await JSZip.loadAsync(outBuf);
+  const drawingPath = Object.keys(zip.files).find((p) => /xl\/drawings\/drawing\d+\.xml$/i.test(p));
+  if (!drawingPath) throw new Error(label + ': no drawing XML');
+  const xml = await zip.file(drawingPath).async('string');
+  // Display size is on xdr:ext (oneCellAnchor), not a:ext inside spPr.
+  const m = xml.match(/<xdr:ext\s+cx="(\d+)"\s+cy="(\d+)"\s*\/>/);
+  if (!m) throw new Error(label + ': missing xdr:ext cx/cy in drawing');
+  const cx = Number(m[1]);
+  const cy = Number(m[2]);
+  if (!(cx > 0) || !(cy > 0)) {
+    throw new Error(label + ': invalid xdr:ext cx/cy ' + cx + '/' + cy);
+  }
+  // Excel uses EMUs; ExcelJS maps 1px ≈ 9525 EMUs at 96dpi
+  const ratio = cx / cy;
+  const expectedRatio = expectedW / expectedH;
+  if (Math.abs(ratio - expectedRatio) > 0.02) {
+    throw new Error(
+      label +
+        ': warped drawing aspect cx/cy=' +
+        ratio.toFixed(4) +
+        ' expected ~' +
+        expectedRatio.toFixed(4) +
+        ' (ext ' +
+        expectedW +
+        'x' +
+        expectedH +
+        ')'
+    );
+  }
+  console.log(label + ': drawing aspect OK (cx/cy ≈', ratio.toFixed(3) + ')');
+}
+
+async function runCase(label, imageBuffer, useUint8Array, fitExt) {
   const wb = XLSX.utils.book_new();
   const ws = buildPtoLikeSheet();
   xlSanitizeSheetForExport(ws);
@@ -101,17 +180,38 @@ async function runCase(label, imageBuffer, useUint8Array) {
   if (!sheet) throw new Error(label + ': PTO sheet missing after load');
 
   const buf = useUint8Array ? new Uint8Array(imageBuffer) : imageBuffer;
+  const dims = readJpegDimensions(buf);
+  const fitted =
+    fitExt ||
+    ptoPhotoFitSize(
+      dims && dims.width,
+      dims && dims.height,
+      PTO_PHOTO_PX,
+      PTO_PHOTO_PX
+    );
   const imageId = excelWb.addImage({ buffer: buf, extension: 'jpeg' });
+  const padX = Math.max(0, (PTO_PHOTO_PX - fitted.width) / 2);
+  const padY = Math.max(0, (PTO_PHOTO_PX - fitted.height) / 2);
   sheet.addImage(imageId, {
-    tl: { col: 0.2, row: 2.15 },
-    ext: { width: 72, height: 72 },
+    tl: {
+      col: 0.2 + padX / 56,
+      row: 2.15 + padY / 20,
+    },
+    ext: { width: fitted.width, height: fitted.height },
   });
 
   const out = await excelWb.xlsx.writeBuffer();
   const outBuf = Buffer.from(out);
   const mediaHits = countZipEntries(outBuf, 'xl/media/');
-  console.log(label + ': media entries in zip ~', mediaHits, useUint8Array ? '(Uint8Array)' : '(Buffer)');
+  console.log(
+    label + ': media entries in zip ~',
+    mediaHits,
+    useUint8Array ? '(Uint8Array)' : '(Buffer)',
+    'ext',
+    fitted.width + 'x' + fitted.height
+  );
   if (mediaHits < 1) throw new Error(label + ': no xl/media/ in output');
+  await assertDrawingAspect(outBuf, fitted.width, fitted.height, label);
   return outBuf;
 }
 
@@ -122,6 +222,23 @@ async function main() {
 
   await runCase('Buffer', raw, false);
   await runCase('Uint8Array', raw, true);
+
+  // Non-square: must not be forced into 72×72 (that warps).
+  const widePath = path.join(ROOT, '.tmp-pto-wide-photo.jpg');
+  makeWideTestJpeg(imagePath, widePath, 300, 150);
+  const wideRaw = fs.readFileSync(widePath);
+  const wideDims = readJpegDimensions(wideRaw);
+  if (!wideDims || wideDims.width !== 300 || wideDims.height !== 150) {
+    throw new Error(
+      'wide test jpeg dims unexpected: ' + JSON.stringify(wideDims)
+    );
+  }
+  const wideFit = ptoPhotoFitSize(wideDims.width, wideDims.height, PTO_PHOTO_PX, PTO_PHOTO_PX);
+  if (wideFit.width !== 72 || wideFit.height !== 36) {
+    throw new Error('contain-fit expected 72x36, got ' + wideFit.width + 'x' + wideFit.height);
+  }
+  // Old bug: square ext would yield cx===cy; assert we do not do that.
+  await runCase('Wide contain-fit', wideRaw, true, wideFit);
 
   const outPath = path.join(ROOT, '.tmp-pto-photos-test.xlsx');
   const out = await runCase('Final write', raw, true);

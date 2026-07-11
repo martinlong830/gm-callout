@@ -149,7 +149,7 @@
     if (d().getRestaurantsList) return d().getRestaurantsList();
     return [
       { id: 'rp-9', shortLabel: '9th Ave', name: 'Red Poke 598 9th Ave' },
-      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave', defaultUnassignedSchedule: true },
+      { id: 'rp-8', shortLabel: '8th Ave', name: 'Red Poke 885 8th Ave', defaultUnassignedSchedule: false },
     ];
   }
 
@@ -279,11 +279,76 @@
     return shiftRestaurantId(shiftRow.shift) === timecardsLocationFilter;
   }
 
-  /** Home store determines roster membership; use All locations for cross-store payroll. */
-  function rosterRowVisibleAtLocation(row) {
+  /** Home store determines roster membership; also include staff scheduled at the filtered location. */
+  function employeeVisibleAtCurrentLocation(emp) {
     if (timecardsLocationFilter === 'all') return true;
-    var home = employeeHomeRestaurant(row && row.emp);
-    return home === 'both' || home === timecardsLocationFilter;
+    var home = employeeHomeRestaurant(emp);
+    if (home === 'both' || home === timecardsLocationFilter) return true;
+    return employeeScheduledAtLocation(emp, timecardsLocationFilter);
+  }
+
+  function employeeScheduledAtLocation(emp, locationFilter) {
+    if (!emp) return false;
+    var loc = effectiveLocationFilter(locationFilter);
+    if (loc === 'all') return true;
+    var shifts = getWorkerScheduleShifts(emp);
+    for (var i = 0; i < shifts.length; i += 1) {
+      if (shiftRestaurantId(shifts[i].shift) === loc) return true;
+    }
+    return false;
+  }
+
+  function rosterRowVisibleAtLocation(row) {
+    return employeeVisibleAtCurrentLocation(row && row.emp);
+  }
+
+  function restaurantShortLabelForId(restaurantId) {
+    var list = getRestaurantsList();
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].id === restaurantId) {
+        return list[i].shortLabel || list[i].name || restaurantId;
+      }
+    }
+    if (restaurantId === 'rp-8') return '8th Ave';
+    if (restaurantId === 'rp-9') return '9th Ave';
+    return restaurantId || 'location';
+  }
+
+  /** Filename-safe slug for the active timecards location (e.g. 9th-ave). */
+  function locationFileSlug(locationFilter) {
+    var loc = effectiveLocationFilter(locationFilter);
+    return String(restaurantShortLabelForId(loc) || loc)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || String(loc || 'location');
+  }
+
+  function timecardsExportFileBase(bounds) {
+    bounds = bounds || payWeekBounds();
+    return (
+      'timecards-' +
+      isoFromDate(bounds.start) +
+      '_' +
+      isoFromDate(bounds.end) +
+      '-' +
+      locationFileSlug()
+    );
+  }
+
+  function redPokeStoreNumberForLocation(locationFilter) {
+    return effectiveLocationFilter(locationFilter) === 'rp-8' ? '2' : '1';
+  }
+
+  function payrollTitleForLocation() {
+    return 'RED POKE ' + redPokeStoreNumberForLocation() + ' - PAYROLL';
+  }
+
+  function scheduleSheetTitleForLocation() {
+    return (
+      'RED POKE ' +
+      redPokeStoreNumberForLocation() +
+      ': WEEKLY SCHEDULE 11:00AM - 9:00PM { 7 DAYS A WEEK }'
+    );
   }
 
   function dishwasherTipStorageKey(empId, iso, restaurantId) {
@@ -339,7 +404,22 @@
         var next = btn.getAttribute('data-timecards-location') || 'rp-9';
         if (next === timecardsLocationFilter) return;
         saveTimecardsLocationFilter(next);
-        repaintRoster();
+        invalidateWeekTipPoolCache();
+        invalidateFullReportSheetsCache();
+        /* Instant chip highlight before roster rebuild. */
+        root.querySelectorAll('[data-timecards-location]').forEach(function (b) {
+          b.classList.toggle('active', b.getAttribute('data-timecards-location') === next);
+        });
+        var wrap = document.getElementById('timecardsRosterWrap');
+        if (wrap && wrap.querySelector('table.timecards-table--roster')) {
+          wrap.classList.add('timecards-roster--switching');
+        } else {
+          showRosterLoadingKeepToolbar(wrap);
+        }
+        deferUiWork(function () {
+          repaintRoster();
+          if (wrap) wrap.classList.remove('timecards-roster--switching');
+        });
       });
     });
   }
@@ -1470,6 +1550,11 @@
     return isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end);
   }
 
+  /** Tip pool is per pay week + selected restaurant (9th and 8th keep separate pools). */
+  function weekTipPoolStorageKey(bounds, locationFilter) {
+    return weekExtrasStorageKey(bounds) + '|' + effectiveLocationFilter(locationFilter);
+  }
+
   function loadWeekExtrasMap(bounds) {
     bounds = bounds || payWeekBounds();
     try {
@@ -1520,15 +1605,19 @@
     return Math.round(n * 100) / 100;
   }
 
-  function loadWeekTipPoolSlice(bounds) {
+  function loadWeekTipPoolSlice(bounds, locationFilter) {
     bounds = bounds || payWeekBounds();
     try {
       var raw = localStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
       if (!raw) return null;
       var all = JSON.parse(raw);
       if (!all || typeof all !== 'object') return null;
-      var slice = all[weekExtrasStorageKey(bounds)];
-      return slice && typeof slice === 'object' ? slice : null;
+      var locKey = weekTipPoolStorageKey(bounds, locationFilter);
+      var slice = all[locKey];
+      if (slice && typeof slice === 'object') return slice;
+      // Legacy week-only key (pre location-scoped tip pools).
+      var legacy = all[weekExtrasStorageKey(bounds)];
+      return legacy && typeof legacy === 'object' ? legacy : null;
     } catch (_e) {
       return null;
     }
@@ -1540,11 +1629,11 @@
     invalidatePayrollTipDistCache();
   }
 
-  function getPayrollTipPoolInputs(bounds) {
+  function getPayrollTipPoolInputs(bounds, locationFilter) {
     bounds = bounds || payWeekBounds();
-    var key = weekExtrasStorageKey(bounds);
+    var key = weekTipPoolStorageKey(bounds, locationFilter);
     if (cachedWeekTipPoolKey === key && cachedWeekTipPool) return cachedWeekTipPool;
-    var slice = loadWeekTipPoolSlice(bounds);
+    var slice = loadWeekTipPoolSlice(bounds, locationFilter);
     var out = {
       cashTip: normalizeTipPoolMoney(
         slice && slice.cashTip != null ? slice.cashTip : null,
@@ -1569,13 +1658,13 @@
     return out;
   }
 
-  function saveWeekTipPoolSlice(bounds, pool) {
+  function saveWeekTipPoolSlice(bounds, pool, locationFilter) {
     bounds = bounds || payWeekBounds();
     try {
       var raw = localStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
       var all = raw ? JSON.parse(raw) : {};
       if (!all || typeof all !== 'object') all = {};
-      all[weekExtrasStorageKey(bounds)] = pool;
+      all[weekTipPoolStorageKey(bounds, locationFilter)] = pool;
       localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(all));
       invalidateWeekTipPoolCache();
       if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
@@ -2812,6 +2901,12 @@
     return kept;
   }
 
+  /** Strip chars illegal in XML 1.0 (Excel rejects the part on open). */
+  function xlStripInvalidXmlChars(value) {
+    if (value == null) return value;
+    return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+  }
+
   /** Strip sheet metadata that breaks Excel open / formula calc after write. */
   function xlSanitizeSheetForExport(ws) {
     if (!ws) return ws;
@@ -2840,9 +2935,14 @@
     Object.keys(ws).forEach(function (k) {
       if (k.charAt(0) === '!') return;
       var cell = ws[k];
-      if (!cell || cell.f == null) return;
-      var f = String(cell.f).trim();
-      if (f.charAt(0) === '=') cell.f = f.slice(1);
+      if (!cell) return;
+      if (cell.f != null) {
+        var f = String(cell.f).trim();
+        if (f.charAt(0) === '=') cell.f = f.slice(1);
+        cell.f = xlStripInvalidXmlChars(cell.f);
+      }
+      if (typeof cell.v === 'string') cell.v = xlStripInvalidXmlChars(cell.v);
+      if (typeof cell.w === 'string') cell.w = xlStripInvalidXmlChars(cell.w);
     });
     return ws;
   }
@@ -3307,6 +3407,37 @@
     sel.value = selectedIso;
   }
 
+  /** Yield so the browser can paint click/select feedback before heavy sync work. */
+  function deferUiWork(fn) {
+    if (typeof global.requestAnimationFrame === 'function') {
+      global.requestAnimationFrame(function () {
+        setTimeout(fn, 0);
+      });
+    } else {
+      setTimeout(fn, 0);
+    }
+  }
+
+  /** Keep week/location toolbar visible; swap table for a loading hint. */
+  function showRosterLoadingKeepToolbar(wrap) {
+    if (!wrap) return;
+    var toolbar = wrap.querySelector('.timecards-roster-toolbar');
+    if (!toolbar) {
+      wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
+      return;
+    }
+    var child = wrap.firstChild;
+    while (child) {
+      var next = child.nextSibling;
+      if (child !== toolbar) wrap.removeChild(child);
+      child = next;
+    }
+    var hint = document.createElement('p');
+    hint.className = 'calendar-hint';
+    hint.textContent = 'Loading timecards…';
+    wrap.appendChild(hint);
+  }
+
   function bindPayWeekSelectorOnce() {
     if (payWeekSelectorBound) return;
     payWeekSelectorBound = true;
@@ -3323,7 +3454,18 @@
       timecardState.shiftId = null;
       timecardState.shiftRow = null;
       timecardState.entryId = null;
-      renderRoster();
+      var wrap = document.getElementById('timecardsRosterWrap');
+      var hasCachedEntries = !!weekEntriesCacheByKey[weekExtrasStorageKey(payWeekBounds())];
+      /* Instant feedback: loading hint only when punches are not cached yet. */
+      if (!hasCachedEntries) {
+        showRosterLoadingKeepToolbar(wrap);
+      } else if (wrap) {
+        wrap.classList.add('timecards-roster--switching');
+      }
+      deferUiWork(function () {
+        renderRoster();
+        if (wrap) wrap.classList.remove('timecards-roster--switching');
+      });
     });
   }
 
@@ -3437,8 +3579,7 @@
     considerMetrics(bohMetrics);
     return w;
   }
-  var PAYROLL_TITLE = 'RED POKE 1 - PAYROLL';
-  var ONGI_MANAGEMENT_GROSS = 1500;
+   var ONGI_MANAGEMENT_GROSS = 1500;
 
   function payrollTipPoolTotals(pool) {
     pool = pool || PAYROLL_TIP_POOL_DEFAULTS;
@@ -4113,9 +4254,11 @@
         additionalCash: buildWeekAdditionalCashTipsByEmp(),
         employeeCash: buildWeekEmployeeCashByEmp(),
       };
-      rosterCache.rows = d().employees.map(function (emp) {
+      var emps = d().employees.filter(employeeVisibleAtCurrentLocation);
+      rosterCache.rows = emps.map(function (emp) {
         return buildRosterRowData(emp, tipSums);
       });
+      rosterCache.fileBase = timecardsExportFileBase();
       rosterCache.shiftRows = null;
       rosterCacheRowsDirty = false;
       invalidateFullReportSheetsCache();
@@ -4788,7 +4931,7 @@
     var colWidths = payrollResolvedColWidths(fohMetrics, bohMetrics);
     while (colWidths.length <= PAYROLL_FEE_AMT_COL) colWidths.push(12);
 
-    xlSet(ws, 0, 0, PAYROLL_TITLE, S.title);
+    xlSet(ws, 0, 0, payrollTitleForLocation(), S.title);
     xlMerge(merges, 0, 0, 0, PAYROLL_COLS - 1);
     writePayrollTipPoolSection(ws, getPayrollTipPoolInputs(), S);
 
@@ -5608,8 +5751,7 @@
     return xlFinalizeSheet(ws, merges, payslipSheetColWidths(range.e.c), null, rowHeights);
   }
 
-  var SCHEDULE_SHEET_TITLE = 'RED POKE 1: WEEKLY SCHEDULE 11:00AM - 9:00PM { 7 DAYS A WEEK }';
-  var SCHEDULE_DAY_COL_START = 2;
+   var SCHEDULE_DAY_COL_START = 2;
   var SCHEDULE_COL_TOTAL_H = 9;
   var SCHEDULE_COL_TOTAL_AFTER = 10;
   var SCHEDULE_COL_COUNT = 11;
@@ -5691,9 +5833,11 @@
     var trIdx = scheduleTrIdxForEmp(emp);
     var found = null;
     var foundByIdx = null;
+    var loc = effectiveLocationFilter();
     snapshot.forEach(function (s) {
       if (s.day !== dayLabel) return;
       if (s.role !== emp.staffType) return;
+      if (loc !== 'all' && shiftRestaurantId(s) !== loc) return;
       if (!d().shiftRowIncludesWorker(s, name)) return;
       if (!found) found = s;
       if (s.trIdx === trIdx) foundByIdx = s;
@@ -5722,7 +5866,7 @@
   function scheduleSectionEmployees(staffType) {
     return d()
       .employees.filter(function (emp) {
-        return emp.staffType === staffType;
+        return emp.staffType === staffType && employeeVisibleAtCurrentLocation(emp);
       })
       .sort(function (a, b) {
         return scheduleIndexForEmp(a) - scheduleIndexForEmp(b);
@@ -5801,7 +5945,7 @@
     var r = 0;
     var lastCol = SCHEDULE_COL_COUNT - 1;
 
-    xlSet(ws, r, 0, SCHEDULE_SHEET_TITLE, S.title);
+    xlSet(ws, r, 0, scheduleSheetTitleForLocation(), S.title);
     xlMerge(merges, r, 0, r, lastCol);
     rowHeights[r] = { hpt: 22 };
     r += 1;
@@ -6025,6 +6169,60 @@
     if (u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff) return true;
     if (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) return true;
     return false;
+  }
+
+  /** Read natural pixel size from JPEG/PNG bytes (no decode). Returns null if unknown. */
+  function readImageDimensions(buf) {
+    if (!buf || buf.byteLength < 24) return null;
+    var u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    // PNG: IHDR width/height at bytes 16–23
+    if (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) {
+      var pw =
+        (u8[16] << 24) | (u8[17] << 16) | (u8[18] << 8) | u8[19];
+      var ph =
+        (u8[20] << 24) | (u8[21] << 16) | (u8[22] << 8) | u8[23];
+      if (pw > 0 && ph > 0) return { width: pw, height: ph };
+      return null;
+    }
+    // JPEG: scan for SOF0/1/2 markers
+    if (u8[0] === 0xff && u8[1] === 0xd8) {
+      var i = 2;
+      while (i + 9 < u8.length) {
+        if (u8[i] !== 0xff) {
+          i += 1;
+          continue;
+        }
+        var marker = u8[i + 1];
+        if (marker === 0xd9 || marker === 0xda) break;
+        var segLen = (u8[i + 2] << 8) | u8[i + 3];
+        if (segLen < 2) break;
+        // SOF0 / SOF1 / SOF2
+        if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+          var jh = (u8[i + 5] << 8) | u8[i + 6];
+          var jw = (u8[i + 7] << 8) | u8[i + 8];
+          if (jw > 0 && jh > 0) return { width: jw, height: jh };
+          return null;
+        }
+        i += 2 + segLen;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Contain-fit into maxW×maxH (preserve aspect ratio). Falls back to the box if dims unknown.
+   */
+  function ptoPhotoFitSize(natW, natH, maxW, maxH) {
+    var boxW = maxW > 0 ? maxW : PTO_PHOTO_PX;
+    var boxH = maxH > 0 ? maxH : PTO_PHOTO_PX;
+    if (!(natW > 0) || !(natH > 0)) {
+      return { width: boxW, height: boxH };
+    }
+    var scale = Math.min(boxW / natW, boxH / natH);
+    return {
+      width: Math.max(1, Math.round(natW * scale)),
+      height: Math.max(1, Math.round(natH * scale)),
+    };
   }
 
   function fetchPhotoBufferForUrl(url) {
@@ -6469,6 +6667,32 @@
     );
   }
 
+  /**
+   * OOXML CT_Worksheet requires pageMargins/pageSetup/colBreaks BEFORE
+   * ignoredErrors/drawing. Appending them before </worksheet> after SheetJS's
+   * ignoredErrors makes Excel replace sheet4.xml on open (blank Payslip).
+   */
+  function insertPayslipPrintXmlInSchemaOrder(xml, printXml) {
+    if (!xml || !printXml) return xml;
+    var markers = [
+      /<ignoredErrors\b/,
+      /<smartTags\b/,
+      /<drawing\b/,
+      /<drawingHF\b/,
+      /<picture\b/,
+      /<oleObjects\b/,
+      /<controls\b/,
+      /<\/worksheet>/,
+    ];
+    for (var i = 0; i < markers.length; i += 1) {
+      var match = xml.match(markers[i]);
+      if (match && match.index != null) {
+        return xml.slice(0, match.index) + printXml + xml.slice(match.index);
+      }
+    }
+    return xml + printXml;
+  }
+
   function patchPayslipSheetPrintXml(xml, pageBreakCols) {
     if (!xml) return xml;
     var out = xml;
@@ -6476,15 +6700,10 @@
     out = out.replace(/<rowBreaks[\s\S]*?<\/rowBreaks>/g, '');
     out = out.replace(/<colBreaks\b[^>]*\/>/g, '');
     out = out.replace(/<colBreaks[\s\S]*?<\/colBreaks>/g, '');
-    if (/<pageSetup[^>]*\/>/.test(out)) {
-      out = out.replace(/<pageSetup([^>]*)\/>/, function (_match, attrs) {
-        return '<pageSetup' + patchPayslipPageSetupAttrs(attrs) + '/>';
-      });
-    } else if (/<pageSetup[^>]*>/.test(out)) {
-      out = out.replace(/<pageSetup([^>]*)>/, function (_match, attrs) {
-        return '<pageSetup' + patchPayslipPageSetupAttrs(attrs) + '>';
-      });
-    }
+    out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
+    out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
+    out = out.replace(/<pageSetup\b[^>]*\/>/g, '');
+    out = out.replace(/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/g, '');
     if (/<pageSetUpPr[^>]*\/>/.test(out)) {
       out = out.replace(/<pageSetUpPr([^>]*)\/>/, function (_match, attrs) {
         return '<pageSetUpPr' + patchPayslipPageSetUpPrAttrs(attrs) + '/>';
@@ -6509,16 +6728,11 @@
         '<worksheet$1><sheetPr><pageSetUpPr fitToPage="0" autoPageBreaks="0"/></sheetPr>'
       );
     }
-    out = out.replace(/<pageMargins\b[^>]*\/>/g, '');
-    out = out.replace(/<pageMargins\b[^>]*>[\s\S]*?<\/pageMargins>/g, '');
-    var printTail = payslipPageMarginsXml();
-    if (!/<pageSetup\b/.test(out)) {
-      printTail += payslipPageSetupXml();
-    }
+    // Keep the known-good print block: 0.2" margins, portrait, 50% scale, stub col breaks.
+    var printBlock = payslipPageMarginsXml() + payslipPageSetupXml();
     var colBreaksXml = payslipColBreaksXml(pageBreakCols);
-    if (colBreaksXml) printTail += colBreaksXml;
-    out = out.replace(/<\/worksheet>/, printTail + '</worksheet>');
-    return out;
+    if (colBreaksXml) printBlock += colBreaksXml;
+    return insertPayslipPrintXmlInSchemaOrder(out, printBlock);
   }
 
   function worksheetPathFromWorkbook(wbXml, relsXml, sheetName) {
@@ -6762,6 +6976,12 @@
       })
     );
 
+    // Approx px per Excel col/row unit — used only to center within the max box.
+    var PTO_PHOTO_COL_PX = 56;
+    var PTO_PHOTO_ROW_PX = 20;
+    var baseColInset = 0.2;
+    var baseRowInset = 0.15;
+
     var embedded = 0;
     for (var bi = 0; bi < photoBlocks.length; bi += 1) {
       var block = photoBlocks[bi];
@@ -6770,13 +6990,25 @@
       var photoCell = ws.getCell(excelRow, PTO_C.PHOTO + 1);
       try {
         if (photo && photo.buffer) {
+          var dims = readImageDimensions(photo.buffer);
+          var fitted = ptoPhotoFitSize(
+            dims && dims.width,
+            dims && dims.height,
+            PTO_PHOTO_PX,
+            PTO_PHOTO_PX
+          );
+          var padX = Math.max(0, (PTO_PHOTO_PX - fitted.width) / 2);
+          var padY = Math.max(0, (PTO_PHOTO_PX - fitted.height) / 2);
           var imageId = excelWb.addImage({
             buffer: photo.buffer,
             extension: photo.extension,
           });
           ws.addImage(imageId, {
-            tl: { col: 0.2, row: excelRow - 1 + 0.15 },
-            ext: { width: PTO_PHOTO_PX, height: PTO_PHOTO_PX },
+            tl: {
+              col: baseColInset + padX / PTO_PHOTO_COL_PX,
+              row: excelRow - 1 + baseRowInset + padY / PTO_PHOTO_ROW_PX,
+            },
+            ext: { width: fitted.width, height: fitted.height },
           });
           photoCell.value = null;
           embedded += 1;
@@ -6793,12 +7025,20 @@
   /** Normalize XLSX.write / ExcelJS / JSZip output for Blob and JSZip.loadAsync. */
   function xlsxBytesFromOutput(buffer) {
     if (!buffer) return new Uint8Array(0);
+    // Prefer duck-typing: vm/sandbox realms break `instanceof` across contexts.
+    if (typeof buffer.byteLength === 'number' && typeof buffer.byteOffset === 'number' && buffer.buffer) {
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    }
+    if (typeof buffer.byteLength === 'number' && typeof buffer.slice === 'function' && !buffer.buffer) {
+      // ArrayBuffer (including cross-realm)
+      return new Uint8Array(buffer);
+    }
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(buffer)) {
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    }
     if (buffer instanceof Uint8Array) return buffer;
     if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer);
     if (Array.isArray(buffer)) return new Uint8Array(buffer);
-    if (buffer.buffer instanceof ArrayBuffer && typeof buffer.byteLength === 'number') {
-      return new Uint8Array(buffer.buffer, buffer.byteOffset || 0, buffer.byteLength);
-    }
     return new Uint8Array(buffer);
   }
 
@@ -6836,7 +7076,8 @@
     var fullSheets;
     try {
       setFullReportExportProgress('Building worksheets…');
-      fullSheets = buildFullReportSheets();
+      /* Always rebuild from live schedule assignments/draft — never reuse a cached Schedule sheet. */
+      fullSheets = buildFullReportSheets({ forceFresh: true });
     } catch (buildErr) {
       console.warn('Full report build failed', buildErr);
       alert(
@@ -6937,7 +7178,7 @@
     sections.forEach(function (section) {
       var emps = d()
         .employees.filter(function (emp) {
-          return emp.staffType === section.staffType;
+          return emp.staffType === section.staffType && employeeVisibleAtCurrentLocation(emp);
         })
         .slice()
         .sort(function (a, b) {
@@ -6998,7 +7239,15 @@
     );
   }
 
-  function buildFullReportSheets() {
+  /**
+   * Build all full-report worksheets.
+   * opts.forceFresh — drop schedule + sheet caches first (download path; Schedule must match live calendar).
+   */
+  function buildFullReportSheets(opts) {
+    opts = opts || {};
+    if (opts.forceFresh) {
+      invalidatePayWeekScheduleCache();
+    }
     var cached = getCachedFullReportSheets();
     if (cached) return cached;
 
@@ -7068,7 +7317,7 @@
   }
 
   function openTimecardsDownloadModal() {
-    if (!rosterCache || !rosterCache.rows.length) {
+    if (!rosterCache || !sortedRosterRows(rosterCache.rows).length) {
       alert('No timecard data to download for this pay week.');
       return;
     }
@@ -7103,7 +7352,8 @@
       if (downloadPicker.fullExportInFlight) return;
       downloadPicker.fullExportInFlight = true;
       setFullReportExportUiBusy(true);
-      var fullReportFileBase = rosterCache.fileBase;
+      var fullReportFileBase = timecardsExportFileBase();
+      if (rosterCache) rosterCache.fileBase = fullReportFileBase;
       var ensureTimecardsLoaded =
         global.gmCalloutEnsureTimecardsManagerLoaded &&
         typeof global.gmCalloutEnsureTimecardsManagerLoaded === 'function'
@@ -7131,7 +7381,8 @@
   function runTimecardsDownload(format) {
     if (!rosterCache || !downloadPicker.report) return;
     var report = downloadPicker.report;
-    var fileBase = rosterCache.fileBase;
+    var fileBase = timecardsExportFileBase();
+    rosterCache.fileBase = fileBase;
     var summaryAoa = buildSummaryExportAoa();
     var shiftsAoa = buildShiftsExportAoa();
 
@@ -8075,14 +8326,14 @@
       bounds.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
       ' – ' +
       bounds.end.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-    var emps = d().employees.slice();
+    var emps = d().employees.filter(employeeVisibleAtCurrentLocation);
     var tipSums = {
       dishwasher: buildWeekDishwasherTipsByEmp(bounds),
       additionalCash: buildWeekAdditionalCashTipsByEmp(bounds),
     };
     rosterCache = {
       weekLabel: weekLabel,
-      fileBase: 'timecards-' + isoFromDate(bounds.start) + '_' + isoFromDate(bounds.end),
+      fileBase: timecardsExportFileBase(bounds),
       rows: emps.map(function (emp) {
         return buildRosterRowData(emp, tipSums);
       }),
@@ -8114,26 +8365,44 @@
       return;
     }
     buildRosterCacheFromCurrentWeek();
-    paintRosterWrap(wrap);
+    paintRosterIncrementalOrFull(wrap, { deferGrandTotals: true });
   }
 
-  function refreshRosterAfterWeekFetch(loadRes, wrap) {
+  function refreshRosterAfterWeekFetch(loadRes, wrap, expectedKey) {
+    if (expectedKey && expectedKey !== selectedPayWeekEntriesCacheKey()) return;
     if (!loadRes.ok) {
       if (!weekEntries.length && wrap) {
-        wrap.innerHTML =
-          '<p class="calendar-hint">' +
-          d().escapeHtml(formatTimecardsLoadError(loadRes.reason)) +
-          '</p>';
+        var toolbar = wrap.querySelector('.timecards-roster-toolbar');
+        if (toolbar) {
+          showRosterLoadingKeepToolbar(wrap);
+          var hint = wrap.querySelector('.calendar-hint');
+          if (hint) hint.textContent = formatTimecardsLoadError(loadRes.reason);
+        } else {
+          wrap.innerHTML =
+            '<p class="calendar-hint">' +
+            d().escapeHtml(formatTimecardsLoadError(loadRes.reason)) +
+            '</p>';
+        }
       }
       return;
     }
     buildRosterCacheFromCurrentWeek();
     if (!wrap) return;
-    if (wrap.querySelector('table.timecards-roster-table')) {
-      paintRosterTableBody(wrap, { deferGrandTotals: true });
-    } else {
-      paintRosterWrap(wrap, { deferGrandTotals: true });
+    paintRosterIncrementalOrFull(wrap, { deferGrandTotals: true });
+  }
+
+  /** Prefer tbody-only update when toolbar already exists (avoids recreating week select). */
+  function paintRosterIncrementalOrFull(wrap, opts) {
+    if (!wrap) return;
+    if (
+      wrap.querySelector('.timecards-roster-toolbar') &&
+      wrap.querySelector('table.timecards-table--roster')
+    ) {
+      syncPayWeekSelectorUi();
+      paintRosterTableBody(wrap, opts);
+      return;
     }
+    paintRosterWrap(wrap, opts);
   }
 
   function renderRoster() {
@@ -8150,6 +8419,7 @@
       return;
     }
     var bounds = payWeekBounds();
+    var selectedKey = weekExtrasStorageKey(bounds);
     var hadCache = hydrateWeekEntriesFromCache(bounds);
     var emps = d().employees.slice();
     if (!emps.length) {
@@ -8160,10 +8430,10 @@
     var paintOpts = { deferGrandTotals: true };
     if (hadCache) {
       buildRosterCacheFromCurrentWeek();
-      paintRosterWrap(wrap, paintOpts);
+      paintRosterIncrementalOrFull(wrap, paintOpts);
       var scheduleFetch = function () {
         loadWeekEntries().then(function (loadRes) {
-          refreshRosterAfterWeekFetch(loadRes, wrap);
+          refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
         });
       };
       if (typeof global.requestAnimationFrame === 'function') {
@@ -8176,9 +8446,9 @@
     activeWeekEntriesCacheKey = null;
     weekEntries = [];
     invalidateWeekEntriesIndex();
-    wrap.innerHTML = '<p class="calendar-hint">Loading timecards…</p>';
+    showRosterLoadingKeepToolbar(wrap);
     loadWeekEntries().then(function (loadRes) {
-      refreshRosterAfterWeekFetch(loadRes, wrap);
+      refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
     });
   }
 
@@ -9667,6 +9937,22 @@
         invalidateFullReportSheetsCache();
       },
       invalidateFullReportSheetsCache: invalidateFullReportSheetsCache,
+      setTimecardsLocationFilterForTest: function (id) {
+        saveTimecardsLocationFilter(id === 'rp-8' ? 'rp-8' : 'rp-9');
+        invalidateWeekTipPoolCache();
+        invalidateFullReportSheetsCache();
+      },
+      getTimecardsLocationFilterForTest: function () {
+        return timecardsLocationFilter;
+      },
+      timecardsExportFileBase: timecardsExportFileBase,
+      employeeVisibleAtCurrentLocation: employeeVisibleAtCurrentLocation,
+      buildEmployeeInfoWorksheet: buildEmployeeInfoWorksheet,
+      buildScheduleWorksheet: buildScheduleWorksheet,
+      sortedRosterRows: sortedRosterRows,
+      writeFullReportWorkbookBytes: writeFullReportWorkbookBytes,
+      patchPayslipSheetPrintXml: patchPayslipSheetPrintXml,
+      patchPayslipPrintOoxml: patchPayslipPrintOoxml,
     };
   }
 

@@ -110,7 +110,7 @@
         ? bridge.getEmployeeLoginName()
         : bridge.employeeLoginName || '';
     if (!WORKER) return;
-    var titles = { home: 'Home', messages: 'Messages', requests: 'Actions' };
+    var titles = { home: 'Home', availability: 'Availability', messages: 'Messages', requests: 'Actions' };
 
     var screenTitle = el('empScreenTitle');
     var welcomeCard = el('empWelcomeCard');
@@ -130,9 +130,15 @@
     var chatBackBtn = el('empChatBack');
     var messagesLayout = el('empMessagesLayout');
     var feedback = el('empRequestFeedback');
-    var empAvailWeekChips = el('empAvailWeekChips');
     var empAvailGrid = el('empAvailGrid');
     var empAvailCheckAllBtn = el('empAvailCheckAllBtn');
+    var empAvailSubmitBtn = el('empAvailSubmitBtn');
+    var empAvailFeedback = el('empAvailFeedback');
+    var empAvailStatus = el('empAvailStatus');
+    var empAvailWeekLabel = el('empAvailWeekLabel');
+    var empAvailWeekBadge = el('empAvailWeekBadge');
+    var empAvailWeekPrev = el('empAvailWeekPrev');
+    var empAvailWeekNext = el('empAvailWeekNext');
     var empTimeoffStartDate = el('empTimeoffStartDate');
     var empTimeoffEndDate = el('empTimeoffEndDate');
     var empTimeoffLeaveType = el('empTimeoffLeaveType');
@@ -144,9 +150,16 @@
     var upcomingWeekCursor = 0;
     var upcomingWeekStarts = [];
     var upcomingRowsByWeek = {};
-    var availWeekOptions = [];
-    var selectedAvailWeekIndex = 0;
+    var availWeekIndex =
+      bridge.getAvailabilityTemplateWeekIndex && typeof bridge.getAvailabilityTemplateWeekIndex === 'function'
+        ? bridge.getAvailabilityTemplateWeekIndex()
+        : 0;
+    var availWeekCount =
+      bridge.getAvailabilityViewWeekCount && typeof bridge.getAvailabilityViewWeekCount === 'function'
+        ? bridge.getAvailabilityViewWeekCount()
+        : 1;
     var currentAvailGrid = null;
+    var currentAvailStatus = 'draft';
     var messagesSearchQuery = '';
 
     store = loadChatStore();
@@ -669,7 +682,6 @@
 
     function showEmpRequestForm(formKey) {
       var map = {
-        availability: 'empFormAvailability',
         timeoff: 'empFormTimeoff',
         swap: 'empFormSwap',
         callout_request: 'empFormCallout',
@@ -687,24 +699,34 @@
       }
     }
 
-    function renderAvailWeekChips() {
-      if (!empAvailWeekChips) return;
-      empAvailWeekChips.innerHTML = availWeekOptions
-        .map(function (w, idx) {
-          var active = idx === selectedAvailWeekIndex;
-          return (
-            '<button type="button" class="filter-chip' +
-            (active ? ' active' : '') +
-            '" data-avail-week-idx="' +
-            idx +
-            '" role="tab" aria-selected="' +
-            (active ? 'true' : 'false') +
-            '">' +
-            escapeHtml(w.label) +
-            '</button>'
-          );
-        })
-        .join('');
+    function showAvailFeedback(msg) {
+      if (!empAvailFeedback) return;
+      empAvailFeedback.textContent = msg || '';
+      empAvailFeedback.hidden = !msg;
+    }
+
+    function setEmpAvailStatusBadge(status) {
+      currentAvailStatus = status === 'submitted' ? 'submitted' : 'draft';
+      if (!empAvailStatus) return;
+      empAvailStatus.textContent = currentAvailStatus === 'submitted' ? 'Submitted' : 'Draft';
+      empAvailStatus.classList.toggle('avail-status-badge--submitted', currentAvailStatus === 'submitted');
+      empAvailStatus.classList.toggle('avail-status-badge--draft', currentAvailStatus !== 'submitted');
+    }
+
+    function updateEmpAvailWeekNav() {
+      var tpl =
+        bridge.getAvailabilityTemplateWeekIndex && typeof bridge.getAvailabilityTemplateWeekIndex === 'function'
+          ? bridge.getAvailabilityTemplateWeekIndex()
+          : 0;
+      if (empAvailWeekLabel) {
+        empAvailWeekLabel.textContent =
+          bridge.formatAvailabilityWeekLabel && typeof bridge.formatAvailabilityWeekLabel === 'function'
+            ? bridge.formatAvailabilityWeekLabel(availWeekIndex)
+            : 'Week';
+      }
+      if (empAvailWeekBadge) empAvailWeekBadge.hidden = availWeekIndex !== tpl;
+      if (empAvailWeekPrev) empAvailWeekPrev.disabled = availWeekIndex <= 0;
+      if (empAvailWeekNext) empAvailWeekNext.disabled = availWeekIndex >= availWeekCount - 1;
     }
 
     function collectAvailabilityGridFromDom() {
@@ -720,10 +742,34 @@
       return out;
     }
 
-    function renderAvailabilityRequestGrid(roleCode) {
-      if (!empAvailGrid || !bridge.getDefaultAvailabilityGridForRole || !bridge.renderAvailabilityGridEditor) return;
-      if (!currentAvailGrid) currentAvailGrid = bridge.getDefaultAvailabilityGridForRole(roleCode);
-      empAvailGrid.innerHTML = bridge.renderAvailabilityGridEditor(currentAvailGrid, roleCode);
+    function persistEmpAvailabilityDraft() {
+      if (!bridge.saveWorkerAvailabilityDraft) return;
+      currentAvailGrid = collectAvailabilityGridFromDom();
+      bridge.saveWorkerAvailabilityDraft(WORKER, availWeekIndex, currentAvailGrid);
+      setEmpAvailStatusBadge('draft');
+    }
+
+    function renderEmployeeAvailabilityTab() {
+      if (!empAvailGrid || !bridge.renderAvailabilityGridEditor) return;
+      var roleCode = bridge.getWorkerRoleCode(WORKER);
+      var entry =
+        bridge.getWorkerAvailabilityWeek && typeof bridge.getWorkerAvailabilityWeek === 'function'
+          ? bridge.getWorkerAvailabilityWeek(WORKER, availWeekIndex)
+          : null;
+      currentAvailGrid =
+        entry && entry.grid
+          ? entry.grid
+          : bridge.getDefaultAvailabilityGridForRole
+            ? bridge.getDefaultAvailabilityGridForRole(roleCode, availWeekIndex)
+            : {};
+      setEmpAvailStatusBadge(entry && entry.status ? entry.status : 'draft');
+      updateEmpAvailWeekNav();
+      empAvailGrid.innerHTML = bridge.renderAvailabilityGridEditor(
+        currentAvailGrid,
+        (entry && entry.staffType) || roleCode,
+        availWeekIndex
+      );
+      if (bridge.bindAvailabilityGridDragDrop) bridge.bindAvailabilityGridDragDrop(empAvailGrid);
     }
 
     function checkAllAvailabilityGrid() {
@@ -731,18 +777,22 @@
       empAvailGrid.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
         inp.checked = true;
       });
-      currentAvailGrid = collectAvailabilityGridFromDom();
+      persistEmpAvailabilityDraft();
     }
 
-    function initAvailabilityRequestForm() {
-      var roleCode = bridge.getWorkerRoleCode(WORKER);
-      currentAvailGrid = bridge.getDefaultAvailabilityGridForRole
-        ? bridge.getDefaultAvailabilityGridForRole(roleCode)
-        : null;
-      availWeekOptions = bridge.getAvailabilityWeekOptions ? bridge.getAvailabilityWeekOptions() : [];
-      selectedAvailWeekIndex = 0;
-      renderAvailWeekChips();
-      renderAvailabilityRequestGrid(roleCode);
+    function submitEmployeeAvailabilityTab() {
+      if (!bridge.submitWorkerAvailability) return;
+      currentAvailGrid = collectAvailabilityGridFromDom();
+      var res = bridge.submitWorkerAvailability(WORKER, availWeekIndex, currentAvailGrid);
+      if (!res || !res.ok) {
+        showAvailFeedback((res && res.message) || 'Could not submit availability.');
+        return;
+      }
+      setEmpAvailStatusBadge('submitted');
+      showAvailFeedback('Submitted. Your manager can see this week on Availability.');
+      setTimeout(function () {
+        showAvailFeedback('');
+      }, 4000);
     }
 
     function initTimeoffDateRangeForm() {
@@ -760,8 +810,7 @@
         var payload = getPayload();
         if (!payload) return;
         bridge.submitEmployeeRequest(payload);
-        if (formId === 'empFormAvailability') initAvailabilityRequestForm();
-        else if (formId === 'empFormTimeoff') initTimeoffDateRangeForm();
+        if (formId === 'empFormTimeoff') initTimeoffDateRangeForm();
         else form.reset();
         showRequestFeedback('Submitted. Your manager will see it under Actions.');
         setTimeout(function () {
@@ -808,24 +857,6 @@
           renderThreadsList();
         });
       }
-
-      wireRequestForm('empFormAvailability', function () {
-        var weekOpt = availWeekOptions[selectedAvailWeekIndex];
-        if (!weekOpt) return null;
-        var roleCodeNow = bridge.getWorkerRoleCode(WORKER);
-        var roleLine = bridge.getWorkerRoleLine(WORKER);
-        var collected = collectAvailabilityGridFromDom();
-        currentAvailGrid = collected;
-        return {
-          type: 'availability',
-          employeeName: WORKER,
-          role: roleCodeNow,
-          summary: 'Availability update for ' + weekOpt.label + ' (' + roleLine + ').',
-          submittedWeekLabel: weekOpt.label,
-          submittedWeekIndex: weekOpt.weekIndex,
-          submittedGrid: collected,
-        };
-      });
 
       wireRequestForm('empFormSwap', function () {
         var ta = el('empSwapDetails');
@@ -918,33 +949,55 @@
             renderThreadsList();
             closeThreadView();
           }
+          if (key === 'availability') {
+            showAvailFeedback('');
+            renderEmployeeAvailabilityTab();
+          }
           if (key === 'requests') {
             populateCalloutShiftSelect();
             populateSwapShiftOfferSelect();
             populateAvailableSwapOffersSelect();
-            initAvailabilityRequestForm();
             initTimeoffDateRangeForm();
-            showEmpRequestForm('availability');
+            showEmpRequestForm('timeoff');
             showRequestFeedback('');
           }
           showEmpNav(key);
         });
       });
 
-      if (empAvailWeekChips) {
-        empAvailWeekChips.addEventListener('click', function (e) {
-          var btn = e.target.closest('[data-avail-week-idx]');
-          if (!btn) return;
-          var idx = parseInt(btn.getAttribute('data-avail-week-idx'), 10);
-          if (Number.isNaN(idx) || idx < 0 || idx >= availWeekOptions.length) return;
-          selectedAvailWeekIndex = idx;
-          renderAvailWeekChips();
+      if (empAvailWeekPrev) {
+        empAvailWeekPrev.addEventListener('click', function () {
+          if (availWeekIndex <= 0) return;
+          persistEmpAvailabilityDraft();
+          availWeekIndex -= 1;
+          renderEmployeeAvailabilityTab();
+        });
+      }
+      if (empAvailWeekNext) {
+        empAvailWeekNext.addEventListener('click', function () {
+          if (availWeekIndex >= availWeekCount - 1) return;
+          persistEmpAvailabilityDraft();
+          availWeekIndex += 1;
+          renderEmployeeAvailabilityTab();
+        });
+      }
+
+      if (empAvailGrid) {
+        empAvailGrid.addEventListener('change', function (e) {
+          if (!e.target || !e.target.classList || !e.target.classList.contains('availability-grid-cb')) return;
+          persistEmpAvailabilityDraft();
         });
       }
 
       if (empAvailCheckAllBtn) {
         empAvailCheckAllBtn.addEventListener('click', function () {
           checkAllAvailabilityGrid();
+        });
+      }
+
+      if (empAvailSubmitBtn) {
+        empAvailSubmitBtn.addEventListener('click', function () {
+          submitEmployeeAvailabilityTab();
         });
       }
 

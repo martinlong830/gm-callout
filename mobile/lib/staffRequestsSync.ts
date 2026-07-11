@@ -14,7 +14,7 @@ export function subscribeStaffRequests(
     timer = setTimeout(() => {
       timer = null;
       onRemoteChange();
-    }, 350);
+    }, 800);
   };
 
   const channel: RealtimeChannel = sb

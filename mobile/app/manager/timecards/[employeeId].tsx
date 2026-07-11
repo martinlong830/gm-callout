@@ -16,6 +16,7 @@ import {
   formatDayBreakLabel,
   formatRecordedHoursLabel,
   formatHourlyRateLabel,
+  formatPayAmount,
   formatShiftPayLabel,
   scheduledPaidMinutes,
   shiftPayForScheduledRecorded,
@@ -31,8 +32,13 @@ import {
 } from '../../../lib/timecards/offScheduleShift';
 import { applyCrossRestaurantPunchSideEffects } from '../../../lib/timecards/crossRestaurantPunch';
 import { removeShiftDay } from '../../../lib/timecards/shiftDayCleanup';
-import { isDeliveryDishwasherStaff, loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
-import { getEmployeeDayLeaveSync, loadWeekExtrasSlice } from '../../../lib/timecards/weekExtras';
+import { isDeliveryDishwasherStaff, getEmployeeDayDishwasherTipSync, loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
+import {
+  getEmployeeDayAdditionalCashTipSync,
+  getEmployeeDayLeaveSync,
+  loadWeekExtrasSlice,
+  type WeekExtrasSlice,
+} from '../../../lib/timecards/weekExtras';
 import {
   compactShiftTimeLabel,
   formatPayWeekDateLabel,
@@ -66,7 +72,7 @@ export default function TimecardsEmployeeScreen() {
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
   const [listVersion, setListVersion] = useState(0);
-  const [extrasSlice, setExtrasSlice] = useState<Record<string, { vl: number; sl: number; manual?: boolean }>>({});
+  const [extrasSlice, setExtrasSlice] = useState<WeekExtrasSlice>({});
   const [dishwasherTipsSlice, setDishwasherTipsSlice] = useState<Record<string, number>>({});
   const [addMenuOpen, setAddMenuOpen] = useState(false);
 
@@ -223,6 +229,7 @@ export default function TimecardsEmployeeScreen() {
             entries={entries}
             bounds={bounds}
             extrasSlice={extrasSlice}
+            dishwasherTipsSlice={dishwasherTipsSlice}
             onRemoved={async () => {
               await refresh();
               await loadShiftListData();
@@ -257,6 +264,7 @@ function ShiftRowCard({
   entries,
   bounds,
   extrasSlice,
+  dishwasherTipsSlice,
   onRemoved,
   onPress,
 }: {
@@ -265,7 +273,8 @@ function ShiftRowCard({
   emp: EmployeeRow;
   entries: TimeClockEntry[];
   bounds: PayWeekBounds;
-  extrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  extrasSlice: WeekExtrasSlice;
+  dishwasherTipsSlice: Record<string, number>;
   onRemoved: () => Promise<void>;
   onPress: () => void;
 }) {
@@ -283,6 +292,11 @@ function ShiftRowCard({
   const when =
     (row.isToday ? 'Today · ' : row.isUpcoming ? 'Upcoming · ' : '') + shiftTime;
   const dayLeave = getEmployeeDayLeaveSync(empId, row.iso, extrasSlice);
+  const showDishwasherTips = isDeliveryDishwasherStaff(emp);
+  const dayDishwasherTip = showDishwasherTips
+    ? getEmployeeDayDishwasherTipSync(empId, row.iso, dishwasherTipsSlice)
+    : 0;
+  const dayCoverage = getEmployeeDayAdditionalCashTipSync(empId, row.iso, extrasSlice);
 
   const confirmRemove = () => {
     const message = offSchedule
@@ -342,6 +356,14 @@ function ShiftRowCard({
       <Text style={styles.shiftMeta}>
         VL {formatDayLeaveHoursLabel(dayLeave.vl)} · SL {formatDayLeaveHoursLabel(dayLeave.sl)}
       </Text>
+      {showDishwasherTips ? (
+        <Text style={styles.shiftMeta}>
+          Dishwasher tips {dayDishwasherTip > 0 ? formatPayAmount(dayDishwasherTip) : '—'}
+        </Text>
+      ) : null}
+      {dayCoverage > 0 ? (
+        <Text style={styles.shiftMeta}>Coverage {formatPayAmount(dayCoverage)}</Text>
+      ) : null}
       <Text style={styles.shiftPay}>Pay {payLabel} · Pay/hr {rateLabel}</Text>
     </Pressable>
   );

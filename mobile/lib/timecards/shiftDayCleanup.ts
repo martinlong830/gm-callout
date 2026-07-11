@@ -5,7 +5,7 @@ import { deleteTimeClockEntries, loadWeekEntries } from './entriesApi';
 import { entriesForShiftDayCleanup, type ShiftDayRow } from './engine';
 import { removeOffScheduleDay } from './offScheduleShift';
 import type { PayWeekBounds, TimeClockEntry } from './types';
-import { setEmployeeDayLeave } from './weekExtras';
+import { setEmployeeDayAdditionalCashTip, setEmployeeDayLeave } from './weekExtras';
 
 const DELETE_MISMATCH_MESSAGE =
   'Could not delete all punch records. Sign in as a manager and apply the latest Supabase migrations (time_clock_entries_delete_managers).';
@@ -35,6 +35,7 @@ export async function removeShiftDay(
     }
   }
   await setEmployeeDayLeave(emp.id, shiftRow.iso, 0, 0, bounds);
+  await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, 0, bounds);
   if (options?.clearDishwasherTip) {
     await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, 0, bounds);
   }

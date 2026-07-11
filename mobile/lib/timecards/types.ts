@@ -57,6 +57,8 @@ export type RosterRow = {
   vlPay: number | null;
   slPay: number | null;
   dishwasherTipsPay: number;
+  /** Coverage compensation (week total). */
+  additionalCashTip: number;
   status: string;
   statusRank: number;
 };
@@ -75,6 +77,7 @@ export type RosterTotals = {
   slPay: number;
   sohPay: number;
   dishwasherTipsPay: number;
+  additionalCashTip: number;
   grandTotalPay: number;
   totalMins: number;
   hasRegPay: boolean;
@@ -82,6 +85,7 @@ export type RosterTotals = {
   hasVlSlPay: boolean;
   hasSohPay: boolean;
   hasDishwasherTips: boolean;
+  hasAdditionalCashTip: boolean;
   hasGrandTotal: boolean;
 };
 

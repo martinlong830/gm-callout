@@ -6,7 +6,7 @@ import {
   queueTipPayrollPushToSupabase,
   TIMECARD_DISHWASHER_TIPS_KEY,
 } from './tipPayrollSync';
-import { getEmployeeDayLeaveSync } from './weekExtras';
+import { getEmployeeDayLeaveSync, type WeekExtrasSlice } from './weekExtras';
 import type { LocationFilter } from './restaurantAttribution';
 import type { PayWeekBounds, TimeClockEntry } from './types';
 
@@ -50,7 +50,7 @@ function dayHasBackingShiftForDishwasherTips(
   empId: string,
   iso: string,
   entries?: TimeClockEntry[],
-  extrasSlice?: Record<string, { vl: number; sl: number; manual?: boolean }>
+  extrasSlice?: WeekExtrasSlice
 ): boolean {
   if (!empId || !iso) return false;
   for (const e of entries ?? []) {
@@ -166,7 +166,7 @@ export function sumEmployeeWeekDishwasherTipsSync(
   slice: Record<string, number>,
   options?: {
     entries?: TimeClockEntry[];
-    extrasSlice?: Record<string, { vl: number; sl: number; manual?: boolean }>;
+    extrasSlice?: WeekExtrasSlice;
     locationFilter?: LocationFilter;
   }
 ): number {

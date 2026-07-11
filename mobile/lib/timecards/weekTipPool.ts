@@ -5,6 +5,7 @@ import {
   queueTipPayrollPushToSupabase,
   TIMECARD_WEEK_TIP_POOL_KEY,
 } from './tipPayrollSync';
+import type { LocationFilter } from './restaurantAttribution';
 import type { PayWeekBounds } from './types';
 
 export const PAYROLL_TIP_POOL_DEFAULTS = {
@@ -39,6 +40,25 @@ function normalizeMoney(val: unknown, fallback = 0): number {
   return Math.round(n * 100) / 100;
 }
 
+function tipPoolStorageKey(bounds: PayWeekBounds, locationFilter: LocationFilter = 'rp-9'): string {
+  return `${weekBoundsStorageKey(bounds)}|${locationFilter}`;
+}
+
+function sliceFromRecord(slice: unknown): TipPoolInputs | null {
+  if (!slice || typeof slice !== 'object') return null;
+  const s = slice as Record<string, unknown>;
+  return {
+    cashTip: normalizeMoney(s.cashTip, PAYROLL_TIP_POOL_DEFAULTS.cashTip),
+    sqGhDd: normalizeMoney(s.sqGhDd, PAYROLL_TIP_POOL_DEFAULTS.sqGhDd),
+    squareTips: normalizeMoney(s.squareTips, PAYROLL_TIP_POOL_DEFAULTS.squareTips),
+    feePercent:
+      s.feePercent != null && !Number.isNaN(Number(s.feePercent))
+        ? Number(s.feePercent)
+        : PAYROLL_TIP_POOL_DEFAULTS.feePercent,
+    manual: !!s.manual,
+  };
+}
+
 export function payrollTipPoolTotals(pool: TipPoolInputs): TipPoolTotals {
   const p = pool || PAYROLL_TIP_POOL_DEFAULTS;
   const feeAmount = Math.round(p.squareTips * p.feePercent * 100) / 100;
@@ -55,45 +75,43 @@ export function payrollTipPoolTotals(pool: TipPoolInputs): TipPoolTotals {
   };
 }
 
-export async function loadWeekTipPoolSlice(bounds: PayWeekBounds): Promise<TipPoolInputs | null> {
+export async function loadWeekTipPoolSlice(
+  bounds: PayWeekBounds,
+  locationFilter: LocationFilter = 'rp-9'
+): Promise<TipPoolInputs | null> {
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
     if (!raw) return null;
     const all = JSON.parse(raw) as Record<string, unknown>;
     if (!all || typeof all !== 'object') return null;
-    const slice = all[weekBoundsStorageKey(bounds)];
-    if (!slice || typeof slice !== 'object') return null;
-    const s = slice as Record<string, unknown>;
-    return {
-      cashTip: normalizeMoney(s.cashTip, PAYROLL_TIP_POOL_DEFAULTS.cashTip),
-      sqGhDd: normalizeMoney(s.sqGhDd, PAYROLL_TIP_POOL_DEFAULTS.sqGhDd),
-      squareTips: normalizeMoney(s.squareTips, PAYROLL_TIP_POOL_DEFAULTS.squareTips),
-      feePercent:
-        s.feePercent != null && !Number.isNaN(Number(s.feePercent))
-          ? Number(s.feePercent)
-          : PAYROLL_TIP_POOL_DEFAULTS.feePercent,
-      manual: !!s.manual,
-    };
+    const locSlice = sliceFromRecord(all[tipPoolStorageKey(bounds, locationFilter)]);
+    if (locSlice) return locSlice;
+    // Legacy week-only key (pre location-scoped tip pools).
+    return sliceFromRecord(all[weekBoundsStorageKey(bounds)]);
   } catch {
     return null;
   }
 }
 
-export async function getPayrollTipPoolInputs(bounds: PayWeekBounds): Promise<TipPoolInputs> {
-  const slice = await loadWeekTipPoolSlice(bounds);
+export async function getPayrollTipPoolInputs(
+  bounds: PayWeekBounds,
+  locationFilter: LocationFilter = 'rp-9'
+): Promise<TipPoolInputs> {
+  const slice = await loadWeekTipPoolSlice(bounds, locationFilter);
   if (!slice) return { ...PAYROLL_TIP_POOL_DEFAULTS };
   return slice;
 }
 
 export async function saveWeekTipPoolSlice(
   bounds: PayWeekBounds,
-  pool: TipPoolInputs
+  pool: TipPoolInputs,
+  locationFilter: LocationFilter = 'rp-9'
 ): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     const next = all && typeof all === 'object' ? { ...all } : {};
-    next[weekBoundsStorageKey(bounds)] = pool;
+    next[tipPoolStorageKey(bounds, locationFilter)] = pool;
     await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(next));
     if (isSupabaseConfigured && supabase) {
       queueTipPayrollPushToSupabase(supabase);

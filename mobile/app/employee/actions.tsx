@@ -8,13 +8,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { AvailabilityMatrixEditor, availabilityCheckAll } from '../../components/AvailabilityMatrixEditor';
 import { CompactShiftRow } from '../../components/CompactShiftRow';
 import { DatePickerField } from '../../components/DatePickerField';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { employeeDisplayName, staffTypeLabel } from '../../lib/employees';
+import { employeeDisplayName } from '../../lib/employees';
 import {
   compactShiftTimeLabel,
   currentScheduleWeekIndex,
@@ -29,21 +28,17 @@ import {
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
-  getAvailabilityWeekOptions,
   getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
-  loadDraftFromTeamState,
   mergeRemoteAssignments,
-  SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   type WorkerShiftRow,
 } from '../../lib/schedule/engine';
 import type { EmployeeLite, RoleKey } from '../../lib/schedule/types';
 import { formatStaffRequestSubmittedDate, insertStaffRequest } from '../../lib/staffRequests';
-import { normalizeWeeklyGrid, type WeeklyGridNormalized } from '../../lib/weeklyAvailabilityMatrix';
 import { supabase } from '../../lib/supabase';
 
-type FormKey = 'availability' | 'timeoff' | 'swap' | 'callout';
+type FormKey = 'timeoff' | 'swap' | 'callout';
 
 function toLite(e: { firstName: string; lastName: string; staffType: string; usualRestaurant: string }): EmployeeLite {
   return {
@@ -63,7 +58,6 @@ function isoDate(d: Date): string {
 }
 
 const CHIPS: { key: FormKey; label: string }[] = [
-  { key: 'availability', label: 'Availability' },
   { key: 'timeoff', label: 'Time Off' },
   { key: 'swap', label: 'Shift Swap' },
   { key: 'callout', label: 'Callout' },
@@ -74,9 +68,8 @@ export default function EmployeeActions() {
   const { myEmployee, employees, staffRequests, teamState, refetch } = useAppData();
   const roleCode = myEmployee?.staffType ?? 'Kitchen';
   const nameForRequests = myEmployee ? employeeDisplayName(myEmployee) : displayName;
-  const roleLine = staffTypeLabel(roleCode);
 
-  const [activeForm, setActiveForm] = useState<FormKey>('availability');
+  const [activeForm, setActiveForm] = useState<FormKey>('timeoff');
   const [busy, setBusy] = useState(false);
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
@@ -85,10 +78,6 @@ export default function EmployeeActions() {
     []
   );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
-  const draftRows = useMemo(
-    () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
-    [teamState]
-  );
   const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
     return mergeRemoteAssignments(assignmentShell(restaurants), teamState?.schedule_assignments, ids);
@@ -108,18 +97,6 @@ export default function EmployeeActions() {
     });
     return [...today, ...upcoming];
   }, [nameForRequests, weekMeta, allWeekDays, teamState?.draft_schedule, lites, restaurants, assignmentStore]);
-
-  const availWeekOptions = useMemo(() => getAvailabilityWeekOptions(weekMeta), [weekMeta]);
-  const [selectedAvailWeekIndex, setSelectedAvailWeekIndex] = useState(0);
-  const [availNorm, setAvailNorm] = useState<WeeklyGridNormalized>(() =>
-    normalizeWeeklyGrid({}, roleCode, draftRows)
-  );
-
-  useEffect(() => {
-    if (activeForm !== 'availability') return;
-    setAvailNorm(normalizeWeeklyGrid(myEmployee?.weeklyGrid ?? {}, roleCode, draftRows));
-    setSelectedAvailWeekIndex(0);
-  }, [activeForm, myEmployee?.weeklyGrid, roleCode, draftRows]);
 
   const [timeoffStartDate, setTimeoffStartDate] = useState<Date | null>(null);
   const [timeoffEndDate, setTimeoffEndDate] = useState<Date | null>(null);
@@ -167,6 +144,7 @@ export default function EmployeeActions() {
     return staffRequests
       .filter(
         (r) =>
+          r.type !== 'availability' &&
           String(r.employeeName || '')
             .trim()
             .toLowerCase() === self
@@ -188,47 +166,6 @@ export default function EmployeeActions() {
         r.offeredShiftLabel
     );
   }, [staffRequests, nameForRequests]);
-
-  const submitAvailability = useCallback(async () => {
-    if (!supabase) {
-      Alert.alert('Error', 'Not configured');
-      return;
-    }
-    const weekOpt = availWeekOptions[selectedAvailWeekIndex];
-    if (!weekOpt) {
-      Alert.alert('Availability', 'Choose which week this applies to.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const gridPayload = availNorm as unknown as Record<string, unknown>;
-      const res = await insertStaffRequest(supabase, {
-        type: 'availability',
-        employeeName: nameForRequests,
-        role: roleCode,
-        summary: `Availability update for ${weekOpt.label} (${roleLine}).`,
-        submittedWeekLabel: weekOpt.label,
-        submittedWeekIndex: weekOpt.weekIndex,
-        submittedGrid: gridPayload,
-      });
-      if (!res.ok) Alert.alert('Error', res.message);
-      else {
-        Alert.alert('Sent', 'Submitted. Your manager will see it under Actions.');
-        void refetch();
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [
-    supabase,
-    availWeekOptions,
-    selectedAvailWeekIndex,
-    availNorm,
-    nameForRequests,
-    roleCode,
-    roleLine,
-    refetch,
-  ]);
 
   const submitTimeoff = useCallback(async () => {
     if (!supabase) {
@@ -411,44 +348,6 @@ export default function EmployeeActions() {
           </Pressable>
         ))}
       </View>
-
-      {activeForm === 'availability' ? (
-        <View style={styles.card}>
-          <Text style={styles.hint}>
-            Set availability by role-based time slots and choose which week it applies to.
-          </Text>
-          <Text style={styles.fieldLabel}>Week</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.weekChipRow}>
-            {availWeekOptions.map((w, idx) => (
-              <Pressable
-                key={w.label}
-                onPress={() => setSelectedAvailWeekIndex(idx)}
-                style={[styles.chip, idx === selectedAvailWeekIndex && styles.chipActive]}
-              >
-                <Text style={[styles.chipText, idx === selectedAvailWeekIndex && styles.chipTextActive]} numberOfLines={1}>
-                  {w.label}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          <AvailabilityMatrixEditor
-            staffType={roleCode}
-            draftRows={draftRows}
-            normalized={availNorm}
-            onChange={setAvailNorm}
-            embedInParentScroll
-          />
-          <Pressable
-            style={[styles.btnSecondary, styles.mt]}
-            onPress={() => setAvailNorm((g) => availabilityCheckAll(roleCode, draftRows, g))}
-          >
-            <Text style={styles.btnSecondaryText}>Check all</Text>
-          </Pressable>
-          <Pressable style={[styles.btnPrimary, styles.mt]} disabled={busy} onPress={() => void submitAvailability()}>
-            <Text style={styles.btnPrimaryText}>{busy ? 'Submitting…' : 'Submit availability'}</Text>
-          </Pressable>
-        </View>
-      ) : null}
 
       {activeForm === 'timeoff' ? (
         <View style={styles.card}>

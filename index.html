@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=timeclock-pad-1" />
+  <link rel="stylesheet" href="styles.css?v=person-row-picker-1" />
   <script>
     /* Login shell is interactive before deferred app bundles finish loading. */
   </script>
@@ -91,10 +91,39 @@
       <div id="companyPendingPanel" hidden>
         <p class="login-subtitle">Confirm your email</p>
         <p class="login-hint" id="companyPendingMessage">
-          We sent a confirmation link to your email. After you confirm, return here and use <strong>Log in</strong> with your company access code, username, and password.
+          We sent a confirmation link to your email. After you confirm, you will set your company access code, then use <strong>Log in</strong> with that code, your username, and password.
         </p>
         <p class="login-footer-actions">
           <button type="button" class="login-link-btn" id="showLandingFromPendingBtn">Back to home</button>
+        </p>
+      </div>
+      <div id="setupAccessCodePanel" hidden>
+        <p class="login-subtitle">Set your company access code</p>
+        <p class="login-hint">
+          Choose a unique access code. Your team will enter it before signing in with their name and password.
+        </p>
+        <form id="setupAccessCodeForm" class="login-form" autocomplete="off" novalidate>
+          <label class="login-field">
+            <span class="login-label">Company access code</span>
+            <input
+              type="text"
+              id="setupAccessCodeInput"
+              class="login-input"
+              required
+              minlength="3"
+              maxlength="48"
+              autocapitalize="off"
+              autocomplete="off"
+              spellcheck="false"
+              enterkeyhint="done"
+              placeholder="e.g. my-restaurant"
+            />
+          </label>
+          <p class="login-error" id="setupAccessCodeError" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block login-submit">Save access code</button>
+        </form>
+        <p class="login-footer-actions">
+          <button type="button" class="login-link-btn" id="showLandingFromSetupAccessCodeBtn">Back to home</button>
         </p>
       </div>
       <div id="loginPanel" hidden>
@@ -490,6 +519,7 @@
       <nav class="top-nav" aria-label="Main navigation">
         <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
         <button type="button" class="nav-item" data-goto="5">Team</button>
+        <button type="button" class="nav-item" data-goto="13">Availability</button>
         <button type="button" class="nav-item" data-goto="8">Actions</button>
         <button type="button" class="nav-item" data-goto="9">Messages</button>
         <button type="button" class="nav-item" data-goto="10">Timecards</button>
@@ -749,10 +779,7 @@
           <div class="employee-filter-block">
             <span class="employee-filter-label" id="requestsTypeFiltersLabel">Action type</span>
             <div class="employee-filter-chips" id="requestsTypeChips" role="group" aria-labelledby="requestsTypeFiltersLabel">
-              <button type="button" class="filter-chip active" data-request-type="availability">
-                Availability Submissions
-              </button>
-              <button type="button" class="filter-chip" data-request-type="timeoff">Time Off</button>
+              <button type="button" class="filter-chip active" data-request-type="timeoff">Time Off</button>
               <button type="button" class="filter-chip" data-request-type="swap">Shift Swaps</button>
               <button type="button" class="filter-chip" data-request-type="callout">Callouts</button>
             </div>
@@ -892,6 +919,14 @@
 
           <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
             <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below. If app login fails (duplicate name, etc.), the employee is still saved to the roster.</p>
+            <label class="form-field form-field-block" id="empPortalAccountTypeWrap" hidden>
+              <span class="form-label">Account type</span>
+              <select name="portalAccountType" id="empPortalAccountType" class="form-select">
+                <option value="employee" selected>Employee</option>
+                <option value="manager">Manager</option>
+              </select>
+              <span class="calendar-hint">Only the company creator can create manager accounts.</span>
+            </label>
             <label class="form-field form-field-block">
               <span class="form-label">App login password</span>
               <input
@@ -928,11 +963,7 @@
                   <div id="empDetailShiftsMount" class="emp-profile-dropdown-mount" aria-live="polite"></div>
                 </div>
               </div>
-
-              <fieldset class="week-avail-fieldset">
-                <legend class="emp-form-subtitle">Weekly availability</legend>
-                <div id="employeeWeekAvail" class="availability-grid-wrap"></div>
-              </fieldset>
+              <p class="calendar-hint">Edit weekly availability on the Availability tab.</p>
             </div>
           </section>
 
@@ -1087,6 +1118,53 @@
         </div>
         <div id="timecardsShiftDetail" class="timecards-shift-detail"></div>
       </section>
+
+      <!-- Screen 13: Availability -->
+      <section class="screen" id="screen-availability" data-screen="13">
+        <div class="avail-tab-toolbar">
+          <label class="avail-tab-employee-field form-field">
+            <span class="form-label" id="mgrAvailEmployeeLabel">Employee</span>
+            <select id="mgrAvailEmployeeSelect" aria-labelledby="mgrAvailEmployeeLabel"></select>
+          </label>
+          <div
+            class="schedule-week-nav"
+            id="mgrAvailWeekNav"
+            role="group"
+            aria-label="Availability week"
+          >
+            <button
+              type="button"
+              class="btn btn-secondary schedule-week-nav-btn"
+              id="mgrAvailWeekPrev"
+              data-mgr-avail-week-step="-1"
+              aria-label="Previous week"
+            >
+              ‹
+            </button>
+            <span class="schedule-week-nav-label" id="mgrAvailWeekLabel">—</span>
+            <span class="schedule-week-nav-badge" id="mgrAvailWeekBadge" hidden>This week</span>
+            <button
+              type="button"
+              class="btn btn-secondary schedule-week-nav-btn"
+              id="mgrAvailWeekNext"
+              data-mgr-avail-week-step="1"
+              aria-label="Next week"
+            >
+              ›
+            </button>
+          </div>
+          <span class="avail-status-badge" id="mgrAvailStatus" aria-live="polite">Draft</span>
+        </div>
+        <p class="calendar-hint avail-tab-hint">
+          View or edit each employee’s week. Drag a time block onto another day to copy it (hold Shift while dropping to move).
+        </p>
+        <div id="mgrAvailGrid" class="availability-grid-wrap avail-tab-grid" aria-label="Employee availability"></div>
+        <div class="avail-tab-actions">
+          <button type="button" class="btn btn-secondary" id="mgrAvailCheckAllBtn">Check all</button>
+          <button type="button" class="btn btn-primary" id="mgrAvailSaveBtn">Save availability</button>
+        </div>
+        <p class="calendar-hint avail-tab-feedback" id="mgrAvailFeedback" hidden></p>
+      </section>
     </main>
   </div>
 
@@ -1204,6 +1282,7 @@
       </header>
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
+        <button type="button" class="nav-item" data-emp-nav="availability">Availability</button>
         <button type="button" class="nav-item" data-emp-nav="requests">Actions</button>
         <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
       </nav>
@@ -1267,20 +1346,53 @@
           </div>
         </div>
       </section>
+      <section class="emp-screen" data-emp-screen="availability" id="empScreenAvailability" hidden>
+        <div class="avail-tab-toolbar">
+          <div
+            class="schedule-week-nav"
+            id="empAvailWeekNav"
+            role="group"
+            aria-label="Availability week"
+          >
+            <button
+              type="button"
+              class="btn btn-secondary schedule-week-nav-btn"
+              id="empAvailWeekPrev"
+              data-emp-avail-week-step="-1"
+              aria-label="Previous week"
+            >
+              ‹
+            </button>
+            <span class="schedule-week-nav-label" id="empAvailWeekLabel">—</span>
+            <span class="schedule-week-nav-badge" id="empAvailWeekBadge" hidden>This week</span>
+            <button
+              type="button"
+              class="btn btn-secondary schedule-week-nav-btn"
+              id="empAvailWeekNext"
+              data-emp-avail-week-step="1"
+              aria-label="Next week"
+            >
+              ›
+            </button>
+          </div>
+          <span class="avail-status-badge" id="empAvailStatus" aria-live="polite">Draft</span>
+        </div>
+        <p class="emp-hint">
+          Mark when you can work for the selected week. Drag a time onto another day to copy it (Shift+drop to move), then submit for your manager.
+        </p>
+        <div class="availability-grid-wrap emp-avail-grid-wrap avail-tab-grid" id="empAvailGrid"></div>
+        <div class="avail-tab-actions">
+          <button type="button" class="btn btn-secondary" id="empAvailCheckAllBtn">Check all</button>
+          <button type="button" class="btn btn-primary" id="empAvailSubmitBtn">Submit availability</button>
+        </div>
+        <p class="emp-request-feedback" id="empAvailFeedback" hidden></p>
+      </section>
       <section class="emp-screen" data-emp-screen="requests" id="empScreenRequests" hidden>
         <div class="emp-request-type-chips" role="tablist" aria-label="Action type">
-          <button type="button" class="filter-chip active" data-req-form="availability">Availability</button>
-          <button type="button" class="filter-chip" data-req-form="timeoff">Time Off</button>
+          <button type="button" class="filter-chip active" data-req-form="timeoff">Time Off</button>
           <button type="button" class="filter-chip" data-req-form="swap">Shift Swap</button>
           <button type="button" class="filter-chip" data-req-form="callout_request">Callout</button>
         </div>
-        <form class="emp-request-form" id="empFormAvailability">
-          <p class="emp-hint">Set availability by role-based time slots and choose which week it applies to.</p>
-          <div class="employee-filter-chips emp-avail-week-chips" id="empAvailWeekChips" role="tablist" aria-label="Availability week"></div>
-          <div class="availability-grid-wrap emp-avail-grid-wrap" id="empAvailGrid"></div>
-          <button type="button" class="btn btn-secondary btn-block emp-avail-check-all" id="empAvailCheckAllBtn">Check all</button>
-          <button type="submit" class="btn btn-primary btn-block">Submit availability</button>
-        </form>
         <form class="emp-request-form emp-form-swap" id="empFormSwap" hidden>
           <p class="emp-swap-intro">
             Post a shift you want to trade, or pick up someone else’s open offer. Your manager approves every swap.
@@ -1329,7 +1441,7 @@
             </div>
           </section>
         </form>
-        <form class="emp-request-form" id="empFormTimeoff" hidden>
+        <form class="emp-request-form" id="empFormTimeoff">
           <p class="emp-hint">Select the day range you need off. This submits as full-day time off.</p>
           <label class="form-field form-field-block">
             <span class="form-label">Type</span>
@@ -1541,7 +1653,8 @@
       </div>
       <p class="calendar-hint account-settings-intro">
         Your <strong>sign-in name</strong> is shown for reference only — it cannot be changed here. Set your
-        <strong>recovery email</strong> for password reset (each person sets their own).
+        <strong>recovery email</strong> for password reset (each person sets their own). Managers can edit the
+        <strong>company name</strong>.
       </p>
       <form id="accountSettingsForm" class="account-settings-form" novalidate>
         <label class="form-field form-field-block">
@@ -1549,6 +1662,13 @@
           <input type="text" id="accountSettingsLoginName" class="login-input" readonly tabindex="-1" aria-readonly="true" />
           <span class="calendar-hint account-settings-field-hint">Read only — used when you sign in.</span>
         </label>
+        <div id="accountSettingsCompanyBlock" class="form-field form-field-block" hidden>
+          <label class="form-field form-field-block">
+            <span class="form-label">Company name</span>
+            <input type="text" id="accountSettingsCompanyName" class="login-input" maxlength="120" autocomplete="organization" />
+            <span class="calendar-hint account-settings-field-hint">Shown for your team. Managers can update this.</span>
+          </label>
+        </div>
         <label class="form-field form-field-block">
           <span class="form-label">Recovery email</span>
           <input
@@ -1564,7 +1684,7 @@
         </label>
         <p class="login-error" id="accountSettingsError" role="alert" hidden></p>
         <p class="login-error is-success" id="accountSettingsSuccess" role="status" hidden></p>
-        <button type="submit" class="btn btn-primary btn-block">Save recovery email only</button>
+        <button type="submit" class="btn btn-primary btn-block">Save account settings</button>
       </form>
     </div>
   </div>
@@ -1656,17 +1776,22 @@
       var accessCodePanel = document.getElementById('accessCodePanel');
       var createCompanyPanel = document.getElementById('createCompanyPanel');
       var companyPendingPanel = document.getElementById('companyPendingPanel');
+      var setupAccessCodePanel = document.getElementById('setupAccessCodePanel');
       var accessCodeForm = document.getElementById('accessCodeForm');
       var accessCodeInput = document.getElementById('accessCodeInput');
       var accessCodeError = document.getElementById('accessCodeError');
       var createCompanyForm = document.getElementById('createCompanyForm');
       var createCompanyError = document.getElementById('createCompanyError');
       var companyPendingMessage = document.getElementById('companyPendingMessage');
+      var setupAccessCodeForm = document.getElementById('setupAccessCodeForm');
+      var setupAccessCodeInput = document.getElementById('setupAccessCodeInput');
+      var setupAccessCodeError = document.getElementById('setupAccessCodeError');
       var showAccessCodePanelBtn = document.getElementById('showAccessCodePanelBtn');
       var showCreateCompanyPanelBtn = document.getElementById('showCreateCompanyPanelBtn');
       var showLandingFromAccessCodeBtn = document.getElementById('showLandingFromAccessCodeBtn');
       var showLandingFromCreateCompanyBtn = document.getElementById('showLandingFromCreateCompanyBtn');
       var showLandingFromPendingBtn = document.getElementById('showLandingFromPendingBtn');
+      var showLandingFromSetupAccessCodeBtn = document.getElementById('showLandingFromSetupAccessCodeBtn');
       var showLandingFromLoginBtn = document.getElementById('showLandingFromLoginBtn');
       var verifiedCompanyId = '';
       var verifiedTeamStateId = '';
@@ -1706,10 +1831,13 @@
       var accountSettingsModal = document.getElementById('accountSettingsModal');
       var accountSettingsForm = document.getElementById('accountSettingsForm');
       var accountSettingsLoginName = document.getElementById('accountSettingsLoginName');
+      var accountSettingsCompanyBlock = document.getElementById('accountSettingsCompanyBlock');
+      var accountSettingsCompanyName = document.getElementById('accountSettingsCompanyName');
       var accountSettingsRecoveryEmail = document.getElementById('accountSettingsRecoveryEmail');
       var accountSettingsError = document.getElementById('accountSettingsError');
       var accountSettingsSuccess = document.getElementById('accountSettingsSuccess');
       var accountSettingsLoaded = false;
+      var accountSettingsIsManager = false;
       var recoveryEmailPromptInFlight = false;
       var RECOVERY_EMAIL_PROMPT_SNOOZE_KEY = 'gm_recovery_email_prompt_snoozed';
 
@@ -1771,6 +1899,17 @@
         if (accessCodePanel) accessCodePanel.hidden = true;
         if (createCompanyPanel) createCompanyPanel.hidden = true;
         if (companyPendingPanel) companyPendingPanel.hidden = true;
+        if (setupAccessCodePanel) setupAccessCodePanel.hidden = true;
+      }
+
+      function showSetupAccessCodeError(msg) {
+        if (!setupAccessCodeError) return;
+        setupAccessCodeError.textContent = msg || '';
+        setupAccessCodeError.hidden = !msg;
+      }
+
+      function clearSetupAccessCodeError() {
+        showSetupAccessCodeError('');
       }
 
       function showLandingPanel() {
@@ -1786,6 +1925,7 @@
         clearLoginError();
         clearAccessCodeError();
         clearCreateCompanyError();
+        clearSetupAccessCodeError();
         clearRegisterError();
         clearManagerRegisterError();
         clearForgotPasswordError();
@@ -1827,9 +1967,24 @@
         updateLoginBranding();
       }
 
+      function showSetupAccessCodePanel() {
+        hideOnboardingPanels();
+        if (loginPanel) loginPanel.hidden = true;
+        if (registerPanel) registerPanel.hidden = true;
+        if (managerRegisterPanel) managerRegisterPanel.hidden = true;
+        hidePasswordResetPanels();
+        hideTimeclockLoginPanels();
+        if (setupAccessCodePanel) setupAccessCodePanel.hidden = false;
+        if (loginScreenEl) loginScreenEl.classList.remove('login-screen--register');
+        clearSetupAccessCodeError();
+        if (setupAccessCodeInput) setupAccessCodeInput.focus();
+        updateLoginBranding();
+      }
+
       window.gmCalloutShowLandingPanel = showLandingPanel;
       window.gmCalloutShowAccessCodePanel = showAccessCodePanel;
       window.gmCalloutShowLoginPanel = showLoginPanel;
+      window.gmCalloutShowSetupAccessCodePanel = showSetupAccessCodePanel;
 
       function norm(s) {
         return String(s || '')
@@ -2013,6 +2168,13 @@
         if (accountSettingsLoginName) accountSettingsLoginName.value = acct.loginName || '';
         if (accountSettingsRecoveryEmail) {
           accountSettingsRecoveryEmail.value = acct.recoveryEmail || '';
+        }
+        accountSettingsIsManager = acct.role === 'manager';
+        if (accountSettingsCompanyBlock) {
+          accountSettingsCompanyBlock.hidden = !accountSettingsIsManager;
+        }
+        if (accountSettingsCompanyName) {
+          accountSettingsCompanyName.value = acct.companyName || '';
         }
         accountSettingsLoaded = true;
         return acct;
@@ -2266,6 +2428,53 @@
       if (showLandingFromPendingBtn) {
         showLandingFromPendingBtn.addEventListener('click', showLandingPanel);
       }
+      if (showLandingFromSetupAccessCodeBtn) {
+        showLandingFromSetupAccessCodeBtn.addEventListener('click', showLandingPanel);
+      }
+      if (setupAccessCodeForm) {
+        setupAccessCodeForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          clearSetupAccessCodeError();
+          var code = setupAccessCodeInput ? String(setupAccessCodeInput.value || '').trim() : '';
+          if (!code) {
+            showSetupAccessCodeError('Enter an access code.');
+            return;
+          }
+          if (!window.gmPortalAuth || !window.gmPortalAuth.setupAccessCode) {
+            showSetupAccessCodeError(
+              'Access code setup needs Supabase on this server. Confirm your email first, then try again.'
+            );
+            return;
+          }
+          (async function () {
+            await whenPortalAuthReady();
+            var res = await window.gmPortalAuth.setupAccessCode(code);
+            if (!res.ok) {
+              showSetupAccessCodeError(res.message || 'Could not save access code.');
+              return;
+            }
+            storeCompanySession(res);
+            verifiedCompanyId = res.companyId || '';
+            verifiedTeamStateId = res.teamStateId || '';
+            verifiedAccessCode = res.accessCode || code;
+            verifiedCompanyName = res.companyName || '';
+            if (setupAccessCodeForm) setupAccessCodeForm.reset();
+            try {
+              if (window.gmSupabase && window.gmSupabase.auth) {
+                await window.gmSupabase.auth.signOut();
+              }
+            } catch (_so) {
+              /* ignore */
+            }
+            showLoginPanel();
+            showLoginError(
+              res.message ||
+                'Access code saved. Sign in with your username and password (use this access code next time from the home screen).',
+              'success'
+            );
+          })();
+        });
+      }
       if (showLandingFromLoginBtn) {
         showLandingFromLoginBtn.addEventListener('click', showLandingPanel);
       }
@@ -2372,11 +2581,7 @@
             createCompanyForm.reset();
             var pendingMsg =
               res.message ||
-              'Check your email to confirm company creation. After confirming, use Log in with your access code, username, and password.';
-            if (res.accessCode) {
-              pendingMsg +=
-                ' Your company access code will be "' + res.accessCode + '" after confirmation.';
-            }
+              'Check your email to confirm. After confirming, you will set your company access code, then sign in with Log in.';
             if (res.dev) {
               pendingMsg += ' (Dev: confirmation link was logged on the server.)';
             }
@@ -2500,9 +2705,48 @@
         var resetTokenFromUrl = bootParams.get('reset_token');
         if (resetTokenFromUrl) {
           showResetPasswordPanel(resetTokenFromUrl);
+        } else if (bootParams.get('setup_access_code') === '1') {
+          showSetupAccessCodePanel();
+          try {
+            var cleanSetupUrl = new URL(window.location.href);
+            cleanSetupUrl.searchParams.delete('setup_access_code');
+            window.history.replaceState(
+              {},
+              '',
+              cleanSetupUrl.pathname +
+                (cleanSetupUrl.search ? cleanSetupUrl.search : '') +
+                cleanSetupUrl.hash
+            );
+          } catch (_su) {
+            /* ignore */
+          }
+          (async function () {
+            await whenPortalAuthReady();
+            // Email confirm redirects with session tokens in the URL hash; wait for client to pick them up.
+            var tries = 0;
+            while (tries < 40) {
+              if (window.gmSupabase && window.gmSupabase.auth) {
+                var sessRes = await window.gmSupabase.auth.getSession();
+                if (sessRes.data && sessRes.data.session) break;
+              }
+              tries += 1;
+              await new Promise(function (r) {
+                setTimeout(r, 100);
+              });
+            }
+            var sess =
+              window.gmSupabase && window.gmSupabase.auth
+                ? await window.gmSupabase.auth.getSession()
+                : null;
+            if (!(sess && sess.data && sess.data.session)) {
+              showSetupAccessCodeError(
+                'Confirm your email first using the link we sent, then return here to set your access code.'
+              );
+            }
+          })();
         } else if (bootParams.get('company_pending') === '1') {
           showCompanyPendingPanel(
-            'Email confirmed! Use Log in, enter your company access code, then sign in with your username and password.'
+            'Email confirmed! Set your company access code next, then use Log in with that code, your username, and password.'
           );
           try {
             var cleanUrl = new URL(window.location.href);
@@ -2515,6 +2759,7 @@
           } catch (_cp) {
             /* ignore */
           }
+          showSetupAccessCodePanel();
         } else if (!document.documentElement.classList.contains('authed')) {
           showLandingPanel();
         }
@@ -2842,12 +3087,31 @@
             return;
           }
           (async function () {
+            if (accountSettingsIsManager && window.gmPortalAuth.updateCompany) {
+              var companyName = accountSettingsCompanyName
+                ? String(accountSettingsCompanyName.value || '').trim()
+                : '';
+              if (!companyName) {
+                showAccountSettingsError('Company name is required.');
+                return;
+              }
+              var coSaved = await window.gmPortalAuth.updateCompany({ name: companyName });
+              if (!coSaved.ok) {
+                showAccountSettingsError(coSaved.message || 'Could not update company name.');
+                return;
+              }
+              storeCompanySession({
+                companyId: coSaved.companyId,
+                companyName: coSaved.companyName,
+                accessCode: coSaved.accessCode,
+              });
+            }
             var saved = await window.gmPortalAuth.updateRecoveryEmail(email);
             if (!saved.ok) {
               showAccountSettingsError(saved.message || 'Could not save recovery email.');
               return;
             }
-            showAccountSettingsSuccess(saved.message || 'Recovery email saved.');
+            showAccountSettingsSuccess(saved.message || 'Account settings saved.');
             accountSettingsLoaded = true;
             clearRecoveryEmailPromptSnooze();
             setTimeout(function () {
@@ -2863,8 +3127,8 @@
   <script defer src="gm-supabase-init.js"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=timecards-tips-1"></script>
-  <script defer src="employee-app.js?v=timecards-tips-1"></script>
+  <script defer src="app.js?v=person-row-picker-1"></script>
+  <script defer src="employee-app.js?v=person-row-picker-1"></script>
   <script defer src="manager-messaging.js?v=timecards-tips-1"></script>
   <script defer src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
   <script defer src="timeclock-app.js?v=timeclock-off-schedule-1"></script>

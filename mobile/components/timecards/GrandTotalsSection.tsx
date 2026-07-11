@@ -6,6 +6,7 @@ import {
   formatPayAmount,
   type RosterTotals,
 } from '../../lib/timecards/engine';
+import type { LocationFilter } from '../../lib/timecards/restaurantAttribution';
 import type { PayWeekBounds } from '../../lib/timecards/types';
 import {
   getPayrollTipPoolInputs,
@@ -17,6 +18,8 @@ import {
 type Props = {
   totals: RosterTotals;
   bounds: PayWeekBounds;
+  /** Active timecards location — tip pool is stored per restaurant. */
+  locationFilter?: LocationFilter;
   /** When false, hides week-wide tip pool inputs (e.g. employee detail view). */
   showTipPool?: boolean;
   /** Replaces default "{n} employees" meta line. */
@@ -54,6 +57,7 @@ function TotalCard({
 export function GrandTotalsSection({
   totals,
   bounds,
+  locationFilter = 'rp-9',
   showTipPool = true,
   metaLabel,
   hourlyRateLabel,
@@ -65,12 +69,12 @@ export function GrandTotalsSection({
   const [tipSummary, setTipSummary] = useState('');
 
   const loadTips = useCallback(async () => {
-    const pool = await getPayrollTipPoolInputs(bounds);
+    const pool = await getPayrollTipPoolInputs(bounds, locationFilter);
     setCash(String(pool.cashTip));
     setSqGhDd(String(pool.sqGhDd));
     setSquare(String(pool.squareTips));
     updateSummary(pool);
-  }, [bounds]);
+  }, [bounds, locationFilter]);
 
   const updateSummary = (pool: TipPoolInputs) => {
     const t = payrollTipPoolTotals(pool);
@@ -88,10 +92,10 @@ export function GrandTotalsSection({
         feePercent: 0.03,
         manual: true,
       };
-      await saveWeekTipPoolSlice(bounds, pool);
+      await saveWeekTipPoolSlice(bounds, pool, locationFilter);
       updateSummary(pool);
     },
-    [bounds]
+    [bounds, locationFilter]
   );
 
   useEffect(() => {
@@ -106,6 +110,9 @@ export function GrandTotalsSection({
   const paySoh = totals.hasSohPay ? formatPayAmount(totals.sohPay) : '—';
   const payDishwasherTips = totals.hasDishwasherTips
     ? formatPayAmount(totals.dishwasherTipsPay)
+    : '—';
+  const payCoverage = totals.hasAdditionalCashTip
+    ? formatPayAmount(totals.additionalCashTip)
     : '—';
   const payTotal = totals.hasGrandTotal ? formatPayAmount(totals.grandTotalPay) : '—';
   const allPaidMins =
@@ -137,6 +144,7 @@ export function GrandTotalsSection({
         />
         <TotalCard label="SoH" hours={String(totals.sohCount)} pay={paySoh} />
         <TotalCard label="Dishwasher tips" hours={payDishwasherTips} />
+        <TotalCard label="Coverage compensation" hours={payCoverage} />
         {hourlyRateLabel != null ? (
           <TotalCard label="Pay/hr" hours={hourlyRateLabel} />
         ) : null}

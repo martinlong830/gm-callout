@@ -99,6 +99,7 @@ export default function EmployeeHome() {
     return staffRequests
       .filter(
         (r) =>
+          r.type !== 'availability' &&
           String(r.employeeName || '')
             .trim()
             .toLowerCase() === self

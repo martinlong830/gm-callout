@@ -193,7 +193,7 @@ export function defaultRestaurants(): Restaurant[] {
       id: 'rp-8',
       shortLabel: '8th Ave',
       name: 'Red Poke 885 8th Ave',
-      defaultUnassignedSchedule: true,
+      defaultUnassignedSchedule: false,
     },
   ];
 }
@@ -757,7 +757,6 @@ function namesPoolForScheduleRole(
 }
 
 function restaurantUsesDefaultUnassignedSchedule(restaurants: Restaurant[], restaurantId: string): boolean {
-  if (restaurantId === 'rp-8') return true;
   const r = restaurants.find((x) => x.id === restaurantId);
   return !!(r && r.defaultUnassignedSchedule);
 }
@@ -999,17 +998,28 @@ export function buildSchedule(params: {
   restaurants: Restaurant[];
   currentRestaurantId: string;
   assignmentStore: AssignmentStore;
+  /** When set, only build that week (~15× cheaper for timecards pay-week snapshots). */
+  weekIndex?: number;
 }): ScheduleRow[] {
-  const { allWeekDays, draftScheduleRaw, draftRows, employees, restaurants, currentRestaurantId, assignmentStore } =
-    params;
+  const {
+    allWeekDays,
+    draftScheduleRaw,
+    draftRows,
+    employees,
+    restaurants,
+    currentRestaurantId,
+    assignmentStore,
+    weekIndex: weekOnly,
+  } = params;
   const pools = refreshPools(employees);
   const forceUnassigned = restaurantUsesDefaultUnassignedSchedule(restaurants, currentRestaurantId);
   const schedule: ScheduleRow[] = [];
   const stored = getCurrentRestaurantAssignments(assignmentStore, currentRestaurantId);
 
   allWeekDays.forEach((dayStr, globalDayIdx) => {
-    const wk = weekdayKeyFromScheduleDay(dayStr);
     const weekIdx = Math.floor(globalDayIdx / 7);
+    if (weekOnly != null && weekIdx !== weekOnly) return;
+    const wk = weekdayKeyFromScheduleDay(dayStr);
     const weekDraft = draftForWeek(draftScheduleRaw, draftRows, weekIdx, currentRestaurantId);
     const usedToday: Record<string, boolean> = Object.create(null);
     ROLE_DEFS.forEach((rd, roleIdx) => {
@@ -1066,6 +1076,29 @@ export function buildSchedule(params: {
   return schedule;
 }
 
+/** Resolve schedule grid week index for a Monday ISO (matches web `weekIndexForPayWeekStartIso`). */
+export function weekIndexForPayWeekStartIso(weekMeta: WeekMeta[], mondayIso: string): number {
+  if (!mondayIso) return SCHEDULE_TEMPLATE_WEEK_INDEX;
+  for (let w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+    const m0 = weekMeta[w * 7];
+    if (m0?.iso === mondayIso) return w;
+  }
+  const hit = weekMeta.find((meta) => meta.iso === mondayIso);
+  if (hit?.weekIndex != null) return hit.weekIndex;
+  const anchor = getScheduleAnchorMondayDate();
+  const target = new Date(`${mondayIso}T12:00:00`);
+  if (!Number.isNaN(target.getTime())) {
+    const diffDays = Math.round((target.getTime() - anchor.getTime()) / 86400000);
+    const idx = Math.floor(diffDays / 7);
+    if (idx >= 0 && idx < SCHEDULE_VIEW_WEEK_COUNT) return idx;
+  }
+  return SCHEDULE_TEMPLATE_WEEK_INDEX;
+}
+
+export function scheduleWorkerNameKey(name: string): string {
+  return normalizeWorkerKey(name);
+}
+
 export type CalendarCell =
   | { kind: 'empty' }
   | { kind: 'dayoff'; timeLabel: string; roleLabel: string; dayStr: string }
@@ -1080,7 +1113,97 @@ export type CalendarCell =
 
 export type CalendarBodyRow =
   | { kind: 'section'; title: string; variant: 'foh' | 'boh' | 'delivery' }
-  | { kind: 'cells'; cells: CalendarCell[] };
+  | { kind: 'cells'; role: RoleKey; trIdx: number; cells: CalendarCell[] };
+
+/** Team-page names for a schedule row picker (canonical display names). */
+export function namesForScheduleRowPersonPicker(
+  employees: EmployeeLite[],
+  role: RoleKey,
+  restaurantId: string
+): string[] {
+  const seen: Record<string, boolean> = Object.create(null);
+  const out: string[] = [];
+  employees
+    .filter((e) => e.staffType === role && employeeMatchesScheduleRestaurantLite(e, restaurantId))
+    .sort(compareEmployeesByScheduleOrderLite)
+    .forEach((e) => {
+      const canon = employeeDisplayNameLite(e);
+      if (!canon || canon === 'Unassigned') return;
+      const key = normalizeWorkerKey(canon);
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(canon);
+    });
+  return out;
+}
+
+/** Dominant assigned person across staffed days in a calendar row (visible week). */
+export function scheduleRowPrimaryPerson(
+  schedule: ScheduleRow[],
+  role: RoleKey,
+  trIdx: number,
+  visibleDays: string[],
+  employees: EmployeeLite[],
+  restaurantId: string
+): string {
+  const counts: Record<string, number> = Object.create(null);
+  const order: string[] = [];
+  (visibleDays || []).forEach((dayStr) => {
+    const shift = schedule.find((s) => s.day === dayStr && s.role === role && s.trIdx === trIdx);
+    if (!shift) return;
+    const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+      (n) => n && n !== 'Unassigned'
+    );
+    let name = workers.length
+      ? canonicalScheduleWorkerNameLite(employees, workers[0], restaurantId)
+      : 'Unassigned';
+    if (!name) name = 'Unassigned';
+    if (!counts[name]) {
+      counts[name] = 0;
+      order.push(name);
+    }
+    counts[name] += 1;
+  });
+  if (!order.length) return 'Unassigned';
+  let best = 'Unassigned';
+  let bestCount = -1;
+  order.forEach((n) => {
+    if (n === 'Unassigned') return;
+    if (counts[n] > bestCount) {
+      best = n;
+      bestCount = counts[n];
+    }
+  });
+  return bestCount > 0 ? best : 'Unassigned';
+}
+
+/** Assign one person to every staffed day in a schedule row for the visible week. */
+export function assignPersonToScheduleRow(
+  store: AssignmentStore,
+  schedule: ScheduleRow[],
+  restaurantId: string,
+  role: RoleKey,
+  trIdx: number,
+  visibleDays: string[],
+  personName: string,
+  employees: EmployeeLite[]
+): AssignmentStore {
+  const canon =
+    !personName || personName === 'Unassigned'
+      ? 'Unassigned'
+      : canonicalScheduleWorkerNameLite(employees, personName, restaurantId) || 'Unassigned';
+  const list = canon === 'Unassigned' ? ['Unassigned'] : [canon];
+  const next = JSON.parse(JSON.stringify(store)) as AssignmentStore;
+  if (!next[restaurantId]) next[restaurantId] = {};
+  let any = false;
+  (visibleDays || []).forEach((dayStr) => {
+    const shift = schedule.find((s) => s.day === dayStr && s.role === role && s.trIdx === trIdx);
+    if (!shift) return;
+    any = true;
+    next[restaurantId][shift.id] = list;
+  });
+  return any ? next : store;
+}
 
 export function buildCalendarBody(
   schedule: ScheduleRow[],
@@ -1141,7 +1264,7 @@ export function buildCalendarBody(
       if (cells.length !== colCount) {
         /* pad safety */
       }
-      bodyRows.push({ kind: 'cells', cells });
+      bodyRows.push({ kind: 'cells', role: rd.role, trIdx, cells });
     }
   });
 
@@ -1235,6 +1358,70 @@ export type WorkerShiftRow = ScheduleRow & {
 };
 
 /**
+ * All schedule rows across locations for one (or all) weeks.
+ * Prefer `weekIndex` for timecards — full 15-week rebuild is ~15× more expensive.
+ */
+export function buildAllLocationsScheduleRows(
+  weekMeta: WeekMeta[],
+  params: {
+    allWeekDays: string[];
+    draftScheduleRaw?: unknown;
+    draftRows?: DraftGrid;
+    employees: EmployeeLite[];
+    restaurants: Restaurant[];
+    assignmentStore: AssignmentStore;
+    weekIndex?: number;
+  }
+): WorkerShiftRow[] {
+  const { allWeekDays, draftScheduleRaw, draftRows, employees, restaurants, assignmentStore, weekIndex } =
+    params;
+  const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
+  const out: WorkerShiftRow[] = [];
+  for (const rest of restaurants) {
+    const schedule = buildSchedule({
+      allWeekDays,
+      draftScheduleRaw,
+      draftRows,
+      employees,
+      restaurants,
+      currentRestaurantId: rest.id,
+      assignmentStore,
+      weekIndex,
+    });
+    for (const s of schedule) {
+      const meta = labelToMeta.get(s.day);
+      out.push({
+        ...s,
+        restaurantId: rest.id,
+        restaurantName: rest.name,
+        iso: meta?.iso ?? '',
+        dayNameUpper: meta?.dayNameUpper ?? '',
+      });
+    }
+  }
+  return out;
+}
+
+/** Index pay-week snapshot rows by normalized worker name (and shift id). */
+export function indexPayWeekScheduleRows(rows: WorkerShiftRow[]): {
+  byWorkerKey: Record<string, WorkerShiftRow[]>;
+  byId: Record<string, WorkerShiftRow>;
+} {
+  const byWorkerKey: Record<string, WorkerShiftRow[]> = Object.create(null);
+  const byId: Record<string, WorkerShiftRow> = Object.create(null);
+  for (const s of rows) {
+    if (s?.id) byId[s.id] = s;
+    for (const workerName of s.workers || []) {
+      const key = scheduleWorkerNameKey(workerName);
+      if (!key || key === 'unassigned') continue;
+      if (!byWorkerKey[key]) byWorkerKey[key] = [];
+      byWorkerKey[key].push(s);
+    }
+  }
+  return { byWorkerKey, byId };
+}
+
+/**
  * All shifts across locations where the worker is assigned (merged `team_state.schedule_assignments`).
  * Uses the same `buildSchedule` pipeline as the manager calendar.
  */
@@ -1248,34 +1435,13 @@ export function buildAllLocationsWorkerShiftRows(
     restaurants: Restaurant[];
     assignmentStore: AssignmentStore;
     workerName: string;
+    weekIndex?: number;
   }
 ): WorkerShiftRow[] {
-  const { allWeekDays, draftScheduleRaw, draftRows, employees, restaurants, assignmentStore, workerName } = params;
-  const labelToMeta = new Map(weekMeta.map((m) => [m.label, m]));
-  const out: WorkerShiftRow[] = [];
-  for (const rest of restaurants) {
-    const schedule = buildSchedule({
-      allWeekDays,
-      draftScheduleRaw,
-      draftRows,
-      employees,
-      restaurants,
-      currentRestaurantId: rest.id,
-      assignmentStore,
-    });
-    for (const s of schedule) {
-      if (!shiftRowIncludesWorker(s, workerName)) continue;
-      const meta = labelToMeta.get(s.day);
-      out.push({
-        ...s,
-        restaurantId: rest.id,
-        restaurantName: rest.name,
-        iso: meta?.iso ?? '',
-        dayNameUpper: meta?.dayNameUpper ?? '',
-      });
-    }
-  }
-  return out;
+  const { workerName, weekIndex, ...rest } = params;
+  return buildAllLocationsScheduleRows(weekMeta, { ...rest, weekIndex }).filter((s) =>
+    shiftRowIncludesWorker(s, workerName)
+  );
 }
 
 /** Today vs future shifts for the employee portal (mirrors web `getWorkerScheduleBuckets`). */
@@ -1330,7 +1496,7 @@ export function getWorkerScheduleBuckets(params: {
   return { today, upcoming };
 }
 
-/** Drop saved worker rows for locations that must stay unassigned (e.g. rp-8). */
+/** Drop saved worker rows for locations that must stay unassigned (custom sites with the flag). */
 export function purgeDefaultUnassignedRestaurantAssignments(
   store: AssignmentStore,
   restaurants: Restaurant[]

@@ -22,27 +22,58 @@ export async function loadWeekEntries(
 } | { ok: false; reason: string }> {
   const fullSel =
     'id, employee_id, clock_in_at, clock_out_at, break_minutes, break_start_at, break_end_at, break_segments, break_paid, schedule_shift_id, clock_restaurant_id, edit_history, updated_at';
-  const res = await sb
+  const weekStartIso = bounds.start.toISOString();
+  const weekEndIso = bounds.end.toISOString();
+
+  const weekQuery = sb
     .from('time_clock_entries')
     .select(fullSel)
-    .gte('clock_in_at', bounds.start.toISOString())
-    .lte('clock_in_at', bounds.end.toISOString())
+    .gte('clock_in_at', weekStartIso)
+    .lte('clock_in_at', weekEndIso)
     .order('clock_in_at', { ascending: true });
+  const openQuery = sb
+    .from('time_clock_entries')
+    .select(fullSel)
+    .is('clock_out_at', null)
+    .lt('clock_in_at', weekEndIso);
+
+  type QueryResult = { error: { message: string } | null; data: unknown[] | null };
+  const [weekRes, openInitial] = (await Promise.all([weekQuery, openQuery])) as [
+    QueryResult,
+    QueryResult,
+  ];
+  let openRes: QueryResult = openInitial;
 
   let entries: TimeClockEntry[] = [];
-  if (res.error && /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|clock_restaurant_id|edit_history/i.test(res.error.message || '')) {
-    const fallback = await sb
-      .from('time_clock_entries')
-      .select('id, employee_id, clock_in_at, clock_out_at, updated_at')
-      .gte('clock_in_at', bounds.start.toISOString())
-      .lte('clock_in_at', bounds.end.toISOString())
-      .order('clock_in_at', { ascending: true });
+  const schemaMissing =
+    weekRes.error &&
+    /break_start_at|break_end_at|break_minutes|break_segments|break_paid|schedule_shift_id|clock_restaurant_id|edit_history/i.test(
+      weekRes.error.message || ''
+    );
+
+  if (schemaMissing) {
+    const fallbackSel = 'id, employee_id, clock_in_at, clock_out_at, updated_at';
+    const [fallback, openFallback] = (await Promise.all([
+      sb
+        .from('time_clock_entries')
+        .select(fallbackSel)
+        .gte('clock_in_at', weekStartIso)
+        .lte('clock_in_at', weekEndIso)
+        .order('clock_in_at', { ascending: true }),
+      sb
+        .from('time_clock_entries')
+        .select(fallbackSel)
+        .is('clock_out_at', null)
+        .lt('clock_in_at', weekEndIso),
+    ])) as [QueryResult, QueryResult];
     if (fallback.error) return { ok: false, reason: fallback.error.message };
     entries = (fallback.data || []) as unknown as TimeClockEntry[];
+    openRes = openFallback;
   } else {
-    if (res.error) return { ok: false, reason: res.error.message };
-    entries = (res.data || []) as unknown as TimeClockEntry[];
+    if (weekRes.error) return { ok: false, reason: weekRes.error.message };
+    entries = (weekRes.data || []) as unknown as TimeClockEntry[];
   }
+
   const schema: TimecardSchema = {
     breakMinutes: !!(entries.length && entries[0].break_minutes !== undefined),
     breakTimes: !!(entries.length && entries[0].break_start_at !== undefined),
@@ -50,15 +81,6 @@ export async function loadWeekEntries(
     editHistory: !!(entries.length && entries[0].edit_history !== undefined),
     breakPaid: !!(entries.length && entries[0].break_paid !== undefined),
   };
-
-  const openSel = schema.breakMinutes
-    ? fullSel
-    : 'id, employee_id, clock_in_at, clock_out_at, updated_at';
-  const openRes = await sb
-    .from('time_clock_entries')
-    .select(openSel)
-    .is('clock_out_at', null)
-    .lt('clock_in_at', bounds.end.toISOString());
 
   if (!openRes.error && openRes.data?.length) {
     entries = mergeWeekEntriesById(entries, openRes.data as unknown as TimeClockEntry[]);

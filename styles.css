@@ -760,6 +760,85 @@ html.authed .header-signout-btn {
   color: var(--text-muted);
 }
 
+.avail-tab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.avail-tab-employee-field {
+  min-width: min(100%, 220px);
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+.avail-tab-employee-field select {
+  width: 100%;
+}
+
+.avail-tab-hint {
+  margin: 0 0 12px;
+}
+
+.avail-tab-grid {
+  margin-bottom: 14px;
+}
+
+.avail-tab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.avail-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--surface-2, #f3f4f6);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.avail-status-badge--submitted {
+  background: #e8f5e9;
+  color: #1b5e20;
+  border-color: #a5d6a7;
+}
+
+.avail-status-badge--draft {
+  background: #fff8e1;
+  color: #8d6e00;
+  border-color: #ffe082;
+}
+
+.availability-matrix-cell-time--draggable {
+  cursor: grab;
+}
+
+.availability-matrix-cell-time--draggable:active {
+  cursor: grabbing;
+}
+
+.availability-drag-source {
+  outline: 2px solid var(--accent, #c41230);
+  outline-offset: 1px;
+  opacity: 0.85;
+}
+
+.availability-drag-over {
+  outline: 2px dashed var(--accent, #c41230);
+  outline-offset: 1px;
+  background: rgba(196, 18, 48, 0.06);
+}
+
 .emp-avail-week-chips {
   margin: 0 0 10px;
 }
@@ -1358,6 +1437,8 @@ html.authed .header-signout-btn {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .top-nav .nav-item:hover,
@@ -1365,6 +1446,11 @@ html.authed .header-signout-btn {
   color: var(--text);
   background: var(--hover-fill);
   outline: none;
+}
+
+.top-nav .nav-item:active {
+  color: var(--text);
+  background: #f1f5f9;
 }
 
 .top-nav .nav-item.active {
@@ -2052,43 +2138,70 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.75rem;
-  color: var(--text-muted);
+}
+
+/* Section headers use the same role palette as former name pills */
+.calendar-matrix--redpoke .calendar-section-foh td {
+  color: #047857;
+  background: color-mix(in srgb, #ecfdf5 88%, #fff);
+}
+
+.calendar-matrix--redpoke .calendar-section-foh td.calendar-group-label {
+  border-left: 3px solid #047857;
+}
+
+.calendar-matrix--redpoke .calendar-section-boh td {
+  color: #92400e;
+  background: color-mix(in srgb, #fffbeb 88%, #fff);
+}
+
+.calendar-matrix--redpoke .calendar-section-boh td.calendar-group-label {
+  border-left: 3px solid #92400e;
+}
+
+.calendar-matrix--redpoke .calendar-section-delivery td {
+  color: #1d4ed8;
+  background: color-mix(in srgb, #eff6ff 88%, #fff);
+}
+
+.calendar-matrix--redpoke .calendar-section-delivery td.calendar-group-label {
+  border-left: 3px solid #1d4ed8;
 }
 
 .calendar-slot-rp {
   box-sizing: border-box;
-  min-height: 4.5rem;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed var(--border);
+  min-height: 0;
+  padding-bottom: 0;
+  border-bottom: none;
   flex-shrink: 0;
 }
 
 .calendar-slot-rp-time {
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 600;
   color: var(--text);
   letter-spacing: 0.01em;
-  line-height: 1.35;
+  line-height: 1.3;
   overflow-wrap: break-word;
   word-break: normal;
 }
 
 .calendar-slot-rp-break {
-  margin-top: 4px;
-  font-size: 0.72rem;
+  margin-top: 2px;
+  font-size: 0.68rem;
   font-weight: 500;
   color: var(--text-muted);
-  line-height: 1.35;
+  line-height: 1.3;
   overflow-wrap: break-word;
   word-break: normal;
 }
 
 .calendar-slot-rp-hours {
-  margin-top: 2px;
-  font-size: 0.78rem;
+  margin-top: 1px;
+  font-size: 0.72rem;
   font-weight: 600;
   color: var(--text);
-  line-height: 1.35;
+  line-height: 1.3;
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -2133,8 +2246,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   vertical-align: top;
 }
 
-/* Stretch shift cells in a row to equal height so name pills share one baseline. */
-.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) > td {
+/*
+ * Equal-height day cells: height:1px + child height:100%.
+ * Do NOT apply to the Person column — overflow:hidden + height:1px clips the
+ * <select> to ~0px in Safari/WebKit after a cold load.
+ */
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) > td:not(.calendar-row-person-col) {
   height: 1px;
 }
 
@@ -2142,42 +2259,36 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   height: 100%;
 }
 
-.calendar-matrix thead th:not(.time-col),
-.calendar-matrix tbody tr:not(.calendar-group-row) td {
+.calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col),
+.calendar-matrix tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
   min-width: 128px;
   box-sizing: border-box;
 }
 
 /*
- * Schedule home calendar: fixed table layout + equal day columns so a focused text
- * input’s default intrinsic min-width can’t widen the matrix (horizontal “tile stretch”).
+ * Schedule home calendar: auto layout + max-content width so day-column min-widths
+ * are honored. Person column + 7 days no longer get crushed into the viewport —
+ * #calendarGrid scrolls horizontally instead. (Fixed + width:100% ignored min-width.)
  */
 .calendar-matrix.calendar-matrix--redpoke {
-  width: 100%;
+  width: max-content;
   min-width: 100%;
-  /* Allow day columns to honor min-width; #calendarGrid scrolls horizontally when needed. */
   max-width: none;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
-.calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
-.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
-  min-width: 10rem;
-  width: 1%;
+.calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
+.calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
+  width: auto;
+  min-width: 11rem;
+  box-sizing: border-box;
 }
 
-/* Below desktop width: fixed equal columns cram day cells — scroll horizontally with roomy columns instead. */
 @media (max-width: 1023px) {
-  .calendar-matrix.calendar-matrix--redpoke {
-    width: max-content;
-    min-width: 100%;
-    max-width: none;
-    table-layout: auto;
-  }
-
-  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
-  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
-    width: auto;
+  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
     min-width: clamp(11rem, 42vw, 14.5rem);
   }
 }
@@ -2192,12 +2303,129 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   letter-spacing: 0.03em;
 }
 
-.calendar-matrix .time-col {
-  width: 112px;
-  min-width: 112px;
-  max-width: 140px;
+/* Sticky per-day hours/pay summary — stays visible while the grid scrolls. */
+.calendar-matrix tfoot.schedule-day-totals {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+}
+
+.calendar-matrix tfoot.schedule-day-totals td {
+  vertical-align: middle;
+  padding: 10px 10px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--primary) 8%);
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 14px rgba(15, 23, 42, 0.06);
+}
+
+.schedule-day-totals-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.schedule-day-totals-hours {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+}
+
+.schedule-day-totals-pay {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .calendar-matrix tfoot.schedule-day-totals td {
+    padding: 8px 6px;
+  }
+
+  .schedule-day-totals-hours {
+    font-size: 0.75rem;
+  }
+
+  .schedule-day-totals-pay {
+    font-size: 0.6875rem;
+  }
+}
+
+.calendar-matrix .time-col,
+.calendar-matrix .calendar-row-person-col {
+  width: 11rem;
+  min-width: 11rem;
+  max-width: 11rem;
   font-weight: 600;
   background: var(--surface);
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  vertical-align: middle;
+  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35);
+}
+
+/* Person column: keep sticky chrome visible; never clip the row <select>.
+   No tinted background, heavy border, or edge shade — matches day cells. */
+.calendar-matrix .calendar-row-person-col {
+  overflow: visible;
+  box-shadow: none;
+}
+
+.calendar-matrix thead th.calendar-row-person-col {
+  z-index: 4;
+  vertical-align: bottom;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.calendar-matrix tfoot.schedule-day-totals td.calendar-row-person-col {
+  z-index: 4;
+  overflow: hidden;
+  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35), 0 -6px 14px rgba(15, 23, 42, 0.06);
+}
+
+.calendar-row-person {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
+}
+
+.calendar-row-person-select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  appearance: auto;
+  -webkit-appearance: menulist;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  min-height: 2.25rem;
+  padding: 7px 8px;
+  border: 1.5px solid color-mix(in srgb, var(--primary) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  /* Prevent long option labels from expanding the sticky person column. */
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.calendar-row-person-select:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--primary);
+  border-color: var(--primary);
 }
 
 .time-role {
@@ -2224,20 +2452,35 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: var(--radius-sm);
-  padding: 12px 12px;
+  padding: 10px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   cursor: pointer;
   text-align: left;
-  min-height: 168px;
+  min-height: 0;
   box-sizing: border-box;
+}
+
+.calendar-slot-wrap.calendar-slot-compact {
+  min-height: 5rem;
 }
 
 .calendar-slot-wrap:not(.calendar-slot-empty) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  background: #fff;
+}
+
+/* Role color coding on compact cells (replaces former .calendar-worker-pill tints) */
+.calendar-slot-wrap.role-kitchen,
+.calendar-slot-wrap.role-server,
+.calendar-slot-wrap.role-bartender {
+  background: var(--role-bg);
+  border-color: var(--role-border);
+  border-left-width: 3px;
+  border-left-color: var(--role-fg);
 }
 
 .calendar-slot-wrap:hover,
@@ -2245,6 +2488,41 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   outline: 1px solid var(--primary);
   outline-offset: 0;
   background: var(--hover-fill);
+}
+
+.calendar-slot-wrap.role-kitchen:hover,
+.calendar-slot-wrap.role-kitchen:focus-visible,
+.calendar-slot-wrap.role-server:hover,
+.calendar-slot-wrap.role-server:focus-visible,
+.calendar-slot-wrap.role-bartender:hover,
+.calendar-slot-wrap.role-bartender:focus-visible {
+  background: color-mix(in srgb, var(--role-bg) 65%, var(--hover-fill));
+}
+
+.calendar-matrix--alt-drag-active {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: copy;
+}
+
+.calendar-matrix--alt-drag-active .calendar-slot-wrap {
+  cursor: copy;
+}
+
+.calendar-matrix--alt-drag-active .calendar-slot-wrap.calendar-slot-empty {
+  cursor: copy;
+}
+
+.calendar-slot-wrap.calendar-slot-alt-source {
+  outline: 2px solid var(--primary);
+  outline-offset: 0;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+.calendar-slot-wrap.calendar-slot-alt-target {
+  outline: 2px dashed color-mix(in srgb, var(--primary) 70%, #22c55e);
+  outline-offset: 0;
+  background: color-mix(in srgb, #22c55e 12%, #fff);
 }
 
 .calendar-slot-pills {
@@ -2392,11 +2670,29 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   letter-spacing: 0.02em;
 }
 
+/* Role section labels: sticky left (with Person col) + sticky top while the grid scrolls. */
+.calendar-matrix .calendar-group-row td.calendar-group-label {
+  top: 0;
+  z-index: 3;
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: middle;
+  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35), 0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+.calendar-matrix .calendar-group-row td.calendar-group-fill {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
+  box-shadow: 0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
 .calendar-slot-wrap.calendar-slot-empty {
   cursor: default;
   background: rgba(255, 255, 255, 0.6);
   color: var(--text-muted);
-  min-height: 48px;
+  min-height: 3.25rem;
   align-items: center;
   justify-content: center;
   font-size: 0.72rem;
@@ -2405,8 +2701,17 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   text-transform: uppercase;
 }
 
+.calendar-slot-wrap.calendar-slot-empty.role-kitchen,
+.calendar-slot-wrap.calendar-slot-empty.role-server,
+.calendar-slot-wrap.calendar-slot-empty.role-bartender {
+  background: color-mix(in srgb, var(--role-bg) 42%, #fff);
+  border-color: var(--role-border);
+  border-left-width: 3px;
+  border-left-color: color-mix(in srgb, var(--role-fg) 50%, var(--border));
+}
+
 .calendar-slot-wrap.calendar-slot-empty--timed {
-  min-height: 120px;
+  min-height: 5rem;
   padding: 10px 10px;
   flex-direction: column;
   justify-content: flex-start;
@@ -2417,8 +2722,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-rp--dayoff {
-  margin-bottom: 8px;
-  padding-bottom: 8px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px dashed var(--border);
   opacity: 0.92;
 }
@@ -2493,19 +2798,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     -webkit-overflow-scrolling: touch;
   }
 
-  .calendar-matrix thead th:not(.time-col),
-  .calendar-matrix tbody tr:not(.calendar-group-row) td {
+  .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
     min-width: 156px;
   }
 
-  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col),
-  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td {
-    min-width: 10rem;
-    width: 1%;
+  .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
+    min-width: 11rem;
+    width: auto;
   }
 
   .calendar-slot-wrap:not(.calendar-slot-empty) {
-    min-height: 140px;
+    min-height: 5rem;
   }
 
   .availability-modal-panel {
@@ -2821,6 +3127,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .btn-primary {
@@ -2849,6 +3157,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-color: #d1d5db;
   outline: 1px solid var(--border);
   outline-offset: 1px;
+}
+
+.btn-primary:active:not(:disabled):not([disabled]) {
+  background: #18324f;
+  border-color: #18324f;
+}
+
+.btn-secondary:active:not(:disabled):not([disabled]) {
+  background: #f1f5f9;
+  border-color: #d1d5db;
+}
+
+.btn:active:not(:disabled):not([disabled]) {
+  transform: translateY(1px);
 }
 
 .btn-block { width: 100%; }
@@ -3225,6 +3547,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
   background: var(--hover-fill);
   outline: none;
+}
+
+.filter-chip:active {
+  background: #f1f5f9;
+  border-color: #d1d5db;
+  color: var(--text);
 }
 
 .filter-chip.active {
@@ -4071,32 +4399,38 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   /* Default day columns — Red Poke schedule uses wider mins via .calendar-matrix--redpoke rule above */
-  .calendar-matrix thead th:not(.time-col),
-  .calendar-matrix tbody tr:not(.calendar-group-row) td {
+  .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col),
+  .calendar-matrix tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
     min-width: min(148px, 44vw);
   }
 
-  .calendar-matrix .time-col {
-    width: 88px;
-    min-width: 88px;
-    max-width: 104px;
+  .calendar-matrix .time-col,
+  .calendar-matrix .calendar-row-person-col {
+    width: 9.5rem;
+    min-width: 9.5rem;
+    max-width: 9.5rem;
   }
 
   .calendar-slot-wrap {
-    min-height: 92px;
+    min-height: 0;
     padding: 8px 8px;
+  }
+
+  .calendar-slot-wrap.calendar-slot-compact,
+  .calendar-slot-wrap.calendar-slot-empty--timed {
+    min-height: 4.5rem;
   }
 
   .calendar-slot-pills {
     flex: 0 0 auto;
   }
 
-  .calendar-matrix thead th:not(.time-col) {
+  .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col) {
     font-size: 0.72rem;
     line-height: 1.25;
   }
 
-  .calendar-matrix thead th:not(.time-col) .calendar-th-full {
+  .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col) .calendar-th-full {
     display: block;
     white-space: nowrap;
     overflow: hidden;
@@ -4104,7 +4438,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     max-width: 100%;
   }
 
-  .calendar-matrix thead th:not(.time-col) .calendar-th-date-sub {
+  .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col) .calendar-th-date-sub {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4737,6 +5071,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   justify-content: space-between;
   gap: 10px 16px;
   margin: 0 0 10px;
+}
+
+.timecards-roster--switching .timecards-table-wrap,
+.timecards-roster--switching .timecards-grand-totals {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
 
 .timecards-roster-toolbar .timecards-week-picker,

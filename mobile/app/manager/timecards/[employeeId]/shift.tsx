@@ -20,6 +20,10 @@ import {
   isDeliveryDishwasherStaff,
   setEmployeeDayDishwasherTip,
 } from '../../../../lib/timecards/dishwasherTips';
+import {
+  getEmployeeDayAdditionalCashTip,
+  setEmployeeDayAdditionalCashTip,
+} from '../../../../lib/timecards/weekExtras';
 import { deleteTimeClockEntries, saveManagerPunch } from '../../../../lib/timecards/entriesApi';
 import {
   employeeBreakPolicy,
@@ -101,7 +105,10 @@ export default function TimecardsShiftScreen() {
   );
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
-  const scheduleCtx = useMemo(() => buildScheduleContext(teamState), [teamState]);
+  const scheduleCtx = useMemo(
+    () => buildScheduleContext(teamState, { bounds, employees: lites }),
+    [teamState, bounds, lites]
+  );
 
   const weekShifts = useMemo(() => {
     if (!emp) return [];
@@ -132,6 +139,7 @@ export default function TimecardsShiftScreen() {
   const [slText, setSlText] = useState('0');
   const [suggestedLeave, setSuggestedLeave] = useState<{ vl: number; sl: number } | null>(null);
   const [dishwasherTipText, setDishwasherTipText] = useState('0');
+  const [coverageText, setCoverageText] = useState('0');
   const [busy, setBusy] = useState(false);
   const [punchesCleared, setPunchesCleared] = useState(false);
   const showDishwasherTip = emp ? isDeliveryDishwasherStaff(emp) : false;
@@ -141,9 +149,12 @@ export default function TimecardsShiftScreen() {
     setVlText('0');
     setSlText('0');
     setSuggestedLeave(null);
+    setCoverageText('0');
     const dayLeave = await getEmployeeDayLeave(emp.id, iso, bounds);
     setVlText(String(dayLeave.vl));
     setSlText(String(dayLeave.sl));
+    const coverage = await getEmployeeDayAdditionalCashTip(emp.id, iso, bounds);
+    setCoverageText(String(coverage));
     const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
     const suggested = await getSuggestedDayLeave(
       emp,
@@ -252,6 +263,7 @@ export default function TimecardsShiftScreen() {
     setVlText('0');
     setSlText('0');
     setDishwasherTipText('0');
+    setCoverageText('0');
   }, []);
 
   const finishClearedDaySave = async (_vl: number, _sl: number, _dishwasherTip: number) => {
@@ -276,6 +288,7 @@ export default function TimecardsShiftScreen() {
     const vl = Math.max(0, parseFloat(vlText) || 0);
     const sl = Math.max(0, parseFloat(slText) || 0);
     const dishwasherTip = showDishwasherTip ? Math.max(0, parseFloat(dishwasherTipText) || 0) : 0;
+    const coverage = Math.max(0, parseFloat(coverageText) || 0);
     let inIso = dateToIso(clockInDate);
     let outIso =
       clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
@@ -297,7 +310,7 @@ export default function TimecardsShiftScreen() {
 
     if (!hasPunchTimes) {
       const removingDay =
-        punchesCleared || (vl <= 0 && sl <= 0 && dishwasherTip <= 0);
+        punchesCleared || (vl <= 0 && sl <= 0 && dishwasherTip <= 0 && coverage <= 0);
       if (removingDay) {
         await finishClearedDaySave(0, 0, 0);
         return;
@@ -327,6 +340,7 @@ export default function TimecardsShiftScreen() {
         }
       }
       await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+      await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
       if (showDishwasherTip) {
         await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
       }
@@ -407,6 +421,7 @@ export default function TimecardsShiftScreen() {
       return;
     }
     await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+    await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
     if (showDishwasherTip) {
       await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
     }
@@ -611,6 +626,16 @@ export default function TimecardsShiftScreen() {
           />
         </>
       ) : null}
+
+      <Text style={styles.sectionTitle}>Coverage compensation</Text>
+      <Text style={styles.hint}>Extra pay for covering a shift (saved per day).</Text>
+      <Text style={styles.fieldLabel}>Amount ($)</Text>
+      <TextInput
+        style={styles.input}
+        value={coverageText}
+        onChangeText={setCoverageText}
+        keyboardType="decimal-pad"
+      />
 
       {previewPaid != null ? (
         <Text style={styles.preview}>

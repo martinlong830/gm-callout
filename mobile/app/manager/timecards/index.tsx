@@ -2,11 +2,13 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  InteractionManager,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { PayWeekPicker } from '../../../components/PayWeekPicker';
@@ -21,17 +23,18 @@ import {
   type RosterRow,
 } from '../../../lib/timecards/engine';
 import { loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
-import { loadWeekExtrasSlice } from '../../../lib/timecards/weekExtras';
+import { loadWeekExtrasSlice, type WeekExtrasSlice } from '../../../lib/timecards/weekExtras';
 import {
   loadTimecardsLocationFilter,
   saveTimecardsLocationFilter,
   TIMECARDS_LOCATION_OPTIONS,
   type SelectedRestaurant,
 } from '../../../lib/timecards/locationFilter';
-import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
+import { rosterRowHasLocationActivity, rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
 import { weekBoundsStorageKey } from '../../../lib/timecards/payWeek';
+import { getSohRate, loadSohRate, saveSohRate } from '../../../lib/timecards/sohRate';
 import { type EmployeeRow } from '../../../lib/employees';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -113,6 +116,12 @@ function RosterRowCard({
             <Text style={styles.statPay}>{formatPayAmount(row.dishwasherTipsPay)}</Text>
           </View>
         ) : null}
+        {row.additionalCashTip > 0 ? (
+          <View style={styles.statRow}>
+            <Text style={styles.statLabel}>Coverage</Text>
+            <Text style={styles.statPay}>{formatPayAmount(row.additionalCashTip)}</Text>
+          </View>
+        ) : null}
         <View style={[styles.statRow, styles.totalRow]}>
           <Text style={styles.totalLabel}>Total</Text>
           <Text style={styles.totalHours}>
@@ -127,9 +136,34 @@ function RosterRowCard({
 
 type WeekSlices = {
   key: string;
-  extras: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  extras: WeekExtrasSlice;
   dishwasherTips: Record<string, number>;
 };
+
+/** Keep recently viewed pay weeks warm when switching back. */
+const weekSlicesCache = new Map<string, WeekSlices>();
+const WEEK_SLICES_CACHE_MAX = 6;
+
+function cacheWeekSlices(slice: WeekSlices): void {
+  weekSlicesCache.set(slice.key, slice);
+  if (weekSlicesCache.size <= WEEK_SLICES_CACHE_MAX) return;
+  const oldest = weekSlicesCache.keys().next().value;
+  if (oldest != null) weekSlicesCache.delete(oldest);
+}
+
+function RosterSkeleton() {
+  return (
+    <View style={styles.skeletonWrap} accessibilityLabel="Loading timecards">
+      {[0, 1, 2].map((i) => (
+        <View key={i} style={styles.skeletonCard}>
+          <View style={styles.skeletonLineWide} />
+          <View style={styles.skeletonLineNarrow} />
+          <View style={styles.skeletonLineMid} />
+        </View>
+      ))}
+    </View>
+  );
+}
 
 export default function TimecardsRosterScreen() {
   const router = useRouter();
@@ -137,6 +171,7 @@ export default function TimecardsRosterScreen() {
   const {
     entries,
     loading,
+    weekReady,
     error,
     bounds,
     payWeekOptions,
@@ -148,6 +183,9 @@ export default function TimecardsRosterScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [locationFilter, setLocationFilter] = useState<SelectedRestaurant>('rp-9');
   const [locationReady, setLocationReady] = useState(false);
+  const [showGrandTotals, setShowGrandTotals] = useState(false);
+  const [sohRateText, setSohRateText] = useState(String(getSohRate()));
+  const [sohRateVersion, setSohRateVersion] = useState(0);
 
   const boundsKey = weekBoundsStorageKey(bounds);
   const lites = useMemo(() => employees.map(toLite), [employees]);
@@ -164,20 +202,44 @@ export default function TimecardsRosterScreen() {
   }, []);
 
   useEffect(() => {
+    void loadSohRate().then((rate) => {
+      setSohRateText(String(rate));
+      setSohRateVersion((v) => v + 1);
+    });
+  }, []);
+
+  const persistSohRate = useCallback(async () => {
+    const applied = await saveSohRate(sohRateText);
+    setSohRateText(String(applied));
+    setSohRateVersion((v) => v + 1);
+  }, [sohRateText]);
+
+  useEffect(() => {
+    const cached = weekSlicesCache.get(boundsKey);
+    if (cached && !teamState?.updated_at) {
+      setWeekSlices(cached);
+      return;
+    }
     let cancelled = false;
+    setWeekSlices((prev) => (prev?.key === boundsKey ? prev : null));
     void Promise.all([loadWeekExtrasSlice(bounds), loadDishwasherTipsSlice(bounds)]).then(
       ([extras, dishwasherTips]) => {
         if (cancelled) return;
-        setWeekSlices({ key: boundsKey, extras, dishwasherTips });
+        const next = { key: boundsKey, extras, dishwasherTips };
+        cacheWeekSlices(next);
+        setWeekSlices(next);
       }
     );
     return () => {
       cancelled = true;
     };
-  }, [bounds, boundsKey]);
+  }, [bounds, boundsKey, teamState?.updated_at]);
+
+  const slicesReady = !!weekSlices && weekSlices.key === boundsKey;
+  const dataReady = weekReady && locationReady && slicesReady;
 
   const rows = useMemo(() => {
-    if (loading || !locationReady || !weekSlices || weekSlices.key !== boundsKey) return [];
+    if (!dataReady || !weekSlices) return [];
     const built = buildAllRosterRows(
       employees,
       entries,
@@ -197,13 +259,14 @@ export default function TimecardsRosterScreen() {
     });
     return built.filter((row) => {
       const emp = employeeById[row.empId];
-      return emp ? rosterRowVisibleAtLocation(emp, locationFilter) : true;
+      if (!emp) return true;
+      return (
+        rosterRowVisibleAtLocation(emp, locationFilter) || rosterRowHasLocationActivity(row)
+      );
     });
   }, [
-    loading,
-    locationReady,
+    dataReady,
     weekSlices,
-    boundsKey,
     employees,
     entries,
     teamState,
@@ -213,7 +276,23 @@ export default function TimecardsRosterScreen() {
     locationFilter,
     employeeById,
     teamState?.updated_at,
+    sohRateVersion,
   ]);
+
+  useEffect(() => {
+    if (!dataReady || !rows.length) {
+      setShowGrandTotals(false);
+      return;
+    }
+    let cancelled = false;
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (!cancelled) setShowGrandTotals(true);
+    });
+    return () => {
+      cancelled = true;
+      task.cancel();
+    };
+  }, [dataReady, rows]);
 
   const onLocationChange = useCallback(async (next: SelectedRestaurant) => {
     setLocationFilter(next);
@@ -226,7 +305,7 @@ export default function TimecardsRosterScreen() {
   }, [refresh]);
 
   const totals = useMemo(() => computeRosterTotals(rows), [rows]);
-  const initialBusy = (loading || !weekSlices || weekSlices.key !== boundsKey) && !rows.length;
+  const initialBusy = (loading || !dataReady) && !rows.length;
 
   return (
     <ScrollView
@@ -270,28 +349,53 @@ export default function TimecardsRosterScreen() {
         </ScrollView>
       </View>
 
+      <View style={styles.sohRateSection}>
+        <Text style={styles.locationLabel}>SoH rate</Text>
+        <View style={styles.sohRateRow}>
+          <Text style={styles.sohRatePrefix}>$</Text>
+          <TextInput
+            style={styles.sohRateInput}
+            value={sohRateText}
+            onChangeText={setSohRateText}
+            onEndEditing={() => void persistSohRate()}
+            keyboardType="decimal-pad"
+            accessibilityLabel="Spread of hours rate"
+          />
+          <Text style={styles.sohRateSuffix}>/hr</Text>
+        </View>
+      </View>
+
       {error ? <Text style={styles.err}>{error}</Text> : null}
 
-      {initialBusy ? <ActivityIndicator style={styles.spinner} color="#c41230" /> : null}
+      {initialBusy ? (
+        <>
+          <ActivityIndicator style={styles.spinner} color="#c41230" />
+          <RosterSkeleton />
+        </>
+      ) : null}
 
-      {rows.length > 0 ? <GrandTotalsSection totals={totals} bounds={bounds} /> : null}
+      {!initialBusy && showGrandTotals && rows.length > 0 ? (
+        <GrandTotalsSection totals={totals} bounds={bounds} locationFilter={locationFilter} />
+      ) : null}
 
       <View style={styles.list}>
-        {rows.map((row) => {
-          if (!employeeById[row.empId]) return null;
-          return (
-            <RosterRowCard
-              key={row.empId}
-              row={row}
-              onPress={() =>
-                router.push({
-                  pathname: '/manager/timecards/[employeeId]',
-                  params: { employeeId: row.empId },
-                })
-              }
-            />
-          );
-        })}
+        {!initialBusy
+          ? rows.map((row) => {
+              if (!employeeById[row.empId]) return null;
+              return (
+                <RosterRowCard
+                  key={row.empId}
+                  row={row}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/manager/timecards/[employeeId]',
+                      params: { employeeId: row.empId },
+                    })
+                  }
+                />
+              );
+            })
+          : null}
         {!initialBusy && !employees.length ? (
           <Text style={styles.muted}>No employees on the roster.</Text>
         ) : null}
@@ -309,6 +413,26 @@ const styles = StyleSheet.create({
   locationSection: { paddingHorizontal: 16, paddingBottom: 8, paddingTop: 4 },
   locationLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginBottom: 6 },
   locationPicker: { gap: 8 },
+  sohRateSection: { paddingHorizontal: 16, paddingBottom: 10 },
+  sohRateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: 180,
+  },
+  sohRatePrefix: { fontSize: 16, fontWeight: '600', color: '#475569' },
+  sohRateSuffix: { fontSize: 14, color: '#64748b' },
+  sohRateInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 16,
+    backgroundColor: '#fff',
+    color: '#0f172a',
+  },
   locationChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -321,7 +445,34 @@ const styles = StyleSheet.create({
   locationChipText: { fontSize: 12, color: '#475569' },
   locationChipTextOn: { color: '#c41230', fontWeight: '700' },
   err: { color: '#b91c1c', paddingHorizontal: 16, paddingBottom: 8 },
-  spinner: { marginTop: 40 },
+  spinner: { marginTop: 24, marginBottom: 8 },
+  skeletonWrap: { paddingHorizontal: 16, gap: 10, marginBottom: 8 },
+  skeletonCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#e2e6ea',
+    gap: 10,
+  },
+  skeletonLineWide: {
+    height: 14,
+    width: '55%',
+    borderRadius: 4,
+    backgroundColor: '#e8eaed',
+  },
+  skeletonLineNarrow: {
+    height: 10,
+    width: '35%',
+    borderRadius: 4,
+    backgroundColor: '#f1f5f9',
+  },
+  skeletonLineMid: {
+    height: 10,
+    width: '70%',
+    borderRadius: 4,
+    backgroundColor: '#f1f5f9',
+  },
   list: { paddingHorizontal: 16, paddingTop: 4, gap: 10 },
   card: {
     backgroundColor: '#fff',
@@ -341,7 +492,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   clockIn: { backgroundColor: '#ecfdf5', color: '#047857' },
-  clockBreak: { backgroundColor: '#fffbeb', color: '#b45309' },
+  clockBreak: { backgroundColor: '#fef3c7', color: '#b45309' },
   clockOff: { backgroundColor: '#f3f4f6', color: '#6b7280' },
   role: { fontSize: 13, color: '#64748b', marginTop: 4 },
   statsGrid: { marginTop: 10, gap: 6 },

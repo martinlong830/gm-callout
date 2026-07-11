@@ -61,24 +61,26 @@ export function employeePhotoSources(emp: EmployeeRow): EmployeePhotoSource[] {
     seenUri.add(custom);
   }
 
-  const slugs = employeePhotoSlugVariants(emp);
-  const base = webAppAssetBase();
-
-  for (const slug of slugs) {
-    const bundled = BUNDLED_EMPLOYEE_PHOTOS[slug];
-    if (bundled) {
-      out.push({ kind: 'bundled', source: bundled });
+  // Prefer bundled assets (zero network). Only one remote candidate to avoid
+  // roster N×slug×jpg/png speculative downloads that burn Storage/CDN egress.
+  const slug = employeePhotoSlug(emp);
+  const bundled = BUNDLED_EMPLOYEE_PHOTOS[slug];
+  if (bundled) {
+    out.push({ kind: 'bundled', source: bundled });
+  } else if (!hideBundled && slug) {
+    // Try alternate bundled keys without adding remote URLs for each variant.
+    for (const alt of employeePhotoSlugVariants(emp)) {
+      const altBundled = BUNDLED_EMPLOYEE_PHOTOS[alt];
+      if (altBundled) {
+        out.push({ kind: 'bundled', source: altBundled });
+        break;
+      }
     }
-    if (!hideBundled) {
-      const jpg = `${base}/assets/employee-photos/${slug}.jpg`;
-      const png = `${base}/assets/employee-photos/${slug}.png`;
+    if (!out.some((s) => s.kind === 'bundled')) {
+      const jpg = `${webAppAssetBase()}/assets/employee-photos/${slug}.jpg`;
       if (!seenUri.has(jpg)) {
         out.push({ kind: 'uri', uri: jpg });
         seenUri.add(jpg);
-      }
-      if (!seenUri.has(png)) {
-        out.push({ kind: 'uri', uri: png });
-        seenUri.add(png);
       }
     }
   }

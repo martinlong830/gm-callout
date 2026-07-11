@@ -15,14 +15,21 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../contexts/AuthContext';
-import { portalGetAccount, portalUpdateRecoveryEmail } from '../lib/portalAuth';
+import { storeCompanySession } from '../lib/companySession';
+import {
+  portalGetAccount,
+  portalUpdateCompany,
+  portalUpdateRecoveryEmail,
+} from '../lib/portalAuth';
 
 export default function AccountScreen() {
   const router = useRouter();
   const { session, role, loading: authLoading } = useAuth();
   const [loginName, setLoginName] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [hasRecovery, setHasRecovery] = useState(false);
+  const [isManager, setIsManager] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -39,7 +46,9 @@ export default function AccountScreen() {
     setLoginName(acct.loginName);
     setRecoveryEmail(acct.recoveryEmail);
     setHasRecovery(acct.hasRecoveryEmail);
-  }, []);
+    setCompanyName(acct.companyName || '');
+    setIsManager(acct.role === 'manager' || role === 'manager');
+  }, [role]);
 
   useEffect(() => {
     if (!session) return;
@@ -61,6 +70,26 @@ export default function AccountScreen() {
   async function onSave() {
     setMessage(null);
     setBusy(true);
+    if (isManager) {
+      const name = companyName.trim();
+      if (!name) {
+        setBusy(false);
+        setMessage('Company name is required.');
+        return;
+      }
+      const co = await portalUpdateCompany({ name });
+      if (!co.ok) {
+        setBusy(false);
+        setMessage(co.message);
+        return;
+      }
+      await storeCompanySession({
+        companyId: co.companyId,
+        companyName: co.companyName,
+        accessCode: co.accessCode,
+      });
+      setCompanyName(co.companyName || name);
+    }
     const res = await portalUpdateRecoveryEmail(recoveryEmail);
     setBusy(false);
     if (!res.ok) {
@@ -85,6 +114,7 @@ export default function AccountScreen() {
           <Text style={styles.subtitle}>
             Your sign-in name stays the same. Add a recovery email so you can reset your password from the app or
             web.
+            {isManager ? ' Managers can also edit the company name.' : ''}
           </Text>
 
           {loading ? (
@@ -95,6 +125,21 @@ export default function AccountScreen() {
               <Text style={styles.readonly}>{loginName || '—'}</Text>
               <Text style={styles.label}>Role</Text>
               <Text style={styles.readonly}>{role === 'manager' ? 'Manager' : 'Employee'}</Text>
+
+              {isManager ? (
+                <>
+                  <Text style={styles.label}>Company name</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={companyName}
+                    onChangeText={setCompanyName}
+                    autoCapitalize="words"
+                    maxLength={120}
+                    placeholder="Company name"
+                    placeholderTextColor="#888"
+                  />
+                </>
+              ) : null}
 
               <Text style={styles.label}>Recovery email</Text>
               <TextInput
@@ -115,7 +160,7 @@ export default function AccountScreen() {
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.buttonText}>Save recovery email</Text>
+                  <Text style={styles.buttonText}>Save account settings</Text>
                 )}
               </Pressable>
             </View>

@@ -33,7 +33,7 @@ import {
   staffTypeLabel,
   type EmployeeRow,
 } from '../lib/employees';
-import { isPortalAuthConfigured, portalCreateEmployeeAccount } from '../lib/portalAuth';
+import { isPortalAuthConfigured, portalCreateEmployeeAccount, portalGetAccount } from '../lib/portalAuth';
 import type { DraftGrid } from '../lib/schedule/types';
 import { employeePhotoUploadHint, clearEmployeePhoto, uploadEmployeePhotoFromUri } from '../lib/uploadEmployeePhoto';
 import { supabase } from '../lib/supabase';
@@ -140,6 +140,8 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [sickHoursRemaining, setSickHoursRemaining] = useState('');
   const [portalPassword, setPortalPassword] = useState('redpoke');
   const [portalRecoveryEmail, setPortalRecoveryEmail] = useState('');
+  const [portalAccountType, setPortalAccountType] = useState<'employee' | 'manager'>('employee');
+  const [canCreateManager, setCanCreateManager] = useState(false);
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -163,8 +165,24 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setSickHoursRemaining('');
     setPortalPassword('redpoke');
     setPortalRecoveryEmail('');
+    setPortalAccountType('employee');
     setStatusMsg('');
   }, [draftRows]);
+
+  useEffect(() => {
+    if (!visible || !isCreate || !isPortalAuthConfigured()) {
+      setCanCreateManager(false);
+      return;
+    }
+    let cancelled = false;
+    void portalGetAccount().then((acct) => {
+      if (cancelled) return;
+      setCanCreateManager(!!(acct.ok && acct.isCompanyCreator));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, isCreate]);
 
   useEffect(() => {
     setProfileEmployee(employee);
@@ -320,6 +338,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
           displayName: displayNameNew,
           phone: phoneTrim,
           staffType,
+          role: canCreateManager ? portalAccountType : 'employee',
         };
         const recovery = portalRecoveryEmail.trim();
         if (recovery) portalPayload.recoveryEmail = recovery;
@@ -586,6 +605,21 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                 </View>
                 {isCreate ? (
                   <>
+                    {canCreateManager ? (
+                      <>
+                        <FieldLabel>Account type</FieldLabel>
+                        <ChipRow
+                          options={[
+                            { value: 'employee', label: 'Employee' },
+                            { value: 'manager', label: 'Manager' },
+                          ]}
+                          value={portalAccountType}
+                          onChange={(v) =>
+                            setPortalAccountType(v === 'manager' ? 'manager' : 'employee')
+                          }
+                        />
+                      </>
+                    ) : null}
                     <FieldLabel>App login password</FieldLabel>
                     <TextInput
                       style={styles.input}

@@ -7,6 +7,10 @@ export type TeamStateBroadcastPayload = {
 };
 
 const TEAM_STATE_BROADCAST_EVENT = 'team_state_changed';
+const REMOTE_REFRESH_DEBOUNCE_MS = 1200;
+
+let sharedChannel: RealtimeChannel | null = null;
+let sharedTeamStateId: string | null = null;
 
 /**
  * Lightweight team_state sync: broadcast ping (~100 bytes) + debounced REST refetch.
@@ -23,7 +27,7 @@ export function subscribeTeamState(
     timer = setTimeout(() => {
       timer = null;
       onRemoteChange(fields);
-    }, 600);
+    }, REMOTE_REFRESH_DEBOUNCE_MS);
   };
 
   const channel: RealtimeChannel = sb
@@ -36,8 +40,15 @@ export function subscribeTeamState(
     })
     .subscribe();
 
+  sharedChannel = channel;
+  sharedTeamStateId = teamStateId;
+
   return () => {
     if (timer) clearTimeout(timer);
+    if (sharedChannel === channel) {
+      sharedChannel = null;
+      sharedTeamStateId = null;
+    }
     void sb.removeChannel(channel);
   };
 }
@@ -49,6 +60,25 @@ export async function broadcastTeamStateChanged(
   fields: string[],
   sourceUserId?: string | null
 ): Promise<void> {
+  const payload = {
+    source: sourceUserId || undefined,
+    fields,
+    ts: Date.now(),
+  };
+
+  if (sharedChannel && sharedTeamStateId === teamStateId) {
+    try {
+      await sharedChannel.send({
+        type: 'broadcast',
+        event: TEAM_STATE_BROADCAST_EVENT,
+        payload,
+      });
+      return;
+    } catch {
+      /* fall through to ephemeral channel */
+    }
+  }
+
   const channel = sb.channel(`team_state_sync_${teamStateId}`, {
     config: { broadcast: { ack: false, self: true } },
   });
@@ -57,11 +87,7 @@ export async function broadcastTeamStateChanged(
     await channel.send({
       type: 'broadcast',
       event: TEAM_STATE_BROADCAST_EVENT,
-      payload: {
-        source: sourceUserId || undefined,
-        fields,
-        ts: Date.now(),
-      },
+      payload,
     });
   } finally {
     void sb.removeChannel(channel);

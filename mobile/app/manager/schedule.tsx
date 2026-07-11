@@ -16,7 +16,7 @@ import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
-import { TEAM_STATE_ROW_ID } from '../../lib/constants';
+import { readStoredTeamStateId } from '../../lib/companySession';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
 import type {
@@ -27,6 +27,7 @@ import type {
   ScheduleRow,
 } from '../../lib/schedule/types';
 import {
+  assignPersonToScheduleRow,
   assignmentShell,
   buildAllWeekDayLabels,
   buildCalendarBody,
@@ -37,9 +38,11 @@ import {
   getVisibleWeekDays,
   loadDraftFromTeamState,
   mergeRemoteAssignments,
+  namesForScheduleRowPersonPicker,
   purgeDefaultUnassignedRestaurantAssignments,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
+  scheduleRowPrimaryPerson,
   STAFF_TYPE_LABELS,
   type CalendarBodyRow,
   type CalendarCell,
@@ -47,11 +50,23 @@ import {
 
 /** Wide enough for a single-line slot time (e.g. 10:00 AM – 7:30 PM) in the cell header. */
 const CELL_MIN = 158;
+/** Sticky Person column — parity with web `.calendar-row-person-col`. */
+const PERSON_COL = 118;
+/**
+ * Fixed height for role section bars (person sticky + day fill).
+ * Both columns render independently, so content-driven height (wrapped title vs
+ * single-line invisible mirror) previously made the left side taller.
+ */
+const SECTION_ROW_H = 40;
+/** Gap between role bar and first shift row — keeps bars visually separate from cells. */
+const SECTION_GAP_BELOW = 8;
 const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-kitchen': { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
   'role-server': { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
   'role-bartender': { bg: '#ecfdf5', fg: '#047857', border: '#a7f3d0' },
 };
+
+type RowPersonTarget = { role: RoleKey; trIdx: number };
 
 function toLite(e: EmployeeRow): EmployeeLite {
   return {
@@ -62,6 +77,19 @@ function toLite(e: EmployeeRow): EmployeeLite {
     usualRestaurant: e.usualRestaurant || 'both',
     meta: e.meta,
   };
+}
+
+function sectionBg(variant: 'foh' | 'boh' | 'delivery'): string {
+  if (variant === 'foh') return '#ecfdf5';
+  if (variant === 'delivery') return '#eff6ff';
+  return '#fffbeb';
+}
+
+/** Role accent — matches web `.calendar-section-*` label color / left border. */
+function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
+  if (variant === 'foh') return '#047857';
+  if (variant === 'delivery') return '#1d4ed8';
+  return '#92400e';
 }
 
 export default function ManagerScheduleScreen() {
@@ -75,6 +103,7 @@ export default function ManagerScheduleScreen() {
     assignmentShell(restaurants)
   );
   const [pickerShift, setPickerShift] = useState<ScheduleRow | null>(null);
+  const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -121,7 +150,7 @@ export default function ManagerScheduleScreen() {
     [schedule, visibleDays, draftRows]
   );
 
-  const tableWidth = Math.max(Dimensions.get('window').width, visibleDays.length * CELL_MIN + 24);
+  const daysWidth = Math.max(Dimensions.get('window').width - PERSON_COL - 16, visibleDays.length * CELL_MIN);
 
   const persistCloud = useCallback(
     async (store: AssignmentStore) => {
@@ -130,9 +159,10 @@ export default function ManagerScheduleScreen() {
       try {
         const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
         purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
+        const teamStateId = await readStoredTeamStateId();
         const up = await supabase.from('team_state').upsert(
           {
-            id: TEAM_STATE_ROW_ID,
+            id: teamStateId,
             schedule_assignments: toSave,
           },
           { onConflict: 'id' }
@@ -141,17 +171,18 @@ export default function ManagerScheduleScreen() {
         else {
           await broadcastTeamStateChanged(
             supabase,
-            TEAM_STATE_ROW_ID,
+            teamStateId,
             ['schedule_assignments'],
             session?.user?.id
           );
-          void refetch({ silent: true });
+          // Local state already has assignments; avoid full hydrate after every edit.
+          applyLocalScheduleAssignments(toSave);
         }
       } finally {
         setSaving(false);
       }
     },
-    [role, refetch, restaurants, session?.user?.id]
+    [role, restaurants, session?.user?.id, applyLocalScheduleAssignments]
   );
 
   const queuePersist = useCallback(
@@ -160,7 +191,7 @@ export default function ManagerScheduleScreen() {
       saveTimer.current = setTimeout(() => {
         saveTimer.current = null;
         void persistCloud(store);
-      }, 1800);
+      }, 3000);
     },
     [persistCloud]
   );
@@ -177,21 +208,62 @@ export default function ManagerScheduleScreen() {
     setPickerShift(null);
   }
 
+  function applyRowPersonChoice(target: RowPersonTarget, workerName: string) {
+    const next = assignPersonToScheduleRow(
+      assignmentStore,
+      schedule,
+      currentRestaurantId,
+      target.role,
+      target.trIdx,
+      visibleDays,
+      workerName,
+      lites
+    );
+    if (next === assignmentStore) {
+      setRowPersonPicker(null);
+      return;
+    }
+    setAssignmentStore(next);
+    applyLocalScheduleAssignments(next);
+    queuePersist(next);
+    setRowPersonPicker(null);
+  }
+
   const pickerNames = useMemo(() => {
     if (!pickerShift) return [] as string[];
-    const role = pickerShift.role as RoleKey;
+    const shiftRole = pickerShift.role as RoleKey;
     const names = employees
       .filter((e) => {
-        if (e.staffType !== role) return false;
+        if (e.staffType !== shiftRole) return false;
         const u = e.usualRestaurant || 'both';
         if (u === 'both') return true;
         return u === currentRestaurantId;
       })
       .map(employeeDisplayName)
       .filter(Boolean);
-    const u = ['Unassigned', ...names];
-    return u;
+    return ['Unassigned', ...names];
   }, [pickerShift, employees, currentRestaurantId]);
+
+  const rowPickerNames = useMemo(() => {
+    if (!rowPersonPicker) return [] as string[];
+    const selected = scheduleRowPrimaryPerson(
+      schedule,
+      rowPersonPicker.role,
+      rowPersonPicker.trIdx,
+      visibleDays,
+      lites,
+      currentRestaurantId
+    );
+    const pool = namesForScheduleRowPersonPicker(lites, rowPersonPicker.role, currentRestaurantId);
+    if (selected && selected !== 'Unassigned') {
+      const selKey = selected.trim().toLowerCase();
+      const inPool = pool.some((n) => n.trim().toLowerCase() === selKey);
+      if (!inPool) return ['Unassigned', selected, ...pool];
+    }
+    return ['Unassigned', ...pool];
+  }, [rowPersonPicker, schedule, visibleDays, lites, currentRestaurantId]);
+
+  const modalOpen = !!pickerShift || !!rowPersonPicker;
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
@@ -266,58 +338,163 @@ export default function ManagerScheduleScreen() {
           </View>
         </View>
 
-        <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
-          <View style={{ width: tableWidth, paddingHorizontal: 8, paddingBottom: 16 }}>
-            <View style={[styles.headerRow, { width: tableWidth - 16 }]}>
-              {visibleDays.map((dayStr) => {
-                const meta = weekMeta.find((m) => m.label === dayStr);
-                const parts = dayStr.split(' ');
-                const dow = parts[0] || '';
-                const rest = parts.slice(1).join(' ');
-                return (
-                  <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                    <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
-                    <Text style={styles.thSub}>{rest}</Text>
-                  </View>
-                );
-              })}
+        <View style={styles.matrix}>
+          <View style={[styles.personCol, { width: PERSON_COL }]}>
+            <View style={styles.personTh}>
+              <Text style={styles.thFull}>PERSON</Text>
+              <Text style={styles.thSub}>Row assignee</Text>
             </View>
-
             {calendarBody.map((row, ri) => (
-              <CalendarRowView key={ri} row={row} onOpenShift={setPickerShift} />
+              <PersonColRow
+                key={`p-${ri}`}
+                row={row}
+                schedule={schedule}
+                visibleDays={visibleDays}
+                employees={lites}
+                restaurantId={currentRestaurantId}
+                onOpenRowPerson={setRowPersonPicker}
+              />
             ))}
           </View>
-        </ScrollView>
+
+          <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={styles.daysScroll}>
+            <View style={{ width: daysWidth, paddingBottom: 16 }}>
+              <View style={[styles.headerRow, { width: daysWidth }]}>
+                {visibleDays.map((dayStr) => {
+                  const meta = weekMeta.find((m) => m.label === dayStr);
+                  const parts = dayStr.split(' ');
+                  const dow = parts[0] || '';
+                  const rest = parts.slice(1).join(' ');
+                  return (
+                    <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                      <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
+                      <Text style={styles.thSub}>{rest}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+
+              {calendarBody.map((row, ri) => (
+                <CalendarRowView key={ri} row={row} onOpenShift={setPickerShift} />
+              ))}
+            </View>
+          </ScrollView>
+        </View>
       </ScrollView>
 
-      <Modal visible={!!pickerShift} animationType="slide" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setPickerShift(null)}>
+      <Modal visible={modalOpen} animationType="slide" transparent>
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => {
+            setPickerShift(null);
+            setRowPersonPicker(null);
+          }}
+        >
           <Pressable style={styles.modalPanel} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Assign Shift</Text>
-            {pickerShift ? (
+            <Text style={styles.modalTitle}>
+              {rowPersonPicker ? 'Assign Row Person' : 'Assign Shift'}
+            </Text>
+            {rowPersonPicker ? (
               <Text style={styles.modalSub} numberOfLines={3}>
-                {STAFF_TYPE_LABELS[pickerShift.role as RoleKey]} · {pickerShift.day} · {pickerShift.timeLabel}
+                {STAFF_TYPE_LABELS[rowPersonPicker.role]} · row {rowPersonPicker.trIdx + 1} · all
+                staffed days this week
+              </Text>
+            ) : pickerShift ? (
+              <Text style={styles.modalSub} numberOfLines={3}>
+                {STAFF_TYPE_LABELS[pickerShift.role as RoleKey]} · {pickerShift.day} ·{' '}
+                {pickerShift.timeLabel}
               </Text>
             ) : null}
             <FlatList
-              data={pickerNames}
+              data={rowPersonPicker ? rowPickerNames : pickerNames}
               keyExtractor={(item) => item}
               style={styles.modalList}
               renderItem={({ item }) => (
                 <Pressable
                   style={styles.modalRow}
-                  onPress={() => pickerShift && applyWorkerChoice(pickerShift, item)}
+                  onPress={() => {
+                    if (rowPersonPicker) applyRowPersonChoice(rowPersonPicker, item);
+                    else if (pickerShift) applyWorkerChoice(pickerShift, item);
+                  }}
                 >
                   <Text style={styles.modalRowText}>{item}</Text>
                 </Pressable>
               )}
             />
-            <Pressable style={styles.modalCancel} onPress={() => setPickerShift(null)}>
+            <Pressable
+              style={styles.modalCancel}
+              onPress={() => {
+                setPickerShift(null);
+                setRowPersonPicker(null);
+              }}
+            >
               <Text style={styles.modalCancelText}>Cancel</Text>
             </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
+    </View>
+  );
+}
+
+function PersonColRow({
+  row,
+  schedule,
+  visibleDays,
+  employees,
+  restaurantId,
+  onOpenRowPerson,
+}: {
+  row: CalendarBodyRow;
+  schedule: ScheduleRow[];
+  visibleDays: string[];
+  employees: EmployeeLite[];
+  restaurantId: string;
+  onOpenRowPerson: (t: RowPersonTarget) => void;
+}) {
+  if (row.kind === 'section') {
+    const fg = sectionFg(row.variant);
+    return (
+      <View
+        style={[
+          styles.personSection,
+          {
+            backgroundColor: sectionBg(row.variant),
+            borderLeftColor: fg,
+          },
+        ]}
+      >
+        <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
+          {row.title}
+        </Text>
+      </View>
+    );
+  }
+
+  if (row.kind !== 'cells') return null;
+
+  const selected = scheduleRowPrimaryPerson(
+    schedule,
+    row.role,
+    row.trIdx,
+    visibleDays,
+    employees,
+    restaurantId
+  );
+  const label = selected && selected !== 'Unassigned' ? selected : 'Unassigned';
+
+  return (
+    <View style={styles.personCell}>
+      <Pressable
+        style={styles.personSelect}
+        onPress={() => onOpenRowPerson({ role: row.role, trIdx: row.trIdx })}
+        accessibilityRole="button"
+        accessibilityLabel={`Person for ${STAFF_TYPE_LABELS[row.role]} row ${row.trIdx + 1}`}
+      >
+        <Text style={styles.personSelectText} numberOfLines={2}>
+          {label}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -330,17 +507,9 @@ function CalendarRowView({
   onOpenShift: (s: ScheduleRow) => void;
 }) {
   if (row.kind === 'section') {
-    const bg =
-      row.variant === 'foh'
-        ? '#ecfdf5'
-        : row.variant === 'delivery'
-          ? '#eff6ff'
-          : '#fffbeb';
-    return (
-      <View style={[styles.sectionRow, { backgroundColor: bg }]}>
-        <Text style={styles.sectionText}>{row.title}</Text>
-      </View>
-    );
+    // Empty fill — fixed height matches person sticky; do not mirror title text
+    // (narrow person col wraps; wide day strip does not → height mismatch).
+    return <View style={[styles.sectionRow, { backgroundColor: sectionBg(row.variant) }]} />;
   }
 
   if (row.kind !== 'cells') return null;
@@ -379,16 +548,21 @@ function CalendarCellView({
     );
   }
   const rd = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-kitchen'];
-  const names = cell.workers.filter((w) => w && w !== 'Unassigned');
-  const label = names.length ? names.join(', ') : 'Unassigned';
   return (
-    <Pressable style={styles.cellInner} onPress={() => onOpenShift(cell.shift)}>
+    <Pressable
+      style={[
+        styles.cellInner,
+        {
+          backgroundColor: rd.bg,
+          borderColor: rd.border,
+          borderLeftColor: rd.fg,
+        },
+      ]}
+      onPress={() => onOpenShift(cell.shift)}
+    >
       <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-      <Text style={styles.slotBreak}>{cell.breakText}</Text>
+      {cell.breakText ? <Text style={styles.slotBreak}>{cell.breakText}</Text> : null}
       <Text style={styles.slotHours}>{cell.hours}h</Text>
-      <View style={[styles.pill, { backgroundColor: rd.bg, borderColor: rd.border }]}>
-        <Text style={[styles.pillText, { color: rd.fg }]}>{label}</Text>
-      </View>
     </Pressable>
   );
 }
@@ -423,29 +597,83 @@ const styles = StyleSheet.create({
   syncHint: { fontSize: 13, color: '#64748b' },
   refreshBtn: { paddingVertical: 4 },
   refreshTxt: { fontSize: 14, color: '#c41230', fontWeight: '700' },
-  headerRow: { flexDirection: 'row', marginBottom: 4 },
-  th: { paddingVertical: 10, paddingHorizontal: 4, borderBottomWidth: 1, borderColor: '#e2e8f0' },
+  matrix: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 4 },
+  personCol: {
+    backgroundColor: '#fff',
+    zIndex: 2,
+    /* No grey tint / heavy separator — parity with cleaned web person column. */
+  },
+  personTh: {
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderColor: '#e2e8f0',
+    minHeight: 52,
+    justifyContent: 'flex-end',
+  },
+  personSection: {
+    height: SECTION_ROW_H,
+    paddingHorizontal: 6,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderLeftWidth: 3,
+    borderColor: '#e8eaef',
+    justifyContent: 'center',
+    marginBottom: SECTION_GAP_BELOW,
+  },
+  personCell: {
+    minHeight: 80,
+    padding: 6,
+    borderBottomWidth: 1,
+    borderColor: '#eef2f7',
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+  },
+  personSelect: {
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  personSelectText: { fontSize: 12, fontWeight: '600', color: '#0f172a' },
+  daysScroll: { flexGrow: 1, flexShrink: 1 },
+  headerRow: { flexDirection: 'row', marginBottom: 0 },
+  th: { paddingVertical: 10, paddingHorizontal: 4, borderBottomWidth: 1, borderColor: '#e2e8f0', minHeight: 52, justifyContent: 'flex-end' },
   thFull: { fontSize: 11, fontWeight: '800', color: '#0f172a', letterSpacing: 0.6 },
   thSub: { marginTop: 4, fontSize: 11, color: '#64748b', fontWeight: '500' },
   sectionRow: {
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    height: SECTION_ROW_H,
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: '#e8eaef',
+    marginBottom: SECTION_GAP_BELOW,
   },
-  sectionText: { fontSize: 11, fontWeight: '700', color: '#64748b', letterSpacing: 1 },
+  sectionText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    lineHeight: 13,
+  },
   dataRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#eef2f7', backgroundColor: '#fff' },
-  cell: { minHeight: 140, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 6 },
-  cellInner: { flex: 1 },
+  cell: { minHeight: 80, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
+  cellInner: {
+    flex: 1,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+  },
   cellInnerMuted: { flex: 1, opacity: 0.85, justifyContent: 'center' },
   slotTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
-  slotBreak: { fontSize: 10, color: '#64748b', marginTop: 3 },
-  slotHours: { fontSize: 11, fontWeight: '700', color: '#334155', marginTop: 2 },
+  slotBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
+  slotHours: { fontSize: 11, fontWeight: '700', color: '#334155', marginTop: 1 },
   dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 6 },
   dayoffSmall: { fontSize: 11, fontWeight: '700', color: '#cbd5e1', textAlign: 'center' },
-  pill: { marginTop: 8, paddingVertical: 6, paddingHorizontal: 6, borderRadius: 8, borderWidth: 1 },
-  pillText: { fontSize: 11, fontWeight: '600' },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',

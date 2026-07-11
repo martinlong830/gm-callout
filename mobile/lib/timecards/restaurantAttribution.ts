@@ -1,7 +1,13 @@
 import type { EmployeeRow } from '../employees';
 import { employeeDisplayName } from '../employees';
 import type { AssignmentStore, DraftGrid, Restaurant, WeekMeta } from '../schedule/types';
-import { buildAllLocationsWorkerShiftRows, shiftRowIncludesWorker, type WorkerShiftRow } from '../schedule/engine';
+import {
+  buildAllLocationsWorkerShiftRows,
+  scheduleWorkerNameKey,
+  shiftRowIncludesWorker,
+  weekIndexForPayWeekStartIso,
+  type WorkerShiftRow,
+} from '../schedule/engine';
 import { isoFromDate } from './payWeek';
 import type { TimeClockEntry } from './types';
 
@@ -14,6 +20,10 @@ export type RestaurantAttributionContext = {
   draftRows?: DraftGrid;
   restaurants: Restaurant[];
   assignmentStore: AssignmentStore;
+  /** Pay-week snapshot index (optional; avoids full schedule rebuilds). */
+  payWeekStartIso?: string | null;
+  payWeekShiftsByWorkerKey?: Record<string, WorkerShiftRow[]> | null;
+  payWeekShiftById?: Record<string, WorkerShiftRow> | null;
 };
 
 const VALID_RESTAURANTS = new Set(['rp-9', 'rp-8']);
@@ -28,7 +38,7 @@ function shiftRestaurantId(shift: WorkerShiftRow | null | undefined): string {
 
 function isDefaultUnassignedScheduleRestaurant(restaurantId: string, restaurants: RestaurantAttributionContext['restaurants']): boolean {
   const r = restaurants.find((x) => x.id === restaurantId);
-  return !!r?.defaultUnassignedSchedule || restaurantId === 'rp-8';
+  return !!r?.defaultUnassignedSchedule;
 }
 
 export function employeeHomeRestaurant(emp: EmployeeRow): string {
@@ -36,11 +46,20 @@ export function employeeHomeRestaurant(emp: EmployeeRow): string {
   return u === 'rp-8' || u === 'rp-9' || u === 'both' ? u : 'rp-9';
 }
 
-/** Home store determines roster membership; use All locations for cross-store payroll. */
+/** Home store determines roster membership; callers may also keep rows with local schedule/punch activity. */
 export function rosterRowVisibleAtLocation(emp: EmployeeRow, locationFilter: LocationFilter): boolean {
   if (locationFilter === 'all') return true;
   const home = employeeHomeRestaurant(emp);
   return home === 'both' || home === locationFilter;
+}
+
+/** True when a built roster row has schedule or punch activity at the filtered location. */
+export function rosterRowHasLocationActivity(row: {
+  schedMins?: number;
+  regMins?: number;
+  otMins?: number;
+}): boolean {
+  return (row.schedMins || 0) > 0 || (row.regMins || 0) > 0 || (row.otMins || 0) > 0;
 }
 
 export function dishwasherTipMatchesLocationFilter(
@@ -69,7 +88,42 @@ function preferRestaurantAmongMatches(emp: EmployeeRow, matches: WorkerShiftRow[
 
 function scheduleRowsForEmployee(scheduleCtx: RestaurantAttributionContext, emp: EmployeeRow): WorkerShiftRow[] {
   const name = employeeDisplayName(emp);
-  const { weekMeta, allWeekDays, draftScheduleRaw, draftRows, restaurants, assignmentStore } = scheduleCtx;
+  const {
+    weekMeta,
+    allWeekDays,
+    draftScheduleRaw,
+    draftRows,
+    restaurants,
+    assignmentStore,
+    payWeekShiftsByWorkerKey,
+    payWeekStartIso,
+  } = scheduleCtx;
+
+  if (payWeekShiftsByWorkerKey && payWeekStartIso) {
+    const seen = new Set<string>();
+    const out: WorkerShiftRow[] = [];
+    const consider = (list: WorkerShiftRow[] | undefined) => {
+      for (const s of list || []) {
+        if (!shiftRowIncludesWorker(s, name)) continue;
+        const id = `${s.id}\0${s.iso}\0${s.restaurantId}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push(s);
+      }
+    };
+    consider(payWeekShiftsByWorkerKey[scheduleWorkerNameKey(name)]);
+    const aliases = emp.meta?.scheduleAliases;
+    if (Array.isArray(aliases)) {
+      for (const alias of aliases) {
+        consider(payWeekShiftsByWorkerKey[scheduleWorkerNameKey(String(alias || ''))]);
+      }
+    }
+    if (out.length) return out;
+  }
+
+  const weekIdx = payWeekStartIso
+    ? weekIndexForPayWeekStartIso(weekMeta, payWeekStartIso)
+    : undefined;
   return buildAllLocationsWorkerShiftRows(weekMeta, {
     allWeekDays,
     draftScheduleRaw,
@@ -78,6 +132,7 @@ function scheduleRowsForEmployee(scheduleCtx: RestaurantAttributionContext, emp:
     restaurants,
     assignmentStore,
     workerName: name,
+    weekIndex: weekIdx,
   });
 }
 
@@ -89,6 +144,18 @@ export function findScheduleShiftsForEntry(
   const sid = entry?.schedule_shift_id;
   if (!sid) return [];
   const name = employeeDisplayName(emp);
+  const byId = scheduleCtx.payWeekShiftById;
+  if (byId?.[sid]) {
+    const hit = byId[sid];
+    if (shiftRowIncludesWorker(hit, name)) {
+      const kioskRest = entry.clock_restaurant_id;
+      if (kioskRest === 'rp-8' || kioskRest === 'rp-9') {
+        if (shiftRestaurantId(hit) === kioskRest) return [hit];
+      } else {
+        return [hit];
+      }
+    }
+  }
   const matches = scheduleRowsForEmployee(scheduleCtx, emp).filter(
     (s) => s.id === sid && shiftRowIncludesWorker(s, name)
   );

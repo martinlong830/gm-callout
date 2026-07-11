@@ -179,11 +179,40 @@
       return {
         ok: true,
         pending: !!r.data.pending,
+        needsAccessCodeSetup: !!r.data.needsAccessCodeSetup,
         message: r.data.message || "Check your email to confirm company creation.",
         companyId: r.data.companyId || "",
         accessCode: r.data.accessCode || "",
         emailSent: !!r.data.emailSent,
         dev: !!r.data.dev,
+      };
+    },
+
+    setupAccessCode: async function (accessCode) {
+      var r = await portalAuthedFetch("POST", "/api/portal/setup-access-code", {
+        accessCode: String(accessCode || "").trim(),
+      });
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        message: r.data.message || "Access code saved.",
+        companyId: r.data.companyId || "",
+        companyName: r.data.companyName || "",
+        accessCode: r.data.accessCode || "",
+        teamStateId: r.data.teamStateId || "",
+        restaurantsConfig: r.data.restaurantsConfig || [],
+      };
+    },
+
+    updateCompany: async function (payload) {
+      var r = await portalAuthedFetch("PUT", "/api/portal/company", payload || {});
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        message: r.data.message || "Company updated.",
+        companyId: r.data.companyId || "",
+        companyName: r.data.companyName || "",
+        accessCode: r.data.accessCode || "",
       };
     },
 
@@ -264,6 +293,12 @@
           loginName: viaApi.data.loginName || "",
           recoveryEmail: viaApi.data.recoveryEmail || "",
           hasRecoveryEmail: !!viaApi.data.hasRecoveryEmail,
+          role: viaApi.data.role || "",
+          companyId: viaApi.data.companyId || "",
+          companyName: viaApi.data.companyName || "",
+          accessCode: viaApi.data.accessCode || "",
+          isCompanyCreator: !!viaApi.data.isCompanyCreator,
+          needsAccessCodeSetup: !!viaApi.data.needsAccessCodeSetup,
         };
       }
       var session = await portalSession();
@@ -272,7 +307,7 @@
       }
       var result = await window.gmSupabase
         .from("profiles")
-        .select("login_name, display_name, recovery_email, recovery_email_norm")
+        .select("login_name, display_name, recovery_email, recovery_email_norm, role, company_id")
         .eq("id", session.user.id)
         .maybeSingle();
       if (result.error) {
@@ -287,6 +322,12 @@
         loginName: row.login_name || row.display_name || "",
         recoveryEmail: row.recovery_email || "",
         hasRecoveryEmail: profileHasRecoveryEmail(row),
+        role: row.role || "",
+        companyId: row.company_id || "",
+        companyName: "",
+        accessCode: "",
+        isCompanyCreator: false,
+        needsAccessCodeSetup: false,
       };
     },
 

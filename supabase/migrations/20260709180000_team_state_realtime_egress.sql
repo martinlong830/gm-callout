@@ -2,6 +2,7 @@
 -- postgres_changes sends the full NEW row to every subscriber on each UPDATE — major Realtime egress.
 -- Web + mobile now use Realtime Broadcast pings on team_state_sync:{id} and selective REST fetch.
 -- Apply this migration in Supabase SQL Editor or via `supabase db push`.
+-- See docs/supabase-egress.md for verification and Usage dashboard guidance.
 
 do $$
 begin

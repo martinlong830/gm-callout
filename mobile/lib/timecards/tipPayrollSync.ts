@@ -1,11 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { TEAM_STATE_ROW_ID } from '../constants';
+import { readStoredTeamStateId } from '../companySession';
 import { broadcastTeamStateChanged } from '../teamStateSync';
 
 export const TIMECARD_WEEK_TIP_POOL_KEY = 'gm-timecard-week-tip-pool-v1';
 export const TIMECARD_DISHWASHER_TIPS_KEY = 'gm-timecard-dishwasher-tips-v1';
 export const TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
+
+/** Coalesce tip/VL/SL edits — full payroll JSON blobs are expensive to push. */
+const TIP_PAYROLL_PUSH_DEBOUNCE_MS = 4000;
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -42,10 +45,11 @@ function mergeTipPayrollStoresForPush(
 async function fetchRemoteTipPayrollStores(
   sb: SupabaseClient
 ): Promise<{ tipPool: Record<string, unknown>; dishwasher: Record<string, unknown>; weekExtras: Record<string, unknown> }> {
+  const teamStateId = await readStoredTeamStateId();
   const res = await sb
     .from('team_state')
     .select('timecard_week_tip_pool, timecard_dishwasher_tips, timecard_week_extras')
-    .eq('id', TEAM_STATE_ROW_ID)
+    .eq('id', teamStateId)
     .maybeSingle();
   if (res.error) {
     console.warn('team_state tip payroll select', res.error);
@@ -121,10 +125,11 @@ export function queueTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
   pushTimer = setTimeout(() => {
     pushTimer = null;
     void pushTipPayrollToSupabase(sb);
-  }, 1500);
+  }, TIP_PAYROLL_PUSH_DEBOUNCE_MS);
 }
 
 export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void> {
+  const teamStateId = await readStoredTeamStateId();
   const remote = await fetchRemoteTipPayrollStores(sb);
   const [localTip, localDw, localExtras] = await Promise.all([
     loadTipPoolStore(),
@@ -144,7 +149,7 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
   await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
   const res = await sb.from('team_state').upsert(
     {
-      id: TEAM_STATE_ROW_ID,
+      id: teamStateId,
       timecard_week_tip_pool: merged.tipPool,
       timecard_dishwasher_tips: merged.dishwasher,
       timecard_week_extras: merged.weekExtras,
@@ -158,7 +163,7 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
   const sess = await sb.auth.getSession();
   await broadcastTeamStateChanged(
     sb,
-    TEAM_STATE_ROW_ID,
+    teamStateId,
     ['timecard_week_tip_pool', 'timecard_dishwasher_tips', 'timecard_week_extras'],
     sess.data.session?.user.id
   );

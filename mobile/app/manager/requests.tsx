@@ -3,32 +3,24 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
-import { AvailabilityMatrixReadOnly } from '../../components/AvailabilityMatrixReadOnly';
 import { useAppData } from '../../contexts/AppDataContext';
-import { approveStaffRequest } from '../../lib/approveStaffRequest';
 import { staffTypeLabel } from '../../lib/employees';
-import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
 import { supabase } from '../../lib/supabase';
 import {
-  formatAvailabilityGridSummary,
   formatStaffRequestSubmittedDate,
   isCloudStaffRequestId,
-  submittedAvailabilityGridIsNonEmpty,
   type StaffRequestUi,
   updateStaffRequestStatus,
 } from '../../lib/staffRequests';
 
-type ActionTypeFilter = 'availability' | 'timeoff' | 'swap' | 'callout';
+type ActionTypeFilter = 'timeoff' | 'swap' | 'callout';
 type StatusFilter = 'all' | 'pending' | 'closed';
 
 type CalloutHistoryEntry = {
@@ -112,42 +104,31 @@ function coverageMatchesStatus(item: CalloutHistoryEntry, s: StatusFilter): bool
 
 type Row =
   | { key: string; kind: 'section'; title: string }
-  | { key: string; kind: 'bulk' }
   | { key: string; kind: 'staff'; request: StaffRequestUi }
   | { key: string; kind: 'coverage'; item: CalloutHistoryEntry; index: number };
 
 const TYPE_CHIPS: { id: ActionTypeFilter; label: string }[] = [
-  { id: 'availability', label: 'Availability' },
   { id: 'timeoff', label: 'Time Off' },
   { id: 'swap', label: 'Shift Swaps' },
   { id: 'callout', label: 'Callouts' },
 ];
 
 export default function ManagerRequests() {
-  const { height: windowHeight } = useWindowDimensions();
-  const { staffRequests, teamState, employees, loading, error, refetch } = useAppData();
-  const [typeFilter, setTypeFilter] = useState<ActionTypeFilter>('availability');
+  const { staffRequests, teamState, loading, error, refetch } = useAppData();
+  const [typeFilter, setTypeFilter] = useState<ActionTypeFilter>('timeoff');
   const [statusByType, setStatusByType] = useState<Record<ActionTypeFilter, StatusFilter>>({
-    availability: 'all',
     timeoff: 'all',
     swap: 'all',
     callout: 'all',
   });
   const [search, setSearch] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
-  /** Same as web: open submitted week in a modal from "View submitted grid". */
-  const [gridModal, setGridModal] = useState<StaffRequestUi | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     void refetch().finally(() => setRefreshing(false));
   }, [refetch]);
-
-  const draftRows = useMemo(
-    () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
-    [teamState]
-  );
 
   const statusFilter = statusByType[typeFilter];
   const q = search.trim().toLowerCase();
@@ -178,18 +159,12 @@ export default function ManagerRequests() {
       return out;
     }
 
-    let list = staffRequests
+    const list = staffRequests
+      .filter((r) => r.type !== 'availability')
       .filter((r) => requestMatchesType(r, typeFilter))
       .filter((r) => requestMatchesStatus(r, statusFilter))
       .filter((r) => matchesSearch(r, q))
       .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
-
-    if (typeFilter === 'availability') {
-      const pendingCount = list.filter((r) => r.status === 'pending').length;
-      if (pendingCount > 0) {
-        out.push({ key: 'bulk', kind: 'bulk' });
-      }
-    }
 
     list.forEach((r) => out.push({ key: `s-${r.id}`, kind: 'staff', request: r }));
     return out;
@@ -205,10 +180,7 @@ export default function ManagerRequests() {
       return;
     }
     setBusyId(req.id);
-    const res =
-      req.type === 'availability'
-        ? await approveStaffRequest(supabase, req, employees, draftRows)
-        : await updateStaffRequestStatus(supabase, req.id, 'approved');
+    const res = await updateStaffRequestStatus(supabase, req.id, 'approved');
     setBusyId(null);
     if (!res.ok) Alert.alert('Update failed', res.message);
     else void refetch({ silent: true });
@@ -226,29 +198,7 @@ export default function ManagerRequests() {
     else void refetch({ silent: true });
   };
 
-  const onBulkApproveAvailability = async () => {
-    if (!supabase) return;
-    const targets = staffRequests.filter(
-      (r) =>
-        r.type === 'availability' &&
-        r.status === 'pending' &&
-        matchesSearch(r, q)
-    );
-    const cloud = targets.filter((r) => isCloudStaffRequestId(r.id));
-    if (!cloud.length) {
-      Alert.alert('Nothing to accept', 'No pending availability rows from Supabase match the current search.');
-      return;
-    }
-    setBusyId('bulk');
-    for (const r of cloud) {
-      await approveStaffRequest(supabase, r, employees, draftRows);
-    }
-    setBusyId(null);
-    void refetch({ silent: true });
-  };
-
   const typeLabel = (r: StaffRequestUi) => {
-    if (r.type === 'availability') return 'Availability';
     if (r.type === 'swap') return 'Shift Swap';
     if (r.type === 'timeoff') return 'Time Off';
     if (r.type === 'callout_request' || r.type === 'callout') return 'Employee call-out';
@@ -260,21 +210,6 @@ export default function ManagerRequests() {
       return (
         <View style={styles.sectionHead}>
           <Text style={styles.sectionHeadText}>{item.title}</Text>
-        </View>
-      );
-    }
-    if (item.kind === 'bulk') {
-      return (
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.btnPrimary, busyId === 'bulk' && styles.btnDisabled]}
-            disabled={busyId === 'bulk'}
-            onPress={() => void onBulkApproveAvailability()}
-          >
-            <Text style={styles.btnPrimaryText}>
-              {busyId === 'bulk' ? 'Working…' : 'Accept all pending (matches search)'}
-            </Text>
-          </Pressable>
         </View>
       );
     }
@@ -328,9 +263,6 @@ export default function ManagerRequests() {
         <Text style={styles.meta}>
           {roleLabel} · {typeLabel(r)} · Submitted {formatStaffRequestSubmittedDate(r.submittedAt)}
         </Text>
-        {r.type === 'availability' && r.submittedWeekLabel ? (
-          <Text style={styles.meta}>Week: {r.submittedWeekLabel}</Text>
-        ) : null}
         {r.type === 'swap' && r.offeredShiftLabel ? (
           <Text style={styles.highlight}>Offered shift: {r.offeredShiftLabel}</Text>
         ) : null}
@@ -345,18 +277,6 @@ export default function ManagerRequests() {
           </Text>
         ) : null}
         <Text style={styles.notes}>{r.summary}</Text>
-        {r.type === 'availability' &&
-        r.submittedGrid &&
-        submittedAvailabilityGridIsNonEmpty(r.submittedGrid) ? (
-          <>
-            <Text style={styles.gridPreview}>{formatAvailabilityGridSummary(r.submittedGrid)}</Text>
-            <View style={styles.viewGridWrap}>
-              <Pressable style={styles.btnSecondary} onPress={() => setGridModal(r)}>
-                <Text style={styles.btnSecondaryText}>View submitted grid</Text>
-              </Pressable>
-            </View>
-          </>
-        ) : null}
         {r.status === 'pending' ? (
           <View style={styles.actions}>
             <Pressable
@@ -393,7 +313,6 @@ export default function ManagerRequests() {
         style={styles.typeChipsScroll}
         contentContainerStyle={styles.typeChipsScrollContent}
       >
-        {/* Inner row so RN Web does not stretch chips across the full viewport width. */}
         <View style={styles.typeChipsInner}>
           {TYPE_CHIPS.map((c) => (
             <Pressable
@@ -451,39 +370,6 @@ export default function ManagerRequests() {
           keyboardShouldPersistTaps="handled"
         />
       )}
-
-      <Modal visible={!!gridModal} animationType="slide" transparent onRequestClose={() => setGridModal(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setGridModal(null)}>
-          <Pressable style={styles.modalPanel} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>
-              {gridModal ? `Availability — ${gridModal.employeeName}` : ''}
-            </Text>
-            {gridModal ? (
-              <Text style={styles.modalMeta}>
-                {staffTypeLabel(gridModal.role)} · Submitted {formatStaffRequestSubmittedDate(gridModal.submittedAt)}
-              </Text>
-            ) : null}
-            <ScrollView
-              style={[styles.modalScroll, { maxHeight: Math.round(windowHeight * 0.72) }]}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator
-              keyboardShouldPersistTaps="handled"
-            >
-              {gridModal && gridModal.submittedGrid && submittedAvailabilityGridIsNonEmpty(gridModal.submittedGrid) ? (
-                <AvailabilityMatrixReadOnly
-                  weeklyGrid={gridModal.submittedGrid as Record<string, unknown>}
-                  staffType={gridModal.role}
-                  draftRows={draftRows}
-                  embedInParentScroll
-                />
-              ) : null}
-            </ScrollView>
-            <Pressable style={styles.modalClose} onPress={() => setGridModal(null)}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -492,7 +378,6 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
   err: { color: '#b00020', padding: 12 },
   typeChipsScroll: { flexGrow: 0 },
-  /** Do not use flexGrow: 1 here — it spreads chip row edge-to-edge on web. */
   typeChipsScrollContent: {
     paddingVertical: 8,
     paddingHorizontal: 8,
@@ -505,7 +390,6 @@ const styles = StyleSheet.create({
     flexWrap: 'nowrap',
     gap: 4,
   },
-  /** Same vertical size as status chips (All / Pending / Closed). */
   filterChip: {
     paddingHorizontal: 8,
     paddingVertical: 8,
@@ -531,13 +415,6 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   list: { flex: 1 },
-  gridPreview: {
-    fontSize: 12,
-    color: '#475569',
-    marginTop: 8,
-    lineHeight: 18,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
   search: {
     marginHorizontal: 12,
     marginBottom: 8,
@@ -573,17 +450,6 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: 10, marginTop: 12 },
   btnPrimary: { backgroundColor: '#c41230', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
   btnPrimaryText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  viewGridWrap: { marginTop: 10 },
-  btnSecondary: {
-    alignSelf: 'stretch',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-  },
-  btnSecondaryText: { color: '#334155', fontWeight: '600', fontSize: 15, textAlign: 'center' },
   btnGhost: {
     borderWidth: 1,
     borderColor: '#cbd5e1',
@@ -594,21 +460,4 @@ const styles = StyleSheet.create({
   btnGhostText: { color: '#334155', fontWeight: '700' },
   btnDisabled: { opacity: 0.5 },
   muted: { fontSize: 14, color: '#888', padding: 20 },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.45)',
-    justifyContent: 'center',
-    padding: 16,
-  },
-  modalPanel: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    maxHeight: '88%',
-  },
-  modalTitle: { fontSize: 18, fontWeight: '800', color: '#0f172a' },
-  modalMeta: { fontSize: 14, color: '#64748b', marginTop: 8, lineHeight: 20 },
-  modalScroll: { marginTop: 12 },
-  modalClose: { marginTop: 14, paddingVertical: 12, alignItems: 'center' },
-  modalCloseText: { fontSize: 16, color: '#c41230', fontWeight: '700' },
 });

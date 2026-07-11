@@ -10,21 +10,36 @@ import type { WeekExtras } from './types';
 const TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
 const LEAVE_DEFAULT_DAY_MINUTES = 8 * 60;
 
-async function loadWeekExtrasMap(bounds: PayWeekBounds): Promise<Record<string, { vl: number; sl: number; manual?: boolean }>> {
+/** Leave row or scalar extras (coverage compensation uses `acash|empId|iso` → number). */
+export type DayLeaveRow = { vl: number; sl: number; manual?: boolean };
+export type WeekExtrasSlice = Record<string, DayLeaveRow | number>;
+
+function isDayLeaveRow(val: unknown): val is DayLeaveRow {
+  return !!val && typeof val === 'object' && !Array.isArray(val);
+}
+
+function normalizeMoneyAmount(val: unknown): number {
+  if (val == null || val === '') return 0;
+  const n = parseFloat(String(val));
+  if (Number.isNaN(n) || n < 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+async function loadWeekExtrasMap(bounds: PayWeekBounds): Promise<WeekExtrasSlice> {
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_EXTRAS_KEY);
     if (!raw) return {};
     const all = JSON.parse(raw) as Record<string, unknown>;
     if (!all || typeof all !== 'object') return {};
     const slice = all[weekBoundsStorageKey(bounds)];
-    return slice && typeof slice === 'object' ? (slice as Record<string, { vl: number; sl: number; manual?: boolean }>) : {};
+    return slice && typeof slice === 'object' ? (slice as WeekExtrasSlice) : {};
   } catch {
     return {};
   }
 }
 
 let cachedWeekExtrasKey: string | null = null;
-let cachedWeekExtrasSlice: Record<string, { vl: number; sl: number; manual?: boolean }> | null = null;
+let cachedWeekExtrasSlice: WeekExtrasSlice | null = null;
 
 export function invalidateWeekExtrasSliceCache(bounds?: PayWeekBounds): void {
   if (bounds && cachedWeekExtrasKey !== weekBoundsStorageKey(bounds)) return;
@@ -111,11 +126,12 @@ export function getSuggestedDayLeaveSync(
   bounds: PayWeekBounds,
   staffRequests: StaffRequestUi[],
   schedMinsByDay: Record<string, number>,
-  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+  slice: WeekExtrasSlice
 ): { vl: number; sl: number } {
   if (!iso) return { vl: 0, sl: 0 };
   if (sumManualDayLeaveForEmployee(emp.id, bounds, slice)) return { vl: 0, sl: 0 };
-  if (slice[emp.id]?.manual) return { vl: 0, sl: 0 };
+  const weekRow = slice[emp.id];
+  if (isDayLeaveRow(weekRow) && weekRow.manual) return { vl: 0, sl: 0 };
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
   if (iso < weekStart || iso > weekEnd) return { vl: 0, sl: 0 };
@@ -153,10 +169,10 @@ export function dayLeaveStorageKey(empId: string, iso: string): string {
 export function getEmployeeDayLeaveSync(
   empId: string,
   iso: string,
-  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+  slice: WeekExtrasSlice
 ): { vl: number; sl: number } {
   const row = slice[dayLeaveStorageKey(empId, iso)];
-  if (!row || row.manual === false) return { vl: 0, sl: 0 };
+  if (!isDayLeaveRow(row) || row.manual === false) return { vl: 0, sl: 0 };
   return {
     vl: Math.max(0, parseFloat(String(row.vl)) || 0),
     sl: Math.max(0, parseFloat(String(row.sl)) || 0),
@@ -192,7 +208,7 @@ export async function setEmployeeDayLeave(
 function sumManualDayLeaveForEmployee(
   empId: string,
   bounds: PayWeekBounds,
-  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+  slice: WeekExtrasSlice
 ): WeekExtras | null {
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
@@ -206,7 +222,7 @@ function sumManualDayLeaveForEmployee(
     const iso = k.slice(at + 1);
     if (iso < weekStart || iso > weekEnd) continue;
     const row = slice[k];
-    if (!row) continue;
+    if (!isDayLeaveRow(row)) continue;
     vl += Math.max(0, parseFloat(String(row.vl)) || 0);
     sl += Math.max(0, parseFloat(String(row.sl)) || 0);
     any = true;
@@ -220,12 +236,12 @@ export function getEmployeeWeekExtrasSync(
   bounds: PayWeekBounds,
   staffRequests: StaffRequestUi[],
   schedMinsByDay: Record<string, number>,
-  slice: Record<string, { vl: number; sl: number; manual?: boolean }>
+  slice: WeekExtrasSlice
 ): WeekExtras {
   const daySum = sumManualDayLeaveForEmployee(emp.id, bounds, slice);
   if (daySum) return daySum;
   const row = slice[emp.id];
-  if (row?.manual) {
+  if (isDayLeaveRow(row) && row.manual) {
     const manualVl = Math.max(0, parseFloat(String(row.vl)) || 0);
     const manualSl = Math.max(0, parseFloat(String(row.sl)) || 0);
     if (manualVl > 0 || manualSl > 0) {
@@ -248,7 +264,7 @@ export async function getEmployeeWeekExtras(
   return getEmployeeWeekExtrasSync(emp, displayName, bounds, staffRequests, schedMinsByDay, slice);
 }
 
-async function saveWeekExtrasMap(bounds: PayWeekBounds, slice: Record<string, { vl: number; sl: number; manual?: boolean }>) {
+async function saveWeekExtrasMap(bounds: PayWeekBounds, slice: WeekExtrasSlice) {
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_EXTRAS_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
@@ -260,6 +276,69 @@ async function saveWeekExtrasMap(bounds: PayWeekBounds, slice: Record<string, { 
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Coverage compensation (per employee per day, all roles). Stored inside the synced week-extras
+ * slice under a pipe-delimited key so VL/SL leave parsers (which key on "@" or a bare employee id)
+ * ignore it entirely.
+ */
+export function additionalCashTipStorageKey(empId: string, iso: string): string {
+  return `acash|${String(empId || '')}|${String(iso || '')}`;
+}
+
+export function getEmployeeDayAdditionalCashTipSync(
+  empId: string,
+  iso: string,
+  slice: WeekExtrasSlice
+): number {
+  if (!empId || !iso) return 0;
+  return normalizeMoneyAmount(slice[additionalCashTipStorageKey(empId, iso)]);
+}
+
+export async function getEmployeeDayAdditionalCashTip(
+  empId: string,
+  iso: string,
+  bounds: PayWeekBounds
+): Promise<number> {
+  const slice = await loadWeekExtrasMap(bounds);
+  return getEmployeeDayAdditionalCashTipSync(empId, iso, slice);
+}
+
+export async function setEmployeeDayAdditionalCashTip(
+  empId: string,
+  iso: string,
+  amount: number,
+  bounds: PayWeekBounds
+): Promise<void> {
+  if (!empId || !iso) return;
+  const slice = await loadWeekExtrasMap(bounds);
+  const key = additionalCashTipStorageKey(empId, iso);
+  const val = normalizeMoneyAmount(amount);
+  if (val <= 0) delete slice[key];
+  else slice[key] = val;
+  await saveWeekExtrasMap(bounds, slice);
+}
+
+export function sumEmployeeWeekAdditionalCashTipsSync(
+  empId: string,
+  bounds: PayWeekBounds,
+  slice: WeekExtrasSlice,
+  precomputed?: Record<string, number>
+): number {
+  if (precomputed && empId && precomputed[empId] != null) return precomputed[empId];
+  if (!empId) return 0;
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  const prefix = `acash|${empId}|`;
+  let sum = 0;
+  for (const k of Object.keys(slice)) {
+    if (!k.startsWith(prefix)) continue;
+    const iso = k.slice(prefix.length);
+    if (iso < weekStart || iso > weekEnd) continue;
+    sum += normalizeMoneyAmount(slice[k]);
+  }
+  return Math.round(sum * 100) / 100;
 }
 
 function normNameKey(name: string): string {

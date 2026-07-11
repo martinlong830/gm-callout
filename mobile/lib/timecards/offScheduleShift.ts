@@ -2,7 +2,11 @@ import { formatCalendarDateLabel } from '../schedule/employeeShiftDisplay';
 import type { WorkerShiftRow } from '../schedule/engine';
 import { isoFromDate } from './payWeek';
 import { isMidnightOnShiftDate } from './punch';
-import { getEmployeeDayLeaveSync } from './weekExtras';
+import {
+  getEmployeeDayAdditionalCashTipSync,
+  getEmployeeDayLeaveSync,
+  type WeekExtrasSlice,
+} from './weekExtras';
 import type { PayWeekBounds, ShiftDayRow, TimeClockEntry } from './types';
 
 const addedOffScheduleDaysByEmp: Record<string, string[]> = {};
@@ -82,7 +86,7 @@ export type OffScheduleDaySources = {
   bounds: PayWeekBounds;
   scheduledIsos: Set<string>;
   entries?: TimeClockEntry[];
-  extrasSlice?: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  extrasSlice?: WeekExtrasSlice;
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
 };
@@ -108,13 +112,33 @@ export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string
   }
 
   for (const k of Object.keys(extrasSlice ?? {})) {
+    if (k.startsWith('acash|')) {
+      const parts = k.split('|');
+      if (parts.length >= 3 && parts[1] === empId) {
+        const amount = extrasSlice![k];
+        if (typeof amount === 'number' && amount > 0) maybeAdd(parts[2]);
+      }
+      continue;
+    }
     const at = k.indexOf('@');
     if (at < 0 || k.slice(0, at) !== empId) continue;
     const row = extrasSlice![k];
-    if (!row || ((parseFloat(String(row.vl)) || 0) <= 0 && (parseFloat(String(row.sl)) || 0) <= 0)) {
+    if (!row || typeof row !== 'object') continue;
+    if ((parseFloat(String(row.vl)) || 0) <= 0 && (parseFloat(String(row.sl)) || 0) <= 0) {
       continue;
     }
     maybeAdd(k.slice(at + 1));
+  }
+
+  for (const k of Object.keys(dishwasherTipsSlice ?? {})) {
+    const tip = dishwasherTipsSlice![k];
+    if (!(tip > 0)) continue;
+    const parts = k.split('|');
+    if (parts.length >= 3 && parts[1] === empId) maybeAdd(parts.slice(2).join('|'));
+    else {
+      const at = k.indexOf('@');
+      if (at >= 0 && k.slice(0, at) === empId) maybeAdd(k.slice(at + 1));
+    }
   }
 
   for (const iso of addedDayIsos ?? []) {
@@ -146,13 +170,13 @@ export type DayTimecardActivitySources = {
   empId: string;
   iso: string;
   entries?: TimeClockEntry[];
-  extrasSlice?: Record<string, { vl: number; sl: number; manual?: boolean }>;
+  extrasSlice?: WeekExtrasSlice;
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
 };
 
 export function dayHasTimecardActivity(params: DayTimecardActivitySources): boolean {
-  const { empId, iso, entries, extrasSlice, addedDayIsos } = params;
+  const { empId, iso, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos } = params;
   if (!empId || !iso) return false;
   if ((addedDayIsos ?? getAddedOffScheduleDays(empId)).includes(iso)) return true;
   for (const e of entries ?? []) {
@@ -161,6 +185,14 @@ export function dayHasTimecardActivity(params: DayTimecardActivitySources): bool
   }
   const leave = getEmployeeDayLeaveSync(empId, iso, extrasSlice ?? {});
   if (leave.vl > 0 || leave.sl > 0) return true;
+  if (getEmployeeDayAdditionalCashTipSync(empId, iso, extrasSlice ?? {}) > 0) return true;
+  for (const k of Object.keys(dishwasherTipsSlice ?? {})) {
+    const tip = dishwasherTipsSlice![k];
+    if (!(tip > 0)) continue;
+    const parts = k.split('|');
+    if (parts.length >= 3 && parts[1] === empId && parts.slice(2).join('|') === iso) return true;
+    if (k === `${empId}@${iso}`) return true;
+  }
   return false;
 }
 
