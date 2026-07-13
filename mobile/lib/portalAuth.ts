@@ -17,6 +17,15 @@ export function portalWebUrl(): string {
 type PortalOk<T> = { ok: true } & T;
 type PortalErr = { ok: false; message: string; needsSignIn?: boolean; status?: number };
 
+function friendlyPortalErrorMessage(raw: string): string {
+  const msg = String(raw || '').trim();
+  if (!msg) return 'Request failed.';
+  if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
+    return 'Multiple accounts match that name. Re-enter your company access code, then try again.';
+  }
+  return msg;
+}
+
 async function portalPost<T extends Record<string, unknown>>(
   path: string,
   body: Record<string, unknown>
@@ -39,9 +48,21 @@ async function portalPost<T extends Record<string, unknown>>(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    data = (await res.json()) as Record<string, unknown>;
+    const text = await res.text();
+    try {
+      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+      return {
+        ok: false,
+        message:
+          res.status >= 500
+            ? 'Server error during sign-in. The web portal may need a redeploy.'
+            : 'Unexpected response from the web server.',
+        status: res.status,
+      };
+    }
     if (!res.ok || !data.ok) {
-      let msg = (data.message as string) || 'Request failed.';
+      let msg = friendlyPortalErrorMessage((data.message as string) || 'Request failed.');
       if (res.status === 503) {
         msg =
           msg ||
@@ -88,7 +109,8 @@ export async function applyPortalSession(tokens: {
 export async function portalSignIn(
   loginName: string,
   password: string,
-  companyId?: string
+  companyId?: string,
+  accessCode?: string
 ): Promise<
   | { ok: true; role?: string; displayName?: string; companyId?: string; companyName?: string }
   | { ok: false; message: string }
@@ -98,6 +120,7 @@ export async function portalSignIn(
     password,
   };
   if (companyId) body.companyId = companyId;
+  if (accessCode) body.accessCode = String(accessCode).trim();
   const r = await portalPost<{
     access_token: string;
     refresh_token?: string;
@@ -106,7 +129,7 @@ export async function portalSignIn(
     companyId?: string;
     companyName?: string;
   }>('/api/portal/signin', body);
-  if (!r.ok) return r;
+  if (!r.ok) return { ok: false, message: friendlyPortalErrorMessage(r.message) };
   const applied = await applyPortalSession({
     access_token: r.access_token,
     refresh_token: r.refresh_token,
@@ -356,7 +379,7 @@ export async function establishConfirmSessionForAccessCodeSetup(
     return {
       ok: false,
       alreadySet: true,
-      message: 'Your company access code is already set. Sign in with your username and password.',
+      message: 'Your company access code is already set. Enter it to continue to sign in.',
     };
   }
   try {
@@ -666,9 +689,11 @@ export async function portalUpdateRecoveryEmail(
     .select('id')
     .eq('recovery_email_norm', norm)
     .neq('id', sess.data.session.user.id)
-    .maybeSingle();
+    .limit(1);
   if (dup.error) return { ok: false, message: dup.error.message || 'Could not save.' };
-  if (dup.data) return { ok: false, message: 'That email is already used on another account.' };
+  if (dup.data && dup.data.length) {
+    return { ok: false, message: 'That email is already used on another account.' };
+  }
   const saved = await supabase
     .from('profiles')
     .update({ recovery_email: norm, recovery_email_norm: norm })

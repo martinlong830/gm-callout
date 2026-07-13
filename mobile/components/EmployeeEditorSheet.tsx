@@ -138,7 +138,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [sickAllowanceDays, setSickAllowanceDays] = useState('5');
   const [sickAllowanceHours, setSickAllowanceHours] = useState('');
   const [sickHoursRemaining, setSickHoursRemaining] = useState('');
-  const [portalPassword, setPortalPassword] = useState('redpoke');
+  const [portalPassword, setPortalPassword] = useState('pass');
   const [portalRecoveryEmail, setPortalRecoveryEmail] = useState('');
   const [portalAccountType, setPortalAccountType] = useState<'employee' | 'manager'>('employee');
   const [canCreateManager, setCanCreateManager] = useState(false);
@@ -163,7 +163,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setSickAllowanceDays('5');
     setSickAllowanceHours('');
     setSickHoursRemaining('');
-    setPortalPassword('redpoke');
+    setPortalPassword('pass');
     setPortalRecoveryEmail('');
     setPortalAccountType('employee');
     setStatusMsg('');
@@ -325,7 +325,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     let authUserId = employee?.authUserId;
     let portalCreateWarning: string | null = null;
     if (isCreate) {
-      const pw = portalPassword.trim() || 'redpoke';
+      const pw = portalPassword.trim() || 'pass';
       if (pw.length < 4) {
         Alert.alert('App login', 'Password must be at least 4 characters.');
         return;
@@ -626,7 +626,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       value={portalPassword}
                       onChangeText={setPortalPassword}
                       secureTextEntry
-                      placeholder="Default: redpoke"
+                      placeholder="Default: pass"
                     />
                     <FieldLabel>Recovery email (optional)</FieldLabel>
                     <TextInput

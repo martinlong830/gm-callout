@@ -918,7 +918,6 @@
           </div>
 
           <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
-            <p class="calendar-hint">An app login is created automatically so they can sign in with their name. Default password is <strong>redpoke</strong> unless you set one below. If app login fails (duplicate name, etc.), the employee is still saved to the roster.</p>
             <label class="form-field form-field-block" id="empPortalAccountTypeWrap" hidden>
               <span class="form-label">Account type</span>
               <select name="portalAccountType" id="empPortalAccountType" class="form-select">
@@ -935,7 +934,7 @@
                 id="empPortalPassword"
                 minlength="4"
                 autocomplete="new-password"
-                placeholder="redpoke"
+                placeholder="pass"
               />
             </label>
             <label class="form-field form-field-block">
@@ -1893,14 +1892,28 @@
         }
       }
 
-      function showAccessCodeError(msg) {
+      function showAccessCodeError(msg, variant) {
         if (!accessCodeError) return;
         accessCodeError.textContent = msg || '';
         accessCodeError.hidden = !msg;
+        if (!msg) accessCodeError.classList.remove('is-success');
+        else accessCodeError.classList.toggle('is-success', variant === 'success');
       }
 
       function clearAccessCodeError() {
         showAccessCodeError('');
+      }
+
+      function clearCompanySessionStorage() {
+        try {
+          sessionStorage.removeItem(SESSION_COMPANY_ID_KEY);
+          sessionStorage.removeItem(SESSION_TEAM_STATE_ID_KEY);
+          sessionStorage.removeItem(SESSION_ACCESS_CODE_KEY);
+          sessionStorage.removeItem(SESSION_COMPANY_NAME_KEY);
+          sessionStorage.removeItem(SESSION_COMPANY_RESTAURANTS_KEY);
+        } catch (_clearCo) {
+          /* ignore */
+        }
       }
 
       function showCreateCompanyError(msg) {
@@ -2472,11 +2485,13 @@
               showSetupAccessCodeError(res.message || 'Could not save access code.');
               return;
             }
-            storeCompanySession(res);
-            verifiedCompanyId = res.companyId || '';
-            verifiedTeamStateId = res.teamStateId || '';
-            verifiedAccessCode = res.accessCode || code;
-            verifiedCompanyName = res.companyName || '';
+            var savedAccessCode = res.accessCode || code;
+            // Start the normal login flow: access code entry → name/password.
+            clearCompanySessionStorage();
+            verifiedCompanyId = '';
+            verifiedTeamStateId = '';
+            verifiedAccessCode = '';
+            verifiedCompanyName = '';
             if (setupAccessCodeForm) setupAccessCodeForm.reset();
             try {
               window.__GM_ACCESS_CODE_SETUP_FLOW__ = false;
@@ -2486,10 +2501,11 @@
             } catch (_so) {
               /* ignore */
             }
-            showLoginPanel();
-            showLoginError(
+            showAccessCodePanel();
+            if (accessCodeInput) accessCodeInput.value = savedAccessCode;
+            showAccessCodeError(
               res.message ||
-                'Access code saved. Sign in with your username and password (use this access code next time from the home screen).',
+                'Access code saved. Enter it below, then sign in with your username and password.',
               'success'
             );
           })();
@@ -2500,13 +2516,15 @@
       }
 
       function finishRedPokeAccessCode() {
-        verifiedCompanyId = '';
+        // Same UUID as portal-auth-server RED_POKE_COMPANY_ID — required for scoped sign-in.
+        var RED_POKE_COMPANY_ID = 'a0000000-0000-4000-8000-000000000001';
+        verifiedCompanyId = RED_POKE_COMPANY_ID;
         verifiedTeamStateId = 'main';
         verifiedAccessCode = 'redpoke';
         verifiedCompanyName = 'Red Poke';
         showLoginPanel();
         storeCompanySession({
-          companyId: '',
+          companyId: RED_POKE_COMPANY_ID,
           teamStateId: 'main',
           accessCode: 'redpoke',
           companyName: 'Red Poke',
@@ -2758,8 +2776,19 @@
               showSetupAccessCodeError(established.message || 'Could not confirm your email session.');
               if (established.alreadySet) {
                 window.__GM_ACCESS_CODE_SETUP_FLOW__ = false;
-                showLoginPanel();
-                showLoginError(established.message, 'success');
+                try {
+                  if (window.gmSupabase && window.gmSupabase.auth) {
+                    await window.gmSupabase.auth.signOut({ scope: 'local' });
+                  }
+                } catch (_aso) {
+                  /* ignore */
+                }
+                showAccessCodePanel();
+                showAccessCodeError(
+                  established.message ||
+                    'Your company access code is already set. Enter it below to continue.',
+                  'success'
+                );
               }
               return;
             }

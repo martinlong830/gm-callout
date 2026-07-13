@@ -1,8 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolveCompanyIdForEmployees } from './companySession';
 import { employeeDisplayName, isCloudEmployeeId, type EmployeeRow } from './employees';
 import { normalizeLeaveBalance, type LeaveBalance } from './employeeLeave';
 
-export function employeeToDbRow(emp: EmployeeRow): Record<string, unknown> {
+export function employeeToDbRow(
+  emp: EmployeeRow,
+  companyId?: string
+): Record<string, unknown> {
   const display = employeeDisplayName(emp);
   const ur = emp.usualRestaurant;
   let urDb: string = 'rp-9';
@@ -30,6 +34,7 @@ export function employeeToDbRow(emp: EmployeeRow): Record<string, unknown> {
     weekly_grid: emp.weeklyGrid || {},
     meta,
   };
+  if (companyId) row.company_id = companyId;
   if (emp.clockPin) row.clock_pin = String(emp.clockPin);
   if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
     row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
@@ -41,7 +46,8 @@ export async function saveEmployeeRow(
   sb: SupabaseClient,
   emp: EmployeeRow
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const row = employeeToDbRow(emp);
+  const companyId = await resolveCompanyIdForEmployees();
+  const row = employeeToDbRow(emp, companyId || undefined);
   const { error } = await sb.from('employees').upsert(row, { onConflict: 'id' });
   if (error) return { ok: false, message: error.message || 'Could not save employee.' };
   return { ok: true };

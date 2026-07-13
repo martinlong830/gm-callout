@@ -334,7 +334,7 @@
         ok: false,
         alreadySet: true,
         message:
-          "Your company access code is already set. Sign in with your username and password.",
+          "Your company access code is already set. Enter it to continue to sign in.",
       };
     }
     // Persisted session belongs to someone else (previous browser login).
@@ -574,11 +574,11 @@
         .select("id")
         .eq("recovery_email_norm", norm)
         .neq("id", session.user.id)
-        .maybeSingle();
+        .limit(1);
       if (dup.error) {
         return { ok: false, message: dup.error.message || "Could not save recovery email." };
       }
-      if (dup.data) {
+      if (dup.data && dup.data.length) {
         return { ok: false, message: "That email is already used on another account." };
       }
       var saved = await window.gmSupabase

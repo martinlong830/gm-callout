@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { readStoredTeamStateId } from './companySession';
+import { readStoredTeamStateId, resolveCompanyIdForEmployees } from './companySession';
 import { applyLeaveSeedsToEmployees } from './employeeLeave';
 import { mapEmployeeFromDb, type EmployeeRow } from './employees';
 import { mapStaffRequestFromDbRow, type StaffRequestUi } from './staffRequests';
@@ -23,20 +23,24 @@ export const EMPLOYEE_MANAGER_COLUMNS =
 
 export const STAFF_REQUEST_COLUMNS = 'id, type, status, created_at, payload';
 
+function employeesSelectForCompany(sb: SupabaseClient, cols: string, companyId: string) {
+  const q = sb.from('employees').select(cols);
+  if (companyId) return q.eq('company_id', companyId);
+  return q;
+}
+
 export async function hydrateFromSupabase(
   sb: SupabaseClient,
   opts?: { role?: 'manager' | 'employee' | null; userId?: string | null }
 ): Promise<HydrationResult> {
   const teamStateId = await readStoredTeamStateId();
+  const companyId = await resolveCompanyIdForEmployees();
   const isManager = opts?.role === 'manager';
   const teamCols = isManager ? TEAM_STATE_MANAGER_COLUMNS : TEAM_STATE_EMPLOYEE_COLUMNS;
-
-  const empQuery = isManager
-    ? sb.from('employees').select(EMPLOYEE_MANAGER_COLUMNS)
-    : sb.from('employees').select(EMPLOYEE_LIST_COLUMNS);
+  const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
 
   const [empRes, reqRes, teamRes] = await Promise.all([
-    empQuery.order('display_name', { ascending: true }),
+    employeesSelectForCompany(sb, empCols, companyId).order('display_name', { ascending: true }),
     sb.from('staff_requests').select(STAFF_REQUEST_COLUMNS).order('created_at', { ascending: false }),
     sb.from('team_state').select(teamCols).eq('id', teamStateId).maybeSingle(),
   ]);
@@ -50,11 +54,9 @@ export async function hydrateFromSupabase(
   }
 
   if (opts?.role === 'employee' && opts.userId) {
-    const selfRes = await sb
-      .from('employees')
-      .select('id, weekly_grid')
-      .eq('auth_user_id', opts.userId)
-      .maybeSingle();
+    let selfQ = sb.from('employees').select('id, weekly_grid').eq('auth_user_id', opts.userId);
+    if (companyId) selfQ = selfQ.eq('company_id', companyId);
+    const selfRes = await selfQ.maybeSingle();
     if (selfRes.data?.id) {
       const idx = employees.findIndex((e) => e.id === selfRes.data!.id);
       if (idx >= 0) {
@@ -96,11 +98,12 @@ export async function fetchEmployeesOnly(
   sb: SupabaseClient,
   opts?: { role?: 'manager' | 'employee' | null; userId?: string | null }
 ): Promise<EmployeeRow[]> {
+  const companyId = await resolveCompanyIdForEmployees();
   const isManager = opts?.role === 'manager';
-  const empQuery = isManager
-    ? sb.from('employees').select(EMPLOYEE_MANAGER_COLUMNS)
-    : sb.from('employees').select(EMPLOYEE_LIST_COLUMNS);
-  const empRes = await empQuery.order('display_name', { ascending: true });
+  const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
+  const empRes = await employeesSelectForCompany(sb, empCols, companyId).order('display_name', {
+    ascending: true,
+  });
   const employees: EmployeeRow[] = [];
   if (empRes.data?.length) {
     for (const row of empRes.data) {
@@ -109,11 +112,9 @@ export async function fetchEmployeesOnly(
     }
   }
   if (opts?.role === 'employee' && opts.userId) {
-    const selfRes = await sb
-      .from('employees')
-      .select('id, weekly_grid')
-      .eq('auth_user_id', opts.userId)
-      .maybeSingle();
+    let selfQ = sb.from('employees').select('id, weekly_grid').eq('auth_user_id', opts.userId);
+    if (companyId) selfQ = selfQ.eq('company_id', companyId);
+    const selfRes = await selfQ.maybeSingle();
     if (selfRes.data?.id) {
       const idx = employees.findIndex((e) => e.id === selfRes.data!.id);
       if (idx >= 0) {

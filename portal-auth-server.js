@@ -37,6 +37,31 @@ function companyHasUsableAccessCode(company) {
   return !!String(company.access_code || "").trim() && !isPendingAccessCode(company.access_code);
 }
 
+/** Prefer company-scoped match; never use unscoped .maybeSingle() across tenants. */
+function pickProfileRows(rows, duplicateMessage) {
+  if (!rows || !rows.length) return { notFound: true };
+  if (rows.length > 1) {
+    return {
+      error:
+        duplicateMessage ||
+        "Multiple accounts match that name. Ask an owner to clean up duplicate profiles.",
+    };
+  }
+  const data = rows[0];
+  if (!data.internal_auth_email) return { profile: data, needsAuthEmail: true };
+  return { profile: data };
+}
+
+function preferProfileAmongDuplicates(rows) {
+  if (!rows || !rows.length) return null;
+  if (rows.length === 1) return rows[0];
+  return (
+    rows.find((p) => p.company_id === RED_POKE_COMPANY_ID) ||
+    rows.find((p) => !p.company_id) ||
+    null
+  );
+}
+
 const COMPANY_SELECT =
   "id, name, access_code, team_state_id, restaurants_config, confirmed_at, owner_user_id, access_code_set_at";
 
@@ -65,13 +90,20 @@ async function findCompanyByAccessCode(admin, accessCode) {
       },
     };
   }
-  const { data, error } = await admin
+  const { data: rows, error } = await admin
     .from("companies")
     .select(COMPANY_SELECT)
     .eq("access_code", raw)
-    .maybeSingle();
+    .limit(2);
   if (error) return { error: error.message };
-  if (!data) return { notFound: true };
+  if (!rows || !rows.length) return { notFound: true };
+  if (rows.length > 1) {
+    return {
+      error:
+        "Multiple companies share this access code. Ask an owner to fix duplicate company rows.",
+    };
+  }
+  const data = rows[0];
   if (!companyHasUsableAccessCode(data)) {
     return {
       notFound: true,
@@ -99,11 +131,11 @@ async function accessCodeAvailable(admin, accessCode, exceptCompanyId) {
       error: "Use letters, numbers, hyphens, or underscores only (start with a letter or number).",
     };
   }
-  let query = admin.from("companies").select("id").eq("access_code", raw);
+  let query = admin.from("companies").select("id").eq("access_code", raw).limit(1);
   if (exceptCompanyId) query = query.neq("id", exceptCompanyId);
-  const { data, error } = await query.maybeSingle();
+  const { data, error } = await query;
   if (error) return { error: error.message };
-  if (data) return { error: "That access code is already taken. Choose another." };
+  if (data && data.length) return { error: "That access code is already taken. Choose another." };
   return { ok: true, accessCode: raw };
 }
 
@@ -490,13 +522,13 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   async function saveRecoveryEmail(profileId, email) {
     const norm = normalizeRecoveryEmail(email);
     if (!norm || !isValidEmail(norm)) return { error: "Enter a valid email address." };
-    const { data: existing } = await admin
+    const { data: existingRows } = await admin
       .from("profiles")
       .select("id")
       .eq("recovery_email_norm", norm)
       .neq("id", profileId)
-      .maybeSingle();
-    if (existing) {
+      .limit(1);
+    if (existingRows && existingRows.length) {
       return { error: "That email is already used on another account." };
     }
     const { error } = await admin
@@ -508,17 +540,17 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   }
 
   async function findDuplicateProfileByLoginName(loginNameNorm, companyId) {
-    let query = admin.from("profiles").select("id").eq("login_name_norm", loginNameNorm);
+    let query = admin.from("profiles").select("id").eq("login_name_norm", loginNameNorm).limit(1);
     if (companyId) {
       query = query.eq("company_id", companyId);
     } else {
       query = query.is("company_id", null);
     }
-    const { data, error } = await query.maybeSingle();
+    const { data, error } = await query;
     if (error) {
       return { error: error.message || "Could not verify login name." };
     }
-    if (data) return { existing: data };
+    if (data && data.length) return { existing: data[0] };
     return {};
   }
 
@@ -541,18 +573,74 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   async function findProfileByLoginName(loginName, companyId) {
     const norm = normalizeLoginName(loginName);
     if (!norm) return { error: "Enter your name." };
-    let query = admin.from("profiles").select(profileSelect).eq("login_name_norm", norm);
+
     if (companyId) {
-      query = query.eq("company_id", companyId);
+      const { data: scoped, error: scopedErr } = await admin
+        .from("profiles")
+        .select(profileSelect)
+        .eq("login_name_norm", norm)
+        .eq("company_id", companyId)
+        .limit(5);
+      if (scopedErr) return { error: scopedErr.message };
+      if (scoped && scoped.length) {
+        return pickProfileRows(
+          scoped,
+          "Multiple accounts match that name for this company. Ask an owner to clean up duplicate profiles."
+        );
+      }
+
+      // Legacy Red Poke / pre-tenant rows: company_id is null.
+      // Do not fall back to other companies' profiles (that triggers PGRST116 on duplicates).
+      if (companyId === RED_POKE_COMPANY_ID) {
+        const { data: legacyRows, error: legErr } = await admin
+          .from("profiles")
+          .select(profileSelect)
+          .eq("login_name_norm", norm)
+          .is("company_id", null)
+          .limit(5);
+        if (legErr) return { error: legErr.message };
+        return pickProfileRows(
+          legacyRows,
+          "Multiple legacy accounts match that name. Ask an owner to clean up duplicate profiles."
+        );
+      }
+
+      return { notFound: true };
     }
-    const { data, error } = await query.maybeSingle();
+
+    // Unscoped (password reset): single match OK; if duplicates, prefer Red Poke / legacy null.
+    const { data: rows, error } = await admin
+      .from("profiles")
+      .select(profileSelect)
+      .eq("login_name_norm", norm)
+      .limit(20);
     if (error) return { error: error.message };
-    if (!data && companyId) {
-      return findProfileByLoginName(loginName, null);
+    if (!rows || !rows.length) return { notFound: true };
+    if (rows.length === 1) {
+      return pickProfileRows(rows);
     }
-    if (!data) return { notFound: true };
-    if (!data.internal_auth_email) return { profile: data, needsAuthEmail: true };
-    return { profile: data };
+    const preferred = preferProfileAmongDuplicates(rows);
+    if (preferred) {
+      if (!preferred.internal_auth_email) return { profile: preferred, needsAuthEmail: true };
+      return { profile: preferred };
+    }
+    return {
+      error:
+        "Multiple accounts match that name. Enter your company access code on the sign-in screen first.",
+    };
+  }
+
+  /** Attach Red Poke company_id onto legacy null-company profiles after successful sign-in. */
+  async function backfillLegacyCompanyId(profile, companyId) {
+    if (!profile || !companyId || profile.company_id) return profile;
+    if (companyId !== RED_POKE_COMPANY_ID) return profile;
+    const { error } = await admin
+      .from("profiles")
+      .update({ company_id: companyId })
+      .eq("id", profile.id)
+      .is("company_id", null);
+    if (!error) profile.company_id = companyId;
+    return profile;
   }
 
   /** Match legacy profiles that have display_name but no login_name_norm yet. */
@@ -727,16 +815,16 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
 
       const loginNameNorm = normalizeLoginName(username);
-      const { data: nameTaken, error: nameErr } = await admin
+      const { data: nameTakenRows, error: nameErr } = await admin
         .from("profiles")
         .select("id")
         .eq("login_name_norm", loginNameNorm)
         .is("company_id", null)
-        .maybeSingle();
+        .limit(1);
       if (nameErr) {
         return res.status(400).json({ ok: false, message: nameErr.message || "Could not verify username." });
       }
-      if (nameTaken) {
+      if (nameTakenRows && nameTakenRows.length) {
         return res.status(409).json({
           ok: false,
           message: "That username is already taken. Choose a different one.",
@@ -924,7 +1012,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
       return res.json({
         ok: true,
-        message: "Access code saved. Use Log in with this code, your username, and password.",
+        message: "Access code saved. Enter it on the next screen, then sign in with your username and password.",
         ...companyClientPayload(company, authed.profile),
       });
     } catch (err) {
@@ -970,9 +1058,20 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     try {
       const loginName = req.body && req.body.loginName;
       const password = req.body && req.body.password;
-      const companyId = req.body && req.body.companyId ? String(req.body.companyId).trim() : "";
+      let companyId = req.body && req.body.companyId ? String(req.body.companyId).trim() : "";
+      const accessCode =
+        req.body && req.body.accessCode ? String(req.body.accessCode).trim().toLowerCase() : "";
       if (!loginName || !password) {
         return res.status(400).json({ ok: false, message: "Name and password are required." });
+      }
+
+      // Older mobile builds skipped companyId for Red Poke; recover from access code.
+      if (!companyId && accessCode) {
+        const co = await findCompanyByAccessCode(admin, accessCode);
+        if (co.company) companyId = co.company.id;
+      }
+      if (!companyId && accessCode === PORTAL_ACCESS_CODE) {
+        companyId = RED_POKE_COMPANY_ID;
       }
 
       let sess = null;
@@ -982,6 +1081,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
       if (found.profile) {
         sess = await sessionForProfile(found.profile, String(password), loginName);
+        if (sess && !sess.error && companyId) {
+          sess.profile = await backfillLegacyCompanyId(sess.profile, companyId);
+        }
       } else if (found.notFound) {
         sess = await signInLegacyAccount(loginName, password);
       }
@@ -999,6 +1101,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       });
     } catch (err) {
       console.warn("portal signin", err);
+      const msg = err && err.message ? String(err.message) : "";
+      if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
+        return res.status(401).json({
+          ok: false,
+          message:
+            "Multiple accounts match that name. Enter your company access code first, then try again.",
+        });
+      }
       return res.status(500).json({ ok: false, message: "Sign in failed." });
     }
   });
@@ -1424,6 +1534,8 @@ module.exports = {
   normalizeLoginName,
   diagnoseServiceRoleKey,
   decodeSupabaseKeyRole,
+  pickProfileRows,
+  preferProfileAmongDuplicates,
   PORTAL_ACCESS_CODE,
   RED_POKE_COMPANY_ID,
 };

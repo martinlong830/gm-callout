@@ -6,6 +6,8 @@ const ACCESS_CODE_KEY = 'gm-callout-access-code';
 const COMPANY_NAME_KEY = 'gm-callout-company-name';
 const COMPANY_RESTAURANTS_KEY = 'gm-callout-company-restaurants';
 
+export const RED_POKE_COMPANY_ID = 'a0000000-0000-4000-8000-000000000001';
+
 export type CompanySessionPayload = {
   companyId?: string;
   teamStateId?: string;
@@ -55,7 +57,26 @@ export async function clearCompanySession(): Promise<void> {
 }
 
 export function isRedPokeAccessCode(code: string): boolean {
-  return String(code || '')
-    .trim()
-    .toLowerCase() === 'redpoke';
+  return (
+    String(code || '')
+      .trim()
+      .toLowerCase() === 'redpoke'
+  );
+}
+
+export async function isRedPokeCompanySession(): Promise<boolean> {
+  const code = await readStoredAccessCode();
+  if (isRedPokeAccessCode(code)) return true;
+  const cid = await readStoredCompanyId();
+  if (cid === RED_POKE_COMPANY_ID) return true;
+  const teamStateId = await readStoredTeamStateId();
+  return teamStateId === 'main';
+}
+
+/** Company UUID for roster scoping (Red Poke fallback on legacy main). */
+export async function resolveCompanyIdForEmployees(): Promise<string> {
+  const cid = (await readStoredCompanyId()).trim();
+  if (cid) return cid;
+  if (await isRedPokeCompanySession()) return RED_POKE_COMPANY_ID;
+  return '';
 }

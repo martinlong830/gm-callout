@@ -788,10 +788,18 @@ function scheduleRowRosterDefault(
 ): string | null {
   const emp = employeeAtScheduleSlot(employees, role, trIdx, restaurantId);
   if (emp) return employeeDisplayNameLite(emp);
+  /* Hardcoded Red Poke sheet defaults only when that roster is actually on the team. */
+  if (!teamIncludesLegacyRedPokeRoster(employees)) return null;
   if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
   if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
   if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
   return null;
+}
+
+function teamIncludesLegacyRedPokeRoster(employees: EmployeeLite[]): boolean {
+  if (!employees.length) return false;
+  const names = new Set(employees.map((e) => normalizeWorkerKey(employeeDisplayNameLite(e))));
+  return TEAM_ROSTER_BARTENDER.some((n) => names.has(normalizeWorkerKey(n)));
 }
 
 function workerAllowedOnScheduleRow(name: string, basePool: string[]): boolean {

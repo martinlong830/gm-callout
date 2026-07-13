@@ -17,8 +17,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  clearCompanySession,
   isRedPokeAccessCode,
   readStoredCompanyId,
+  RED_POKE_COMPANY_ID,
   storeCompanySession,
 } from '../lib/companySession';
 import {
@@ -118,18 +120,32 @@ export default function LoginScreen() {
       if (!established.ok) {
         setMessage(established.message);
         setSuccess(!!established.alreadySet);
-        if (established.alreadySet) setPanel('signin');
+        if (established.alreadySet) {
+          try {
+            if (supabase) await supabase.auth.signOut({ scope: 'local' });
+          } catch {
+            /* ignore */
+          }
+          setPanel('access-code');
+        }
         return;
       }
       setMessage(null);
     })();
     const sub = Linking.addEventListener('url', (ev) => {
-      void establishConfirmSessionForAccessCodeSetup(ev.url).then((established) => {
+      void establishConfirmSessionForAccessCodeSetup(ev.url).then(async (established) => {
         if (cancelled) return;
         if (!established.ok) {
           setMessage(established.message);
           setSuccess(!!established.alreadySet);
-          if (established.alreadySet) setPanel('signin');
+          if (established.alreadySet) {
+            try {
+              if (supabase) await supabase.auth.signOut({ scope: 'local' });
+            } catch {
+              /* ignore */
+            }
+            setPanel('access-code');
+          }
           return;
         }
         setPanel('setup-access-code');
@@ -183,30 +199,36 @@ export default function LoginScreen() {
       setMessage('Enter your company access code.');
       return;
     }
-    if (isRedPokeAccessCode(code)) {
-      setVerifiedCompanyId('');
-      setVerifiedAccessCode('redpoke');
-      setVerifiedCompanyName('Red Poke');
-      await storeCompanySession({
-        companyId: '',
-        teamStateId: 'main',
-        accessCode: 'redpoke',
-        companyName: 'Red Poke',
-      });
-      goSignIn();
-      return;
-    }
     setBusy(true);
+    // Always verify via API (including redpoke) so companyId is set for scoped sign-in.
     const res = await portalVerifyAccessCode(code);
     setBusy(false);
     if (!res.ok) {
+      // Offline/dev fallback for the known Red Poke access code only.
+      if (isRedPokeAccessCode(code)) {
+        setVerifiedCompanyId(RED_POKE_COMPANY_ID);
+        setVerifiedAccessCode('redpoke');
+        setVerifiedCompanyName('Red Poke');
+        await storeCompanySession({
+          companyId: RED_POKE_COMPANY_ID,
+          teamStateId: 'main',
+          accessCode: 'redpoke',
+          companyName: 'Red Poke',
+        });
+        goSignIn();
+        return;
+      }
       setMessage(res.message || 'Access code is incorrect.');
       return;
     }
-    setVerifiedCompanyId(res.companyId || '');
+    const companyId = res.companyId || (isRedPokeAccessCode(code) ? RED_POKE_COMPANY_ID : '');
+    setVerifiedCompanyId(companyId);
     setVerifiedAccessCode(res.accessCode || code);
     setVerifiedCompanyName(res.companyName || '');
-    await storeCompanySession(res);
+    await storeCompanySession({
+      ...res,
+      companyId,
+    });
     goSignIn();
   }
 
@@ -283,16 +305,13 @@ export default function LoginScreen() {
       setMessage(res.message || 'Could not save access code.');
       return;
     }
-    await storeCompanySession({
-      companyId: res.companyId,
-      companyName: res.companyName,
-      accessCode: res.accessCode,
-      teamStateId: res.teamStateId,
-      restaurantsConfig: res.restaurantsConfig as never,
-    });
-    setVerifiedCompanyId(res.companyId || '');
-    setVerifiedAccessCode(res.accessCode || code);
-    setVerifiedCompanyName(res.companyName || '');
+    const savedAccessCode = res.accessCode || code;
+    // Start the normal login flow: access code entry → name/password.
+    await clearCompanySession();
+    setVerifiedCompanyId('');
+    setVerifiedAccessCode('');
+    setVerifiedCompanyName('');
+    setCompanyAccessCode(savedAccessCode);
     setSetupAccessCodeValue('');
     try {
       if (supabase) await supabase.auth.signOut({ scope: 'local' });
@@ -300,8 +319,10 @@ export default function LoginScreen() {
       /* ignore */
     }
     setSuccess(true);
-    setMessage(res.message || 'Access code saved. Sign in with your username and password.');
-    setPanel('signin');
+    setMessage(
+      res.message || 'Access code saved. Enter it below, then sign in with your username and password.'
+    );
+    setPanel('access-code');
   }
 
   async function onSignIn() {
@@ -312,16 +333,32 @@ export default function LoginScreen() {
       return;
     }
     setBusy(true);
-    const companyId = verifiedCompanyId || (await readStoredCompanyId());
-    const res = await signIn(name, password, companyId || undefined);
+    let companyId = verifiedCompanyId || (await readStoredCompanyId());
+    if (!companyId && isRedPokeAccessCode(verifiedAccessCode)) {
+      companyId = RED_POKE_COMPANY_ID;
+    }
+    const res = await signIn(
+      name,
+      password,
+      companyId || undefined,
+      verifiedAccessCode || undefined
+    );
     setBusy(false);
     if (!res.ok) {
+      let msg = res.message || 'Sign in failed.';
+      if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
+        msg =
+          'Multiple accounts match that name. Re-enter your company access code, then try again. If it still fails, ask an owner to clean up duplicate profiles.';
+      }
       const hint =
-        res.message.includes('timed out') || res.message.includes('Could not reach')
+        msg.includes('timed out') || msg.includes('Could not reach')
           ? `\n\nTrying: ${portalWebUrl()}`
           : '';
-      setMessage(res.message + hint);
+      setMessage(msg + hint);
       return;
+    }
+    if (companyId) {
+      await storeCompanySession({ companyId });
     }
     router.replace(res.role === 'manager' ? '/manager' : '/employee');
   }
@@ -533,7 +570,9 @@ export default function LoginScreen() {
                   returnKeyType="go"
                   onSubmitEditing={() => void onVerifyAccessCode()}
                 />
-                {message ? <Text style={styles.feedback}>{message}</Text> : null}
+                {message ? (
+                  <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
+                ) : null}
                 <Pressable
                   style={[styles.button, styles.buttonPrimary]}
                   onPress={() => void onVerifyAccessCode()}

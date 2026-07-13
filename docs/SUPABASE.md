@@ -20,6 +20,7 @@ In **SQL Editor** → New query, run **each** file once, in this order:
 5. `supabase/migrations/20260504140000_employee_chat_store.sql` — **`employee_chat_store`**: one row per auth user (`payload` = Messages threads JSON)  
 6. `supabase/migrations/20260504150000_employee_chat_store_realtime.sql` — Realtime on `employee_chat_store`  
 7. `supabase/migrations/20260516120000_timeclock.sql` — **`timeclock`** profile role, `employees.clock_pin`, `time_clock_entries`, punch RPCs  
+8. Later multi-tenant: `20260702180000_companies_multi_tenant.sql`, companies RLS oneshots, and **`20260713010000_employees_company_id.sql`** (or paste `fix-employees-company-id-oneshot.sql`) so each company only sees its own roster. 
 
 Or use the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase db push` after linking the project.
 
@@ -123,7 +124,7 @@ Do these in order; stop if any step fails and fix that before moving on.
 
 1. **Migrations** — All SQL files from §2 ran without errors (`profiles`, `staff_requests`, `employees`, `team_state` + **`callout_history`**, **`employee_chat_store`** in **Table Editor**).
 2. **Env + server** — `.env` has `SUPABASE_URL` and `SUPABASE_ANON_KEY`; `npm start`; open the app; in the browser console, `window.gmSupabaseEnabled` should be **`true`**.
-3. **Manager** — Sign up or sign in as manager (email path). If **`employees`** is still empty, refresh once after login: the app **upserts the in-memory roster** (including demo seed) the first time a manager hydrates against an empty table. You can always change the roster in **Staff** and save; that also upserts all rows.
+3. **Manager** — Sign up or sign in as manager (email path). **Red Poke** only: if **`employees`** is still empty, refresh once after login and the app may upsert the in-memory demo roster. **Other companies** start with an empty Team (no Red Poke seed). You can always add staff in **Team** and save.
 4. **Employee** — Register or sign in as employee; confirm a row in **`employees`** with **`auth_user_id`** set when they register while signed in.
 5. **Staff request** — From the employee shell, submit one action (e.g. time off). Confirm a row in **`staff_requests`** with **`requester_id`** = that user and **`payload`** JSON populated.
 6. **Manager approval** — As manager, approve or decline that request; **`staff_requests.status`** should become `approved` or `rejected`.
@@ -138,4 +139,4 @@ Still local-only: legacy **portal password** accounts (non–Supabase Auth demo)
 ## Security notes
 
 - **Never** put the **service role** key in the web or mobile app.
-- RLS policies in the migration assume **one team per project**. When you add multiple stores, introduce `store_id` on rows and tighten policies.
+- Roster rows are scoped by **`employees.company_id`** (migration `20260713010000_employees_company_id.sql` / oneshot `fix-employees-company-id-oneshot.sql`). New companies must not see Red Poke staff.

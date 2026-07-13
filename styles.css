@@ -2664,17 +2664,21 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: var(--surface);
   color: var(--text);
   font-weight: 600;
-  padding: 14px 12px;
+  /* Keep label + day-span fill on the same padding box so the colored bar is one strip. */
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 0.8125rem;
   letter-spacing: 0.02em;
+  vertical-align: middle;
+  box-sizing: border-box;
 }
 
 /* Role section labels: sticky left (with Person col) + sticky top while the grid scrolls. */
 .calendar-matrix .calendar-group-row td.calendar-group-label {
   top: 0;
   z-index: 3;
-  white-space: normal;
+  /* nowrap keeps Person/Mon heights locked; wrapping in the narrow sticky col was a drift source. */
+  white-space: nowrap;
   line-height: 1.25;
   vertical-align: middle;
   box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35), 0 2px 8px -4px rgba(15, 23, 42, 0.18);
@@ -2684,7 +2688,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 0;
+  /* Must match .calendar-group-row td padding — padding:0 made sticky fill paint shorter than the label. */
+  padding: 10px 12px;
+  vertical-align: middle;
+  line-height: 1.25;
   box-shadow: 0 2px 8px -4px rgba(15, 23, 42, 0.18);
 }
 

@@ -512,6 +512,25 @@
     return gmCalloutTeamStateRowId() === TEAM_STATE_ROW_ID;
   }
 
+  /** Active company UUID from session (Red Poke fallback when on legacy `main` team_state). */
+  function gmCalloutCompanyId() {
+    try {
+      var cid = sessionStorage.getItem(SESSION_COMPANY_ID_KEY) || '';
+      if (cid && String(cid).trim()) return String(cid).trim();
+    } catch (_cid) {
+      /* ignore */
+    }
+    if (gmCalloutIsRedPokeCompany()) return RED_POKE_COMPANY_ID;
+    return '';
+  }
+
+  function employeesQueryForCompany(sb, cols) {
+    var q = sb.from('employees').select(cols);
+    var cid = gmCalloutCompanyId();
+    if (cid) q = q.eq('company_id', cid);
+    return q;
+  }
+
   function resolveDefaultUnassignedSchedule(restaurantRow) {
     if (!restaurantRow || typeof restaurantRow !== 'object') return false;
     var def = defaultRestaurants().find(function (d) {
@@ -1347,6 +1366,8 @@
       weekly_grid: emp.weeklyGrid || {},
       meta: meta,
     };
+    var companyId = emp.companyId || gmCalloutCompanyId();
+    if (companyId) row.company_id = companyId;
     if (emp.clockPin) row.clock_pin = String(emp.clockPin);
     if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
       row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
@@ -1619,13 +1640,13 @@
 
   function applyEmployeesFromRemoteDbRows(dbRows, opts) {
     opts = opts || {};
-    if (!Array.isArray(dbRows) || !dbRows.length) return false;
+    if (!Array.isArray(dbRows)) return false;
     if (!opts.force && gmEmployeeProfileSaveInFlight) {
       employeesRemoteRefreshPending = true;
       return false;
     }
     var next = dbRows.map(mapEmployeeDbRowToRecord).filter(Boolean);
-    if (!next.length) return false;
+    if (!next.length && !opts.allowEmpty) return false;
     employees.length = 0;
     next.forEach(function (e) {
       employees.push(e);
@@ -1647,6 +1668,10 @@
     }
     notifyTimecardsEmployeesChanged();
     return true;
+  }
+
+  function clearLocalEmployeesRoster() {
+    return applyEmployeesFromRemoteDbRows([], { force: true, allowEmpty: true });
   }
 
   function timecardsScreenActive() {
@@ -1756,13 +1781,19 @@
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
     var empCols =
       'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
-    var res = await sb.from('employees').select(empCols).order('display_name', { ascending: true });
+    var res = await employeesQueryForCompany(sb, empCols).order('display_name', {
+      ascending: true,
+    });
     if (res.error) {
       console.warn('gm-callout: employees refresh', res.error);
       return { ok: false, error: res.error };
     }
-    if (res.data && res.data.length) {
-      applyEmployeesFromRemoteDbRows(res.data);
+    if (Array.isArray(res.data)) {
+      if (res.data.length) {
+        applyEmployeesFromRemoteDbRows(res.data);
+      } else if (!gmCalloutIsRedPokeCompany()) {
+        clearLocalEmployeesRoster();
+      }
     }
     return { ok: true };
   }
@@ -4004,13 +4035,17 @@
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length) {
+          /* Non–Red Poke companies must not reuse a cached Red Poke local roster. */
+          if (!gmCalloutIsRedPokeCompany()) return [];
           return parsed.map(migrateEmployeeRecord).filter(Boolean);
         }
       }
     } catch (err) {
       // ignore
     }
-    return seedDefaultEmployees();
+    /* Demo/seed roster is Red Poke only — new companies start empty. */
+    if (gmCalloutIsRedPokeCompany()) return seedDefaultEmployees();
+    return [];
   }
 
   function applySavedEmployeeRecord(rec) {
@@ -4135,6 +4170,8 @@
   function scheduleRowRosterDefault(role, trIdx, restaurantId) {
     var emp = employeeAtScheduleSlot(role, trIdx, restaurantId);
     if (emp) return employeeDisplayName(emp);
+    /* Hardcoded Red Poke sheet defaults — never inject into other companies. */
+    if (!gmCalloutIsRedPokeCompany()) return null;
     if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
     if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
     if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
@@ -8233,7 +8270,7 @@
             '<td class="time-col calendar-row-person-col calendar-group-label">FRONT OF THE HOUSE</td>' +
             '<td colspan="' +
             (colCount - 1) +
-            '" class="calendar-group-fill"></td></tr>'
+            '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
         );
       }
       if (rd.role === 'Server') {
@@ -8242,7 +8279,7 @@
             '<td class="time-col calendar-row-person-col calendar-group-label">DELIVERY/DISHWASHER</td>' +
             '<td colspan="' +
             (colCount - 1) +
-            '" class="calendar-group-fill"></td></tr>'
+            '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
         );
       }
       if (rd.role === 'Kitchen') {
@@ -8251,7 +8288,7 @@
             '<td class="time-col calendar-row-person-col calendar-group-label">BACK OF THE HOUSE</td>' +
             '<td colspan="' +
             (colCount - 1) +
-            '" class="calendar-group-fill"></td></tr>'
+            '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
         );
       }
 
@@ -11582,7 +11619,7 @@
         typeof window.gmPortalAuth.createEmployeeAccount === 'function'
       ) {
         var portalPw = empPortalPassword ? String(empPortalPassword.value || '').trim() : '';
-        if (!portalPw) portalPw = 'redpoke';
+        if (!portalPw) portalPw = 'pass';
         if (portalPw.length < 4) {
           window.alert('App login password must be at least 4 characters.');
           return;
@@ -12526,7 +12563,7 @@
     try {
       var batch = await Promise.all([
         sb.from('staff_requests').select(reqCols).order('created_at', { ascending: false }),
-        sb.from('employees').select(empCols).order('display_name', { ascending: true }),
+        employeesQueryForCompany(sb, empCols).order('display_name', { ascending: true }),
         sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle(),
       ]);
       reqRes = batch[0];
@@ -12592,15 +12629,21 @@
         if (up.error) {
           console.warn('gm-callout: seed employees to empty cloud', up.error);
         } else {
-          var empReload = await sb
-            .from('employees')
-            .select(empCols)
-            .order('display_name', { ascending: true });
+          var empReload = await employeesQueryForCompany(sb, empCols).order('display_name', {
+            ascending: true,
+          });
           if (empReload.data && empReload.data.length) {
             applyEmployeesFromRemoteDbRows(empReload.data, { force: true });
           }
         }
       }
+    } else if (
+      !empRes.error &&
+      Array.isArray(empRes.data) &&
+      empRes.data.length === 0 &&
+      !gmCalloutIsRedPokeCompany()
+    ) {
+      clearLocalEmployeesRoster();
     }
     if (!teamRes.error && teamRes.data) {
       applyTeamStateRowFromRemote(teamRes.data, { isManager: isManager });
