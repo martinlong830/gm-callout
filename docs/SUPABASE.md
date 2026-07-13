@@ -30,7 +30,46 @@ If your hosted project **already has** time-clock tables from a previous laptop,
 ## 3. Auth settings
 
 - **Authentication → Providers**: enable **Email** (password or magic link — your choice).
-- **Authentication → URL configuration**: add your local and production site URLs to **Redirect URLs** if you use email links or OAuth later.
+
+### Production URL configuration (required for create-company confirm links)
+
+Company confirmation emails use Supabase `generateLink` with
+`redirectTo=https://shiflow.app/?setup_access_code=1`. If **Site URL** is still
+`http://localhost:3000`, or the redirect is not allow-listed, Supabase rewrites
+`redirect_to` to localhost and users land on the wrong host after confirm.
+
+In **Supabase Dashboard → Authentication → URL Configuration**, set:
+
+| Setting | Value |
+| --- | --- |
+| **Site URL** | `https://shiflow.app` |
+| **Redirect URLs** (allow list) | `https://shiflow.app/**` |
+| | `https://shiflow.app/?setup_access_code=1` |
+| | `http://localhost:8000/**` (local dev only) |
+
+Remove any leftover `http://localhost:3000` Site URL / redirect entries unless you
+still develop against that port.
+
+### Sender display name (Gmail “From”)
+
+Create-company and password-reset emails are sent by **Resend** from the Node
+server (`portal-email.js`), **not** by Supabase’s built-in Auth templates.
+
+On **Render** (and local `.env`), set:
+
+```bash
+PASSWORD_RESET_FROM_EMAIL=Shiflow <noreply@shiflow.app>
+PUBLIC_BASE_URL=https://shiflow.app
+SITE_URL=https://shiflow.app
+```
+
+Gmail shows the display name from the text before `<noreply@shiflow.app>`. Use
+**Shiflow**, not “Red Poke Schedule” / “Red Poke Scheduler”.
+
+If you also send mail through **Supabase Auth → SMTP / Email templates** (e.g.
+built-in confirm/reset), set the SMTP **Sender name** to **Shiflow** there too.
+This app’s create-company flow does not rely on those templates when Resend is
+configured.
 
 **Employee sign-up from the app:** If **Confirm email** is required (Auth → Providers → Email), new employees get a confirmation link first; after they confirm, they sign in with **email + password** on the main screen. For local testing you can turn confirmation off so they get a session immediately after **Create employee account**.
 
@@ -40,11 +79,12 @@ If your hosted project **already has** time-clock tables from a previous laptop,
 
 **All portal accounts (manager / employee / time clock):** Sign-in and sign-up use **name + password** via `POST /api/portal/signin` and `/api/portal/signup`. Add `SUPABASE_SERVICE_ROLE_KEY` from Project Settings → API → `service_role` to `.env`, restart `npm start`.
 
-**Forgot password:** On the login screen, **Forgot password?** — enter your **sign-in name**; the server emails a reset link to the **recovery email** on that account (set under **Account** after sign-in). Requires:
+**Forgot password / create company confirm:** On the login screen, **Forgot password?** emails a reset link; **Create company** emails a confirm link that should open **`https://shiflow.app/?setup_access_code=1`**. Requires:
 
-1. Migration `20260531120000_password_reset.sql`
-2. `PUBLIC_BASE_URL` set to your HTTPS site (e.g. Render URL)
-3. `RESEND_API_KEY` and `PASSWORD_RESET_FROM_EMAIL` on the server ([Resend](https://resend.com))
+1. Migration `20260531120000_password_reset.sql` (password reset)
+2. `PUBLIC_BASE_URL` / `SITE_URL` = `https://shiflow.app` on Render (never `http://localhost:3000`)
+3. `RESEND_API_KEY` and `PASSWORD_RESET_FROM_EMAIL=Shiflow <noreply@shiflow.app>`
+4. Supabase Site URL + Redirect URLs as in the table above
 
 Existing accounts: each person sets their own recovery email after sign-in via **Account** (top right). New sign-ups enter it on the create-account form.
 

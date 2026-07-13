@@ -1,10 +1,14 @@
 # Render Blueprint: https://render.com/docs/blueprint-spec
-# After first deploy, set PUBLIC_BASE_URL in the dashboard to your service URL, e.g.
-#   https://gm-callout.onrender.com
-# (no trailing slash). Add all Twilio vars there — do not commit secrets.
+# After first deploy, set these in the Render dashboard (do not commit secrets):
+#   PUBLIC_BASE_URL=https://shiflow.app
+#   SITE_URL=https://shiflow.app
+#   PASSWORD_RESET_FROM_EMAIL=Shiflow <noreply@shiflow.app>
+#   RESEND_API_KEY=...
+# NEVER set PUBLIC_BASE_URL / SITE_URL to http://localhost:3000 (breaks confirm email redirects).
 # Required for manager/employee name sign-in (see docs/SUPABASE.md):
 #   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 # After deploy, open /health — portalSignInReady and browserReady must be true.
+# Also set Supabase Auth → URL Configuration Site URL to https://shiflow.app (see docs/SUPABASE.md).
 # Run once locally: node scripts/reset-portal-accounts.js (same Supabase project as Render).
 
 services:

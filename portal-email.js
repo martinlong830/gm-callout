@@ -16,11 +16,31 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
 }
 
+/** Resend/SMTP From header. Display name must be "Shiflow" (not legacy Red Poke). */
+function portalFromAddress() {
+  const raw = stripEnv(process.env.PASSWORD_RESET_FROM_EMAIL);
+  if (!raw) {
+    return "Shiflow <noreply@shiflow.app>";
+  }
+  // Rewrite legacy display names while keeping a verified mailbox if present.
+  const angle = raw.match(/^(.+?)\s*<([^>]+)>\s*$/);
+  if (angle) {
+    const display = angle[1].replace(/^["']|["']$/g, "").trim();
+    const addr = angle[2].trim();
+    if (/red\s*poke/i.test(display) || !display) {
+      return `Shiflow <${addr}>`;
+    }
+    return raw;
+  }
+  if (isValidEmail(raw)) {
+    return `Shiflow <${raw}>`;
+  }
+  return raw;
+}
+
 async function sendPasswordResetEmail({ to, resetUrl, loginName }) {
   const apiKey = stripEnv(process.env.RESEND_API_KEY);
-  const from =
-    stripEnv(process.env.PASSWORD_RESET_FROM_EMAIL) ||
-    "Shiflow <onboarding@resend.dev>";
+  const from = portalFromAddress();
   const recipient = String(to || "").trim();
   if (!isValidEmail(recipient)) {
     return { ok: false, error: "Invalid recipient email." };
@@ -95,9 +115,7 @@ async function sendPasswordResetEmail({ to, resetUrl, loginName }) {
 
 async function sendCompanyConfirmationEmail({ to, companyName, confirmUrl, loginName }) {
   const apiKey = stripEnv(process.env.RESEND_API_KEY);
-  const from =
-    stripEnv(process.env.PASSWORD_RESET_FROM_EMAIL) ||
-    "Shiflow <onboarding@resend.dev>";
+  const from = portalFromAddress();
   const recipient = String(to || "").trim();
   if (!isValidEmail(recipient)) {
     return { ok: false, error: "Invalid recipient email." };
@@ -176,4 +194,5 @@ module.exports = {
   sendPasswordResetEmail,
   sendCompanyConfirmationEmail,
   isValidEmail,
+  portalFromAddress,
 };

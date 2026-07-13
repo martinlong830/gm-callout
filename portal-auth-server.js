@@ -399,7 +399,27 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     "id, role, display_name, internal_auth_email, login_name, login_name_norm, recovery_email, recovery_email_norm, company_id";
 
   function passwordResetBaseUrl() {
-    const base = String(publicBaseUrl || "").replace(/\/$/, "");
+    /** Production app origin for email confirm / password-reset links. */
+    const PRODUCTION_APP_URL = "https://shiflow.app";
+    const raw =
+      stripEnv(process.env.SITE_URL) ||
+      String(publicBaseUrl || "").trim() ||
+      stripEnv(process.env.PUBLIC_BASE_URL);
+    let base = String(raw || "").replace(/\/$/, "");
+
+    const isLocalHost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(base);
+    const isProd =
+      stripEnv(process.env.NODE_ENV) === "production" ||
+      stripEnv(process.env.RENDER) === "true" ||
+      !!stripEnv(process.env.RENDER_EXTERNAL_URL);
+
+    if (isProd && (!base || isLocalHost)) {
+      console.warn(
+        "[portal] SITE_URL/PUBLIC_BASE_URL missing or localhost in production — email links use",
+        PRODUCTION_APP_URL
+      );
+      return PRODUCTION_APP_URL;
+    }
     return base || "http://localhost:8000";
   }
 
