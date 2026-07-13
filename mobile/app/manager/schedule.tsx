@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
   FlatList,
   Image,
   Modal,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -112,13 +110,8 @@ export default function ManagerScheduleScreen() {
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /**
-   * One horizontal ScrollView per matrix row (header + body). Keep day offsets in sync
-   * so scrolling Monday→Sunday moves every row together while Person stays fixed.
-   */
-  const dayScrollRefs = useRef<Array<ScrollView | null>>([]);
-  const dayScrollDriver = useRef<number | null>(null);
-  const dayScrollX = useRef(0);
+  /** Single horizontal ScrollView for all day columns — Person column stays outside. */
+  const dayScrollRef = useRef<ScrollView | null>(null);
 
   const weekMeta = useMemo(
     () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
@@ -163,34 +156,14 @@ export default function ManagerScheduleScreen() {
     [schedule, visibleDays, draftRows]
   );
 
-  const daysWidth = Math.max(Dimensions.get('window').width - PERSON_COL - 16, visibleDays.length * CELL_MIN);
+  const daysWidth = Math.max(
+    Dimensions.get('window').width - PERSON_COL - 16,
+    visibleDays.length * CELL_MIN
+  );
 
   useEffect(() => {
-    dayScrollX.current = 0;
-    dayScrollDriver.current = null;
-    dayScrollRefs.current.forEach((ref) => {
-      ref?.scrollTo({ x: 0, animated: false });
-    });
-  }, [weekIndex, currentRestaurantId, calendarBody.length]);
-
-  const setDayScrollRef = useCallback((index: number, ref: ScrollView | null) => {
-    dayScrollRefs.current[index] = ref;
-  }, []);
-
-  const onDayScroll = useCallback((index: number, e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const x = e.nativeEvent.contentOffset.x;
-    dayScrollX.current = x;
-    if (dayScrollDriver.current != null && dayScrollDriver.current !== index) return;
-    dayScrollDriver.current = index;
-    dayScrollRefs.current.forEach((ref, i) => {
-      if (i === index || !ref) return;
-      ref.scrollTo({ x, animated: false });
-    });
-  }, []);
-
-  const onDayScrollEnd = useCallback(() => {
-    dayScrollDriver.current = null;
-  }, []);
+    dayScrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [weekIndex, currentRestaurantId]);
 
   const persistCloud = useCallback(
     async (store: AssignmentStore) => {
@@ -379,39 +352,65 @@ export default function ManagerScheduleScreen() {
         </View>
 
         {/*
-          Structural grid: each header/body line is ONE row View =
-          [sticky Person | horizontal day ScrollView]. Heights cannot diverge
-          between Person and Monday because they share a parent.
+          Sticky Person column + ONE horizontal ScrollView for all day columns.
+          Avoids N-scroll sync (programmatic scrollTo + onScroll) which fights
+          the user gesture and causes horizontal flicker.
         */}
         <View style={styles.matrix}>
-          <MatrixHeaderRow
-            scrollIndex={0}
-            daysWidth={daysWidth}
-            visibleDays={visibleDays}
-            weekMeta={weekMeta}
-            setDayScrollRef={setDayScrollRef}
-            onDayScroll={onDayScroll}
-            onDayScrollEnd={onDayScrollEnd}
-            showScrollIndicator
-          />
-          {calendarBody.map((row, ri) => (
-            <MatrixBodyRow
-              key={`r-${ri}`}
-              row={row}
-              scrollIndex={ri + 1}
-              daysWidth={daysWidth}
-              schedule={schedule}
-              visibleDays={visibleDays}
-              employees={lites}
-              restaurantId={currentRestaurantId}
-              setDayScrollRef={setDayScrollRef}
-              onDayScroll={onDayScroll}
-              onDayScrollEnd={onDayScrollEnd}
-              showScrollIndicator={ri === calendarBody.length - 1}
-              onOpenRowPerson={setRowPersonPicker}
-              onOpenShift={setPickerShift}
-            />
-          ))}
+          <View style={styles.matrixInner}>
+            <View style={[styles.personCol, { width: PERSON_COL }]}>
+              <View style={styles.personTh}>
+                <Text style={styles.thFull}>PERSON</Text>
+                <Text style={styles.thSub}>Row assignee</Text>
+              </View>
+              {calendarBody.map((row, ri) => (
+                <PersonColRow
+                  key={`p-${ri}`}
+                  row={row}
+                  schedule={schedule}
+                  visibleDays={visibleDays}
+                  employees={lites}
+                  restaurantId={currentRestaurantId}
+                  onOpenRowPerson={setRowPersonPicker}
+                />
+              ))}
+            </View>
+
+            <ScrollView
+              ref={dayScrollRef}
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              style={styles.dayLane}
+              contentContainerStyle={styles.dayLaneContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={{ width: daysWidth }}>
+                <View style={styles.headerDays}>
+                  {visibleDays.map((dayStr) => {
+                    const meta = weekMeta.find((m) => m.label === dayStr);
+                    const parts = dayStr.split(' ');
+                    const dow = parts[0] || '';
+                    const rest = parts.slice(1).join(' ');
+                    return (
+                      <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                        <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
+                        <Text style={styles.thSub}>{rest}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+                {calendarBody.map((row, ri) => (
+                  <DayColRow
+                    key={`d-${ri}`}
+                    row={row}
+                    daysWidth={daysWidth}
+                    onOpenShift={setPickerShift}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+          </View>
         </View>
       </ScrollView>
 
@@ -470,118 +469,40 @@ export default function ManagerScheduleScreen() {
   );
 }
 
-type DayScrollProps = {
-  scrollIndex: number;
-  setDayScrollRef: (index: number, ref: ScrollView | null) => void;
-  onDayScroll: (index: number, e: NativeSyntheticEvent<NativeScrollEvent>) => void;
-  onDayScrollEnd: () => void;
-  showScrollIndicator?: boolean;
-};
-
-function DayLaneScroll({
-  scrollIndex,
-  setDayScrollRef,
-  onDayScroll,
-  onDayScrollEnd,
-  showScrollIndicator,
-  children,
-}: DayScrollProps & { children: ReactNode }) {
-  return (
-    <ScrollView
-      ref={(ref) => setDayScrollRef(scrollIndex, ref)}
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={!!showScrollIndicator}
-      style={styles.dayLane}
-      contentContainerStyle={styles.dayLaneContent}
-      onScroll={(e) => onDayScroll(scrollIndex, e)}
-      onScrollEndDrag={onDayScrollEnd}
-      onMomentumScrollEnd={onDayScrollEnd}
-      scrollEventThrottle={16}
-    >
-      {children}
-    </ScrollView>
-  );
-}
-
-function MatrixHeaderRow({
-  daysWidth,
-  visibleDays,
-  weekMeta,
-  ...scrollProps
-}: DayScrollProps & {
-  daysWidth: number;
-  visibleDays: string[];
-  weekMeta: ReturnType<typeof buildWeeksFromMonday>;
-}) {
-  return (
-    <View style={styles.matrixRow}>
-      <View style={[styles.personTh, { width: PERSON_COL }]}>
-        <Text style={styles.thFull}>PERSON</Text>
-        <Text style={styles.thSub}>Row assignee</Text>
-      </View>
-      <DayLaneScroll {...scrollProps}>
-        <View style={[styles.headerDays, { width: daysWidth }]}>
-          {visibleDays.map((dayStr) => {
-            const meta = weekMeta.find((m) => m.label === dayStr);
-            const parts = dayStr.split(' ');
-            const dow = parts[0] || '';
-            const rest = parts.slice(1).join(' ');
-            return (
-              <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
-                <Text style={styles.thSub}>{rest}</Text>
-              </View>
-            );
-          })}
-        </View>
-      </DayLaneScroll>
-    </View>
-  );
-}
-
-function MatrixBodyRow({
-  row,
-  daysWidth,
-  schedule,
-  visibleDays,
-  employees,
-  restaurantId,
-  onOpenRowPerson,
-  onOpenShift,
-  ...scrollProps
-}: DayScrollProps & {
+type PersonColRowProps = {
   row: CalendarBodyRow;
-  daysWidth: number;
   schedule: ScheduleRow[];
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
   onOpenRowPerson: (t: RowPersonTarget) => void;
-  onOpenShift: (s: ScheduleRow) => void;
-}) {
+};
+
+function PersonColRow({
+  row,
+  schedule,
+  visibleDays,
+  employees,
+  restaurantId,
+  onOpenRowPerson,
+}: PersonColRowProps) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
     return (
-      <View style={[styles.matrixRow, styles.sectionMatrixRow]}>
-        <View
-          style={[
-            styles.personSection,
-            {
-              width: PERSON_COL,
-              backgroundColor: bg,
-              borderLeftColor: fg,
-            },
-          ]}
-        >
-          <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
-            {row.title}
-          </Text>
-        </View>
-        <DayLaneScroll {...scrollProps}>
-          <View style={[styles.sectionDayFill, { width: daysWidth, backgroundColor: bg }]} />
-        </DayLaneScroll>
+      <View
+        style={[
+          styles.personSection,
+          styles.sectionMatrixRow,
+          {
+            backgroundColor: bg,
+            borderLeftColor: fg,
+          },
+        ]}
+      >
+        <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
+          {row.title}
+        </Text>
       </View>
     );
   }
@@ -599,28 +520,52 @@ function MatrixBodyRow({
   const label = selected && selected !== 'Unassigned' ? selected : 'Unassigned';
 
   return (
-    <View style={[styles.matrixRow, styles.dataMatrixRow]}>
-      <View style={[styles.personCell, { width: PERSON_COL }]}>
-        <Pressable
-          style={styles.personSelect}
-          onPress={() => onOpenRowPerson({ role: row.role, trIdx: row.trIdx })}
-          accessibilityRole="button"
-          accessibilityLabel={`Person for ${STAFF_TYPE_LABELS[row.role]} row ${row.trIdx + 1}`}
-        >
-          <Text style={styles.personSelectText} numberOfLines={2}>
-            {label}
-          </Text>
-        </Pressable>
-      </View>
-      <DayLaneScroll {...scrollProps}>
-        <View style={[styles.dataDays, { width: daysWidth }]}>
-          {row.cells.map((cell, ci) => (
-            <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
-              <CalendarCellView cell={cell} onOpenShift={onOpenShift} />
-            </View>
-          ))}
+    <View style={[styles.personCell, styles.dataMatrixRow]}>
+      <Pressable
+        style={styles.personSelect}
+        onPress={() => onOpenRowPerson({ role: row.role, trIdx: row.trIdx })}
+        accessibilityRole="button"
+        accessibilityLabel={`Person for ${STAFF_TYPE_LABELS[row.role]} row ${row.trIdx + 1}`}
+      >
+        <Text style={styles.personSelectText} numberOfLines={2}>
+          {label}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function DayColRow({
+  row,
+  daysWidth,
+  onOpenShift,
+}: {
+  row: CalendarBodyRow;
+  daysWidth: number;
+  onOpenShift: (s: ScheduleRow) => void;
+}) {
+  if (row.kind === 'section') {
+    const bg = sectionBg(row.variant);
+    return (
+      <View
+        style={[
+          styles.sectionDayFill,
+          styles.sectionMatrixRow,
+          { width: daysWidth, backgroundColor: bg },
+        ]}
+      />
+    );
+  }
+
+  if (row.kind !== 'cells') return null;
+
+  return (
+    <View style={[styles.dataDays, styles.dataMatrixRow, { width: daysWidth }]}>
+      {row.cells.map((cell, ci) => (
+        <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
+          <CalendarCellView cell={cell} onOpenShift={onOpenShift} />
         </View>
-      </DayLaneScroll>
+      ))}
     </View>
   );
 }
@@ -698,9 +643,14 @@ const styles = StyleSheet.create({
   refreshBtn: { paddingVertical: 4 },
   refreshTxt: { fontSize: 14, color: '#c41230', fontWeight: '700' },
   matrix: { paddingLeft: 4, paddingBottom: 16 },
-  matrixRow: {
+  matrixInner: {
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'flex-start',
+  },
+  personCol: {
+    flexShrink: 0,
+    zIndex: 1,
+    backgroundColor: '#f8fafc',
   },
   sectionMatrixRow: {
     marginBottom: SECTION_GAP_BELOW,
@@ -709,14 +659,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: '#eef2f7',
     backgroundColor: '#fff',
-    minHeight: DATA_ROW_MIN_H,
+    height: DATA_ROW_MIN_H,
   },
   dayLane: {
     flex: 1,
   },
   dayLaneContent: {
     flexGrow: 1,
-    alignItems: 'stretch',
   },
   personTh: {
     height: HEADER_ROW_H,
@@ -780,10 +729,10 @@ const styles = StyleSheet.create({
   },
   dataDays: {
     flexDirection: 'row',
-    minHeight: DATA_ROW_MIN_H,
+    height: DATA_ROW_MIN_H,
     alignItems: 'stretch',
   },
-  cell: { minHeight: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
+  cell: { height: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
   cellInner: {
     flex: 1,
     borderWidth: 1,

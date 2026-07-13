@@ -1,3 +1,4 @@
+import { friendlyAuthTokenMessage, isInvalidAuthTokenError } from './authErrors';
 import { supabase } from './supabase';
 
 function portalApiBase(): string {
@@ -23,7 +24,20 @@ function friendlyPortalErrorMessage(raw: string): string {
   if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
     return 'Multiple accounts match that name. Re-enter your company access code, then try again.';
   }
+  if (isInvalidAuthTokenError(msg) || /^invalid token$/i.test(msg)) {
+    return friendlyAuthTokenMessage(msg, 'signin');
+  }
   return msg;
+}
+
+/** Clear a bad persisted session without calling the network logout endpoint. */
+export async function clearLocalAuthSession(): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.auth.signOut({ scope: 'local' });
+  } catch {
+    /* ignore */
+  }
 }
 
 async function portalPost<T extends Record<string, unknown>>(
@@ -98,11 +112,28 @@ export async function applyPortalSession(tokens: {
   refresh_token?: string;
 }): Promise<{ ok: true } | { ok: false; message: string }> {
   if (!supabase) return { ok: false, message: 'Supabase is not configured.' };
+  const access = String(tokens.access_token || '').trim();
+  const refresh = String(tokens.refresh_token || '').trim();
+  if (!access || !refresh) {
+    await clearLocalAuthSession();
+    return {
+      ok: false,
+      message: friendlyAuthTokenMessage('Invalid token', 'signin'),
+    };
+  }
+  // Drop any stale AsyncStorage session before applying portal tokens.
+  await clearLocalAuthSession();
   const { error } = await supabase.auth.setSession({
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token ?? '',
+    access_token: access,
+    refresh_token: refresh,
   });
-  if (error) return { ok: false, message: error.message || 'Could not start session.' };
+  if (error) {
+    await clearLocalAuthSession();
+    return {
+      ok: false,
+      message: friendlyAuthTokenMessage(error.message || 'Invalid token', 'signin'),
+    };
+  }
   return { ok: true };
 }
 
@@ -307,46 +338,37 @@ export async function establishConfirmSessionForAccessCodeSetup(
   }
   const params = parseAuthParamsFromUrl(url);
   if (params.error || params.error_description) {
-    try {
-      await supabase.auth.signOut({ scope: 'local' });
-    } catch {
-      /* ignore */
-    }
+    await clearLocalAuthSession();
     return {
       ok: false,
-      message:
-        params.error_description ||
-        params.error ||
-        'Email confirmation failed. Request a new confirmation email.',
+      message: friendlyAuthTokenMessage(
+        params.error_description || params.error || 'Invalid token',
+        'confirm'
+      ),
     };
   }
 
   if (params.access_token && params.refresh_token) {
-    try {
-      await supabase.auth.signOut({ scope: 'local' });
-    } catch {
-      /* ignore */
-    }
-    const { error } = await supabase.auth.setSession({
+    const applied = await applyPortalSession({
       access_token: params.access_token,
       refresh_token: params.refresh_token,
     });
-    if (error) {
-      return { ok: false, message: error.message || 'Could not start session from confirmation link.' };
+    if (!applied.ok) {
+      return {
+        ok: false,
+        message: friendlyAuthTokenMessage(applied.message, 'confirm'),
+      };
     }
   } else if (params.code) {
-    try {
-      await supabase.auth.signOut({ scope: 'local' });
-    } catch {
-      /* ignore */
-    }
+    await clearLocalAuthSession();
     const exchanged = await supabase.auth.exchangeCodeForSession(params.code);
     if (exchanged.error || !exchanged.data.session) {
       return {
         ok: false,
-        message:
-          exchanged.error?.message ||
-          'Could not complete email confirmation. Open the link from your email again.',
+        message: friendlyAuthTokenMessage(
+          exchanged.error?.message || 'Invalid token',
+          'confirm'
+        ),
       };
     }
   }
@@ -609,9 +631,16 @@ async function portalAuthedFetch<T extends Record<string, unknown>>(
     const res = await fetch(`${base}${path}`, opts);
     const data = (await res.json()) as Record<string, unknown>;
     if (!res.ok || !data.ok) {
+      const raw = (data.message as string) || 'Request failed.';
+      let msg = friendlyPortalErrorMessage(raw);
+      if (res.status === 401 && (data.needsSignIn || isInvalidAuthTokenError(raw))) {
+        await clearLocalAuthSession();
+        msg = friendlyAuthTokenMessage(raw, 'session');
+      }
       return {
         ok: false,
-        message: (data.message as string) || 'Request failed.',
+        message: msg,
+        needsSignIn: !!data.needsSignIn || isInvalidAuthTokenError(raw),
         status: res.status,
       };
     }

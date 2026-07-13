@@ -32,6 +32,7 @@ import {
   portalVerifyAccessCode,
   portalWebUrl,
 } from '../lib/portalAuth';
+import { friendlyAuthTokenMessage, isInvalidAuthTokenError } from '../lib/authErrors';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 type Panel =
@@ -349,6 +350,8 @@ export default function LoginScreen() {
       if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
         msg =
           'Multiple accounts match that name. Re-enter your company access code, then try again. If it still fails, ask an owner to clean up duplicate profiles.';
+      } else if (isInvalidAuthTokenError(msg) || /^invalid token$/i.test(msg)) {
+        msg = friendlyAuthTokenMessage(msg, 'signin');
       }
       const hint =
         msg.includes('timed out') || msg.includes('Could not reach')

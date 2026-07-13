@@ -9,11 +9,13 @@ import React, {
 } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import {
+  clearLocalAuthSession,
   isPortalAuthConfigured,
   portalSignIn,
   portalSignUp,
   type PortalSignUpPayload,
 } from '../lib/portalAuth';
+import { isInvalidAuthTokenError } from '../lib/authErrors';
 import { createEmployeeRosterRow, type RegisterEmployeeInput } from '../lib/registerEmployee';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
@@ -69,7 +71,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .select('role, display_name')
       .eq('id', userId)
       .maybeSingle();
-    if (prof.error || !prof.data) return null;
+    if (prof.error) {
+      if (isInvalidAuthTokenError(prof.error.message)) {
+        return { invalidToken: true as const };
+      }
+      return null;
+    }
+    if (!prof.data) return null;
     const r = prof.data.role as string;
     if (!isAppRole(r)) return null;
     return { role: r, displayName: String(prof.data.display_name || '').trim() };
@@ -85,8 +93,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       const prof = await fetchProfile(sess.user.id);
-      if (!prof) {
-        await supabase.auth.signOut();
+      if (!prof || 'invalidToken' in prof) {
+        await clearLocalAuthSession();
         setSession(null);
         setUser(null);
         setRole(null);
@@ -105,12 +113,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!cancelled) await applySession(data.session ?? null);
+      const { data, error } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (error && isInvalidAuthTokenError(error.message)) {
+        await clearLocalAuthSession();
+        await applySession(null);
+        if (!cancelled) setLoading(false);
+        return;
+      }
+      const sess = data.session ?? null;
+      if (sess) {
+        // Validate with Auth server so a stale refresh token cannot linger.
+        const { error: userErr } = await supabase.auth.getUser();
+        if (cancelled) return;
+        if (userErr && isInvalidAuthTokenError(userErr.message)) {
+          await clearLocalAuthSession();
+          await applySession(null);
+          if (!cancelled) setLoading(false);
+          return;
+        }
+      }
+      if (!cancelled) await applySession(sess);
       if (!cancelled) setLoading(false);
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       if (signInInFlightRef.current) return;
+      if (event === 'TOKEN_REFRESHED' && !sess) {
+        void clearLocalAuthSession().then(() => applySession(null));
+        return;
+      }
       void applySession(sess);
     });
     return () => {
@@ -151,11 +182,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         const prof = await fetchProfile(data.session.user.id);
-        if (!prof) {
-          await supabase.auth.signOut();
+        if (!prof || 'invalidToken' in prof) {
+          await clearLocalAuthSession();
           return {
             ok: false as const,
-            message: 'No profile row for this user. Run migrations and try again.',
+            message:
+              prof && 'invalidToken' in prof
+                ? 'Your session token is invalid. Sign in again with your name and password.'
+                : 'No profile row for this user. Run migrations and try again.',
           };
         }
         applyProfile(data.session, prof.role, prof.displayName);

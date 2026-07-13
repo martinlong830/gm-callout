@@ -252,12 +252,15 @@
     var session = null;
     if (params.error || params.error_description) {
       await localSignOutQuiet();
+      var rawErr = params.error_description || params.error || "";
+      var confirmMsg = rawErr;
+      if (/invalid\s*token|token has expired|email link is invalid|otp_expired/i.test(String(rawErr))) {
+        confirmMsg =
+          "This email confirmation link is invalid or was already used. Open a fresh confirmation email in your browser (Safari/Chrome), or create the company again.";
+      }
       return {
         ok: false,
-        message:
-          params.error_description ||
-          params.error ||
-          "Email confirmation failed. Request a new confirmation email.",
+        message: confirmMsg || "Email confirmation failed. Request a new confirmation email.",
       };
     }
 
