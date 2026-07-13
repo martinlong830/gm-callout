@@ -12420,6 +12420,9 @@
   }
 
   async function gmCalloutRestoreAuthedShellFromSupabase() {
+    if (window.__GM_ACCESS_CODE_SETUP_FLOW__) {
+      return false;
+    }
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
       return false;
     }
@@ -12758,6 +12761,18 @@
 
   if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
     window.gmSupabase.auth.onAuthStateChange(function (event, session) {
+      if (window.__GM_ACCESS_CODE_SETUP_FLOW__) {
+        if (event === 'SIGNED_OUT') {
+          teardownEmployeesRealtimeSubscription();
+          teardownTeamStateRealtimeSubscription();
+          teardownStaffRequestsRealtimeSubscription();
+          teardownTimeClockEntriesRealtimeSubscription();
+          teardownEmployeeChatRealtimeSubscription();
+          gmCalloutSessionIsManager = false;
+        }
+        // Stay on the set-access-code panel; do not auto-enter the app as a prior user.
+        return;
+      }
       if (event === 'SIGNED_OUT') {
         teardownEmployeesRealtimeSubscription();
         teardownTeamStateRealtimeSubscription();

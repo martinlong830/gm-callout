@@ -427,11 +427,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     const authHeader = req.headers && req.headers.authorization;
     const match = String(authHeader || "").match(/^Bearer\s+(.+)$/i);
     if (!match) {
-      return { error: "Sign in required.", status: 401 };
+      return { error: "Sign in required.", status: 401, needsSignIn: true };
     }
     const { data, error } = await admin.auth.getUser(match[1]);
     if (error || !data.user) {
-      return { error: "Sign in required.", status: 401 };
+      return { error: "Sign in required.", status: 401, needsSignIn: true };
     }
     const { data: profile, error: profErr } = await admin
       .from("profiles")
@@ -441,7 +441,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (profErr || !profile) {
       return { error: "Account not found.", status: 404 };
     }
-    return { profile, userId: data.user.id };
+    return { profile, userId: data.user.id, user: data.user };
   }
 
   async function createPasswordResetToken(profileId) {
@@ -849,7 +849,19 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     try {
       const authed = await profileFromAccessToken(req);
       if (authed.error) {
-        return res.status(authed.status || 401).json({ ok: false, message: authed.error });
+        return res.status(authed.status || 401).json({
+          ok: false,
+          message: authed.error,
+          needsSignIn: !!authed.needsSignIn,
+        });
+      }
+      if (!authed.user || !authed.user.email_confirmed_at) {
+        return res.status(403).json({
+          ok: false,
+          needsEmailConfirm: true,
+          message:
+            "Confirm your email first using the link we sent, then return here to set your access code.",
+        });
       }
       if (authed.profile.role !== "manager") {
         return res.status(403).json({ ok: false, message: "Manager account required." });
@@ -864,7 +876,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!isOwner && companyHasUsableAccessCode(company)) {
         return res.status(403).json({
           ok: false,
-          message: "Only the company creator can change the access code here.",
+          wrongAccount: true,
+          message:
+            "Only the company creator can change the access code here. If you just confirmed a new company, sign out and open the email link again (private window recommended).",
         });
       }
       if (!isOwner && !company.owner_user_id) {
@@ -877,7 +891,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       } else if (!isOwner) {
         return res.status(403).json({
           ok: false,
-          message: "Only the company creator can set the access code.",
+          wrongAccount: true,
+          message:
+            "This browser is signed in as a different account than the company creator. Sign out and open the confirmation link from your email again (private window recommended).",
         });
       }
 

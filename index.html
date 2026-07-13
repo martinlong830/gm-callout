@@ -1709,6 +1709,25 @@
   </script>
   <script>
     (function () {
+      /* Block auto-restore of a prior Supabase session during create-company email confirm. */
+      try {
+        var earlyParams = new URLSearchParams(window.location.search);
+        var earlyHash = String(window.location.hash || '').replace(/^#/, '');
+        var earlyHashParams = earlyHash ? new URLSearchParams(earlyHash) : null;
+        if (
+          earlyParams.get('setup_access_code') === '1' ||
+          earlyParams.get('code') ||
+          (earlyHashParams &&
+            (earlyHashParams.get('access_token') ||
+              earlyHashParams.get('type') === 'signup' ||
+              earlyHashParams.get('error_description')))
+        ) {
+          window.__GM_ACCESS_CODE_SETUP_FLOW__ = true;
+        }
+      } catch (_earlySetup) {
+        /* ignore */
+      }
+
       var SESSION_KEY = 'gm-callout-session';
       var SESSION_EMPLOYEE_DISPLAY_NAME_KEY = 'gm-callout-employee-display-name';
 
@@ -2460,8 +2479,9 @@
             verifiedCompanyName = res.companyName || '';
             if (setupAccessCodeForm) setupAccessCodeForm.reset();
             try {
+              window.__GM_ACCESS_CODE_SETUP_FLOW__ = false;
               if (window.gmSupabase && window.gmSupabase.auth) {
-                await window.gmSupabase.auth.signOut();
+                await window.gmSupabase.auth.signOut({ scope: 'local' });
               }
             } catch (_so) {
               /* ignore */
@@ -2705,11 +2725,13 @@
         var resetTokenFromUrl = bootParams.get('reset_token');
         if (resetTokenFromUrl) {
           showResetPasswordPanel(resetTokenFromUrl);
-        } else if (bootParams.get('setup_access_code') === '1') {
+        } else if (bootParams.get('setup_access_code') === '1' || window.__GM_ACCESS_CODE_SETUP_FLOW__) {
+          window.__GM_ACCESS_CODE_SETUP_FLOW__ = true;
           showSetupAccessCodePanel();
           try {
             var cleanSetupUrl = new URL(window.location.href);
             cleanSetupUrl.searchParams.delete('setup_access_code');
+            // Keep hash / code params until establishConfirmSession consumes them.
             window.history.replaceState(
               {},
               '',
@@ -2722,27 +2744,26 @@
           }
           (async function () {
             await whenPortalAuthReady();
-            // Email confirm redirects with session tokens in the URL hash; wait for client to pick them up.
-            var tries = 0;
-            while (tries < 40) {
-              if (window.gmSupabase && window.gmSupabase.auth) {
-                var sessRes = await window.gmSupabase.auth.getSession();
-                if (sessRes.data && sessRes.data.session) break;
-              }
-              tries += 1;
-              await new Promise(function (r) {
-                setTimeout(r, 100);
-              });
-            }
-            var sess =
-              window.gmSupabase && window.gmSupabase.auth
-                ? await window.gmSupabase.auth.getSession()
-                : null;
-            if (!(sess && sess.data && sess.data.session)) {
+            if (
+              !window.gmPortalAuth ||
+              typeof window.gmPortalAuth.establishConfirmSessionForAccessCodeSetup !== 'function'
+            ) {
               showSetupAccessCodeError(
-                'Confirm your email first using the link we sent, then return here to set your access code.'
+                'Could not start access-code setup. Refresh and open the confirmation link again.'
               );
+              return;
             }
+            var established = await window.gmPortalAuth.establishConfirmSessionForAccessCodeSetup();
+            if (!established.ok) {
+              showSetupAccessCodeError(established.message || 'Could not confirm your email session.');
+              if (established.alreadySet) {
+                window.__GM_ACCESS_CODE_SETUP_FLOW__ = false;
+                showLoginPanel();
+                showLoginError(established.message, 'success');
+              }
+              return;
+            }
+            clearSetupAccessCodeError();
           })();
         } else if (bootParams.get('company_pending') === '1') {
           showCompanyPendingPanel(
@@ -3124,15 +3145,15 @@
     })();
   </script>
   <script defer src="/vendor/supabase-js.js"></script>
-  <script defer src="gm-supabase-init.js"></script>
+  <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=person-row-picker-1"></script>
+  <script defer src="app.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-app.js?v=person-row-picker-1"></script>
   <script defer src="manager-messaging.js?v=timecards-tips-1"></script>
   <script defer src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
   <script defer src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
-  <script defer src="portal-auth-client.js?v=recovery-email-self-2"></script>
+  <script defer src="portal-auth-client.js?v=setup-access-code-session-1"></script>
   <script defer src="login-timeclock.js?v=timecards-tips-1"></script>
 </body>
 </html>

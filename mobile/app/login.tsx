@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Linking from 'expo-linking';
 import { useAuth } from '../contexts/AuthContext';
 import {
   isRedPokeAccessCode,
@@ -21,6 +22,7 @@ import {
   storeCompanySession,
 } from '../lib/companySession';
 import {
+  establishConfirmSessionForAccessCodeSetup,
   isPortalAuthConfigured,
   portalCreateCompany,
   portalRequestPasswordReset,
@@ -93,6 +95,52 @@ export default function LoginScreen() {
       setPanel('setup-access-code');
     }
   }, [params.setup_access_code]);
+
+  useEffect(() => {
+    if (panel !== 'setup-access-code') return;
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      clearMsg();
+      let url: string | null = null;
+      try {
+        url = (await Linking.getInitialURL()) || null;
+      } catch {
+        url = null;
+      }
+      // Prefer the current deep-link query when Expo Router already parsed it.
+      if (!url && params.setup_access_code === '1') {
+        url = `https://shiflow.app/?setup_access_code=1`;
+      }
+      const established = await establishConfirmSessionForAccessCodeSetup(url);
+      if (cancelled) return;
+      setBusy(false);
+      if (!established.ok) {
+        setMessage(established.message);
+        setSuccess(!!established.alreadySet);
+        if (established.alreadySet) setPanel('signin');
+        return;
+      }
+      setMessage(null);
+    })();
+    const sub = Linking.addEventListener('url', (ev) => {
+      void establishConfirmSessionForAccessCodeSetup(ev.url).then((established) => {
+        if (cancelled) return;
+        if (!established.ok) {
+          setMessage(established.message);
+          setSuccess(!!established.alreadySet);
+          if (established.alreadySet) setPanel('signin');
+          return;
+        }
+        setPanel('setup-access-code');
+        setMessage(null);
+      });
+    });
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [panel, params.setup_access_code]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -247,7 +295,7 @@ export default function LoginScreen() {
     setVerifiedCompanyName(res.companyName || '');
     setSetupAccessCodeValue('');
     try {
-      if (supabase) await supabase.auth.signOut();
+      if (supabase) await supabase.auth.signOut({ scope: 'local' });
     } catch {
       /* ignore */
     }
@@ -596,8 +644,9 @@ export default function LoginScreen() {
               <>
                 <Text style={styles.subtitle}>Set your company access code</Text>
                 <Text style={styles.hint}>
-                  Choose a unique access code. Your team will enter it before signing in. Confirm your email
-                  first so you are signed in long enough to save it.
+                  Choose a unique access code. Your team will enter it before signing in. Open the
+                  confirmation link from your email on this device (or in a private browser window on
+                  the web) so the correct account is signed in.
                 </Text>
                 <Text style={styles.label}>Company access code</Text>
                 <TextInput

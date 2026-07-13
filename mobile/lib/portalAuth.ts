@@ -230,6 +230,148 @@ export async function portalSetupAccessCode(
   };
 }
 
+function parseAuthParamsFromUrl(url: string | null | undefined): {
+  access_token: string;
+  refresh_token: string;
+  code: string;
+  error: string;
+  error_description: string;
+} {
+  const out = {
+    access_token: '',
+    refresh_token: '',
+    code: '',
+    error: '',
+    error_description: '',
+  };
+  if (!url) return out;
+  try {
+    const parsed = new URL(url);
+    out.code = String(parsed.searchParams.get('code') || '').trim();
+    out.access_token = String(parsed.searchParams.get('access_token') || '').trim();
+    out.refresh_token = String(parsed.searchParams.get('refresh_token') || '').trim();
+    out.error = String(parsed.searchParams.get('error') || '').trim();
+    out.error_description = String(parsed.searchParams.get('error_description') || '').trim();
+    const hash = String(parsed.hash || '').replace(/^#/, '');
+    if (hash) {
+      const hp = new URLSearchParams(hash);
+      if (!out.access_token) out.access_token = String(hp.get('access_token') || '').trim();
+      if (!out.refresh_token) out.refresh_token = String(hp.get('refresh_token') || '').trim();
+      if (!out.code) out.code = String(hp.get('code') || '').trim();
+      if (!out.error) out.error = String(hp.get('error') || '').trim();
+      if (!out.error_description) {
+        out.error_description = String(hp.get('error_description') || '').trim();
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/**
+ * After create-company email confirm deep link, clear a conflicting prior session
+ * and establish the newly confirmed user's session before setting the access code.
+ */
+export async function establishConfirmSessionForAccessCodeSetup(
+  url?: string | null
+): Promise<
+  | { ok: true; loginName?: string; companyName?: string; needsAccessCodeSetup?: boolean }
+  | { ok: false; message: string; alreadySet?: boolean; wrongAccount?: boolean }
+> {
+  if (!supabase) {
+    return { ok: false, message: 'Supabase is not configured.' };
+  }
+  const params = parseAuthParamsFromUrl(url);
+  if (params.error || params.error_description) {
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch {
+      /* ignore */
+    }
+    return {
+      ok: false,
+      message:
+        params.error_description ||
+        params.error ||
+        'Email confirmation failed. Request a new confirmation email.',
+    };
+  }
+
+  if (params.access_token && params.refresh_token) {
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch {
+      /* ignore */
+    }
+    const { error } = await supabase.auth.setSession({
+      access_token: params.access_token,
+      refresh_token: params.refresh_token,
+    });
+    if (error) {
+      return { ok: false, message: error.message || 'Could not start session from confirmation link.' };
+    }
+  } else if (params.code) {
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch {
+      /* ignore */
+    }
+    const exchanged = await supabase.auth.exchangeCodeForSession(params.code);
+    if (exchanged.error || !exchanged.data.session) {
+      return {
+        ok: false,
+        message:
+          exchanged.error?.message ||
+          'Could not complete email confirmation. Open the link from your email again.',
+      };
+    }
+  }
+
+  const sess = await supabase.auth.getSession();
+  if (!sess.data.session) {
+    return {
+      ok: false,
+      message:
+        'Confirm your email first using the link we sent, then return here to set your access code. Prefer opening the link in the browser (or a private window).',
+    };
+  }
+
+  const acct = await portalGetAccount();
+  if (!acct.ok) {
+    return {
+      ok: false,
+      message: acct.message || 'Could not load your account after confirmation.',
+    };
+  }
+  if (acct.needsAccessCodeSetup) {
+    return {
+      ok: true,
+      loginName: acct.loginName,
+      companyName: acct.companyName,
+      needsAccessCodeSetup: true,
+    };
+  }
+  if (acct.isCompanyCreator) {
+    return {
+      ok: false,
+      alreadySet: true,
+      message: 'Your company access code is already set. Sign in with your username and password.',
+    };
+  }
+  try {
+    await supabase.auth.signOut({ scope: 'local' });
+  } catch {
+    /* ignore */
+  }
+  return {
+    ok: false,
+    wrongAccount: true,
+    message:
+      'This device was still signed in as a different account. Sign out completed — open the confirmation link from your email again (browser / private window recommended).',
+  };
+}
+
 export async function portalUpdateCompany(payload: {
   name?: string;
   companyName?: string;

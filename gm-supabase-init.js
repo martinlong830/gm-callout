@@ -48,6 +48,9 @@
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
+        // Email confirm redirects use #access_token=… (implicit). Keep explicit so
+        // create-company confirm links are not rejected by a PKCE-only client.
+        flowType: 'implicit',
       },
     });
     window.gmSupabaseEnabled = true;

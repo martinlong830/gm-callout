@@ -51,6 +51,9 @@
         ok: false,
         message: portalErrorMessage(res, data, "Request failed."),
         status: res.status,
+        needsSignIn: !!(data && data.needsSignIn),
+        needsEmailConfirm: !!(data && data.needsEmailConfirm),
+        wrongAccount: !!(data && data.wrongAccount),
       };
     }
     return { ok: true, data: data };
@@ -136,10 +139,220 @@
     return { ok: true };
   }
 
+  function parseAuthRedirectParams() {
+    var out = {
+      access_token: "",
+      refresh_token: "",
+      code: "",
+      type: "",
+      error: "",
+      error_description: "",
+    };
+    try {
+      var url = new URL(window.location.href);
+      out.code = String(url.searchParams.get("code") || "").trim();
+      out.type = String(url.searchParams.get("type") || "").trim();
+      out.error = String(url.searchParams.get("error") || "").trim();
+      out.error_description = String(url.searchParams.get("error_description") || "").trim();
+      var hash = String(url.hash || "").replace(/^#/, "");
+      if (hash) {
+        var hp = new URLSearchParams(hash);
+        out.access_token = String(hp.get("access_token") || "").trim();
+        out.refresh_token = String(hp.get("refresh_token") || "").trim();
+        if (!out.type) out.type = String(hp.get("type") || "").trim();
+        if (!out.error) out.error = String(hp.get("error") || "").trim();
+        if (!out.error_description) {
+          out.error_description = String(hp.get("error_description") || "").trim();
+        }
+        if (!out.code) out.code = String(hp.get("code") || "").trim();
+      }
+      // Query can also carry implicit tokens in some redirect modes.
+      if (!out.access_token) {
+        out.access_token = String(url.searchParams.get("access_token") || "").trim();
+      }
+      if (!out.refresh_token) {
+        out.refresh_token = String(url.searchParams.get("refresh_token") || "").trim();
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+    return out;
+  }
+
+  function cleanAuthRedirectParamsFromUrl() {
+    try {
+      var url = new URL(window.location.href);
+      [
+        "code",
+        "access_token",
+        "refresh_token",
+        "expires_in",
+        "expires_at",
+        "token_type",
+        "type",
+        "error",
+        "error_description",
+        "error_code",
+        "setup_access_code",
+      ].forEach(function (key) {
+        url.searchParams.delete(key);
+      });
+      url.hash = "";
+      window.history.replaceState(
+        {},
+        "",
+        url.pathname + (url.search ? url.search : "")
+      );
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  async function localSignOutQuiet() {
+    if (!window.gmSupabase || !window.gmSupabase.auth) return;
+    try {
+      await window.gmSupabase.auth.signOut({ scope: "local" });
+    } catch (_e) {
+      try {
+        await window.gmSupabase.auth.signOut();
+      } catch (_e2) {
+        /* ignore */
+      }
+    }
+  }
+
+  async function waitForAuthInitialize() {
+    if (!window.gmSupabase || !window.gmSupabase.auth) return;
+    if (typeof window.gmSupabase.auth.initialize === "function") {
+      try {
+        await window.gmSupabase.auth.initialize();
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * After create-company email confirm, land on /?setup_access_code=1 with
+   * hash/query tokens. Clear any previous browser session and establish the
+   * newly confirmed user's session before setting the access code.
+   */
+  async function establishConfirmSessionForAccessCodeSetup() {
+    if (!window.gmSupabase || !window.gmSupabase.auth) {
+      return {
+        ok: false,
+        message:
+          "Supabase is not ready. Open the confirmation link again once the app has loaded.",
+      };
+    }
+    window.__GM_ACCESS_CODE_SETUP_FLOW__ = true;
+    await waitForAuthInitialize();
+
+    var params = parseAuthRedirectParams();
+    var session = null;
+    if (params.error || params.error_description) {
+      await localSignOutQuiet();
+      return {
+        ok: false,
+        message:
+          params.error_description ||
+          params.error ||
+          "Email confirmation failed. Request a new confirmation email.",
+      };
+    }
+
+    if (params.access_token && params.refresh_token) {
+      await localSignOutQuiet();
+      var applied = await applyPortalSession({
+        access_token: params.access_token,
+        refresh_token: params.refresh_token,
+      });
+      cleanAuthRedirectParamsFromUrl();
+      if (!applied.ok) return applied;
+    } else if (params.code && typeof window.gmSupabase.auth.exchangeCodeForSession === "function") {
+      await localSignOutQuiet();
+      var exchanged = await window.gmSupabase.auth.exchangeCodeForSession(params.code);
+      cleanAuthRedirectParamsFromUrl();
+      if (exchanged.error || !(exchanged.data && exchanged.data.session)) {
+        return {
+          ok: false,
+          message:
+            (exchanged.error && exchanged.error.message) ||
+            "Could not complete email confirmation. Open the link from your email again.",
+        };
+      }
+    } else {
+      // detectSessionInUrl may already have consumed tokens; or user revisited without tokens.
+      var tries = 0;
+      while (tries < 30) {
+        session = await portalSession();
+        if (session) break;
+        tries += 1;
+        await new Promise(function (r) {
+          setTimeout(r, 100);
+        });
+      }
+      if (!session) {
+        return {
+          ok: false,
+          message:
+            "Confirm your email first using the link we sent, then return here to set your access code. If you already clicked it, open the link again (or use a private window).",
+        };
+      }
+    }
+
+    session = await portalSession();
+    if (!session) {
+      return {
+        ok: false,
+        message:
+          "Confirm your email first using the link we sent, then return here to set your access code.",
+      };
+    }
+
+    var acct = await window.gmPortalAuth.getAccount();
+    if (!acct.ok) {
+      if (/sign in required/i.test(String(acct.message || ""))) {
+        return {
+          ok: false,
+          message:
+            "Sign in required. Open the confirmation link from your email again so we can verify your account.",
+        };
+      }
+      return { ok: false, message: acct.message || "Could not load your account after confirmation." };
+    }
+    if (acct.needsAccessCodeSetup) {
+      return {
+        ok: true,
+        loginName: acct.loginName || "",
+        companyName: acct.companyName || "",
+        needsAccessCodeSetup: true,
+      };
+    }
+    if (acct.isCompanyCreator) {
+      return {
+        ok: false,
+        alreadySet: true,
+        message:
+          "Your company access code is already set. Sign in with your username and password.",
+      };
+    }
+    // Persisted session belongs to someone else (previous browser login).
+    await localSignOutQuiet();
+    return {
+      ok: false,
+      wrongAccount: true,
+      message:
+        "This browser was still signed in as a different account. Sign out completed — open the confirmation link from your email again (private window recommended).",
+    };
+  }
+
   window.gmPortalAuth = {
     enabled: function () {
       return !!(window.gmSupabaseEnabled && window.gmSupabase);
     },
+
+    establishConfirmSessionForAccessCodeSetup: establishConfirmSessionForAccessCodeSetup,
 
     signIn: async function (loginName, password, companyId) {
       const payload = { loginName, password };
