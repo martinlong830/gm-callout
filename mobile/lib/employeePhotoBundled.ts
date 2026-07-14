@@ -7,7 +7,7 @@ import type { ImageSourcePropType } from 'react-native';
 export const BUNDLED_EMPLOYEE_PHOTOS: Record<string, ImageSourcePropType> = {
   abel_lujan: require('../assets/employee-photos/abel_lujan.jpg'),
   angelyn_gella: require('../assets/employee-photos/angelyn_gella.jpg'),
-  armando_cumes: require('../assets/employee-photos/armando_cumes.png'),
+  armando_cumes: require('../assets/employee-photos/armando_cumes.jpg'),
   baltazar_lucas: require('../assets/employee-photos/baltazar_lucas.jpg'),
   bernabe_de_leon: require('../assets/employee-photos/bernabe_de_leon.jpg'),
   charles_jakob_zacani: require('../assets/employee-photos/charles_jakob_zacani.jpg'),
