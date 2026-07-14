@@ -751,7 +751,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     const pw = String(password || "");
     if (!raw || !pw) return { error: "Name and password are required." };
     if (raw.includes("@")) {
-      return { error: "Sign in with your name, not email. Managers: Martin Long or Ongi Management." };
+      return { error: "Sign in with your name, not email." };
     }
 
     const legacy = await findLegacyProfileByLoginName(raw);
@@ -1419,6 +1419,92 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       return res.status(500).json({ ok: false, message: "Could not save recovery email." });
     }
   });
+
+  /**
+   * Permanently delete the authenticated user's account (Apple Guideline 5.1.1(v)).
+   * - Deletes the Supabase auth user (cascades profiles, staff_requests, chat store, reset tokens).
+   * - Unlinks employees.auth_user_id before delete (also SET NULL via FK).
+   * - If the user owns the company: transfer ownership to another manager in the same company,
+   *   otherwise clear owner_user_id (company + team schedule data remain for the employer).
+   * Body: { confirm: "DELETE" }
+   */
+  async function handleDeleteAccount(req, res) {
+    try {
+      const authed = await profileFromAccessToken(req);
+      if (authed.error) {
+        return res.status(authed.status || 401).json({ ok: false, message: authed.error });
+      }
+      const confirm = String((req.body && req.body.confirm) || "").trim().toUpperCase();
+      if (confirm !== "DELETE") {
+        return res.status(400).json({
+          ok: false,
+          message: "Type DELETE to permanently delete your account.",
+        });
+      }
+
+      const userId = authed.userId;
+      const profile = authed.profile;
+      const company = await loadCompanyForProfile(admin, profile);
+
+      if (
+        company &&
+        company.owner_user_id &&
+        String(company.owner_user_id) === String(userId)
+      ) {
+        const { data: otherManagers, error: mgrErr } = await admin
+          .from("profiles")
+          .select("id")
+          .eq("company_id", company.id)
+          .eq("role", "manager")
+          .neq("id", userId)
+          .limit(1);
+        if (mgrErr) {
+          console.warn("portal account delete ownership", mgrErr.message);
+          return res.status(500).json({
+            ok: false,
+            message: "Could not prepare account deletion. Try again.",
+          });
+        }
+        const nextOwnerId =
+          otherManagers && otherManagers[0] && otherManagers[0].id
+            ? otherManagers[0].id
+            : null;
+        const { error: ownErr } = await admin
+          .from("companies")
+          .update({ owner_user_id: nextOwnerId })
+          .eq("id", company.id);
+        if (ownErr) {
+          console.warn("portal account delete transfer owner", ownErr.message);
+          return res.status(500).json({
+            ok: false,
+            message: "Could not prepare account deletion. Try again.",
+          });
+        }
+      }
+
+      await admin.from("employees").update({ auth_user_id: null }).eq("auth_user_id", userId);
+
+      const { error: delErr } = await admin.auth.admin.deleteUser(userId);
+      if (delErr) {
+        console.warn("portal account deleteUser", delErr.message);
+        return res.status(500).json({
+          ok: false,
+          message: delErr.message || "Could not delete account.",
+        });
+      }
+
+      return res.json({
+        ok: true,
+        message: "Your account has been permanently deleted.",
+      });
+    } catch (err) {
+      console.warn("portal account delete", err);
+      return res.status(500).json({ ok: false, message: "Could not delete account." });
+    }
+  }
+
+  router.delete("/account", handleDeleteAccount);
+  router.post("/account/delete", handleDeleteAccount);
 
   router.post("/forgot-password", async (req, res) => {
     const genericOk =

@@ -17,6 +17,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../contexts/AuthContext';
 import { storeCompanySession } from '../lib/companySession';
 import {
+  portalDeleteAccount,
   portalGetAccount,
   portalUpdateCompany,
   portalUpdateRecoveryEmail,
@@ -24,13 +25,16 @@ import {
 
 export default function AccountScreen() {
   const router = useRouter();
-  const { session, role, loading: authLoading } = useAuth();
+  const { session, role, loading: authLoading, signOut } = useAuth();
   const [loginName, setLoginName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [hasRecovery, setHasRecovery] = useState(false);
   const [isManager, setIsManager] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -101,6 +105,33 @@ export default function AccountScreen() {
     Alert.alert('Saved', res.message);
   }
 
+  function onStartDelete() {
+    setMessage(null);
+    setDeleteConfirm('');
+    setShowDeleteConfirm(true);
+  }
+
+  async function onConfirmDelete() {
+    const typed = deleteConfirm.trim().toUpperCase();
+    if (typed !== 'DELETE') {
+      setMessage('Type DELETE (all caps) to permanently delete your account.');
+      return;
+    }
+    setDeleting(true);
+    setMessage(null);
+    const res = await portalDeleteAccount('DELETE');
+    if (!res.ok) {
+      setDeleting(false);
+      setMessage(res.message);
+      return;
+    }
+    await signOut();
+    setDeleting(false);
+    Alert.alert('Account deleted', res.message, [
+      { text: 'OK', onPress: () => router.replace('/login') },
+    ]);
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -156,13 +187,65 @@ export default function AccountScreen() {
                 <Text style={styles.hint}>Required for password reset if you forget your password.</Text>
               ) : null}
               {message ? <Text style={styles.error}>{message}</Text> : null}
-              <Pressable style={styles.buttonPrimary} onPress={() => void onSave()} disabled={busy}>
+              <Pressable style={styles.buttonPrimary} onPress={() => void onSave()} disabled={busy || deleting}>
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={styles.buttonText}>Save account settings</Text>
                 )}
               </Pressable>
+
+              <View style={styles.deleteBlock}>
+                <Text style={styles.deleteTitle}>Delete account</Text>
+                <Text style={styles.deleteHint}>
+                  Permanently delete your Shiflow login and personal account data. This cannot be undone. Company
+                  schedules and timecards for the restaurant are not erased.
+                </Text>
+                {!showDeleteConfirm ? (
+                  <Pressable
+                    style={styles.buttonDanger}
+                    onPress={onStartDelete}
+                    disabled={busy || deleting}
+                  >
+                    <Text style={styles.buttonText}>Delete account</Text>
+                  </Pressable>
+                ) : (
+                  <>
+                    <Text style={styles.label}>Type DELETE to confirm</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={deleteConfirm}
+                      onChangeText={setDeleteConfirm}
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      placeholder="DELETE"
+                      placeholderTextColor="#888"
+                    />
+                    <Pressable
+                      style={styles.buttonDanger}
+                      onPress={() => void onConfirmDelete()}
+                      disabled={deleting}
+                    >
+                      {deleting ? (
+                        <ActivityIndicator color="#fff" />
+                      ) : (
+                        <Text style={styles.buttonText}>Permanently delete account</Text>
+                      )}
+                    </Pressable>
+                    <Pressable
+                      style={styles.buttonGhost}
+                      onPress={() => {
+                        setShowDeleteConfirm(false);
+                        setDeleteConfirm('');
+                        setMessage(null);
+                      }}
+                      disabled={deleting}
+                    >
+                      <Text style={styles.buttonGhostText}>Cancel</Text>
+                    </Pressable>
+                  </>
+                )}
+              </View>
             </View>
           )}
         </ScrollView>
@@ -210,4 +293,25 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   error: { color: '#b00020', marginTop: 8, fontSize: 14 },
+  deleteBlock: {
+    marginTop: 24,
+    paddingTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e6ea',
+  },
+  deleteTitle: { fontSize: 16, fontWeight: '700', color: '#b00020', marginBottom: 8 },
+  deleteHint: { fontSize: 13, color: '#64748b', lineHeight: 18, marginBottom: 12 },
+  buttonDanger: {
+    backgroundColor: '#b00020',
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  buttonGhost: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  buttonGhostText: { color: '#64748b', fontSize: 15, fontWeight: '600' },
 });

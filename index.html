@@ -128,7 +128,6 @@
       </div>
       <div id="loginPanel" hidden>
         <p class="login-subtitle">Sign in to continue</p>
-        <p class="login-hint">Sign in with your <strong>name</strong> and password. Managers: <strong>Martin Long</strong> or <strong>Ongi Management</strong>.</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
             <span class="login-label">Name</span>
@@ -1685,6 +1684,19 @@
         <p class="login-error is-success" id="accountSettingsSuccess" role="status" hidden></p>
         <button type="submit" class="btn btn-primary btn-block">Save account settings</button>
       </form>
+      <div class="account-delete-section" id="accountDeleteSection">
+        <h3 class="account-delete-title">Delete account</h3>
+        <p class="calendar-hint account-settings-field-hint">
+          Permanently delete your Shiflow login and personal account data. This cannot be undone.
+          Company schedules and timecards for the restaurant are not erased.
+        </p>
+        <label class="form-field form-field-block" id="accountDeleteConfirmWrap" hidden>
+          <span class="form-label">Type DELETE to confirm</span>
+          <input type="text" id="accountDeleteConfirm" class="login-input" autocomplete="off" maxlength="12" />
+        </label>
+        <p class="login-error" id="accountDeleteError" role="alert" hidden></p>
+        <button type="button" class="btn btn-danger btn-block" id="accountDeleteBtn">Delete account</button>
+      </div>
     </div>
   </div>
 
@@ -1846,6 +1858,7 @@
       var loginScreenEl = document.getElementById('login-screen');
       var loginCompanyLogoWrap = document.getElementById('loginCompanyLogoWrap');
       var loginBrandMark = document.getElementById('loginBrandMark');
+      var loginTitle = document.getElementById('loginTitle');
       var accountSettingsModal = document.getElementById('accountSettingsModal');
       var accountSettingsForm = document.getElementById('accountSettingsForm');
       var accountSettingsLoginName = document.getElementById('accountSettingsLoginName');
@@ -1856,6 +1869,11 @@
       var accountSettingsSuccess = document.getElementById('accountSettingsSuccess');
       var accountSettingsLoaded = false;
       var accountSettingsIsManager = false;
+      var accountDeleteBtn = document.getElementById('accountDeleteBtn');
+      var accountDeleteConfirm = document.getElementById('accountDeleteConfirm');
+      var accountDeleteConfirmWrap = document.getElementById('accountDeleteConfirmWrap');
+      var accountDeleteError = document.getElementById('accountDeleteError');
+      var accountDeleteAwaitingConfirm = false;
       var recoveryEmailPromptInFlight = false;
       var RECOVERY_EMAIL_PROMPT_SNOOZE_KEY = 'gm_recovery_email_prompt_snoozed';
 
@@ -2037,13 +2055,24 @@
         }
       }
 
+      function currentVerifiedCompanyName() {
+        if (verifiedCompanyName) return verifiedCompanyName;
+        try {
+          return sessionStorage.getItem(SESSION_COMPANY_NAME_KEY) || '';
+        } catch (_cn) {
+          return '';
+        }
+      }
+
       function updateLoginBranding() {
-        var showRedPoke =
-          loginPanel &&
-          !loginPanel.hidden &&
-          isRedPokeCompanyAccessCode(currentVerifiedAccessCode());
+        var onSignIn = loginPanel && !loginPanel.hidden;
+        var showRedPoke = onSignIn && isRedPokeCompanyAccessCode(currentVerifiedAccessCode());
+        var companyName = currentVerifiedCompanyName();
         if (loginCompanyLogoWrap) loginCompanyLogoWrap.hidden = !showRedPoke;
         if (loginBrandMark) loginBrandMark.hidden = showRedPoke;
+        if (loginTitle) {
+          loginTitle.textContent = onSignIn && companyName ? companyName : 'Shiflow';
+        }
       }
 
       window.gmCalloutUpdateLoginBranding = updateLoginBranding;
@@ -2165,6 +2194,27 @@
           accountSettingsSuccess.textContent = '';
           accountSettingsSuccess.hidden = true;
         }
+        if (accountDeleteError) {
+          accountDeleteError.textContent = '';
+          accountDeleteError.hidden = true;
+        }
+      }
+
+      function resetAccountDeleteConfirm() {
+        accountDeleteAwaitingConfirm = false;
+        if (accountDeleteConfirmWrap) accountDeleteConfirmWrap.hidden = true;
+        if (accountDeleteConfirm) accountDeleteConfirm.value = '';
+        if (accountDeleteBtn) accountDeleteBtn.textContent = 'Delete account';
+        if (accountDeleteError) {
+          accountDeleteError.textContent = '';
+          accountDeleteError.hidden = true;
+        }
+      }
+
+      function showAccountDeleteError(msg) {
+        if (!accountDeleteError) return;
+        accountDeleteError.textContent = msg || '';
+        accountDeleteError.hidden = !msg;
       }
 
       function showAccountSettingsError(msg) {
@@ -2214,6 +2264,7 @@
 
       async function openAccountSettingsModal() {
         clearAccountSettingsMessages();
+        resetAccountDeleteConfirm();
         setAccountSettingsModalOpen(true);
         accountSettingsLoaded = false;
         await loadAccountSettingsForm();
@@ -2878,7 +2929,7 @@
 
           (async function () {
             if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
-            showLoginError('Name or password is incorrect. Managers: Martin Long or Ongi Management.');
+            showLoginError('Name or password is incorrect.');
           })();
         });
       }
@@ -3118,8 +3169,63 @@
           snoozeRecoveryEmailPrompt();
           setAccountSettingsModalOpen(false);
           clearAccountSettingsMessages();
+          resetAccountDeleteConfirm();
         });
       });
+
+      if (accountDeleteBtn) {
+        accountDeleteBtn.addEventListener('click', function () {
+          if (!window.gmPortalAuth || !window.gmPortalAuth.deleteAccount) {
+            showAccountDeleteError('Account deletion needs Supabase on this server.');
+            return;
+          }
+          if (!accountDeleteAwaitingConfirm) {
+            accountDeleteAwaitingConfirm = true;
+            if (accountDeleteConfirmWrap) accountDeleteConfirmWrap.hidden = false;
+            if (accountDeleteBtn) accountDeleteBtn.textContent = 'Permanently delete account';
+            if (accountDeleteConfirm) accountDeleteConfirm.focus();
+            showAccountDeleteError('');
+            return;
+          }
+          var typed = accountDeleteConfirm
+            ? String(accountDeleteConfirm.value || '').trim().toUpperCase()
+            : '';
+          if (typed !== 'DELETE') {
+            showAccountDeleteError('Type DELETE (all caps) to confirm permanent deletion.');
+            return;
+          }
+          accountDeleteBtn.disabled = true;
+          showAccountDeleteError('');
+          (async function () {
+            var res = await window.gmPortalAuth.deleteAccount('DELETE');
+            if (!res.ok) {
+              accountDeleteBtn.disabled = false;
+              showAccountDeleteError(res.message || 'Could not delete account.');
+              return;
+            }
+            try {
+              if (window.gmSupabase && window.gmSupabase.auth) {
+                await window.gmSupabase.auth.signOut();
+              }
+            } catch (_so) {
+              /* ignore */
+            }
+            try {
+              sessionStorage.clear();
+            } catch (_ss) {
+              /* ignore */
+            }
+            document.documentElement.classList.remove(
+              'authed',
+              'manager-app',
+              'employee-app',
+              'timeclock-app'
+            );
+            alert(res.message || 'Your account has been permanently deleted.');
+            location.reload();
+          })();
+        });
+      }
 
       if (accountSettingsForm) {
         accountSettingsForm.addEventListener('submit', function (e) {
@@ -3182,7 +3288,7 @@
   <script defer src="manager-messaging.js?v=timecards-tips-1"></script>
   <script defer src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
   <script defer src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
-  <script defer src="portal-auth-client.js?v=setup-access-code-session-1"></script>
+  <script defer src="portal-auth-client.js?v=account-delete-1"></script>
   <script defer src="login-timeclock.js?v=timecards-tips-1"></script>
 </body>
 </html>

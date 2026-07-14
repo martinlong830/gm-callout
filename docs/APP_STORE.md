@@ -20,7 +20,9 @@ This guide matches the **Expo SDK 54** app in `mobile/`. Bundle ID: **`com.shifl
 3. **Production backend**
    - Supabase project with all migrations applied
    - Web server (`gm-callout`) deployed at **HTTPS** with `/api/portal/signin` working
-4. **Privacy policy URL** — deploy the repo’s **`privacy.html`** (served at `https://your-domain/privacy.html` with `npm start` / your host) or publish `docs/PRIVACY_POLICY.md` elsewhere (required for review)
+4. **Privacy policy URL** — deploy the repo’s **`privacy.html`** (served at `https://shiflow.app/privacy.html` with `npm start` / your host)
+5. **Support URL** — deploy **`support.html`** at `https://shiflow.app/support.html` (includes contact email + account deletion instructions). Set `SUPPORT_EMAIL` on Render if it should differ from `support@shiflow.app`.
+6. **Account deletion** — users delete their own account in **Account** (web + mobile). See **[APP_STORE_CONNECT.md](./APP_STORE_CONNECT.md)**.
 
 ## One-time machine setup
 

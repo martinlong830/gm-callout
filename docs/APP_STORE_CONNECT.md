@@ -49,9 +49,25 @@ Sign-in uses your employer-provided Shiflow account. Contact your administrator 
 
 **Keywords:** schedule, restaurant, timecard, roster, shift, manager, staff
 
-**Support URL:** `https://your-domain/support.html` (static page in repo root; optional `SUPPORT_EMAIL` in server env for a mailto link)  
+**Support URL:** `https://shiflow.app/support.html`  
 **Marketing URL:** Optional  
-**Privacy Policy URL:** `https://your-domain/privacy.html`
+**Privacy Policy URL:** `https://shiflow.app/privacy.html`
+
+### Account deletion (Guideline 5.1.1(v))
+
+Users can permanently delete their own account in-app and on the web (no customer service required):
+
+- **iOS / Android:** signed-in user → **Account** (header) → **Delete account** → type **DELETE**
+- **Web:** signed-in user → **Account** (header) → **Delete account** → type **DELETE**
+- **API:** authenticated `POST /api/portal/account/delete` with `{ "confirm": "DELETE" }` (also `DELETE /api/portal/account`)
+
+Deletion removes the Supabase auth user and personal profile data. Roster / schedule / timecard records for the employer may remain. If the user is the company owner, ownership transfers to another manager when possible.
+
+### App Review notes (paste)
+
+> Account deletion: Sign in with the demo account → tap **Account** → **Delete account** → type DELETE.  
+> Support: https://shiflow.app/support.html (email support@shiflow.app + contact form).  
+> Privacy: https://shiflow.app/privacy.html
 
 ## Screenshots
 

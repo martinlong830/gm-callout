@@ -32,7 +32,7 @@ const TWILIO_FROM_NUMBER = stripEnv(process.env.TWILIO_FROM_NUMBER);
 const TWILIO_API_KEY_SID = stripEnv(process.env.TWILIO_API_KEY_SID);
 const TWILIO_API_KEY_SECRET = stripEnv(process.env.TWILIO_API_KEY_SECRET);
 const PUBLIC_BASE_URL = stripEnv(process.env.PUBLIC_BASE_URL);
-const SUPPORT_EMAIL = stripEnv(process.env.SUPPORT_EMAIL);
+const SUPPORT_EMAIL = stripEnv(process.env.SUPPORT_EMAIL) || "support@shiflow.app";
 const SUPABASE_URL = stripEnv(process.env.SUPABASE_URL);
 const SUPABASE_ANON_KEY = stripEnv(process.env.SUPABASE_ANON_KEY);
 const SUPABASE_SERVICE_ROLE_KEY = stripEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -89,7 +89,7 @@ function appendNgrokBypassToPublicUrl(absoluteUrl) {
 // Allow gm-callout opened from another port (e.g. python http.server :8000) to call this API.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
@@ -188,6 +188,9 @@ const NO_CACHE_ASSET = new Set([
   "timeclock-app.js",
   "break-policy.js",
   "employee-leave.js",
+  "support.html",
+  "privacy.html",
+  "portal-auth-client.js",
 ]);
 
 app.use((req, res, next) => {
@@ -209,10 +212,30 @@ app.get("/support.html", (_req, res) => {
     console.error("[Support page]", err && err.message);
     return res.status(500).send("Support page unavailable.");
   }
-  const contactBlock = SUPPORT_EMAIL
-    ? `<p>Email: <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a></p>`
-    : "<p>Contact your restaurant manager or app administrator for support.</p>";
-  res.type("html").send(html.replace("<!--SUPPORT_CONTACT-->", contactBlock));
+  const email = SUPPORT_EMAIL || "support@shiflow.app";
+  const contactBlock =
+    `<p>Email us at <a href="mailto:${email}?subject=Shiflow%20support">${email}</a>, ` +
+    `or use the form below — it opens your email app with your message ready to send.</p>` +
+    `<p class="support-form-hint">Fill in your details, then tap <strong>Open email to send</strong>.</p>` +
+    `<form id="supportContactForm" class="support-contact-form" action="mailto:${email}" method="get" enctype="text/plain">` +
+    `<label>Your name <input type="text" name="name" maxlength="120" autocomplete="name" /></label>` +
+    `<label>Your email <input type="email" name="email" maxlength="120" autocomplete="email" required /></label>` +
+    `<label>How can we help? <textarea name="body" rows="5" maxlength="4000" required placeholder="Describe your question or issue"></textarea></label>` +
+    `<button type="submit">Open email to send</button>` +
+    `</form>`;
+  // Prefer marker replacement; fall back to injecting before FAQ if markers missing (avoids blank contact).
+  let withContact = html;
+  if (/<!--SUPPORT_CONTACT_START-->[\s\S]*?<!--SUPPORT_CONTACT_END-->/.test(html)) {
+    withContact = html.replace(
+      /<!--SUPPORT_CONTACT_START-->[\s\S]*?<!--SUPPORT_CONTACT_END-->/,
+      `<!--SUPPORT_CONTACT_START-->\n  ${contactBlock}\n  <!--SUPPORT_CONTACT_END-->`
+    );
+  } else if (html.includes("<!--SUPPORT_CONTACT-->")) {
+    withContact = html.replace("<!--SUPPORT_CONTACT-->", contactBlock);
+  }
+  // Keep banner / inline mailto addresses in sync with SUPPORT_EMAIL.
+  withContact = withContact.replace(/support@shiflow\.app/g, email);
+  res.type("html").send(withContact);
 });
 
 app.use(express.static(__dirname));

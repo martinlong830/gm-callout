@@ -739,3 +739,29 @@ export async function portalUpdateRecoveryEmail(
     message: 'Recovery email saved. Your sign-in name was not changed.',
   };
 }
+
+/** Permanently delete the signed-in account. Requires typing DELETE. */
+export async function portalDeleteAccount(
+  confirmText: string
+): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  const confirm = String(confirmText || '')
+    .trim()
+    .toUpperCase();
+  if (confirm !== 'DELETE') {
+    return { ok: false, message: 'Type DELETE to permanently delete your account.' };
+  }
+  if (!isPortalAuthConfigured()) {
+    return {
+      ok: false,
+      message: 'Set EXPO_PUBLIC_GM_WEB_URL in mobile/.env to your web server, then restart Expo.',
+    };
+  }
+  const r = await portalAuthedFetch<{ message?: string }>('POST', '/api/portal/account/delete', {
+    confirm: 'DELETE',
+  });
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    message: r.message || 'Your account has been permanently deleted.',
+  };
+}

@@ -600,6 +600,27 @@
         message: "Recovery email saved. Your sign-in name was not changed.",
       };
     },
+
+    /** Permanently delete the signed-in account. Requires confirm: "DELETE". */
+    deleteAccount: async function (confirmText) {
+      var confirm = String(confirmText || "").trim().toUpperCase();
+      if (confirm !== "DELETE") {
+        return { ok: false, message: 'Type DELETE to permanently delete your account.' };
+      }
+      var viaApi = await portalAuthedFetch("POST", "/api/portal/account/delete", {
+        confirm: "DELETE",
+      });
+      if (viaApi.ok) {
+        return {
+          ok: true,
+          message: (viaApi.data && viaApi.data.message) || "Your account has been permanently deleted.",
+        };
+      }
+      return {
+        ok: false,
+        message: (viaApi && viaApi.message) || "Could not delete account.",
+      };
+    },
   };
   if (typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('gm-callout-portal-auth-ready'));

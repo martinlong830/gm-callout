@@ -592,6 +592,38 @@ html.authed .header-signout-btn {
   max-width: 420px;
 }
 
+.account-delete-section {
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+.account-delete-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #b00020;
+}
+
+.btn-danger {
+  background: #b00020;
+  border-color: #b00020;
+  color: #fff;
+}
+
+.btn-danger:hover,
+.btn-danger:focus-visible {
+  background: #8f001a;
+  border-color: #8f001a;
+  outline: 1px solid #8f001a;
+  outline-offset: 1px;
+}
+
+.btn-danger:active:not(:disabled):not([disabled]) {
+  background: #6e0014;
+  border-color: #6e0014;
+}
+
 .app,
 .app-employee {
   min-height: 100vh;

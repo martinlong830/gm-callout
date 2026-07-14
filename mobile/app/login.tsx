@@ -515,7 +515,11 @@ export default function LoginScreen() {
             )}
 
             <Text style={styles.title}>
-              {showRedPokeBrand ? verifiedCompanyName || 'Red Poke' : 'Shiflow'}
+              {panel === 'signin' && verifiedCompanyName
+                ? verifiedCompanyName
+                : showRedPokeBrand
+                  ? 'Red Poke'
+                  : 'Shiflow'}
             </Text>
 
             {!supabaseOk ? (
@@ -724,10 +728,6 @@ export default function LoginScreen() {
             {panel === 'signin' ? (
               <>
                 <Text style={styles.subtitle}>Sign in to continue</Text>
-                <Text style={styles.hint}>
-                  Sign in with your name and password
-                  {verifiedCompanyName ? ` for ${verifiedCompanyName}` : ''}.
-                </Text>
                 <Text style={styles.label}>Name</Text>
                 <TextInput
                   style={styles.input}

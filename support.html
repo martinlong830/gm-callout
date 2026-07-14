@@ -3,31 +3,117 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Support — Shiflow</title>
+  <meta name="description" content="Contact Shiflow support by email or form. Ask questions and request help with schedules, login, and the app." />
+  <title>Contact Support — Shiflow</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #222; }
-    h1 { font-size: 1.5rem; }
-    h2 { font-size: 1.1rem; margin-top: 1.5rem; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; background: #fff; }
+    h1 { font-size: 1.75rem; margin-bottom: 0.35rem; }
+    .brand { font-size: 0.95rem; color: #555; margin: 0 0 1.25rem; }
+    h2 { font-size: 1.15rem; margin-top: 1.75rem; }
     a { color: #0b5fff; }
+    ul { padding-left: 1.2rem; }
+    .contact-banner {
+      margin: 1.25rem 0;
+      padding: 1rem 1.1rem;
+      border: 2px solid #c41230;
+      border-radius: 8px;
+      background: #fff8f8;
+    }
+    .contact-banner strong { display: block; font-size: 1.05rem; margin-bottom: 0.35rem; }
+    .contact-banner .email-link { font-size: 1.2rem; font-weight: 700; word-break: break-all; }
+    .support-contact-form { display: flex; flex-direction: column; gap: 0.75rem; margin: 1rem 0; padding: 1rem; border: 1px solid #e2e6ea; border-radius: 8px; background: #f8fafc; }
+    .support-contact-form label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; font-weight: 600; }
+    .support-contact-form input,
+    .support-contact-form textarea { font: inherit; font-weight: 400; padding: 0.55rem 0.65rem; border: 1px solid #ccd2d8; border-radius: 6px; }
+    .support-contact-form button { align-self: flex-start; background: #c41230; color: #fff; border: none; border-radius: 6px; padding: 0.65rem 1rem; font-weight: 600; cursor: pointer; }
+    .support-contact-form button:hover { background: #a30f28; }
+    .support-form-hint { color: #555; font-size: 0.95rem; }
+    .muted { color: #555; }
+    .no-login { font-size: 0.95rem; color: #555; }
   </style>
 </head>
 <body>
-  <h1>Support — Shiflow</h1>
-  <p><strong>Last updated:</strong> June 2026</p>
-  <p><strong>Shiflow</strong> is a workplace app for restaurant staff and managers at Red Poke. Use it to view schedules, request time off or shift swaps, exchange messages with your team, and manage timecards and clock punches.</p>
+  <h1>Contact Support</h1>
+  <p class="brand"><strong>Shiflow</strong> · workplace scheduling, messaging, and timecards</p>
+  <p><strong>Last updated:</strong> July 2026</p>
+  <p>
+    Use this page to ask a question or request support for the Shiflow app.
+    No login is required.
+  </p>
 
-  <h2>How to get help</h2>
-  <p>Most questions are handled by your on-site manager or employer administrator. They can update roster access, correct punch times, and approve schedule requests.</p>
+  <div class="contact-banner" role="region" aria-label="Support email">
+    <strong>Email support</strong>
+    <a class="email-link" href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>
+    <p class="muted" style="margin: 0.5rem 0 0;">We reply to account, login, and app questions (usually within 1–2 business days).</p>
+  </div>
+
+  <h2>Ask a question</h2>
+  <!--SUPPORT_CONTACT_START-->
+  <p>
+    Email us at
+    <a href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>,
+    or use the form below — it opens your email app with your message ready to send.
+  </p>
+  <p class="support-form-hint">Fill in your details, then tap <strong>Open email to send</strong>.</p>
+  <form id="supportContactForm" class="support-contact-form" action="mailto:support@shiflow.app" method="get" enctype="text/plain">
+    <label>Your name <input type="text" name="name" maxlength="120" autocomplete="name" /></label>
+    <label>Your email <input type="email" name="email" maxlength="120" autocomplete="email" required /></label>
+    <label>How can we help? <textarea name="body" rows="5" maxlength="4000" required placeholder="Describe your question or issue"></textarea></label>
+    <button type="submit">Open email to send</button>
+  </form>
+  <!--SUPPORT_CONTACT_END-->
+  <p class="no-login">Prefer to write yourself? Send any question to <a href="mailto:support@shiflow.app">support@shiflow.app</a>.</p>
+
+  <h2>Common questions</h2>
   <ul>
-    <li><strong>Schedule or timecard questions:</strong> contact your manager.</li>
-    <li><strong>Login issues:</strong> confirm your username and password with your manager. Accounts are created by your employer.</li>
-    <li><strong>Password reset:</strong> use <strong>Forgot password?</strong> on the Shiflow sign-in screen. A reset link is sent to the email on file for your account (if configured by your employer).</li>
+    <li><strong>Schedule or timecard questions:</strong> contact your on-site manager first — they can update roster access and punch times. For app bugs or login failures, email support.</li>
+    <li><strong>Login issues:</strong> confirm your sign-in name and password with your manager, or email <a href="mailto:support@shiflow.app">support@shiflow.app</a>. Use <strong>Forgot password?</strong> on the sign-in screen if a recovery email is on file.</li>
+    <li><strong>Password reset:</strong> open the Shiflow sign-in screen → <strong>Forgot password?</strong> A reset link is emailed to the recovery address on your account.</li>
+    <li><strong>Something else:</strong> email <a href="mailto:support@shiflow.app">support@shiflow.app</a> or use the form above.</li>
   </ul>
 
-  <h2>Contact</h2>
-  <!--SUPPORT_CONTACT-->
+  <h2>Delete your account</h2>
+  <p>
+    You can permanently delete your Shiflow account yourself — no phone or email ticket required.
+  </p>
+  <ul>
+    <li><strong>In the mobile app:</strong> open <strong>Account</strong> (top of the screen) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
+    <li><strong>On the website:</strong> sign in at <a href="/">shiflow.app</a> → <strong>Account</strong> (header) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
+  </ul>
+  <p class="muted">
+    Deletion permanently removes your login and personal account data. Employer schedule and timecard records for the business may remain as needed for the restaurant.
+  </p>
 
   <h2>Privacy</h2>
   <p>See our <a href="/privacy.html">Privacy Policy</a> for how Shiflow handles your information.</p>
+  <script>
+    (function () {
+      var SUPPORT_EMAIL = 'support@shiflow.app';
+      var form = document.getElementById('supportContactForm');
+      if (!form) return;
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var nameEl = form.querySelector('[name="name"]');
+        var fromEl = form.querySelector('[name="email"]');
+        var bodyEl = form.querySelector('[name="body"]');
+        var name = nameEl ? String(nameEl.value || '').trim() : '';
+        var from = fromEl ? String(fromEl.value || '').trim() : '';
+        var body = bodyEl ? String(bodyEl.value || '').trim() : '';
+        if (!from || !body) return;
+        var lines = [];
+        if (name) lines.push('Name: ' + name);
+        lines.push('From: ' + from);
+        lines.push('');
+        lines.push(body);
+        window.location.href =
+          'mailto:' +
+          SUPPORT_EMAIL +
+          '?subject=' +
+          encodeURIComponent('Shiflow support request') +
+          '&body=' +
+          encodeURIComponent(lines.join('\n'));
+      });
+    })();
+  </script>
 </body>
 </html>
