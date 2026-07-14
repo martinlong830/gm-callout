@@ -592,6 +592,33 @@ html.authed .header-signout-btn {
   max-width: 420px;
 }
 
+.account-support-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 1.15rem 0 0;
+  padding: 0.9rem 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.account-support-link {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.account-support-link:hover,
+.account-support-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.account-support-hint {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
 .account-delete-section {
   margin-top: 1.25rem;
   padding-top: 1.1rem;

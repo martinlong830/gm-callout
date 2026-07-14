@@ -1,4 +1,5 @@
 import { Redirect, useRouter } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -22,6 +23,8 @@ import {
   portalUpdateCompany,
   portalUpdateRecoveryEmail,
 } from '../lib/portalAuth';
+
+const SUPPORT_URL = 'https://shiflow.app/support.html';
 
 export default function AccountScreen() {
   const router = useRouter();
@@ -195,6 +198,20 @@ export default function AccountScreen() {
                 )}
               </Pressable>
 
+              <View style={styles.supportBlock}>
+                <Pressable
+                  onPress={() => {
+                    void Linking.openURL(SUPPORT_URL);
+                  }}
+                  hitSlop={8}
+                  accessibilityRole="link"
+                  accessibilityLabel="Contact support"
+                >
+                  <Text style={styles.supportLink}>Contact support</Text>
+                </Pressable>
+                <Text style={styles.supportHint}>Help with login, the app, or your account</Text>
+              </View>
+
               <View style={styles.deleteBlock}>
                 <Text style={styles.deleteTitle}>Delete account</Text>
                 <Text style={styles.deleteHint}>
@@ -261,7 +278,7 @@ const styles = StyleSheet.create({
   scroll: { padding: 20, paddingBottom: 40 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   headerRow: { marginBottom: 8 },
-  back: { color: '#c41230', fontWeight: '600', fontSize: 16 },
+  back: { color: '#1e3a5f', fontWeight: '600', fontSize: 16 },
   title: { fontSize: 22, fontWeight: '700', color: '#111', marginBottom: 8 },
   subtitle: { fontSize: 15, color: '#555', marginBottom: 20, lineHeight: 22 },
   card: {
@@ -285,7 +302,7 @@ const styles = StyleSheet.create({
   },
   hint: { fontSize: 13, color: '#64748b', marginBottom: 12, lineHeight: 18 },
   buttonPrimary: {
-    backgroundColor: '#c41230',
+    backgroundColor: '#1e3a5f',
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
@@ -293,6 +310,14 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   error: { color: '#b00020', marginTop: 8, fontSize: 14 },
+  supportBlock: {
+    marginTop: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e6ea',
+  },
+  supportLink: { color: '#1e3a5f', fontSize: 16, fontWeight: '600' },
+  supportHint: { color: '#64748b', fontSize: 13, marginTop: 4, lineHeight: 18 },
   deleteBlock: {
     marginTop: 24,
     paddingTop: 18,

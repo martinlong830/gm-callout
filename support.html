@@ -2,90 +2,325 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="description" content="Contact Shiflow support by email or form. Ask questions and request help with schedules, login, and the app." />
   <title>Contact Support — Shiflow</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; background: #fff; }
-    h1 { font-size: 1.75rem; margin-bottom: 0.35rem; }
-    .brand { font-size: 0.95rem; color: #555; margin: 0 0 1.25rem; }
-    h2 { font-size: 1.15rem; margin-top: 1.75rem; }
-    a { color: #0b5fff; }
-    ul { padding-left: 1.2rem; }
-    .contact-banner {
-      margin: 1.25rem 0;
-      padding: 1rem 1.1rem;
-      border: 2px solid #c41230;
-      border-radius: 8px;
-      background: #fff8f8;
+    :root {
+      --bg: #ffffff;
+      --surface: #ffffff;
+      --text: #0f172a;
+      --text-muted: #475569;
+      --border: #e8eaef;
+      --hover-fill: #fafbfc;
+      --primary: #1e3a5f;
+      --primary-hover: #2d4a73;
+      --danger: #b91c1c;
+      --radius: 6px;
+      --radius-sm: 4px;
     }
-    .contact-banner strong { display: block; font-size: 1.05rem; margin-bottom: 0.35rem; }
-    .contact-banner .email-link { font-size: 1.2rem; font-weight: 700; word-break: break-all; }
-    .support-contact-form { display: flex; flex-direction: column; gap: 0.75rem; margin: 1rem 0; padding: 1rem; border: 1px solid #e2e6ea; border-radius: 8px; background: #f8fafc; }
-    .support-contact-form label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; font-weight: 600; }
+
+    *,
+    *::before,
+    *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(165deg, #f1f5f9 0%, #e2e8f0 40%, #f8fafc 100%);
+      color: var(--text);
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      padding: max(1.25rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px))
+        max(2rem, env(safe-area-inset-bottom, 0px)) max(1rem, env(safe-area-inset-left, 0px));
+    }
+
+    .support-shell {
+      width: 100%;
+      max-width: 36rem;
+      margin: 0 auto;
+    }
+
+    .support-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .support-nav-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .support-nav-brand:hover { color: var(--primary); }
+
+    .support-brand-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 0.55rem;
+      background: linear-gradient(145deg, #1e3a5f, #2d5a8c);
+      color: #fff;
+      font-size: 1.05rem;
+      font-weight: 700;
+      box-shadow: 0 4px 12px rgba(30, 58, 95, 0.2);
+    }
+
+    .support-nav-link {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    .support-nav-link:hover { text-decoration: underline; }
+
+    .support-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: 0 20px 50px rgba(15, 23, 42, 0.1);
+      padding: 1.6rem 1.35rem 1.75rem;
+    }
+
+    @media (min-width: 540px) {
+      .support-card { padding: 1.85rem 1.75rem 2rem; }
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--text);
+    }
+
+    .lede {
+      margin: 0 0 1.15rem;
+      font-size: 0.9375rem;
+      color: var(--text-muted);
+    }
+
+    .meta {
+      margin: 0 0 1.15rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+
+    h2 {
+      margin: 1.65rem 0 0.55rem;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    p { margin: 0 0 0.75rem; }
+
+    a { color: var(--primary); }
+
+    ul {
+      margin: 0.35rem 0 0.75rem;
+      padding-left: 1.15rem;
+    }
+
+    li { margin-bottom: 0.45rem; }
+
+    .contact-banner {
+      margin: 1rem 0 0.25rem;
+      padding: 1rem 1.1rem;
+      border: 1px solid rgba(30, 58, 95, 0.22);
+      border-radius: var(--radius-sm);
+      background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    }
+
+    .contact-banner strong {
+      display: block;
+      font-size: 0.8125rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .contact-banner .email-link {
+      display: inline-block;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--primary);
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .contact-banner .email-link:hover { text-decoration: underline; }
+
+    .contact-banner .banner-note {
+      margin: 0.55rem 0 0;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    .support-contact-form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      margin: 0.85rem 0 0.5rem;
+      padding: 1rem 1.05rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--hover-fill);
+    }
+
+    .support-contact-form label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
     .support-contact-form input,
-    .support-contact-form textarea { font: inherit; font-weight: 400; padding: 0.55rem 0.65rem; border: 1px solid #ccd2d8; border-radius: 6px; }
-    .support-contact-form button { align-self: flex-start; background: #c41230; color: #fff; border: none; border-radius: 6px; padding: 0.65rem 1rem; font-weight: 600; cursor: pointer; }
-    .support-contact-form button:hover { background: #a30f28; }
-    .support-form-hint { color: #555; font-size: 0.95rem; }
-    .muted { color: #555; }
-    .no-login { font-size: 0.95rem; color: #555; }
+    .support-contact-form textarea {
+      font: inherit;
+      font-size: 0.9375rem;
+      font-weight: 400;
+      padding: 0.65rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .support-contact-form input:focus,
+    .support-contact-form textarea:focus {
+      outline: 1px solid var(--primary);
+      border-color: var(--primary);
+    }
+
+    .support-contact-form button {
+      align-self: stretch;
+      margin-top: 0.15rem;
+      background: var(--primary);
+      color: #fff;
+      border: 1px solid var(--primary);
+      border-radius: var(--radius-sm);
+      padding: 0.7rem 1rem;
+      font: inherit;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .support-contact-form button:hover {
+      background: var(--primary-hover);
+      border-color: var(--primary-hover);
+    }
+
+    .support-form-hint {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin: 0 0 0.15rem;
+    }
+
+    .muted,
+    .no-login {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .support-footer {
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    .support-footer a {
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .support-footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
-  <h1>Contact Support</h1>
-  <p class="brand"><strong>Shiflow</strong> · workplace scheduling, messaging, and timecards</p>
-  <p><strong>Last updated:</strong> July 2026</p>
-  <p>
-    Use this page to ask a question or request support for the Shiflow app.
-    No login is required.
-  </p>
+  <div class="support-shell">
+    <nav class="support-nav" aria-label="Support">
+      <a class="support-nav-brand" href="/">
+        <span class="support-brand-mark" aria-hidden="true">S</span>
+        <span>Shiflow</span>
+      </a>
+      <a class="support-nav-link" href="/">Back to app</a>
+    </nav>
 
-  <div class="contact-banner" role="region" aria-label="Support email">
-    <strong>Email support</strong>
-    <a class="email-link" href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>
-    <p class="muted" style="margin: 0.5rem 0 0;">We reply to account, login, and app questions (usually within 1–2 business days).</p>
+    <main class="support-card">
+      <h1>Contact Support</h1>
+      <p class="lede">Workplace scheduling, messaging, and timecards — ask a question or request help. No login required.</p>
+      <p class="meta"><strong>Last updated:</strong> July 2026</p>
+
+      <div class="contact-banner" role="region" aria-label="Support email">
+        <strong>Email support</strong>
+        <a class="email-link" href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>
+        <p class="banner-note">We reply to account, login, and app questions (usually within 1–2 business days).</p>
+      </div>
+
+      <h2>Ask a question</h2>
+      <!--SUPPORT_CONTACT_START-->
+      <p>
+        Email us at
+        <a href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>,
+        or use the form below — it opens your email app with your message ready to send.
+      </p>
+      <p class="support-form-hint">Fill in your details, then tap <strong>Open email to send</strong>.</p>
+      <form id="supportContactForm" class="support-contact-form" action="mailto:support@shiflow.app" method="get" enctype="text/plain">
+        <label>Your name <input type="text" name="name" maxlength="120" autocomplete="name" /></label>
+        <label>Your email <input type="email" name="email" maxlength="120" autocomplete="email" required /></label>
+        <label>How can we help? <textarea name="body" rows="5" maxlength="4000" required placeholder="Describe your question or issue"></textarea></label>
+        <button type="submit">Open email to send</button>
+      </form>
+      <!--SUPPORT_CONTACT_END-->
+      <p class="no-login">Prefer to write yourself? Send any question to <a href="mailto:support@shiflow.app">support@shiflow.app</a>.</p>
+
+      <h2>Common questions</h2>
+      <ul>
+        <li><strong>Schedule or timecard questions:</strong> contact your on-site manager first — they can update roster access and punch times. For app bugs or login failures, email support.</li>
+        <li><strong>Login issues:</strong> confirm your sign-in name and password with your manager, or email <a href="mailto:support@shiflow.app">support@shiflow.app</a>. Use <strong>Forgot password?</strong> on the sign-in screen if a recovery email is on file.</li>
+        <li><strong>Password reset:</strong> open the Shiflow sign-in screen → <strong>Forgot password?</strong> A reset link is emailed to the recovery address on your account.</li>
+        <li><strong>Something else:</strong> email <a href="mailto:support@shiflow.app">support@shiflow.app</a> or use the form above.</li>
+      </ul>
+
+      <h2>Delete your account</h2>
+      <p>
+        You can permanently delete your Shiflow account yourself — no phone or email ticket required.
+      </p>
+      <ul>
+        <li><strong>In the mobile app:</strong> open <strong>Account</strong> (top of the screen) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
+        <li><strong>On the website:</strong> sign in at <a href="/">shiflow.app</a> → <strong>Account</strong> (header) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
+      </ul>
+      <p class="muted">
+        Deletion permanently removes your login and personal account data. Employer schedule and timecard records for the business may remain as needed for the restaurant.
+      </p>
+
+      <div class="support-footer">
+        See our <a href="/privacy.html">Privacy Policy</a> for how Shiflow handles your information.
+      </div>
+    </main>
   </div>
-
-  <h2>Ask a question</h2>
-  <!--SUPPORT_CONTACT_START-->
-  <p>
-    Email us at
-    <a href="mailto:support@shiflow.app?subject=Shiflow%20support">support@shiflow.app</a>,
-    or use the form below — it opens your email app with your message ready to send.
-  </p>
-  <p class="support-form-hint">Fill in your details, then tap <strong>Open email to send</strong>.</p>
-  <form id="supportContactForm" class="support-contact-form" action="mailto:support@shiflow.app" method="get" enctype="text/plain">
-    <label>Your name <input type="text" name="name" maxlength="120" autocomplete="name" /></label>
-    <label>Your email <input type="email" name="email" maxlength="120" autocomplete="email" required /></label>
-    <label>How can we help? <textarea name="body" rows="5" maxlength="4000" required placeholder="Describe your question or issue"></textarea></label>
-    <button type="submit">Open email to send</button>
-  </form>
-  <!--SUPPORT_CONTACT_END-->
-  <p class="no-login">Prefer to write yourself? Send any question to <a href="mailto:support@shiflow.app">support@shiflow.app</a>.</p>
-
-  <h2>Common questions</h2>
-  <ul>
-    <li><strong>Schedule or timecard questions:</strong> contact your on-site manager first — they can update roster access and punch times. For app bugs or login failures, email support.</li>
-    <li><strong>Login issues:</strong> confirm your sign-in name and password with your manager, or email <a href="mailto:support@shiflow.app">support@shiflow.app</a>. Use <strong>Forgot password?</strong> on the sign-in screen if a recovery email is on file.</li>
-    <li><strong>Password reset:</strong> open the Shiflow sign-in screen → <strong>Forgot password?</strong> A reset link is emailed to the recovery address on your account.</li>
-    <li><strong>Something else:</strong> email <a href="mailto:support@shiflow.app">support@shiflow.app</a> or use the form above.</li>
-  </ul>
-
-  <h2>Delete your account</h2>
-  <p>
-    You can permanently delete your Shiflow account yourself — no phone or email ticket required.
-  </p>
-  <ul>
-    <li><strong>In the mobile app:</strong> open <strong>Account</strong> (top of the screen) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
-    <li><strong>On the website:</strong> sign in at <a href="/">shiflow.app</a> → <strong>Account</strong> (header) → <strong>Delete account</strong> → type <strong>DELETE</strong> to confirm.</li>
-  </ul>
-  <p class="muted">
-    Deletion permanently removes your login and personal account data. Employer schedule and timecard records for the business may remain as needed for the restaurant.
-  </p>
-
-  <h2>Privacy</h2>
-  <p>See our <a href="/privacy.html">Privacy Policy</a> for how Shiflow handles your information.</p>
   <script>
     (function () {
       var SUPPORT_EMAIL = 'support@shiflow.app';
