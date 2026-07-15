@@ -149,11 +149,11 @@ export function findScheduleShiftsForEntry(
     const hit = byId[sid];
     if (shiftRowIncludesWorker(hit, name)) {
       const kioskRest = entry.clock_restaurant_id;
+      // Prefer kiosk-matching store when the linked id resolves to that restaurant; otherwise keep the link.
       if (kioskRest === 'rp-8' || kioskRest === 'rp-9') {
         if (shiftRestaurantId(hit) === kioskRest) return [hit];
-      } else {
-        return [hit];
       }
+      return [hit];
     }
   }
   const matches = scheduleRowsForEmployee(scheduleCtx, emp).filter(
@@ -216,7 +216,10 @@ export function punchDayRestaurantId(
   return 'rp-9';
 }
 
-/** Which store a punch row belongs to (kiosk attribution, schedule link, or day inference). */
+/**
+ * Which store a punch belongs to (schedule link, kiosk, or day inference).
+ * schedule_shift_id wins when present so shift-detail edits update that row's recorded time and pay.
+ */
 export function entryRestaurantId(
   emp: EmployeeRow,
   entry: TimeClockEntry,
@@ -224,13 +227,13 @@ export function entryRestaurantId(
   scheduleCtx: RestaurantAttributionContext
 ): string {
   if (!entry) return 'rp-9';
-  if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
-    return entry.clock_restaurant_id;
-  }
   const matches = findScheduleShiftsForEntry(emp, entry, scheduleCtx);
   if (matches.length) {
     const pick = preferRestaurantAmongMatches(emp, matches);
     if (pick) return pick;
+  }
+  if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
+    return entry.clock_restaurant_id;
   }
   return punchDayRestaurantId(emp, punchDayIso(entry), entries, scheduleCtx);
 }

@@ -259,14 +259,18 @@
     return matches;
   }
 
-  /** Which store a punch row belongs to (schedule link, kiosk attribution, or calendar-day inference). */
+  /**
+   * Which store a punch row belongs to (schedule link, kiosk attribution, or calendar-day inference).
+   * schedule_shift_id wins when present so editing a punch on a shift-specific row updates that
+   * shift's recorded minutes and pay (kiosk restaurant alone must not orphan hours onto the other store).
+   */
   function entryRestaurantId(emp, entry) {
     if (!entry || !emp) return 'rp-9';
+    var matches = findScheduleShiftsForEntry(emp, entry);
+    if (matches.length) return preferRestaurantAmongMatches(emp, matches);
     if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
       return entry.clock_restaurant_id;
     }
-    var matches = findScheduleShiftsForEntry(emp, entry);
-    if (matches.length) return preferRestaurantAmongMatches(emp, matches);
     return punchDayRestaurantId(emp, punchDayIso(entry));
   }
 
@@ -1541,7 +1545,10 @@
     ['tcClockIn', 'tcClockOut', 'tcBreakStart', 'tcBreakEnd'].forEach(function (prefix) {
       ['Date', 'Time'].forEach(function (suffix) {
         var inp = document.getElementById(prefix + suffix);
-        if (inp) inp.addEventListener('input', updateRecordedPreview);
+        if (!inp) return;
+        inp.addEventListener('input', updateRecordedPreview);
+        // Native date/time pickers often only fire change (not input).
+        inp.addEventListener('change', updateRecordedPreview);
       });
     });
   }
@@ -8659,7 +8666,8 @@
         var offSchedule = isOffScheduleShiftDayRow(row);
         var dayEntries = findEntriesForDay(emp.id, row.iso);
         var schedH = offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)) + 'h';
-        var dayMins = dailyRecordedMinutesForEmployee(emp, row.iso);
+        var rowRest = shiftRowAttributionRestaurant(emp, row);
+        var dayMins = dailyRecordedMinutesForEmployeeAtRestaurant(emp, row.iso, rowRest);
         var recH = formatRecordedHoursLabel(dayMins);
         if (dayEntries.length > 1) {
           recH += ' · ' + dayEntries.length + ' punches';
@@ -8927,7 +8935,9 @@
     var schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
     var schedPaid = scheduledPaidMinutes(s, emp);
     var schedBreakPaid = bp() ? bp().resolveBreakPaid({ shift: s, emp: emp }) : false;
-    var dayMins = dailyRecordedMinutesForEmployee(emp, shiftRow.iso);
+    var rowRest = shiftRowAttributionRestaurant(emp, shiftRow);
+    // Match Pay (this shift): recorded minutes for this shift's store, not other-location punches.
+    var dayMins = dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest);
     var dayRounded = roundToNearest5Minutes(dayMins);
     var soh = computeSpreadOfHours(emp);
     var sohDay = isSoHDateForEmployee(emp, shiftRow.iso);
@@ -9029,15 +9039,15 @@
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">Pay (this shift)</h3>' +
-      '<dl class="timecards-dl">' +
-      '<div><dt>Regular</dt><dd>' +
+      '<dl class="timecards-dl" id="timecardsShiftPayCard">' +
+      '<div><dt>Regular</dt><dd id="timecardsShiftPayReg">' +
       d().escapeHtml(
         decimalHoursFromMinutes(shiftPay.regMins) +
           'h · ' +
           (shiftPay.regPay != null ? formatPayAmount(shiftPay.regPay) : '—')
       ) +
       '</dd></div>' +
-      '<div><dt>Overtime</dt><dd>' +
+      '<div><dt>Overtime</dt><dd id="timecardsShiftPayOt">' +
       d().escapeHtml(
         decimalHoursFromMinutes(shiftPay.otMins) +
           'h · ' +
@@ -9050,7 +9060,7 @@
       '<div><dt>OT pay rate</dt><dd>' +
       d().escapeHtml(formatOtHourlyRateLabel(emp)) +
       '</dd></div>' +
-      '<div><dt>Shift total</dt><dd><strong>' +
+      '<div><dt>Shift total</dt><dd><strong id="timecardsShiftPayTotal">' +
       d().escapeHtml(shiftPay.totalPay != null ? formatPayAmount(shiftPay.totalPay) : '—') +
       '</strong></dd></div>' +
       (isDeliveryDishwasherStaff(emp)
@@ -9113,7 +9123,7 @@
       '" min="0" step="0.25" value="' +
       d().escapeHtml(String(getEmployeeDayLeave(emp, shiftRow.iso).sl)) +
       '" /></dd></div>' +
-      '<div><dt>Day total (5-min rounded)</dt><dd>' +
+      '<div><dt>Day total (5-min rounded)</dt><dd id="timecardsShiftDayTotalRound">' +
       d().escapeHtml(dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—') +
       '</dd></div>' +
       '<div><dt>SoH this day</dt><dd>' +
@@ -9132,7 +9142,7 @@
       '<ul class="timecards-punch-list" id="timecardsPunchList">' +
       punchListHtml +
       '</ul>' +
-      '<p class="timecards-day-total"><strong>Day total:</strong> ' +
+      '<p class="timecards-day-total" id="timecardsShiftDayTotal"><strong>Day total:</strong> ' +
       d().escapeHtml(dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—') +
       (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '') +
       '</p>' +
@@ -9231,6 +9241,101 @@
     return !formHasPunchTimes(shiftIso);
   }
 
+  /** Temporarily apply the punch form as a linked entry so Day total / Pay preview match save. */
+  function withShiftFormPreviewEntries(emp, shiftRow, fn) {
+    if (!emp || !shiftRow) return fn();
+    var shiftIso = shiftRow.iso;
+    var editingId = timecardState.entryId;
+    var idEl = document.getElementById('tcEditingEntryId');
+    if (idEl && idEl.value) editingId = idEl.value;
+    var rowRest = shiftRowAttributionRestaurant(emp, shiftRow);
+    var prior = weekEntries;
+    var next = weekEntries.filter(function (e) {
+      if (!e || e.employee_id !== emp.id) return true;
+      if (editingId && e.id === editingId) return false;
+      if (timecardState.punchesCleared && punchDayIso(e) === shiftIso) return false;
+      return true;
+    });
+    if (!timecardState.punchesCleared) {
+      var inIso = readPunchDateTimeField('tcClockIn', shiftIso);
+      if (inIso) {
+        var outIso = readPunchDateTimeField('tcClockOut', shiftIso);
+        var breakStartIso = readPunchDateTimeField('tcBreakStart', shiftIso);
+        var breakEndIso = readPunchDateTimeField('tcBreakEnd', shiftIso);
+        var br = breakMinutesFromRange(breakStartIso, breakEndIso, outIso);
+        next = next.concat([
+          {
+            id: editingId || '__preview_punch__',
+            employee_id: emp.id,
+            clock_in_at: inIso,
+            clock_out_at: outIso,
+            break_start_at: breakStartIso,
+            break_end_at: breakEndIso,
+            break_minutes: br,
+            break_paid: readPunchBreakPaidSelect(),
+            schedule_shift_id: scheduleShiftIdForSave(shiftRow.shift.id),
+            clock_restaurant_id: rowRest,
+          },
+        ]);
+      }
+    }
+    weekEntries = next;
+    rebuildWeekEntriesIndex();
+    try {
+      return fn();
+    } finally {
+      weekEntries = prior;
+      rebuildWeekEntriesIndex();
+    }
+  }
+
+  function updateShiftDetailTotalsFromForm() {
+    var shiftRow = timecardState.shiftRow;
+    if (!shiftRow || !timecardState.employeeId || !d().employees) return;
+    var emp = d().employees.find(function (e) {
+      return e.id === timecardState.employeeId;
+    });
+    if (!emp) return;
+    withShiftFormPreviewEntries(emp, shiftRow, function () {
+      var rowRest = shiftRowAttributionRestaurant(emp, shiftRow);
+      var dayMins = dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest);
+      var dayRounded = roundToNearest5Minutes(dayMins);
+      var dayLabel = dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—';
+      var dayEntries = findEntriesForDay(emp.id, shiftRow.iso).filter(function (e) {
+        return e && entryRestaurantId(emp, e) === rowRest;
+      });
+      var dayEl = document.getElementById('timecardsShiftDayTotal');
+      if (dayEl) {
+        dayEl.innerHTML =
+          '<strong>Day total:</strong> ' +
+          d().escapeHtml(dayLabel) +
+          (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '');
+      }
+      var dayRoundEl = document.getElementById('timecardsShiftDayTotalRound');
+      if (dayRoundEl) dayRoundEl.textContent = dayLabel;
+      var shiftPay = buildShiftDetailRow(emp, shiftRow);
+      var regEl = document.getElementById('timecardsShiftPayReg');
+      if (regEl) {
+        regEl.textContent =
+          decimalHoursFromMinutes(shiftPay.regMins) +
+          'h · ' +
+          (shiftPay.regPay != null ? formatPayAmount(shiftPay.regPay) : '—');
+      }
+      var otEl = document.getElementById('timecardsShiftPayOt');
+      if (otEl) {
+        otEl.textContent =
+          decimalHoursFromMinutes(shiftPay.otMins) +
+          'h · ' +
+          (shiftPay.otPay != null ? formatPayAmount(shiftPay.otPay) : '—');
+      }
+      var totalEl = document.getElementById('timecardsShiftPayTotal');
+      if (totalEl) {
+        totalEl.textContent =
+          shiftPay.totalPay != null ? formatPayAmount(shiftPay.totalPay) : '—';
+      }
+    });
+  }
+
   function updateRecordedPreview() {
     var prev = document.getElementById('timecardsRecordedPreview');
     if (!prev) return;
@@ -9248,6 +9353,7 @@
       prev.textContent = hasPunchFieldsEmpty()
         ? 'No punch times — save VL/SL below for vacation or sick days.'
         : 'Enter clock in to preview paid time.';
+      updateShiftDetailTotalsFromForm();
       return;
     }
     var emp = null;
@@ -9280,6 +9386,7 @@
       'h' +
       (br ? ' · break ' + br + ' min (' + (bp() ? bp().formatBreakPolicyLabel(isPaid) : 'Unpaid') + ')' : '') +
       (!outIso ? ' · shift still open' : '');
+    updateShiftDetailTotalsFromForm();
   }
 
   async function resolveOpenEntryId(sb, employeeId) {

@@ -67,8 +67,7 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const refetchInFlightRef = useRef(false);
-  const refetchAgainRef = useRef(false);
+  const refreshChainRef = useRef(Promise.resolve());
   const entriesCacheRef = useRef<Map<string, CachedWeekEntries>>(new Map());
   const runRefreshRef = useRef<(opts?: { showLoading?: boolean; force?: boolean }) => Promise<void>>(
     async () => {}
@@ -96,66 +95,64 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
         setLoading(false);
         return;
       }
-      if (refetchInFlightRef.current) {
-        refetchAgainRef.current = true;
-        return;
-      }
+      const sb = supabase;
 
-      const weekKey = weekBoundsStorageKey(bounds);
-      const cached = entriesCacheRef.current.get(weekKey);
-      const hasCache = !!cached;
-      const showLoading = opts?.showLoading ?? !hasCache;
+      const run = async () => {
+        const weekKey = weekBoundsStorageKey(bounds);
+        const cached = entriesCacheRef.current.get(weekKey);
+        const hasCache = !!cached;
+        const showLoading = opts?.showLoading ?? !hasCache;
 
-      refetchInFlightRef.current = true;
-      if (hasCache) {
-        // Keep prior week punches visible while refreshing — never flash empty zeros.
-        setEntries(cached.entries);
-        setSchema(cached.schema);
-        setEntriesWeekKey(weekKey);
-        setError(null);
-        setLoading(!!showLoading && !!opts?.force);
-      } else {
-        // Do not keep a different week's punches — that paints false zeros under the new week label.
-        setEntries([]);
-        setEntriesWeekKey(null);
-        if (showLoading) setLoading(true);
-        setError(null);
-      }
-
-      try {
-        const res = await loadWeekEntries(supabase, bounds);
-        if (!res.ok) {
-          if (!hasCache) {
-            setError(res.reason);
-            setEntries([]);
-            setEntriesWeekKey(null);
-          }
-        } else {
-          const maxUpdatedAt = res.entries.reduce<string | null>((acc, e) => {
-            const at = e.updated_at ? String(e.updated_at) : null;
-            if (!at) return acc;
-            if (!acc || at > acc) return at;
-            return acc;
-          }, null);
-          entriesCacheRef.current.set(weekKey, {
-            entries: res.entries,
-            schema: res.schema,
-            fetchedAt: Date.now(),
-            maxUpdatedAt,
-          });
-          setEntries(res.entries);
-          setSchema(res.schema);
+        if (hasCache) {
+          // Keep prior week punches visible while refreshing — never flash empty zeros.
+          setEntries(cached.entries);
+          setSchema(cached.schema);
           setEntriesWeekKey(weekKey);
           setError(null);
+          setLoading(!!showLoading && !!opts?.force);
+        } else {
+          // Do not keep a different week's punches — that paints false zeros under the new week label.
+          setEntries([]);
+          setEntriesWeekKey(null);
+          if (showLoading) setLoading(true);
+          setError(null);
         }
-      } finally {
-        refetchInFlightRef.current = false;
-        setLoading(false);
-        if (refetchAgainRef.current) {
-          refetchAgainRef.current = false;
-          void runRefresh({ showLoading: false, force: true });
+
+        try {
+          const res = await loadWeekEntries(sb, bounds);
+          if (!res.ok) {
+            if (!hasCache) {
+              setError(res.reason);
+              setEntries([]);
+              setEntriesWeekKey(null);
+            }
+          } else {
+            const maxUpdatedAt = res.entries.reduce<string | null>((acc, e) => {
+              const at = e.updated_at ? String(e.updated_at) : null;
+              if (!at) return acc;
+              if (!acc || at > acc) return at;
+              return acc;
+            }, null);
+            entriesCacheRef.current.set(weekKey, {
+              entries: res.entries,
+              schema: res.schema,
+              fetchedAt: Date.now(),
+              maxUpdatedAt,
+            });
+            setEntries(res.entries);
+            setSchema(res.schema);
+            setEntriesWeekKey(weekKey);
+            setError(null);
+          }
+        } finally {
+          setLoading(false);
         }
-      }
+      };
+
+      // Serialize refreshes so await refresh() after save always sees post-save punches.
+      const next = refreshChainRef.current.then(run, run);
+      refreshChainRef.current = next.catch(() => {});
+      await next;
     },
     [bounds]
   );

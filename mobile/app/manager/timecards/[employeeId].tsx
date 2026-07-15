@@ -8,9 +8,10 @@ import { employeeDisplayName, type EmployeeRow } from '../../../lib/employees';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
 import {
   buildRosterRow,
+  buildScheduleContext,
   buildShiftsForEmployeeInWeek,
   computeRosterTotals,
-  dailyRecordedMinutesForEmployee,
+  dailyRecordedMinutesForEmployeeAtRestaurant,
   decimalHoursFromMinutes,
   findEntriesForDay,
   formatDayBreakLabel,
@@ -19,7 +20,8 @@ import {
   formatPayAmount,
   formatShiftPayLabel,
   scheduledPaidMinutes,
-  shiftPayForScheduledRecorded,
+  shiftPayForShiftRow,
+  shiftRowAttributionRestaurant,
   type RosterTotals,
   type ShiftDayRow,
 } from '../../../lib/timecards/engine';
@@ -71,6 +73,10 @@ export default function TimecardsEmployeeScreen() {
   );
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
+  const scheduleCtx = useMemo(
+    () => buildScheduleContext(teamState, { bounds, employees: lites }),
+    [teamState, bounds, lites]
+  );
   const [listVersion, setListVersion] = useState(0);
   const [extrasSlice, setExtrasSlice] = useState<WeekExtrasSlice>({});
   const [dishwasherTipsSlice, setDishwasherTipsSlice] = useState<Record<string, number>>({});
@@ -228,6 +234,7 @@ export default function TimecardsEmployeeScreen() {
             emp={emp}
             entries={entries}
             bounds={bounds}
+            scheduleCtx={scheduleCtx}
             extrasSlice={extrasSlice}
             dishwasherTipsSlice={dishwasherTipsSlice}
             onRemoved={async () => {
@@ -263,6 +270,7 @@ function ShiftRowCard({
   emp,
   entries,
   bounds,
+  scheduleCtx,
   extrasSlice,
   dishwasherTipsSlice,
   onRemoved,
@@ -273,6 +281,7 @@ function ShiftRowCard({
   emp: EmployeeRow;
   entries: TimeClockEntry[];
   bounds: PayWeekBounds;
+  scheduleCtx: ReturnType<typeof buildScheduleContext>;
   extrasSlice: WeekExtrasSlice;
   dishwasherTipsSlice: Record<string, number>;
   onRemoved: () => Promise<void>;
@@ -280,11 +289,17 @@ function ShiftRowCard({
 }) {
   const s = row.shift;
   const dayEntries = findEntriesForDay(entries, empId, row.iso);
-  const recMins = dailyRecordedMinutesForEmployee(entries, empId, row.iso);
+  const rowRest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
+  const recMins = dailyRecordedMinutesForEmployeeAtRestaurant(
+    emp,
+    row.iso,
+    rowRest,
+    entries,
+    scheduleCtx
+  );
   const breakLabel = formatDayBreakLabel(entries, empId, row.iso);
-  const schedMins = scheduledPaidMinutes(s);
   const offSchedule = isOffScheduleShiftDayRow(row);
-  const shiftPay = shiftPayForScheduledRecorded(emp, schedMins, recMins);
+  const shiftPay = shiftPayForShiftRow(emp, row, entries, scheduleCtx);
   const payLabel = formatShiftPayLabel(shiftPay);
   const rateLabel = formatHourlyRateLabel(emp);
   const dateLabel = formatPayWeekDateLabel(row.iso);
@@ -348,7 +363,7 @@ function ShiftRowCard({
         </Pressable>
       </View>
       <Text style={styles.shiftMeta}>
-        Sched {offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s)) + 'h'} · Rec{' '}
+        Sched {offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)) + 'h'} · Rec{' '}
         {formatRecordedHoursLabel(recMins)}
         {dayEntries.length > 1 ? ` · ${dayEntries.length} punches` : ''}
       </Text>

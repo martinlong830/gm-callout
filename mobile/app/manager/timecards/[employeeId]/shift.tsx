@@ -52,6 +52,7 @@ import {
   isEntryOpen,
   normalizePunchTimesForShift,
   parseBreakMinutesFromAnnotation,
+  punchDayIso,
   recordedPaidMinutes,
   roundToNearest5Minutes,
   scheduledPaidMinutes,
@@ -241,6 +242,8 @@ export default function TimecardsShiftScreen() {
       clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
         ? dateToIso(clockOutDate)
         : null;
+    const breakPaid =
+      breakPaidChoice === 'paid' ? true : breakPaidChoice === 'unpaid' ? false : null;
     const fake: TimeClockEntry = {
       id: '',
       employee_id: emp?.id ?? '',
@@ -249,9 +252,66 @@ export default function TimecardsShiftScreen() {
       break_start_at: breakStartIso,
       break_end_at: breakEndIso,
       break_minutes: 0,
+      break_paid: breakPaid,
     };
-    return recordedPaidMinutes(fake, shiftRow);
-  }, [clockInDate, clockOutDate, breakStartDate, breakEndDate, emp, shiftRow]);
+    return recordedPaidMinutes(fake, shiftRow, emp);
+  }, [clockInDate, clockOutDate, breakStartDate, breakEndDate, breakPaidChoice, emp, shiftRow]);
+
+  const previewEntries = useMemo(() => {
+    if (!emp || !shiftRow) return entries;
+    const editingId = entryId;
+    let next = entries.filter((e) => {
+      if (e.employee_id !== emp.id) return true;
+      if (editingId && e.id === editingId) return false;
+      if (punchesCleared && e.clock_in_at && punchDayIso(e) === shiftRow.iso) return false;
+      return true;
+    });
+    if (punchesCleared) return next;
+    const inIso = dateToIso(clockInDate);
+    if (!inIso || isMidnightOnShiftDate(clockInDate, shiftRow.iso)) return next;
+    const breakStartIso =
+      breakStartDate && !isMidnightOnShiftDate(breakStartDate, shiftRow.iso)
+        ? dateToIso(breakStartDate)
+        : null;
+    const breakEndIso =
+      breakEndDate && !isMidnightOnShiftDate(breakEndDate, shiftRow.iso)
+        ? dateToIso(breakEndDate)
+        : null;
+    const outIso =
+      clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
+        ? dateToIso(clockOutDate)
+        : null;
+    const breakPaid =
+      breakPaidChoice === 'paid' ? true : breakPaidChoice === 'unpaid' ? false : null;
+    const rowRest = shiftRowAttributionRestaurant(emp, shiftRow, entries, scheduleCtx);
+    next = next.concat([
+      {
+        id: editingId || '__preview_punch__',
+        employee_id: emp.id,
+        clock_in_at: inIso,
+        clock_out_at: outIso,
+        break_start_at: breakStartIso,
+        break_end_at: breakEndIso,
+        break_minutes: breakMinutesFromRange(breakStartIso, breakEndIso, outIso),
+        break_paid: breakPaid,
+        schedule_shift_id: scheduleShiftIdForSave(shiftRow.shift.id),
+        clock_restaurant_id: rowRest,
+      },
+    ]);
+    return next;
+  }, [
+    emp,
+    shiftRow,
+    entries,
+    entryId,
+    punchesCleared,
+    clockInDate,
+    clockOutDate,
+    breakStartDate,
+    breakEndDate,
+    breakPaidChoice,
+    scheduleCtx,
+  ]);
 
   const clearPunchFields = useCallback(() => {
     setClockInDate(null);
@@ -440,12 +500,12 @@ export default function TimecardsShiftScreen() {
   const s = shiftRow.shift;
   const offSchedule = isOffScheduleShiftDayRow(shiftRow);
   const schedBreak = parseBreakMinutesFromAnnotation(s.redPokeBreak);
-  const rowRest = emp && shiftRow ? shiftRowAttributionRestaurant(emp, shiftRow, entries, scheduleCtx) : 'rp-9';
+  const rowRest = emp && shiftRow ? shiftRowAttributionRestaurant(emp, shiftRow, previewEntries, scheduleCtx) : 'rp-9';
   const dayMins = emp && shiftRow
-    ? dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest, entries, scheduleCtx)
+    ? dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest, previewEntries, scheduleCtx)
     : 0;
   const shiftPay =
-    emp && shiftRow ? shiftPayForShiftRow(emp, shiftRow, entries, scheduleCtx) : null;
+    emp && shiftRow ? shiftPayForShiftRow(emp, shiftRow, previewEntries, scheduleCtx) : null;
   const history = editingEntry ? formatHistoryLines(editingEntry) : [];
 
   return (
@@ -458,7 +518,7 @@ export default function TimecardsShiftScreen() {
         </Text>
         {!offSchedule ? (
           <Text style={styles.line}>
-            Paid {decimalHoursFromMinutes(scheduledPaidMinutes(s))}h · Break{' '}
+            Paid {decimalHoursFromMinutes(scheduledPaidMinutes(s, emp))}h · Break{' '}
             {schedBreak ? `${schedBreak} min` : 'none'}
           </Text>
         ) : (
@@ -486,7 +546,7 @@ export default function TimecardsShiftScreen() {
       <Text style={styles.sectionTitle}>Punches this day</Text>
       {dayEntries.map((punch, idx) => {
         const active = punch.id === entryId;
-        const paid = recordedPaidMinutes(punch, shiftRow);
+        const paid = recordedPaidMinutes(punch, shiftRow, emp);
         return (
           <Pressable
             key={punch.id}
