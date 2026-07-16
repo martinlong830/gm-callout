@@ -68,7 +68,7 @@ export default function EmployeeHome() {
       console.warn('employee home assignmentStore', err);
       return assignmentShell(restaurants);
     }
-  }, [teamState, restaurants]);
+  }, [teamState?.schedule_assignments, restaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -149,7 +149,7 @@ export default function EmployeeHome() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    void refetch().finally(() => setRefreshing(false));
+    void refetch({ silent: true }).finally(() => setRefreshing(false));
   }, [refetch]);
 
   return (

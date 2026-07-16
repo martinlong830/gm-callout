@@ -28,6 +28,10 @@ export default function EmployeeLayout() {
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#c41230',
+        // Keep inactive tabs mounted but frozen so tab switches stay snappy on iOS
+        // without re-running heavy schedule/home work on every blur/focus.
+        freezeOnBlur: true,
+        lazy: true,
         headerRight: () => <HeaderActions onSignOut={() => void signOut()} />,
       }}
     >

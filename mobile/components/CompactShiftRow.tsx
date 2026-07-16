@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   compactShiftTimeLabel,
@@ -17,7 +18,7 @@ type Props = {
   onPress?: () => void;
 };
 
-export function CompactShiftRow({ row, selected, onPress }: Props) {
+export const CompactShiftRow = memo(function CompactShiftRow({ row, selected, onPress }: Props) {
   const roleStyle = ROLE_COLORS[row.role] ?? ROLE_COLORS.Server;
   const dateLabel = formatCalendarDateLabel(row);
   const time = compactShiftTimeLabel(row);
@@ -57,7 +58,7 @@ export function CompactShiftRow({ row, selected, onPress }: Props) {
   }
 
   return <View style={[styles.row, selected && styles.rowSelected]}>{inner}</View>;
-}
+});
 
 const styles = StyleSheet.create({
   row: {

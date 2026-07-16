@@ -1,19 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Dimensions,
   Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import type { EmployeeRow } from '../../lib/employees';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
-import type { AssignmentStore, EmployeeLite, Restaurant, RoleKey, ScheduleRow } from '../../lib/schedule/types';
+import type { EmployeeLite, Restaurant, RoleKey, ScheduleRow } from '../../lib/schedule/types';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -33,14 +33,20 @@ import {
   scheduleRowPrimaryPerson,
   seedDefaultPublishedWeeks,
   type CalendarBodyRow,
+  type CalendarCell,
 } from '../../lib/schedule/engine';
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
+/**
+ * Fixed heights — Person sticky + day columns are separate trees, so minHeight
+ * lets shift cells grow while name cells stay short (misalignment when scrolling).
+ * Match manager schedule: shared fixed height so rows cannot diverge.
+ */
 const SECTION_ROW_H = 40;
 const SECTION_GAP_BELOW = 8;
 const HEADER_ROW_H = 52;
-const DATA_ROW_MIN_H = 80;
+const DATA_ROW_H = 80;
 const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-kitchen': { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
   'role-server': { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
@@ -73,13 +79,11 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
 /** Read-only master schedule for employees — same SoT as manager, no editing. */
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const { employees, teamState, loading } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
-  const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
-    assignmentShell(restaurants)
-  );
   const dayScrollRef = useRef<ScrollView | null>(null);
 
   const weekMeta = useMemo(
@@ -110,13 +114,13 @@ export default function EmployeeScheduleScreen() {
     dayScrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [weekIndex, currentRestaurantId]);
 
-  useEffect(() => {
+  /** Derive store — avoid useEffect + setState layout thrash on every teamState tick. */
+  const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
     const shell = assignmentShell(restaurants);
     const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
-    const rolled = ensureRollingFutureAssignments(merged, restaurants);
-    setAssignmentStore(rolled.store);
-  }, [teamState, restaurants]);
+    return ensureRollingFutureAssignments(merged, restaurants).store;
+  }, [teamState?.schedule_assignments, restaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -138,9 +142,9 @@ export default function EmployeeScheduleScreen() {
     [schedule, visibleDays, draftRows]
   );
 
-  const daysWidth = Math.max(
-    Dimensions.get('window').width - PERSON_COL - 16,
-    visibleDays.length * CELL_MIN
+  const daysWidth = useMemo(
+    () => Math.max(windowWidth - PERSON_COL - 16, visibleDays.length * CELL_MIN),
+    [windowWidth, visibleDays.length]
   );
 
   return (
@@ -220,8 +224,7 @@ export default function EmployeeScheduleScreen() {
         /*
          * Same scroll model as manager schedule: one vertical ScrollView for the
          * whole matrix (Person + day headers travel with rows). Nested horizontal
-         * ScrollView only for day columns. Avoids a flex-bounded body ScrollView
-         * that failed to scroll after the sticky-header split.
+         * ScrollView only for day columns. Fixed DATA_ROW_H keeps Person/day rows level.
          */
         <ScrollView
           style={styles.gridScroll}
@@ -288,19 +291,21 @@ export default function EmployeeScheduleScreen() {
   );
 }
 
-function PersonColRow({
-  row,
-  schedule,
-  visibleDays,
-  employees,
-  restaurantId,
-}: {
+type PersonColRowProps = {
   row: CalendarBodyRow;
   schedule: ScheduleRow[];
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
-}) {
+};
+
+const PersonColRow = memo(function PersonColRow({
+  row,
+  schedule,
+  visibleDays,
+  employees,
+  restaurantId,
+}: PersonColRowProps) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
@@ -337,9 +342,15 @@ function PersonColRow({
       </View>
     </View>
   );
-}
+});
 
-function DayColRow({ row, daysWidth }: { row: CalendarBodyRow; daysWidth: number }) {
+const DayColRow = memo(function DayColRow({
+  row,
+  daysWidth,
+}: {
+  row: CalendarBodyRow;
+  daysWidth: number;
+}) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     return (
@@ -354,38 +365,52 @@ function DayColRow({ row, daysWidth }: { row: CalendarBodyRow; daysWidth: number
   }
   if (row.kind !== 'cells') return null;
   return (
-    <View style={[styles.dataMatrixRow, styles.dayRow, { width: daysWidth }]}>
-      {row.cells.map((cell, ci) => {
-        if (cell.kind === 'empty') {
-          return <View key={ci} style={[styles.cell, styles.cellEmpty, { width: CELL_MIN }]} />;
-        }
-        if (cell.kind === 'dayoff') {
-          return (
-            <View key={ci} style={[styles.cell, styles.cellDayoff, { width: CELL_MIN }]}>
-              <Text style={styles.cellTime}>{cell.timeLabel}</Text>
-              <Text style={styles.cellDayoffLabel}>DAY-OFF</Text>
-            </View>
-          );
-        }
-        const pill = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-server'];
-        return (
-          <View
-            key={ci}
-            style={[
-              styles.cell,
-              styles.cellShift,
-              { width: CELL_MIN, borderColor: pill.border, backgroundColor: pill.bg },
-            ]}
-          >
-            <Text style={[styles.cellTime, { color: pill.fg }]}>{cell.timeLabel}</Text>
-            <Text style={styles.cellBreak}>{cell.breakText}</Text>
-            <Text style={styles.cellHours}>{cell.hours}</Text>
-          </View>
-        );
-      })}
+    <View style={[styles.dataDays, styles.dataMatrixRow, { width: daysWidth }]}>
+      {row.cells.map((cell, ci) => (
+        <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
+          <CalendarCellView cell={cell} />
+        </View>
+      ))}
     </View>
   );
-}
+});
+
+const CalendarCellView = memo(function CalendarCellView({ cell }: { cell: CalendarCell }) {
+  if (cell.kind === 'empty') {
+    return <View style={styles.cellInnerMuted} />;
+  }
+  if (cell.kind === 'dayoff') {
+    return (
+      <View style={styles.cellInnerMuted}>
+        <Text style={styles.cellTime} numberOfLines={1}>
+          {cell.timeLabel}
+        </Text>
+        <Text style={styles.cellDayoffLabel}>DAY-OFF</Text>
+      </View>
+    );
+  }
+  const pill = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-server'];
+  return (
+    <View
+      style={[
+        styles.cellInner,
+        { borderColor: pill.border, backgroundColor: pill.bg, borderLeftColor: pill.fg },
+      ]}
+    >
+      <Text style={[styles.cellTime, { color: pill.fg }]} numberOfLines={1}>
+        {cell.timeLabel}
+      </Text>
+      {cell.breakText ? (
+        <Text style={styles.cellBreak} numberOfLines={1}>
+          {cell.breakText}
+        </Text>
+      ) : null}
+      <Text style={styles.cellHours} numberOfLines={1}>
+        {cell.hours}h
+      </Text>
+    </View>
+  );
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
@@ -429,7 +454,6 @@ const styles = StyleSheet.create({
   unpublishedTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 6 },
   unpublishedBody: { fontSize: 14, color: '#555', lineHeight: 20 },
   muted: { paddingHorizontal: 16, color: '#888', marginBottom: 8 },
-  /* flex:1 + minHeight:0 so this ScrollView gets a real viewport under frozen chrome */
   gridScroll: { flex: 1, minHeight: 0 },
   gridScrollContent: { flexGrow: 1, paddingBottom: 24 },
   matrix: { paddingHorizontal: 8 },
@@ -450,23 +474,26 @@ const styles = StyleSheet.create({
   },
   thFull: { fontSize: 11, fontWeight: '700', color: '#333' },
   thSub: { fontSize: 10, color: '#888', marginTop: 2 },
+  sectionMatrixRow: {
+    marginBottom: SECTION_GAP_BELOW,
+  },
   personSection: {
     height: SECTION_ROW_H,
-    marginBottom: SECTION_GAP_BELOW,
     justifyContent: 'center',
     paddingHorizontal: 8,
     borderLeftWidth: 3,
   },
-  sectionMatrixRow: {},
   sectionText: { fontSize: 10, fontWeight: '700' },
-  personCell: {
-    minHeight: DATA_ROW_MIN_H,
-    justifyContent: 'center',
-    paddingHorizontal: 6,
+  dataMatrixRow: {
+    height: DATA_ROW_H,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f2f4',
+    backgroundColor: '#fff',
   },
-  dataMatrixRow: {},
+  personCell: {
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+  },
   personReadonly: {
     paddingVertical: 8,
     paddingHorizontal: 6,
@@ -478,26 +505,44 @@ const styles = StyleSheet.create({
   dayLaneContent: { flexGrow: 1 },
   headerDays: { flexDirection: 'row', height: HEADER_ROW_H },
   th: {
+    height: HEADER_ROW_H,
     justifyContent: 'center',
     paddingHorizontal: 6,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e6ea',
     backgroundColor: '#fff',
   },
-  sectionDayFill: { height: SECTION_ROW_H, marginBottom: SECTION_GAP_BELOW },
-  dayRow: { flexDirection: 'row', minHeight: DATA_ROW_MIN_H },
+  sectionDayFill: {
+    height: SECTION_ROW_H,
+  },
+  dataDays: {
+    flexDirection: 'row',
+    height: DATA_ROW_H,
+    alignItems: 'stretch',
+  },
   cell: {
-    minHeight: DATA_ROW_MIN_H,
-    padding: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f2f4',
+    height: DATA_ROW_H,
     borderRightWidth: 1,
     borderRightColor: '#f0f2f4',
+    padding: 4,
   },
-  cellEmpty: { backgroundColor: '#fafafa' },
-  cellDayoff: { backgroundColor: '#f8fafc' },
+  cellInner: {
+    flex: 1,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    overflow: 'hidden',
+  },
+  cellInnerMuted: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: '#fafafa',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+  },
   cellDayoffLabel: { fontSize: 10, color: '#94a3b8', marginTop: 4, fontWeight: '600' },
-  cellShift: { borderWidth: 1, borderRadius: 4, margin: 2 },
   cellTime: { fontSize: 11, fontWeight: '700' },
   cellBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   cellHours: { fontSize: 10, color: '#334155', marginTop: 2, fontWeight: '600' },
