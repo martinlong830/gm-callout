@@ -6,9 +6,9 @@
 const TEAM_ROSTER = {
   Bartender: [
     "MARK ONG",
-    "SIED SUMOG - OY",
-    "ANGELYN GELLA",
-    "JONG SARDUA",
+    "CHARLES JAKOB ZACANI",
+    "MAEVE WILLIAMS",
+    "JON ARELLANO",
     "EUGENE VILLARRUZ",
   ],
   Kitchen: [
@@ -27,6 +27,8 @@ const ROLE_IDX = { Kitchen: 0, Bartender: 1, Server: 2 };
 /** Sheet row label → preferred current Team display name (when roster changed). */
 const ROW_LABEL_TO_TEAM = {
   Bartender: {
+    "SIED SUMOG - OY": "CHARLES JAKOB ZACANI",
+    "ANGELYN GELLA": "MAEVE WILLIAMS",
     "JONG SARDUA": "JON ARELLANO",
   },
 };
@@ -60,9 +62,7 @@ function workerNamesMatch(a, b) {
   if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
   const wl = wa[wa.length - 1].replace(/\.$/, "");
   const tl = ta[ta.length - 1].replace(/\.$/, "");
-  if (wl === tl) return true;
-  if (wl.length && tl.length && wl[0] === tl[0]) return true;
-  return false;
+  return wl === tl;
 }
 
 function employeeDisplayName(emp) {

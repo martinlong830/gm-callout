@@ -3220,25 +3220,72 @@
         });
       }
 
+      /**
+       * Bulletproof sign-out: never await supabase auth (lock can hang forever).
+       * Clear portal + auth storage synchronously, then hard-navigate with cache bust.
+       */
+      function clearSupabaseAuthStorageSync() {
+        try {
+          var toRemove = [];
+          for (var i = 0; i < localStorage.length; i += 1) {
+            var k = localStorage.key(i);
+            if (!k) continue;
+            if (
+              (k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) ||
+              k.indexOf('supabase.auth.') === 0
+            ) {
+              toRemove.push(k);
+            }
+          }
+          toRemove.forEach(function (key) {
+            localStorage.removeItem(key);
+          });
+        } catch (_ls) {
+          /* ignore */
+        }
+      }
+
+      function hardSignOutNow() {
+        try {
+          sessionStorage.removeItem(SESSION_KEY);
+          sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+        } catch (_ss) {
+          /* ignore */
+        }
+        clearCompanySessionStorage();
+        clearSupabaseAuthStorageSync();
+        document.documentElement.classList.remove(
+          'authed',
+          'manager-app',
+          'employee-app',
+          'timeclock-app'
+        );
+        // Fire-and-forget only — never await on the UI critical path.
+        try {
+          if (window.gmSupabase && window.gmSupabase.auth) {
+            var p = window.gmSupabase.auth.signOut({ scope: 'local' });
+            if (p && typeof p.then === 'function') {
+              p.then(
+                function () {},
+                function () {}
+              );
+            }
+          }
+        } catch (_so) {
+          /* ignore */
+        }
+        var bust = String(Date.now());
+        try {
+          location.replace('/?signedout=' + bust);
+        } catch (_nav) {
+          location.href = '/?signedout=' + bust;
+        }
+      }
+
       document.querySelectorAll('[data-session-signout]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          (async function () {
-            try {
-              if (window.gmSupabase && window.gmSupabase.auth) {
-                await window.gmSupabase.auth.signOut();
-              }
-            } catch (so) {
-              /* ignore */
-            }
-            try {
-              sessionStorage.removeItem(SESSION_KEY);
-              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-            } catch (err) {
-              /* ignore */
-            }
-            document.documentElement.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
-            location.reload();
-          })();
+        btn.addEventListener('click', function (ev) {
+          if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+          hardSignOutNow();
         });
       });
 
@@ -3287,26 +3334,8 @@
               showAccountDeleteError(res.message || 'Could not delete account.');
               return;
             }
-            try {
-              if (window.gmSupabase && window.gmSupabase.auth) {
-                await window.gmSupabase.auth.signOut();
-              }
-            } catch (_so) {
-              /* ignore */
-            }
-            try {
-              sessionStorage.clear();
-            } catch (_ss) {
-              /* ignore */
-            }
-            document.documentElement.classList.remove(
-              'authed',
-              'manager-app',
-              'employee-app',
-              'timeclock-app'
-            );
             alert(res.message || 'Your account has been permanently deleted.');
-            location.reload();
+            hardSignOutNow();
           })();
         });
       }
@@ -3384,12 +3413,12 @@
   <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=setup-access-code-session-1"></script>
-  <script defer src="employee-app.js?v=person-row-picker-1"></script>
-  <script defer src="manager-messaging.js?v=timecards-tips-1"></script>
-  <script defer src="timeclock-schedule-match.js?v=timeclock-off-schedule-1"></script>
-  <script defer src="timeclock-app.js?v=timeclock-off-schedule-1"></script>
-  <script defer src="portal-auth-client.js?v=account-delete-1"></script>
-  <script defer src="login-timeclock.js?v=timecards-tips-1"></script>
+  <script defer src="app.js?v=signout-hard-nav-2"></script>
+  <script defer src="employee-app.js?v=signout-hard-nav-2"></script>
+  <script defer src="manager-messaging.js?v=signout-hard-nav-2"></script>
+  <script defer src="timeclock-schedule-match.js?v=signout-hard-nav-2"></script>
+  <script defer src="timeclock-app.js?v=signout-hard-nav-2"></script>
+  <script defer src="portal-auth-client.js?v=signout-hard-nav-2"></script>
+  <script defer src="login-timeclock.js?v=signout-hard-nav-2"></script>
 </body>
 </html>

@@ -76,9 +76,7 @@
     if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
     var wl = wa[wa.length - 1].replace(/\.$/, '');
     var tl = ta[ta.length - 1].replace(/\.$/, '');
-    if (wl === tl) return true;
-    if (wl.length && tl.length && wl[0] === tl[0]) return true;
-    return false;
+    return wl === tl;
   }
 
   function workersIncludeName(workers, employeeName) {

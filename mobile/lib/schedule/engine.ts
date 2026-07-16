@@ -482,9 +482,8 @@ function workerNamesMatch(a: string | null | undefined, b: string | null | undef
   if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
   const wl = wa[wa.length - 1].replace(/\.$/, '');
   const tl = ta[ta.length - 1].replace(/\.$/, '');
-  if (wl === tl) return true;
-  if (wl.length && tl.length && wl[0] === tl[0]) return true;
-  return false;
+  // Full last token only — last-initial matching remapped distinct people.
+  return wl === tl;
 }
 
 function scheduleAssignmentPrimaryWorker(entry: NormalizedScheduleAssignment | null | undefined): string | null {
@@ -1425,9 +1424,7 @@ export function shiftRowIncludesWorker(shiftRow: Pick<ScheduleRow, 'workers'>, w
     if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
     const wl = wa[wa.length - 1].replace(/\.$/, '');
     const tl = ta[ta.length - 1].replace(/\.$/, '');
-    if (wl === tl) return true;
-    if (wl.length && tl.length && wl[0] === tl[0]) return true;
-    return false;
+    return wl === tl;
   });
 }
 

@@ -6652,6 +6652,13 @@
   function pushEmployeeScheduleAlias(emp, label) {
     if (!emp || !label || label === 'Unassigned') return;
     if (workerNamesMatch(label, employeeDisplayName(emp))) return;
+    /* Never attach another current roster member's canonical name as an alias —
+       that would make canonicalize rewrite Charles → Eugene (or similar). */
+    for (var i = 0; i < employees.length; i += 1) {
+      var other = employees[i];
+      if (!other || other === emp || (emp.id && other.id && other.id === emp.id)) continue;
+      if (workerNamesMatch(label, employeeDisplayName(other))) return;
+    }
     if (!emp.meta || typeof emp.meta !== 'object') emp.meta = {};
     if (!Array.isArray(emp.meta.scheduleAliases)) emp.meta.scheduleAliases = [];
     if (emp.meta.scheduleAliases.indexOf(label) === -1) {
@@ -6687,7 +6694,11 @@
     return changed;
   }
 
-  /** Fuzzy match for roster names (schedule assignments, requests, callouts). */
+  /**
+   * Fuzzy match for roster names (schedule assignments, requests, callouts).
+   * Requires matching first token + full last token (not last-initial only) so
+   * distinct people like CHARLES…ZACANI vs EUGENE…VILLARRUZ never cross-match.
+   */
   function workerNamesMatch(a, b) {
     var wc = String(a || '').trim().toLowerCase();
     var target = String(b || '').trim().toLowerCase();
@@ -6700,9 +6711,7 @@
     if (wa.length === 1 || ta.length === 1) return wa[0] === ta[0];
     var wl = wa[wa.length - 1].replace(/\.$/, '');
     var tl = ta[ta.length - 1].replace(/\.$/, '');
-    if (wl === tl) return true;
-    if (wl.length && tl.length && wl[0] === tl[0]) return true;
-    return false;
+    return wl === tl;
   }
 
   function employeeMatchesScheduleRestaurant(emp, restaurantId) {
@@ -13283,11 +13292,8 @@
     } catch (_coClr) {
       /* ignore */
     }
-    if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
-      window.gmSupabase.auth.signOut().catch(function () {
-        /* ignore */
-      });
-    }
+    // Do not call auth.signOut() here. This runs from onAuthStateChange(SIGNED_OUT);
+    // re-entering signOut while the auth lock is held deadlocks supabase-js and freezes the UI.
     try {
       sessionStorage.removeItem('gm-callout-session');
       sessionStorage.removeItem('gm-callout-employee-display-name');
@@ -13647,58 +13653,66 @@
 
   if (GM_SUPABASE_DATA && window.gmSupabase && window.gmSupabase.auth) {
     window.gmSupabase.auth.onAuthStateChange(function (event, session) {
+      // Defer all work: supabase-js holds an auth lock while notifying subscribers.
+      // Any re-entrant auth/realtime call inside this callback can hang forever.
       if (window.__GM_ACCESS_CODE_SETUP_FLOW__) {
         if (event === 'SIGNED_OUT') {
+          setTimeout(function () {
+            teardownEmployeesRealtimeSubscription();
+            teardownTeamStateRealtimeSubscription();
+            teardownStaffRequestsRealtimeSubscription();
+            teardownTimeClockEntriesRealtimeSubscription();
+            teardownEmployeeChatRealtimeSubscription();
+            gmCalloutSessionIsManager = false;
+          }, 0);
+        }
+        // Stay on the set-access-code panel; do not auto-enter the app as a prior user.
+        return;
+      }
+      if (event === 'SIGNED_OUT') {
+        setTimeout(function () {
           teardownEmployeesRealtimeSubscription();
           teardownTeamStateRealtimeSubscription();
           teardownStaffRequestsRealtimeSubscription();
           teardownTimeClockEntriesRealtimeSubscription();
           teardownEmployeeChatRealtimeSubscription();
           gmCalloutSessionIsManager = false;
-        }
-        // Stay on the set-access-code panel; do not auto-enter the app as a prior user.
-        return;
-      }
-      if (event === 'SIGNED_OUT') {
-        teardownEmployeesRealtimeSubscription();
-        teardownTeamStateRealtimeSubscription();
-        teardownStaffRequestsRealtimeSubscription();
-        teardownTimeClockEntriesRealtimeSubscription();
-        teardownEmployeeChatRealtimeSubscription();
-        gmCalloutSessionIsManager = false;
-        if (document.documentElement.classList.contains('authed')) {
-          gmCalloutReturnToLogin();
-        }
+          if (document.documentElement.classList.contains('authed')) {
+            gmCalloutReturnToLogin();
+          }
+        }, 0);
         return;
       }
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED')) {
-        gmCalloutRestoreAuthedShellFromSupabase()
-          .then(function (ok) {
-            if (!ok) return null;
-            if (gmCalloutIsTimeclockKiosk()) {
-              if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
-                window.gmCalloutTimeclockBootstrap();
-              }
-              return null;
-            }
-            return gmCalloutSupabaseHydrateFromRemote().then(function () {
-              syncRealtimeSubscriptionsForVisibility();
-              setupEmployeeChatRealtimeSubscription();
-              if (document.documentElement.classList.contains('manager-app')) {
-                if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-                  window.gmCalloutManagerMessagingBootstrap();
+        setTimeout(function () {
+          gmCalloutRestoreAuthedShellFromSupabase()
+            .then(function (ok) {
+              if (!ok) return null;
+              if (gmCalloutIsTimeclockKiosk()) {
+                if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+                  window.gmCalloutTimeclockBootstrap();
                 }
+                return null;
               }
-              if (document.documentElement.classList.contains('employee-app')) {
-                if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-                  window.gmCalloutEmployeeBootstrap();
+              return gmCalloutSupabaseHydrateFromRemote().then(function () {
+                syncRealtimeSubscriptionsForVisibility();
+                setupEmployeeChatRealtimeSubscription();
+                if (document.documentElement.classList.contains('manager-app')) {
+                  if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                    window.gmCalloutManagerMessagingBootstrap();
+                  }
                 }
-              }
+                if (document.documentElement.classList.contains('employee-app')) {
+                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                    window.gmCalloutEmployeeBootstrap();
+                  }
+                }
+              });
+            })
+            .catch(function (authErr) {
+              console.warn('gm-callout: auth shell', authErr);
             });
-          })
-          .catch(function (authErr) {
-            console.warn('gm-callout: auth shell', authErr);
-          });
+        }, 0);
       }
     });
   }
