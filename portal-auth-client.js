@@ -601,6 +601,34 @@
       };
     },
 
+    updateLoginName: async function (loginName) {
+      var next = String(loginName || "").trim();
+      if (!next) {
+        return { ok: false, message: "Enter a sign-in username." };
+      }
+      if (next.length > 80) {
+        return { ok: false, message: "Username must be 80 characters or fewer." };
+      }
+      if (/@/.test(next)) {
+        return { ok: false, message: "Use a username, not an email address, for sign-in." };
+      }
+      var viaApi = await portalAuthedFetch("PUT", "/api/portal/account/login-name", {
+        loginName: next,
+      });
+      if (viaApi.ok && viaApi.data) {
+        return {
+          ok: true,
+          loginName: viaApi.data.loginName || next,
+          message:
+            viaApi.data.message || "Sign-in username updated. Your display name was not changed.",
+        };
+      }
+      if (viaApi && viaApi.message) {
+        return { ok: false, message: viaApi.message };
+      }
+      return { ok: false, message: "Could not update username. Try again from the web app." };
+    },
+
     /** Permanently delete the signed-in account. Requires confirm: "DELETE". */
     deleteAccount: async function (confirmText) {
       var confirm = String(confirmText || "").trim().toUpperCase();
@@ -619,6 +647,39 @@
       return {
         ok: false,
         message: (viaApi && viaApi.message) || "Could not delete account.",
+      };
+    },
+
+    /** Register Expo push token for this signed-in user. */
+    registerPushToken: async function (payload) {
+      var viaApi = await portalAuthedFetch("POST", "/api/portal/push/register", payload || {});
+      if (viaApi.ok) return { ok: true };
+      return {
+        ok: false,
+        message: (viaApi && viaApi.message) || "Could not register push token.",
+        needsSignIn: !!(viaApi && viaApi.needsSignIn),
+      };
+    },
+
+    /** Manager: notify employees that a week was published. */
+    notifySchedulePublished: async function (payload) {
+      var viaApi = await portalAuthedFetch(
+        "POST",
+        "/api/portal/schedule/notify-published",
+        payload || {}
+      );
+      if (viaApi.ok) {
+        return {
+          ok: true,
+          sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+          weekMondayIso: viaApi.data && viaApi.data.weekMondayIso,
+          message: viaApi.data && viaApi.data.message,
+        };
+      }
+      return {
+        ok: false,
+        message: (viaApi && viaApi.message) || "Could not send notifications.",
+        needsSignIn: !!(viaApi && viaApi.needsSignIn),
       };
     },
   };

@@ -571,6 +571,14 @@
             <div class="schedule-toolbar-actions">
               <button
                 type="button"
+                class="btn btn-primary schedule-toolbar-btn"
+                id="schedulePublishNotifyBtn"
+                title="Publish next week’s schedule and notify employees"
+              >
+                Publish / Notify
+              </button>
+              <button
+                type="button"
                 class="btn btn-secondary schedule-toolbar-btn"
                 id="scheduleUndoBtn"
                 disabled
@@ -838,6 +846,17 @@
             <input type="tel" name="phone" id="empPhone" placeholder="e.g. 609-250-8527" autocomplete="tel" />
           </label>
           <label class="form-field form-field-block">
+            <span class="form-label">Email</span>
+            <input
+              type="email"
+              name="email"
+              id="empEmail"
+              placeholder="e.g. name@example.com"
+              autocomplete="email"
+            />
+            <span class="calendar-hint">Account / profile email (not the sign-in username).</span>
+          </label>
+          <label class="form-field form-field-block">
             <span class="form-label">Location</span>
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
@@ -943,7 +962,7 @@
                 name="recoveryEmail"
                 id="empRecoveryEmail"
                 autocomplete="email"
-                placeholder="For password reset"
+                placeholder="For password reset — uses Email above if blank"
               />
             </label>
           </div>
@@ -1083,7 +1102,7 @@
             ← Back to timecards
           </button>
         </div>
-        <p class="calendar-hint" id="timecardsEmployeeWeekLabel"></p>
+        <div id="timecardsEmployeeToolbar" class="timecards-employee-toolbar" aria-label="Employee timecard controls"></div>
         <div id="timecardsEmployeeSummary" class="timecards-employee-summary-mount"></div>
         <div class="timecards-table-wrap">
           <table class="timecards-table" id="timecardsEmployeeTable">
@@ -1091,12 +1110,14 @@
               <tr>
                 <th scope="col">Date</th>
                 <th scope="col">Shift</th>
+                <th scope="col">In / Out</th>
                 <th scope="col">Scheduled</th>
                 <th scope="col">Recorded</th>
                 <th scope="col">Break</th>
                 <th scope="col">Day total</th>
                 <th scope="col">VL (hrs)</th>
                 <th scope="col">SL (hrs)</th>
+                <th scope="col">Coverage</th>
                 <th scope="col">Pay</th>
                 <th scope="col">Pay/hr</th>
                 <th scope="col" class="timecards-col-actions"><span class="visually-hidden">Actions</span></th>
@@ -1280,6 +1301,7 @@
       </header>
       <nav class="top-nav" aria-label="Employee navigation">
         <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
+        <button type="button" class="nav-item" data-emp-nav="schedule">Schedule</button>
         <button type="button" class="nav-item" data-emp-nav="availability">Availability</button>
         <button type="button" class="nav-item" data-emp-nav="requests">Actions</button>
         <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
@@ -1302,6 +1324,58 @@
             </div>
           </div>
           <ul class="emp-shift-list" id="empShiftsUpcoming"></ul>
+        </div>
+      </section>
+      <section class="emp-screen" data-emp-screen="schedule" id="empScreenSchedule" hidden>
+        <div class="calendar-table-wrap emp-schedule-wrap">
+          <div class="schedule-toolbar-compact">
+            <div class="schedule-toolbar-left">
+              <span class="employee-filter-label" id="empScheduleWeekChipsLabel">Week</span>
+              <div
+                class="schedule-week-nav"
+                id="empScheduleWeekNav"
+                role="group"
+                aria-labelledby="empScheduleWeekChipsLabel"
+              >
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-btn"
+                  id="empScheduleWeekNavPrev"
+                  data-emp-schedule-week-step="-1"
+                  aria-label="Previous week"
+                >
+                  ‹
+                </button>
+                <span class="schedule-week-nav-label" id="empScheduleWeekNavLabel">—</span>
+                <span class="schedule-week-nav-badge" id="empScheduleWeekNavBadge" hidden>This week</span>
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-btn"
+                  id="empScheduleWeekNavNext"
+                  data-emp-schedule-week-step="1"
+                  aria-label="Next week"
+                >
+                  ›
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-secondary schedule-week-nav-today"
+                  id="empScheduleWeekNavToday"
+                  hidden
+                >
+                  This week
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="emp-hint emp-schedule-readonly-hint">Full team schedule — view only.</p>
+          <div class="restaurant-switcher" id="empRestaurantSwitcher" role="group" aria-label="Restaurant location"></div>
+          <div class="calendar-legend" aria-label="Role colors">
+            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-kitchen">Back of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
+          </div>
+          <div id="empCalendarGrid" class="emp-calendar-grid" aria-label="Team schedule calendar"></div>
         </div>
       </section>
       <section class="emp-screen" data-emp-screen="messages" id="empScreenMessages" hidden>
@@ -1650,15 +1724,15 @@
         <button type="button" class="availability-modal-close" data-account-settings-dismiss aria-label="Close">×</button>
       </div>
       <p class="calendar-hint account-settings-intro">
-        Your <strong>sign-in name</strong> is shown for reference only — it cannot be changed here. Set your
+        Change your <strong>sign-in username</strong> and set your
         <strong>recovery email</strong> for password reset (each person sets their own). Managers can edit the
-        <strong>company name</strong>.
+        <strong>company name</strong>. Changing username does not change your display name on the team roster.
       </p>
       <form id="accountSettingsForm" class="account-settings-form" novalidate>
         <label class="form-field form-field-block">
-          <span class="form-label">Sign-in name</span>
-          <input type="text" id="accountSettingsLoginName" class="login-input" readonly tabindex="-1" aria-readonly="true" />
-          <span class="calendar-hint account-settings-field-hint">Read only — used when you sign in.</span>
+          <span class="form-label">Sign-in username</span>
+          <input type="text" id="accountSettingsLoginName" class="login-input" maxlength="80" autocomplete="username" />
+          <span class="calendar-hint account-settings-field-hint">Used when you sign in. Changing this does not change your display name on the roster.</span>
         </label>
         <div id="accountSettingsCompanyBlock" class="form-field form-field-block" hidden>
           <label class="form-field form-field-block">
@@ -3004,6 +3078,7 @@
                   lastName: ln && ln.value,
                   phone: ph && ph.value,
                   staffType: st && st.value,
+                  email: re && re.value ? String(re.value).trim() : '',
                 });
                 if (roster && typeof roster.then === 'function') {
                   roster = await roster;
@@ -3270,6 +3345,23 @@
                 companyName: coSaved.companyName,
                 accessCode: coSaved.accessCode,
               });
+            }
+            var loginNameNext = accountSettingsLoginName
+              ? String(accountSettingsLoginName.value || '').trim()
+              : '';
+            if (
+              loginNameNext &&
+              window.gmPortalAuth.updateLoginName &&
+              typeof window.gmPortalAuth.updateLoginName === 'function'
+            ) {
+              var loginSaved = await window.gmPortalAuth.updateLoginName(loginNameNext);
+              if (!loginSaved.ok) {
+                showAccountSettingsError(loginSaved.message || 'Could not update username.');
+                return;
+              }
+              if (accountSettingsLoginName) {
+                accountSettingsLoginName.value = loginSaved.loginName || loginNameNext;
+              }
             }
             var saved = await window.gmPortalAuth.updateRecoveryEmail(email);
             if (!saved.ok) {

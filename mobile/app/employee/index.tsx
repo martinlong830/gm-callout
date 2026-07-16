@@ -1,16 +1,18 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { CompactShiftRow } from '../../components/CompactShiftRow';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../../lib/employees';
+import { registerEmployeePushToken } from '../../lib/pushNotifications';
 import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
+  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
   mergeRemoteAssignments,
@@ -60,7 +62,8 @@ export default function EmployeeHome() {
   const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
     const shell = assignmentShell(restaurants);
-    return mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
+    const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
+    return ensureRollingFutureAssignments(merged, restaurants).store;
   }, [teamState, restaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
@@ -69,6 +72,10 @@ export default function EmployeeHome() {
     if (myEmployee) return employeeDisplayName(myEmployee);
     return displayName.trim();
   }, [myEmployee, displayName]);
+
+  useEffect(() => {
+    void registerEmployeePushToken();
+  }, []);
 
   const buckets = useMemo(() => {
     if (!workerName) return { today: [], upcoming: [] };
@@ -80,8 +87,18 @@ export default function EmployeeHome() {
       employees: lites,
       restaurants,
       assignmentStore,
+      schedulePublishedRaw: teamState?.schedule_published,
     });
-  }, [workerName, weekMeta, allWeekDays, teamState?.draft_schedule, lites, restaurants, assignmentStore]);
+  }, [
+    workerName,
+    weekMeta,
+    allWeekDays,
+    teamState?.draft_schedule,
+    teamState?.schedule_published,
+    lites,
+    restaurants,
+    assignmentStore,
+  ]);
 
   const upcomingGrouped = useMemo(
     () => partitionShiftsByWeekStart(buckets.upcoming),
@@ -164,7 +181,10 @@ export default function EmployeeHome() {
               ) : null}
             </View>
             {!upcomingGrouped.order.length ? (
-              <Text style={styles.muted}>No later shifts in the current 3-week window.</Text>
+              <Text style={styles.muted}>
+                No later published shifts in the current window. Unpublished weeks stay hidden until
+                your manager publishes.
+              </Text>
             ) : !upcomingWeekRows.length ? (
               <Text style={styles.muted}>No shifts this week.</Text>
             ) : (

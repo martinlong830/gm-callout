@@ -28,6 +28,7 @@ import {
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
+  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
   mergeRemoteAssignments,
@@ -80,7 +81,12 @@ export default function EmployeeActions() {
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
   const assignmentStore = useMemo(() => {
     const ids = restaurants.map((r) => r.id);
-    return mergeRemoteAssignments(assignmentShell(restaurants), teamState?.schedule_assignments, ids);
+    const merged = mergeRemoteAssignments(
+      assignmentShell(restaurants),
+      teamState?.schedule_assignments,
+      ids
+    );
+    return ensureRollingFutureAssignments(merged, restaurants).store;
   }, [teamState, restaurants]);
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -94,9 +100,19 @@ export default function EmployeeActions() {
       employees: lites,
       restaurants,
       assignmentStore,
+      schedulePublishedRaw: teamState?.schedule_published,
     });
     return [...today, ...upcoming];
-  }, [nameForRequests, weekMeta, allWeekDays, teamState?.draft_schedule, lites, restaurants, assignmentStore]);
+  }, [
+    nameForRequests,
+    weekMeta,
+    allWeekDays,
+    teamState?.draft_schedule,
+    teamState?.schedule_published,
+    lites,
+    restaurants,
+    assignmentStore,
+  ]);
 
   const [timeoffStartDate, setTimeoffStartDate] = useState<Date | null>(null);
   const [timeoffEndDate, setTimeoffEndDate] = useState<Date | null>(null);

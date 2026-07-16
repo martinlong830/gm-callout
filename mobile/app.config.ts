@@ -21,29 +21,6 @@ const config: ExpoConfig = {
     resizeMode: 'contain',
     backgroundColor: '#ffffff',
   },
-  ios: {
-    supportsTablet: true,
-    bundleIdentifier: IOS_BUNDLE_ID,
-    buildNumber: '1',
-    config: {
-      usesNonExemptEncryption: false,
-    },
-    infoPlist: {
-      ITSAppUsesNonExemptEncryption: false,
-      UIBackgroundModes: [],
-    },
-  },
-  android: {
-    package: ANDROID_PACKAGE,
-    adaptiveIcon: {
-      foregroundImage: './assets/adaptive-icon.png',
-      backgroundColor: '#1e3a5f',
-    },
-    edgeToEdgeEnabled: true,
-  },
-  web: {
-    favicon: './assets/favicon.png',
-  },
   plugins: [
     'expo-router',
     [
@@ -61,7 +38,37 @@ const config: ExpoConfig = {
         android: { minSdkVersion: 24 },
       },
     ],
+    [
+      'expo-notifications',
+      {
+        icon: './assets/icon.png',
+        color: '#c41230',
+      },
+    ],
   ],
+  ios: {
+    supportsTablet: true,
+    bundleIdentifier: IOS_BUNDLE_ID,
+    buildNumber: '1',
+    config: {
+      usesNonExemptEncryption: false,
+    },
+    infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
+      UIBackgroundModes: ['remote-notification'],
+    },
+  },
+  android: {
+    package: ANDROID_PACKAGE,
+    adaptiveIcon: {
+      foregroundImage: './assets/adaptive-icon.png',
+      backgroundColor: '#1e3a5f',
+    },
+    edgeToEdgeEnabled: true,
+  },
+  web: {
+    favicon: './assets/favicon.png',
+  },
   extra: {
     eas: {
       projectId: '4e08651a-f13a-4ebd-99e9-96ea3451a0bb',

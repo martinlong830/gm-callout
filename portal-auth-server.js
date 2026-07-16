@@ -1420,6 +1420,96 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
+  router.put("/account/login-name", async (req, res) => {
+    try {
+      const authed = await profileFromAccessToken(req);
+      if (authed.error) {
+        return res.status(authed.status || 401).json({ ok: false, message: authed.error });
+      }
+      const loginName = String((req.body && (req.body.loginName || req.body.username)) || "").trim();
+      if (!loginName) {
+        return res.status(400).json({ ok: false, message: "Enter a sign-in username." });
+      }
+      if (loginName.length > 80) {
+        return res.status(400).json({ ok: false, message: "Username must be 80 characters or fewer." });
+      }
+      if (/@/.test(loginName)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Use a username, not an email address, for sign-in.",
+        });
+      }
+      const loginNameNorm = normalizeLoginName(loginName);
+      if (!loginNameNorm) {
+        return res.status(400).json({ ok: false, message: "Enter a sign-in username." });
+      }
+      const companyId = authed.profile.company_id || null;
+      const taken = await findDuplicateProfileByLoginName(loginNameNorm, companyId);
+      if (taken.error) {
+        return res.status(400).json({ ok: false, message: taken.error });
+      }
+      if (taken.existing && String(taken.existing.id) !== String(authed.userId)) {
+        return res.status(409).json({
+          ok: false,
+          message: "That username is already taken. Choose a different one.",
+        });
+      }
+      // Also block global null-company collisions when this user has a company.
+      if (companyId) {
+        const { data: globalHit } = await admin
+          .from("profiles")
+          .select("id")
+          .eq("login_name_norm", loginNameNorm)
+          .is("company_id", null)
+          .neq("id", authed.userId)
+          .limit(1);
+        if (globalHit && globalHit.length) {
+          return res.status(409).json({
+            ok: false,
+            message: "That username is already taken. Choose a different one.",
+          });
+        }
+      }
+
+      const { error: updErr } = await admin
+        .from("profiles")
+        .update({
+          login_name: loginName,
+          login_name_norm: loginNameNorm,
+        })
+        .eq("id", authed.userId);
+      if (updErr) {
+        if (updErr.code === "23505") {
+          return res.status(409).json({
+            ok: false,
+            message: "That username is already taken. Choose a different one.",
+          });
+        }
+        return res.status(400).json({ ok: false, message: updErr.message || "Could not update username." });
+      }
+
+      const role = authed.profile.role || "employee";
+      const displayName = authed.profile.display_name || loginName;
+      await admin.auth.admin.updateUserById(authed.userId, {
+        user_metadata: {
+          role,
+          display_name: displayName,
+          login_name: loginName,
+          login_name_norm: loginNameNorm,
+        },
+      });
+
+      return res.json({
+        ok: true,
+        loginName,
+        message: "Sign-in username updated. Your display name was not changed.",
+      });
+    } catch (err) {
+      console.warn("portal account login-name", err);
+      return res.status(500).json({ ok: false, message: "Could not update username." });
+    }
+  });
+
   /**
    * Permanently delete the authenticated user's account (Apple Guideline 5.1.1(v)).
    * - Deletes the Supabase auth user (cascades profiles, staff_requests, chat store, reset tokens).
@@ -1609,6 +1699,159 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     } catch (err) {
       console.warn("reset-password", err);
       return res.status(500).json({ ok: false, message: "Could not reset password." });
+    }
+  });
+
+  /** Register Expo push token for the signed-in user (employee or manager). */
+  router.post("/push/register", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      const body = req.body || {};
+      const token = String(body.expoPushToken || body.token || "").trim();
+      if (!/^Expo(nent)?PushToken\[.+\]$/.test(token)) {
+        return res.status(400).json({ ok: false, message: "Invalid Expo push token." });
+      }
+      let teamStateId = String(body.teamStateId || "").trim();
+      let companyId = auth.profile.company_id || null;
+      if (!teamStateId && companyId) {
+        const { data: company } = await admin
+          .from("companies")
+          .select("team_state_id")
+          .eq("id", companyId)
+          .maybeSingle();
+        teamStateId = (company && company.team_state_id) || companyId || "main";
+      }
+      if (!teamStateId) teamStateId = "main";
+      const platform = body.platform != null ? String(body.platform).slice(0, 32) : null;
+      const { error } = await admin.from("device_push_tokens").upsert(
+        {
+          user_id: auth.userId,
+          company_id: companyId,
+          team_state_id: teamStateId,
+          expo_push_token: token,
+          platform,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id,expo_push_token" }
+      );
+      if (error) {
+        console.warn("push/register", error);
+        return res.status(500).json({ ok: false, message: error.message || "Could not save push token." });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      console.warn("push/register", err);
+      return res.status(500).json({ ok: false, message: "Could not register push token." });
+    }
+  });
+
+  /** Manager: notify employees that a week’s schedule is ready (Expo Push API). */
+  router.post("/schedule/notify-published", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      if (auth.profile.role !== "manager") {
+        return res.status(403).json({ ok: false, message: "Managers only." });
+      }
+      const body = req.body || {};
+      const weekMondayIso = String(body.weekMondayIso || "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
+        return res.status(400).json({ ok: false, message: "weekMondayIso is required (YYYY-MM-DD)." });
+      }
+      let teamStateId = String(body.teamStateId || "").trim();
+      const companyId = auth.profile.company_id || null;
+      if (!teamStateId && companyId) {
+        const { data: company } = await admin
+          .from("companies")
+          .select("team_state_id")
+          .eq("id", companyId)
+          .maybeSingle();
+        teamStateId = (company && company.team_state_id) || companyId || "main";
+      }
+      if (!teamStateId) teamStateId = "main";
+
+      let tokenQuery = admin
+        .from("device_push_tokens")
+        .select("expo_push_token, user_id")
+        .eq("team_state_id", teamStateId);
+      if (companyId) {
+        tokenQuery = tokenQuery.or(`company_id.eq.${companyId},company_id.is.null`);
+      }
+      const { data: tokenRows, error: tokErr } = await tokenQuery;
+      if (tokErr) {
+        console.warn("schedule/notify-published tokens", tokErr);
+        return res.status(500).json({ ok: false, message: tokErr.message || "Could not load push tokens." });
+      }
+
+      const tokens = [];
+      const seen = Object.create(null);
+      (tokenRows || []).forEach((row) => {
+        const t = String((row && row.expo_push_token) || "").trim();
+        if (!t || seen[t]) return;
+        seen[t] = true;
+        tokens.push(t);
+      });
+
+      if (!tokens.length) {
+        return res.json({ ok: true, sent: 0, message: "No registered devices." });
+      }
+
+      const title = "Next week’s schedule is ready";
+      const bodyText = "Open Shiflow to view your upcoming shifts.";
+      const messages = tokens.map((to) => ({
+        to,
+        sound: "default",
+        title,
+        body: bodyText,
+        data: { type: "schedule_published", weekMondayIso, teamStateId },
+      }));
+
+      let sent = 0;
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        const pushRes = await fetch("https://exp.host/--/api/v2/push/send", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(chunk),
+        });
+        if (!pushRes.ok) {
+          const text = await pushRes.text().catch(() => "");
+          console.warn("expo push send", pushRes.status, text);
+          return res.status(502).json({
+            ok: false,
+            message: "Expo push send failed (" + pushRes.status + ").",
+            sent,
+          });
+        }
+        const pushJson = await pushRes.json().catch(() => null);
+        const tickets = (pushJson && pushJson.data) || [];
+        tickets.forEach((t) => {
+          if (t && t.status === "ok") sent += 1;
+        });
+        if (!tickets.length) sent += chunk.length;
+      }
+
+      return res.json({ ok: true, sent, weekMondayIso });
+    } catch (err) {
+      console.warn("schedule/notify-published", err);
+      return res.status(500).json({ ok: false, message: "Could not send schedule notifications." });
     }
   });
 

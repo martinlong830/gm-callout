@@ -464,6 +464,12 @@ function cloneScheduleAssignment(val: ScheduleAssignmentEntry | null | undefined
   return JSON.parse(JSON.stringify(normalizeScheduleAssignment(val)));
 }
 
+function scheduleAssignmentHasStaffedWorkers(
+  entry: ScheduleAssignmentEntry | NormalizedScheduleAssignment | null | undefined
+): boolean {
+  return (normalizeScheduleAssignment(entry).workers || []).some((w) => w && w !== 'Unassigned');
+}
+
 function workerNamesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
   const wc = String(a || '').trim().toLowerCase();
   const target = String(b || '').trim().toLowerCase();
@@ -853,11 +859,8 @@ export function mergeRemoteAssignments(
   const mig = migrateScheduleAssignmentsForPastWeeks(next);
   const store = mig.store;
   const restaurants = defaultRestaurants();
-  restaurantIds.forEach((rid) => {
-    if (restaurantUsesDefaultUnassignedSchedule(restaurants, rid)) return;
-    if (!store[rid]) store[rid] = {};
-    replicateWeekZeroToFutureWeeksInStore(store[rid], SCHEDULE_VIEW_WEEK_COUNT);
-  });
+  /* Do not seed/copy future weeks on remote merge — that can stomp per-week edits.
+     Schedule screen calls ensureRollingFutureAssignments to seed empty W+2 only. */
   purgeDefaultUnassignedRestaurantAssignments(store, restaurants);
   return store;
 }
@@ -904,38 +907,109 @@ function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): { store
   return { store, changed };
 }
 
-function replicateWeekZeroToFutureWeeksInStore(
+function clampScheduleWorkersToSingle(workers: string[] | undefined): string[] {
+  const list = (workers || []).filter((w) => w && w !== 'Unassigned');
+  if (!list.length) return ['Unassigned'];
+  return [list[0]];
+}
+
+function restaurantWeekHasStaffedAssignments(
   restAssignments: Record<string, ScheduleAssignmentEntry>,
-  weekCount: number
+  weekIndex: number
 ): boolean {
   if (!restAssignments || typeof restAssignments !== 'object') return false;
-  const tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
-  const tplStart = tpl * 7;
-  let changed = false;
+  const start = weekIndex * 7;
+  const end = start + 7;
+  return Object.keys(restAssignments).some((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return false;
+    return scheduleAssignmentHasStaffedWorkers(restAssignments[shiftId]);
+  });
+}
+
+function clearRestaurantWeekAssignments(
+  restAssignments: Record<string, ScheduleAssignmentEntry>,
+  weekIndex: number
+): void {
+  const start = weekIndex * 7;
+  const end = start + 7;
   Object.keys(restAssignments).forEach((shiftId) => {
     const p = parseShiftIdParts(shiftId);
-    if (!p) return;
-    if (p.globalDayIdx >= tplStart + 7 && p.globalDayIdx < weekCount * 7) {
-      delete restAssignments[shiftId];
-      changed = true;
-    }
+    if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+    delete restAssignments[shiftId];
   });
-  for (let w = tpl + 1; w < weekCount; w += 1) {
-    const weekStart = w * 7;
-    for (let dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
-      for (let roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
-        const slotCount = slotCountForRole(DEFAULT_DRAFT_SCHEDULE_ROWS, ROLE_DEFS[roleIdx].role);
-        for (let trIdx = 0; trIdx < slotCount; trIdx += 1) {
-          const templateId = `shift-${tplStart + dayInWeek}-${roleIdx}-${trIdx}`;
-          const targetId = `shift-${weekStart + dayInWeek}-${roleIdx}-${trIdx}`;
-          if (restAssignments[templateId] == null) continue;
-          restAssignments[targetId] = cloneScheduleAssignment(restAssignments[templateId]);
-          changed = true;
-        }
-      }
-    }
-  }
-  return changed;
+}
+
+function copyRestaurantWeekAssignments(
+  restAssignments: Record<string, ScheduleAssignmentEntry>,
+  fromWeekIndex: number,
+  toWeekIndex: number
+): boolean {
+  if (!restAssignments || typeof restAssignments !== 'object') return false;
+  if (fromWeekIndex === toWeekIndex) return false;
+  const fromStart = fromWeekIndex * 7;
+  const toStart = toWeekIndex * 7;
+  const copies: { targetId: string; entry: ScheduleAssignmentEntry }[] = [];
+  Object.keys(restAssignments).forEach((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    if (!p || p.globalDayIdx < fromStart || p.globalDayIdx >= fromStart + 7) return;
+    const dayInWeek = p.globalDayIdx - fromStart;
+    const entry = cloneScheduleAssignment(restAssignments[shiftId]);
+    entry.workers = clampScheduleWorkersToSingle(entry.workers);
+    copies.push({
+      targetId: `shift-${toStart + dayInWeek}-${p.roleIdx}-${p.trIdx}`,
+      entry,
+    });
+  });
+  if (!copies.length) return false;
+  clearRestaurantWeekAssignments(restAssignments, toWeekIndex);
+  copies.forEach((c) => {
+    restAssignments[c.targetId] = c.entry;
+  });
+  return true;
+}
+
+/**
+ * Seed W+2 from current week when empty. Leaves W+1 intact; never overwrites staffed W+2.
+ * (Web also rolls week indices on Monday; mobile relies on shared team_state after web roll,
+ * and seeds locally if the furthest week is still empty.)
+ */
+function seedFurthestFutureWeekIfEmpty(
+  store: AssignmentStore,
+  restaurants: Restaurant[],
+  restaurantIds: string[]
+): boolean {
+  const tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+  let furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
+  if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
+  if (furthest <= tpl) return false;
+  let any = false;
+  restaurantIds.forEach((rid) => {
+    if (restaurantUsesDefaultUnassignedSchedule(restaurants, rid)) return;
+    if (!store[rid]) store[rid] = {};
+    if (restaurantWeekHasStaffedAssignments(store[rid], furthest)) return;
+    if (copyRestaurantWeekAssignments(store[rid], tpl, furthest)) any = true;
+  });
+  return any;
+}
+
+/**
+ * Ensure rolling 2 future weeks: seed furthest (W+2) from current week when empty.
+ * Returns a new store when changed so callers can persist to team_state.
+ */
+export function ensureRollingFutureAssignments(
+  store: AssignmentStore,
+  restaurants?: Restaurant[]
+): { store: AssignmentStore; changed: boolean } {
+  const next = JSON.parse(JSON.stringify(store || {})) as AssignmentStore;
+  const rests = restaurants && restaurants.length ? restaurants : defaultRestaurants();
+  const ids = rests.map((r) => r.id);
+  ids.forEach((rid) => {
+    if (!next[rid]) next[rid] = {};
+  });
+  const changed = seedFurthestFutureWeekIfEmpty(next, rests, ids);
+  if (changed) purgeDefaultUnassignedRestaurantAssignments(next, rests);
+  return { store: next, changed };
 }
 
 function getCurrentRestaurantAssignments(
@@ -1287,7 +1361,7 @@ export function updateAssignmentWorkers(
 ): AssignmentStore {
   const next = JSON.parse(JSON.stringify(store)) as AssignmentStore;
   if (!next[restaurantId]) next[restaurantId] = {};
-  next[restaurantId][shiftId] = workers.filter(Boolean);
+  next[restaurantId][shiftId] = clampScheduleWorkersToSingle(workers.filter(Boolean));
   return next;
 }
 
@@ -1462,6 +1536,8 @@ export function getWorkerScheduleBuckets(params: {
   employees: EmployeeLite[];
   restaurants: Restaurant[];
   assignmentStore: AssignmentStore;
+  /** Monday ISO keys (or schedule_published blob) — unpublished weeks are hidden. */
+  schedulePublishedRaw?: unknown;
 }): { today: WorkerShiftRow[]; upcoming: WorkerShiftRow[] } {
   const {
     workerName,
@@ -1472,7 +1548,10 @@ export function getWorkerScheduleBuckets(params: {
     employees,
     restaurants,
     assignmentStore,
+    schedulePublishedRaw,
   } = params;
+  const published = normalizeSchedulePublishedMap(schedulePublishedRaw);
+  seedDefaultPublishedWeeks(published, weekMeta);
   const windowStartMeta = weekMeta[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
   const windowEndMeta =
     weekMeta[(SCHEDULE_TEMPLATE_WEEK_INDEX + EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT) * 7 - 1];
@@ -1493,6 +1572,7 @@ export function getWorkerScheduleBuckets(params: {
   for (const o of all) {
     if (windowStartIso && o.iso && o.iso < windowStartIso) continue;
     if (windowEndIso && o.iso && o.iso > windowEndIso) continue;
+    if (!isScheduleWeekPublished(published, o.iso)) continue;
     if (o.iso === todayIso) today.push(o);
     else if (o.iso && o.iso > todayIso) upcoming.push(o);
   }
@@ -1502,6 +1582,101 @@ export function getWorkerScheduleBuckets(params: {
   });
   today.sort((a, b) => a.start.localeCompare(b.start));
   return { today, upcoming };
+}
+
+export function normalizeSchedulePublishedMap(raw: unknown): Record<string, true> {
+  const out: Record<string, true> = Object.create(null);
+  if (!raw) return out;
+  if (Array.isArray(raw)) {
+    for (const iso of raw) {
+      const k = String(iso || '').slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k)) out[k] = true;
+    }
+    return out;
+  }
+  if (typeof raw !== 'object') return out;
+  const obj = raw as Record<string, unknown>;
+  if (Array.isArray(obj.weeks)) return normalizeSchedulePublishedMap(obj.weeks);
+  const src =
+    obj.weeks && typeof obj.weeks === 'object'
+      ? (obj.weeks as Record<string, unknown>)
+      : obj;
+  for (const k of Object.keys(src)) {
+    const key = String(k || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue;
+    const v = src[k];
+    if (v === false || v == null) continue;
+    out[key] = true;
+  }
+  return out;
+}
+
+export function schedulePublishedPayload(map: Record<string, true | boolean>): {
+  weeks: Record<string, true>;
+} {
+  const weeks: Record<string, true> = {};
+  for (const k of Object.keys(map || {})) {
+    if (map[k]) weeks[k] = true;
+  }
+  return { weeks };
+}
+
+/** Seed past + current weeks when empty (parity with web). */
+export function seedDefaultPublishedWeeks(
+  map: Record<string, true>,
+  weekMeta: WeekMeta[]
+): boolean {
+  if (Object.keys(map).length) return false;
+  let any = false;
+  for (let wi = 0; wi <= SCHEDULE_TEMPLATE_WEEK_INDEX; wi += 1) {
+    const iso = weekMeta[wi * 7]?.iso;
+    if (iso) {
+      map[iso] = true;
+      any = true;
+    }
+  }
+  return any;
+}
+
+export function weekStartMondayIsoFromDayIso(iso: string): string {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  if (Number.isNaN(d.getTime())) return '';
+  const day = d.getDay();
+  const monOffset = day === 0 ? -6 : 1 - day;
+  const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() + monOffset);
+  const y = mon.getFullYear();
+  const mo = String(mon.getMonth() + 1).padStart(2, '0');
+  const dd = String(mon.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${dd}`;
+}
+
+export function isScheduleWeekPublished(
+  published: Record<string, true> | unknown,
+  dayOrMondayIso: string
+): boolean {
+  const map =
+    published && typeof published === 'object' && !Array.isArray(published)
+      ? (published as Record<string, true>)
+      : normalizeSchedulePublishedMap(published);
+  const mon =
+    weekStartMondayIsoFromDayIso(dayOrMondayIso) || String(dayOrMondayIso || '').slice(0, 10);
+  if (!mon) return false;
+  return !!map[mon];
+}
+
+export function isScheduleWeekIndexPublished(
+  published: Record<string, true> | unknown,
+  weekMeta: WeekMeta[],
+  weekIndex: number
+): boolean {
+  const iso = weekMeta[weekIndex * 7]?.iso || '';
+  return isScheduleWeekPublished(published, iso);
+}
+
+export function nextScheduleWeekMondayIso(weekMeta: WeekMeta[]): string {
+  return weekMeta[(SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7]?.iso || '';
 }
 
 /** Drop saved worker rows for locations that must stay unassigned (custom sites with the flag). */

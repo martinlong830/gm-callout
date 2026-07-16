@@ -3085,7 +3085,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .worker-item:hover { border-color: #d1d5db; background: var(--hover-fill); }
 
-.worker-item input[type="checkbox"] {
+.worker-item input[type="checkbox"],
+.worker-item input[type="radio"] {
   width: 22px;
   height: 22px;
   accent-color: var(--primary);
@@ -4230,6 +4231,39 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text-muted);
 }
 
+.emp-schedule-wrap {
+  padding-bottom: 24px;
+}
+
+.emp-schedule-readonly-hint {
+  margin: 0 0 10px;
+}
+
+.emp-schedule-unpublished {
+  padding: 16px 4px;
+}
+
+.calendar-row-person--readonly .calendar-row-person-text {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly {
+  cursor: default;
+}
+
+.calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly:hover {
+  box-shadow: none;
+}
+
+#schedulePublishNotifyBtn {
+  white-space: nowrap;
+}
+
 .emp-schedule-block {
   margin-bottom: 4px;
 }
@@ -5139,6 +5173,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   margin: 0 0 10px;
 }
 
+.timecards-employee-toolbar {
+  --timecards-toolbar-control-height: 34px;
+  --timecards-toolbar-font-size: 0.8125rem;
+  --timecards-toolbar-font-weight: 500;
+  --timecards-toolbar-line-height: 1.25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+  margin: 0 0 10px;
+}
+
 .timecards-roster--switching .timecards-table-wrap,
 .timecards-roster--switching .timecards-grand-totals {
   opacity: 0.55;
@@ -5148,7 +5194,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-roster-toolbar .timecards-week-picker,
 .timecards-roster-toolbar .timecards-location-switcher,
-.timecards-roster-toolbar .timecards-soh-rate-control {
+.timecards-roster-toolbar .timecards-soh-rate-control,
+.timecards-employee-toolbar .timecards-week-picker {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -5157,7 +5204,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .timecards-roster-toolbar .timecards-week-picker-label,
-.timecards-roster-toolbar .employee-filter-label {
+.timecards-roster-toolbar .employee-filter-label,
+.timecards-employee-toolbar .timecards-week-picker-label {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -5169,7 +5217,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-roster-toolbar .timecards-week-select,
 .timecards-roster-toolbar .filter-chip,
 .timecards-roster-toolbar .timecards-soh-rate-field,
-.timecards-roster-toolbar .timecards-download-btn {
+.timecards-roster-toolbar .timecards-download-btn,
+.timecards-employee-toolbar .timecards-week-select {
   box-sizing: border-box;
   min-height: var(--timecards-toolbar-control-height);
   font-size: var(--timecards-toolbar-font-size);
@@ -5184,7 +5233,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   justify-content: center;
 }
 
-.timecards-roster-toolbar .timecards-week-select {
+.timecards-roster-toolbar .timecards-week-select,
+.timecards-employee-toolbar .timecards-week-select {
   min-width: min(100%, 240px);
   padding: 6px 10px;
   border: 1px solid var(--border, #d6d3d1);
@@ -5798,6 +5848,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font: inherit;
   font-size: 0.875rem;
   text-align: right;
+  box-sizing: border-box;
+}
+
+/* Dollar amounts (dishwasher tip, coverage) need room for 1234.56+ */
+.timecards-extra-input--money {
+  width: 8.5rem;
+  min-width: 8.5rem;
+  max-width: 100%;
+  overflow: visible;
+  font-variant-numeric: tabular-nums;
 }
 
 .timecards-extra-suffix {
@@ -5884,6 +5944,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-shifts-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -5894,6 +5955,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.9375rem;
   font-weight: 600;
   color: var(--text);
+}
+
+.timecards-inout-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .timecards-add-day {

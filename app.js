@@ -531,6 +531,33 @@
     return q;
   }
 
+  var EMPLOYEE_SELECT_COLS_WITH_EMAIL =
+    'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+  var EMPLOYEE_SELECT_COLS_NO_EMAIL =
+    'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+
+  async function employeesSelectWithEmailFallback(sb) {
+    var preferEmail = gmEmployeesEmailColumnAvailable !== false;
+    if (preferEmail) {
+      var withEmail = await employeesQueryForCompany(sb, EMPLOYEE_SELECT_COLS_WITH_EMAIL).order(
+        'display_name',
+        { ascending: true }
+      );
+      if (!withEmail.error) {
+        gmEmployeesEmailColumnAvailable = true;
+        return withEmail;
+      }
+      if (/email/i.test((withEmail.error && withEmail.error.message) || '')) {
+        gmEmployeesEmailColumnAvailable = false;
+      } else {
+        return withEmail;
+      }
+    }
+    return employeesQueryForCompany(sb, EMPLOYEE_SELECT_COLS_NO_EMAIL).order('display_name', {
+      ascending: true,
+    });
+  }
+
   function resolveDefaultUnassignedSchedule(restaurantRow) {
     if (!restaurantRow || typeof restaurantRow !== 'object') return false;
     var def = defaultRestaurants().find(function (d) {
@@ -773,6 +800,10 @@
 
   const SCHEDULE_ASSIGN_PAST_WEEKS_MIGRATION_KEY = 'gm_schedule_past_weeks_migrated_v2';
   const SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY = 'gm_schedule_rp8_assignments_reset_v1';
+  /** Last applied schedule-window Monday (YYYY-MM-DD) — used to roll assignment/draft indices. */
+  const SCHEDULE_WINDOW_MONDAY_KEY = 'gm_schedule_window_monday_iso_v1';
+  /** `{ mondayIso, seeded }` — furthest future week (W+2) auto-seeded from current week for this Monday. */
+  const SCHEDULE_FURTHEST_SEED_KEY = 'gm_schedule_furthest_seed_v1';
   let scheduleCalendarWeekIndex = SCHEDULE_TEMPLATE_WEEK_INDEX;
 
   function getThisMondayDate() {
@@ -782,6 +813,192 @@
     const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
     monday.setHours(0, 0, 0, 0);
     return monday;
+  }
+
+  function isoDateFromLocalDate(d) {
+    if (!d || Number.isNaN(d.getTime())) return '';
+    return (
+      d.getFullYear() +
+      '-' +
+      String(d.getMonth() + 1).padStart(2, '0') +
+      '-' +
+      String(d.getDate()).padStart(2, '0')
+    );
+  }
+
+  function parseIsoDateLocal(iso) {
+    var s = String(iso || '').slice(0, 10);
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    var d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    d.setHours(0, 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function currentScheduleWeekMondayIso() {
+    var meta = WEEK_META[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
+    if (meta && meta.iso) return String(meta.iso).slice(0, 10);
+    return isoDateFromLocalDate(getThisMondayDate());
+  }
+
+  function mondayIsoForScheduleWeekIndex(weekIndex) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi < 0) return '';
+    var meta = WEEK_META[wi * 7];
+    return meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
+  }
+
+  function weekStartMondayIsoFromDayIso(iso) {
+    var d = parseIsoDateLocal(iso);
+    if (!d) return '';
+    var day = d.getDay();
+    var monOffset = day === 0 ? -6 : 1 - day;
+    var mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() + monOffset);
+    return isoDateFromLocalDate(mon);
+  }
+
+  function normalizeSchedulePublishedMap(raw) {
+    var out = Object.create(null);
+    if (!raw) return out;
+    if (Array.isArray(raw)) {
+      raw.forEach(function (iso) {
+        var k = String(iso || '').slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(k)) out[k] = true;
+      });
+      return out;
+    }
+    if (typeof raw !== 'object') return out;
+    if (Array.isArray(raw.weeks)) {
+      return normalizeSchedulePublishedMap(raw.weeks);
+    }
+    var src = raw.weeks && typeof raw.weeks === 'object' ? raw.weeks : raw;
+    Object.keys(src).forEach(function (k) {
+      var key = String(k || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+      var v = src[k];
+      if (v === false || v == null) return;
+      out[key] = true;
+    });
+    return out;
+  }
+
+  function schedulePublishedPayload() {
+    var weeks = {};
+    Object.keys(schedulePublishedByMonday).forEach(function (k) {
+      if (schedulePublishedByMonday[k]) weeks[k] = true;
+    });
+    return { weeks: weeks };
+  }
+
+  /** Seed past + current weeks when map is empty so employees are not blanked after deploy. */
+  function seedDefaultSchedulePublishedWeeks() {
+    if (Object.keys(schedulePublishedByMonday).length) return false;
+    for (var wi = 0; wi <= SCHEDULE_TEMPLATE_WEEK_INDEX; wi += 1) {
+      var iso = mondayIsoForScheduleWeekIndex(wi);
+      if (iso) schedulePublishedByMonday[iso] = true;
+    }
+    return Object.keys(schedulePublishedByMonday).length > 0;
+  }
+
+  function isScheduleWeekPublished(dayOrMondayIso) {
+    var mon = weekStartMondayIsoFromDayIso(dayOrMondayIso) || String(dayOrMondayIso || '').slice(0, 10);
+    if (!mon) return false;
+    return !!schedulePublishedByMonday[mon];
+  }
+
+  function isScheduleWeekIndexPublished(weekIndex) {
+    return isScheduleWeekPublished(mondayIsoForScheduleWeekIndex(weekIndex));
+  }
+
+  function nextScheduleWeekMondayIso() {
+    return mondayIsoForScheduleWeekIndex(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+  }
+
+  function markScheduleWeekPublished(mondayIso) {
+    var mon = String(mondayIso || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(mon)) return false;
+    if (schedulePublishedByMonday[mon]) return false;
+    schedulePublishedByMonday[mon] = true;
+    schedulePublishedDirty = true;
+    return true;
+  }
+
+  function updateSchedulePublishNotifyButton() {
+    var btn = document.getElementById('schedulePublishNotifyBtn');
+    if (!btn) return;
+    var nextIso = nextScheduleWeekMondayIso();
+    var published = nextIso && isScheduleWeekPublished(nextIso);
+    btn.textContent = published ? 'Notify again' : 'Publish / Notify';
+    btn.disabled = false;
+    btn.title = published
+      ? 'Next week is already published — send another push notification'
+      : 'Publish next week’s schedule and notify employees';
+  }
+
+  async function publishNextWeekScheduleAndNotify() {
+    var nextIso = nextScheduleWeekMondayIso();
+    if (!nextIso) {
+      showScheduleNotice('Could not resolve next week’s start date.', false);
+      return { ok: false };
+    }
+    var btn = document.getElementById('schedulePublishNotifyBtn');
+    if (btn) btn.disabled = true;
+    var newlyPublished = markScheduleWeekPublished(nextIso);
+    updateSchedulePublishNotifyButton();
+    try {
+      if (newlyPublished || schedulePublishedDirty) {
+        await flushTeamStateSyncNow();
+      }
+      var notifyResult = { ok: true, sent: 0 };
+      if (
+        window.gmPortalAuth &&
+        typeof window.gmPortalAuth.notifySchedulePublished === 'function'
+      ) {
+        notifyResult = await window.gmPortalAuth.notifySchedulePublished({
+          weekMondayIso: nextIso,
+          teamStateId: gmCalloutTeamStateRowId(),
+        });
+      }
+      var range = formatScheduleWeekRangeLabel(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+      if (notifyResult && notifyResult.ok === false) {
+        showScheduleNotice(
+          'Next week (' +
+            range +
+            ') is published for employees, but push notify failed: ' +
+            (notifyResult.message || 'unknown error'),
+          false
+        );
+      } else {
+        var sent = notifyResult && notifyResult.sent != null ? Number(notifyResult.sent) : 0;
+        showScheduleNotice(
+          'Next week (' +
+            range +
+            ') is published.' +
+            (sent > 0
+              ? ' Notified ' + sent + ' device' + (sent === 1 ? '' : 's') + '.'
+              : ' Employees can view it now (no push tokens registered yet).'),
+          false
+        );
+      }
+      if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
+        window.gmCalloutEmployeeScheduleRefreshUi();
+      }
+      return { ok: true, weekMondayIso: nextIso, newlyPublished: newlyPublished, notify: notifyResult };
+    } catch (err) {
+      console.warn('publish next week', err);
+      showScheduleNotice('Could not publish next week’s schedule.', false);
+      return { ok: false };
+    } finally {
+      updateSchedulePublishNotifyButton();
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function mondayIsoDiffWeeks(fromIso, toIso) {
+    var a = parseIsoDateLocal(fromIso);
+    var b = parseIsoDateLocal(toIso);
+    if (!a || !b) return 0;
+    return Math.round((b.getTime() - a.getTime()) / (7 * 24 * 60 * 60 * 1000));
   }
 
   var TIME_ROUND_MS = 5 * 60 * 1000;
@@ -814,19 +1031,18 @@
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  /** When a punch is closed: floor early clock-in to shift start, else 5-min round; round clock-out. */
+  /**
+   * Round closed punch times to 5 minutes for storage.
+   * Do not rewrite early clock-in to shift start — managers can log actual arrival (e.g. 10:30
+   * when the shift starts at 12:00). Paid hours still floor early arrival via punchShiftRoundedMinutes.
+   */
   function normalizePunchTimesForShift(clockInIso, clockOutIso, shiftIso, shiftStartTime) {
     var out = { clockInAt: clockInIso, clockOutAt: clockOutIso };
     if (!clockInIso || !clockOutIso) return out;
-    var start = scheduledShiftStartAt(shiftIso, shiftStartTime);
     var inD = new Date(clockInIso);
     if (Number.isNaN(inD.getTime())) return out;
     var rin = roundDateToNearest5Minutes(inD);
-    if (rin && start && rin.getTime() < start.getTime()) {
-      out.clockInAt = start.toISOString();
-    } else if (rin) {
-      out.clockInAt = rin.toISOString();
-    }
+    if (rin) out.clockInAt = rin.toISOString();
     var outD = new Date(clockOutIso);
     if (!Number.isNaN(outD.getTime())) {
       var rout = roundDateToNearest5Minutes(outD);
@@ -1058,10 +1274,10 @@
   /** Payroll CSV employee info — merged into employee.meta on load when fields are empty. */
   var EMPLOYEE_INFO_PRESETS = [
     { name: 'MARK ONG', position: 'STORE MANAGER', hiringDate: '3/25/2023', emergencyContact: 'ELLOISA ONG · 347 526 9910', ssn: '', itin: '990 - 98 - 5260', birthDate: '3/17/1989', hoursRate: 22, payAdjustment: 28.5, tipPoint: 5 },
-    { name: 'SEID SUMOG - OY', position: 'SERVICE REP', hiringDate: '4/9/2023', emergencyContact: 'BARBARA WESS · 404 980 0319‬', ssn: '713 - 11 - 6099', itin: '', birthDate: '10/23/2000', hoursRate: 19, payAdjustment: 20, tipPoint: 2 },
+    { name: 'CHARLES JAKOB ZACANI', position: 'SERVICE REP', hiringDate: '4/9/2023', emergencyContact: 'BARBARA WESS · 404 980 0319‬', ssn: '713 - 11 - 6099', itin: '', birthDate: '10/23/2000', hoursRate: 19, payAdjustment: 20, tipPoint: 2 },
     { name: 'EUGENE VILLARRUZ', position: 'SERVICE REP', hiringDate: '4/28/2025', emergencyContact: 'EVA GUZMAN · 515 993 0795', ssn: '916 - 66 - 2562', itin: '', birthDate: '11/6/1999', hoursRate: 18, payAdjustment: 0, tipPoint: 2 },
-    { name: 'ANGEL GELLA', position: 'SERVICE REP', hiringDate: '1/1/2026', emergencyContact: 'LALAINE BRIONNES · 305 587 8299', ssn: '788 - 04 - 4444', itin: '', birthDate: '1/14/2002', hoursRate: 17, payAdjustment: 18, tipPoint: 2 },
-    { name: 'JONG SARDUA', position: 'SERVICE REP', hiringDate: '3/17/2026', emergencyContact: 'RONA LUKBAN · 929 836 5956', ssn: '245 - 95 - 5801', itin: '', birthDate: '10/4/1989', hoursRate: 17, payAdjustment: 17.5, tipPoint: 2 },
+    { name: 'MAEVE WILLIAMS', position: 'SERVICE REP', hiringDate: '1/1/2026', emergencyContact: 'LALAINE BRIONNES · 305 587 8299', ssn: '788 - 04 - 4444', itin: '', birthDate: '1/14/2002', hoursRate: 17, payAdjustment: 18, tipPoint: 2 },
+    { name: 'JON ARELLANO', position: 'SERVICE REP', hiringDate: '3/17/2026', emergencyContact: 'RONA LUKBAN · 929 836 5956', ssn: '245 - 95 - 5801', itin: '', birthDate: '10/4/1989', hoursRate: 17, payAdjustment: 17.5, tipPoint: 2 },
     { name: 'BALTAZAR LUCAS', position: 'KITCHEN MANAGER', hiringDate: '10/7/2019', emergencyContact: 'LOURDES LUCAS · 929 391 7813', ssn: '', itin: '985 - 95 - 1637', birthDate: '6/6/1996', hoursRate: 20, payAdjustment: 25.5, tipPoint: 4 },
     { name: 'ENRIQUE CUMES', position: 'SERVICE REP', hiringDate: '7/1/2024', emergencyContact: 'GRACIELA COXOLCA · 929 751 3313', ssn: '085 - 39 - 2876', itin: '', birthDate: '8/2/2002', hoursRate: 19, payAdjustment: 20, tipPoint: 3 },
     { name: 'ARMANDO CUMES', position: 'SERVICE REP', hiringDate: '10/18/2024', emergencyContact: 'ANDRES CUMES · 929 608 5892', ssn: '387 - 39 - 1029', itin: '', birthDate: '7/27/2002', hoursRate: 18, payAdjustment: 19, tipPoint: 2 },
@@ -1074,9 +1290,40 @@
   ];
 
   var EMPLOYEE_INFO_NAME_ALIASES = {
-    'seid sumog oy': 'sied sumog oy',
-    'angel gella': 'angelyn gella',
+    'seid sumog oy': 'charles jakob zacani',
+    'sied sumog oy': 'charles jakob zacani',
+    'angel gella': 'maeve williams',
+    'angelyn gella': 'maeve williams',
+    'jong sardua': 'jon arellano',
     'abel lujon': 'abel lujan',
+  };
+
+  /** Stale localStorage / offline roster rows → current display names (Team + Schedule). */
+  var ROSTER_LEGACY_DISPLAY_RENAMES = [
+    {
+      from: ['ANGELYN GELLA', 'ANGEL GELLA'],
+      to: { display: 'MAEVE WILLIAMS', first: 'MAEVE', last: 'WILLIAMS' },
+    },
+    {
+      from: ['JONG SARDUA'],
+      to: { display: 'JON ARELLANO', first: 'JON', last: 'ARELLANO' },
+    },
+    {
+      from: ['SIED SUMOG - OY', 'SEID SUMOG - OY', 'SIED SUMOG-OY', 'SEID SUMOG-OY'],
+      to: { display: 'CHARLES JAKOB ZACANI', first: 'CHARLES JAKOB', last: 'ZACANI' },
+    },
+  ];
+
+  /** null = unknown; false until migration adds employees.email. */
+  var gmEmployeesEmailColumnAvailable = null;
+
+  /** Old roster photo file slugs → current display-name slugs (and reverse for lookup). */
+  var EMPLOYEE_PHOTO_SLUG_ALIASES = {
+    angelyn_gella: 'maeve_williams',
+    maeve_williams: 'angelyn_gella',
+    jong_sardua: 'jon_arellano',
+    sied_sumog_oy: 'charles_jakob_zacani',
+    seid_sumog_oy: 'charles_jakob_zacani',
   };
 
   function normCsvInfoNameKey(name) {
@@ -1354,6 +1601,9 @@
     } else if ('tipPoint' in meta) {
       delete meta.tipPoint;
     }
+    var emailVal = emp.email != null ? String(emp.email).trim() : '';
+    if (emailVal) meta.email = emailVal;
+    else if ('email' in meta) delete meta.email;
     var row = {
       id: emp.id,
       auth_user_id: emp.authUserId || null,
@@ -1366,6 +1616,10 @@
       weekly_grid: emp.weeklyGrid || {},
       meta: meta,
     };
+    /* Omit email until the column exists (avoids upsert failures + stale-name sync loops). */
+    if (gmEmployeesEmailColumnAvailable !== false) {
+      row.email = emailVal;
+    }
     var companyId = emp.companyId || gmCalloutCompanyId();
     if (companyId) row.company_id = companyId;
     if (emp.clockPin) row.clock_pin = String(emp.clockPin);
@@ -1577,6 +1831,11 @@
       };
     }
     var res = await sb.from('employees').upsert(row, { onConflict: 'id' });
+    if (res.error && /email/i.test(res.error.message || '') && row.email != null) {
+      gmEmployeesEmailColumnAvailable = false;
+      delete row.email;
+      res = await sb.from('employees').upsert(row, { onConflict: 'id' });
+    }
     if (res.error) {
       console.warn('gm-callout: employee upsert', res.error);
       return {
@@ -1609,6 +1868,15 @@
       if (!rows.length) return { ok: true };
     }
     var res = await sb.from('employees').upsert(rows, { onConflict: 'id' });
+    if (res.error && /email/i.test(res.error.message || '')) {
+      gmEmployeesEmailColumnAvailable = false;
+      rows = rows.map(function (r) {
+        var copy = Object.assign({}, r);
+        delete copy.email;
+        return copy;
+      });
+      res = await sb.from('employees').upsert(rows, { onConflict: 'id' });
+    }
     if (res.error) {
       console.warn('gm-callout: employees upsert', res.error);
       return { ok: false, error: res.error };
@@ -1630,6 +1898,7 @@
       displayName: row.display_name || undefined,
       staffType: row.staff_type,
       phone: row.phone,
+      email: row.email || (row.meta && row.meta.email) || '',
       weeklyGrid: row.weekly_grid,
       usualRestaurant: usualRestaurantFromDbRow(row.usual_restaurant),
       meta: row.meta,
@@ -1779,11 +2048,7 @@
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
-    var empCols =
-      'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
-    var res = await employeesQueryForCompany(sb, empCols).order('display_name', {
-      ascending: true,
-    });
+    var res = await employeesSelectWithEmailFallback(sb);
     if (res.error) {
       console.warn('gm-callout: employees refresh', res.error);
       return { ok: false, error: res.error };
@@ -1835,6 +2100,10 @@
   var scheduleAssignmentsDirty = false;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
+  /** True while published-week map changed locally (manager Publish / Notify). */
+  var schedulePublishedDirty = false;
+  /** Monday ISO (YYYY-MM-DD) -> true for weeks visible to employees. */
+  var schedulePublishedByMonday = Object.create(null);
   /** True while callout history, messaging, timeclock settings, or restaurant id changed locally. */
   var teamStateMetaDirty = false;
   /** Suppress debounced push while applying a remote team_state row (avoids multi-tab echo storms). */
@@ -1842,6 +2111,8 @@
   /** Last known team_state.updated_at — skip multi-MB REST when unchanged. */
   var teamStateCachedUpdatedAt = null;
   var tipPayrollPushTimer = null;
+  /** Snapshot of tip/VL/SL stores last applied from (or confirmed to) Supabase — push only overlays session edits. */
+  var tipPayrollRemoteBaseline = { tipPool: {}, dishwasher: {}, weekExtras: {} };
   var teamStateRemoteRefreshTimer = null;
   var teamStateRealtimeChannel = null;
   var employeeChatCloudTimer = null;
@@ -1972,6 +2243,20 @@
     }
   }
 
+  function tipPayrollSliceJson(slice) {
+    if (!slice || typeof slice !== 'object') return '';
+    try {
+      return JSON.stringify(slice);
+    } catch (_tj) {
+      return '';
+    }
+  }
+
+  /**
+   * Merge tip/VL/SL for push: start from remote SoT, overlay only week keys this browser
+   * changed since the last remote apply (vs tipPayrollRemoteBaseline). Prevents one manager's
+   * stale localStorage from clobbering another manager's tip/VL edits.
+   */
   function mergeTipPayrollStoresForPush(localTip, localDw, remoteTip, remoteDw, localExtras, remoteExtras) {
     remoteTip = remoteTip && typeof remoteTip === 'object' ? remoteTip : {};
     remoteDw = remoteDw && typeof remoteDw === 'object' ? remoteDw : {};
@@ -1979,22 +2264,47 @@
     localDw = localDw && typeof localDw === 'object' ? localDw : {};
     remoteExtras = remoteExtras && typeof remoteExtras === 'object' ? remoteExtras : {};
     localExtras = localExtras && typeof localExtras === 'object' ? localExtras : {};
+    var baseTip =
+      tipPayrollRemoteBaseline.tipPool && typeof tipPayrollRemoteBaseline.tipPool === 'object'
+        ? tipPayrollRemoteBaseline.tipPool
+        : {};
+    var baseDw =
+      tipPayrollRemoteBaseline.dishwasher && typeof tipPayrollRemoteBaseline.dishwasher === 'object'
+        ? tipPayrollRemoteBaseline.dishwasher
+        : {};
+    var baseExtras =
+      tipPayrollRemoteBaseline.weekExtras && typeof tipPayrollRemoteBaseline.weekExtras === 'object'
+        ? tipPayrollRemoteBaseline.weekExtras
+        : {};
     var mergedTip = Object.assign({}, remoteTip);
     Object.keys(localTip).forEach(function (key) {
       var slice = localTip[key];
-      if (slice && typeof slice === 'object') mergedTip[key] = slice;
+      if (!slice || typeof slice !== 'object') return;
+      if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseTip[key])) mergedTip[key] = slice;
     });
     var mergedDw = Object.assign({}, remoteDw);
     Object.keys(localDw).forEach(function (key) {
       var slice = localDw[key];
-      if (slice && typeof slice === 'object') mergedDw[key] = slice;
+      if (!slice || typeof slice !== 'object') return;
+      if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseDw[key])) mergedDw[key] = slice;
     });
     var mergedExtras = Object.assign({}, remoteExtras);
     Object.keys(localExtras).forEach(function (key) {
       var slice = localExtras[key];
-      if (slice && typeof slice === 'object') mergedExtras[key] = slice;
+      if (!slice || typeof slice !== 'object') return;
+      if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseExtras[key])) {
+        mergedExtras[key] = slice;
+      }
     });
     return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
+  }
+
+  function snapshotTipPayrollRemoteBaseline() {
+    tipPayrollRemoteBaseline = {
+      tipPool: loadTimecardWeekTipPoolStore(),
+      dishwasher: loadTimecardDishwasherTipsStore(),
+      weekExtras: loadTimecardWeekExtrasStore(),
+    };
   }
 
   async function fetchRemoteTipPayrollStores(sb) {
@@ -2067,6 +2377,7 @@
     );
     if (res.error) console.warn('gm-callout: team_state tip payroll upsert', res.error);
     else {
+      snapshotTipPayrollRemoteBaseline();
       void broadcastTeamStateChanged([
         'timecard_week_tip_pool',
         'timecard_dishwasher_tips',
@@ -2088,12 +2399,15 @@
   }
 
   var TEAM_STATE_SCHEDULE_COLUMNS =
-    'schedule_assignments,schedule_templates,draft_schedule,updated_at';
+    'schedule_assignments,schedule_templates,draft_schedule,schedule_published,updated_at';
   var TEAM_STATE_MANAGER_COLUMNS =
     TEAM_STATE_SCHEDULE_COLUMNS +
     ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras';
+  /* Employees need draft_schedule (slot times/rows) + schedule_assignments so upcoming
+     shifts and the read-only master calendar match the manager SoT.
+     schedule_published gates which weeks employees can see. */
   var TEAM_STATE_EMPLOYEE_COLUMNS =
-    'schedule_assignments,callout_history,current_restaurant_id,updated_at';
+    'schedule_assignments,draft_schedule,schedule_published,callout_history,current_restaurant_id,updated_at';
 
   function teamStateColumnsForRemoteFetch(fields) {
     if (Array.isArray(fields) && fields.length) {
@@ -2107,6 +2421,7 @@
             'schedule_assignments',
             'schedule_templates',
             'draft_schedule',
+            'schedule_published',
             'messaging_templates',
             'current_restaurant_id',
             'callout_history',
@@ -2115,7 +2430,13 @@
             'timecard_dishwasher_tips',
             'timecard_week_extras',
           ]
-        : ['schedule_assignments', 'callout_history', 'current_restaurant_id'];
+        : [
+            'schedule_assignments',
+            'draft_schedule',
+            'schedule_published',
+            'callout_history',
+            'current_restaurant_id',
+          ];
       allowed.forEach(function (c) {
         if (set[c]) cols.push(c);
       });
@@ -2215,6 +2536,9 @@
         /* ignore */
       }
     }
+    // Always snapshot baseline (even when remote columns were empty) so a later push does not
+    // treat pre-hydrate localStorage as session edits and overwrite shared tip/VL SoT.
+    snapshotTipPayrollRemoteBaseline();
     if (
       changed &&
       window.gmCalloutTimecards &&
@@ -2546,13 +2870,18 @@
     return {
       v: 2,
       byWeek: cloneDraftSchedule(store || draftScheduleByWeekStore),
+      windowMondayIso: readScheduleWindowMondayIso() || currentScheduleWeekMondayIso(),
     };
   }
 
   function draftSchedulePayloadFromRemote(dr) {
     if (!dr || typeof dr !== 'object') return null;
     if (dr.byWeek && typeof dr.byWeek === 'object') {
-      return { v: 2, byWeek: dr.byWeek };
+      return {
+        v: 2,
+        byWeek: dr.byWeek,
+        windowMondayIso: dr.windowMondayIso ? String(dr.windowMondayIso).slice(0, 10) : '',
+      };
     }
     if (draftScheduleJsonHasLayers(dr)) {
       var migratedRemote = {};
@@ -2560,7 +2889,7 @@
       for (var wr = 0; wr < SCHEDULE_VIEW_WEEK_COUNT; wr += 1) {
         migratedRemote[String(wr)] = cloneDraftSchedule(remoteLayers);
       }
-      return { v: 2, byWeek: migratedRemote };
+      return { v: 2, byWeek: migratedRemote, windowMondayIso: '' };
     }
     return null;
   }
@@ -2571,26 +2900,32 @@
     });
   }
 
-  /** True when remote schedule_assignments must not replace local (unpushed edits or stale fetch). */
+  /**
+   * True when remote schedule_assignments must not replace local.
+   * Only refuse while THIS tab has unpushed edits. Confirmed-JSON mismatch used to refuse
+   * remote and push local whenever another manager updated Supabase — that made browsers diverge.
+   */
   function scheduleAssignmentsRemoteMergeIsStale(remoteSched) {
     if (!remoteSched || typeof remoteSched !== 'object') return false;
+    if (!(scheduleAssignmentsDirty || teamStateSyncTimer || teamStatePushInFlight)) {
+      return false;
+    }
     var local = loadScheduleAssignmentsStore();
     var localJson = JSON.stringify(local);
     var remoteJson = JSON.stringify(
       mergeAssignmentStoreWithShell(assignmentStoreShell(), remoteSched)
     );
-    if (localJson === remoteJson) return false;
-    var confirmed = getScheduleAssignmentsConfirmedJson();
-    if (!confirmed) {
-      return scheduleAssignmentsStoreIsPopulated(local);
-    }
-    if (localJson !== confirmed) return true;
-    return remoteJson !== confirmed;
+    return localJson !== remoteJson;
   }
 
-  /** True when remote schedule_templates must not replace local (unpushed edits or stale fetch). */
+  /**
+   * True when remote schedule_templates must not replace local (unpushed edits only).
+   */
   function scheduleTemplatesRemoteMergeIsStale(remoteTpl) {
     if (!Array.isArray(remoteTpl)) return false;
+    if (!(scheduleTemplatesDirty || teamStateSyncTimer || teamStatePushInFlight)) {
+      return false;
+    }
     var local = [];
     try {
       var raw = localStorage.getItem(SCHEDULE_TEMPLATES_KEY);
@@ -2601,30 +2936,21 @@
     } catch (_tplSnap) {
       local = [];
     }
-    var localJson = JSON.stringify(local);
-    var remoteJson = JSON.stringify(remoteTpl);
-    if (localJson === remoteJson) return false;
-    var confirmed = getScheduleTemplatesConfirmedJson();
-    if (!confirmed) {
-      return local.length > 0;
-    }
-    if (localJson !== confirmed) return true;
-    return remoteJson !== confirmed;
+    return JSON.stringify(local) !== JSON.stringify(remoteTpl);
   }
 
-  /** True when remote draft_schedule must not replace local (unpushed edits or stale fetch). */
+  /**
+   * True when remote draft_schedule must not replace local (unpushed edits only).
+   */
   function draftScheduleRemoteMergeIsStale(remoteDr) {
     var remotePayload = draftSchedulePayloadFromRemote(remoteDr);
     if (!remotePayload) return false;
+    if (!(draftScheduleDirty || teamStateSyncTimer || teamStatePushInFlight)) {
+      return false;
+    }
     var localJson = JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore));
     var remoteJson = JSON.stringify(remotePayload);
-    if (localJson === remoteJson) return false;
-    var confirmed = getDraftScheduleConfirmedJson();
-    if (!confirmed) {
-      return localDraftScheduleHasContent();
-    }
-    if (localJson !== confirmed) return true;
-    return remoteJson !== confirmed;
+    return localJson !== remoteJson;
   }
 
   function draftScheduleJsonHasLayers(obj) {
@@ -2704,6 +3030,7 @@
       !scheduleAssignmentsDirty &&
       !scheduleTemplatesDirty &&
       !draftScheduleDirty &&
+      !schedulePublishedDirty &&
       !teamStateMetaDirty
     ) {
       return;
@@ -2715,6 +3042,7 @@
           scheduleAssignmentsDirty ||
           scheduleTemplatesDirty ||
           draftScheduleDirty ||
+          schedulePublishedDirty ||
           teamStateMetaDirty
         ) {
           await pushTeamStateToSupabaseOnce();
@@ -2732,6 +3060,7 @@
       !scheduleAssignmentsDirty &&
       !scheduleTemplatesDirty &&
       !draftScheduleDirty &&
+      !schedulePublishedDirty &&
       !teamStateMetaDirty
     ) {
       return;
@@ -2758,6 +3087,10 @@
       if (draftScheduleDirty) {
         payload.draft_schedule = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
         pushedFields.push('draft_schedule');
+      }
+      if (schedulePublishedDirty) {
+        payload.schedule_published = schedulePublishedPayload();
+        pushedFields.push('schedule_published');
       }
       if (teamStateMetaDirty) {
         var msg = loadMessagingTemplates();
@@ -2789,6 +3122,7 @@
           draftScheduleDirty = false;
           setDraftScheduleConfirmedJson(JSON.stringify(payload.draft_schedule));
         }
+        if (schedulePublishedDirty) schedulePublishedDirty = false;
         if (teamStateMetaDirty) teamStateMetaDirty = false;
         void broadcastTeamStateChanged(pushedFields);
       }
@@ -2889,6 +3223,9 @@
                 JSON.stringify(remoteDraftPayload.byWeek)
               );
               setDraftScheduleConfirmedJson(JSON.stringify(remoteDraftPayload));
+              if (remoteDraftPayload.windowMondayIso) {
+                writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
+              }
             } catch (_d) {
               /* ignore */
             }
@@ -2903,6 +3240,23 @@
           flushTeamStateSyncNow();
         }
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(row, 'schedule_published')) {
+      if (!schedulePublishedDirty) {
+        schedulePublishedByMonday = normalizeSchedulePublishedMap(row.schedule_published);
+        if (seedDefaultSchedulePublishedWeeks() && isMgr) {
+          schedulePublishedDirty = true;
+          scheduleTeamStateDebouncedSync();
+        }
+        updateSchedulePublishNotifyButton();
+      }
+    } else if (!Object.keys(schedulePublishedByMonday).length) {
+      if (seedDefaultSchedulePublishedWeeks() && isMgr) {
+        schedulePublishedDirty = true;
+        scheduleTeamStateDebouncedSync();
+      }
+      updateSchedulePublishNotifyButton();
     }
 
     var msg = row.messaging_templates;
@@ -2945,27 +3299,8 @@
     applyCalloutHistoryFromRemote(row.callout_history, { isManager: isMgr });
     applyTimeclockSettingsFromRemote(row.timeclock_settings);
     applyTimecardTipPayrollFromRemote(row);
-    if (isMgr) {
-      var remoteTip = row.timecard_week_tip_pool;
-      var remoteDw = row.timecard_dishwasher_tips;
-      var remoteExtras = row.timecard_week_extras;
-      var localTip = loadTimecardWeekTipPoolStore();
-      var localDw = loadTimecardDishwasherTipsStore();
-      var localExtras = loadTimecardWeekExtrasStore();
-      var remoteTipEmpty =
-        !remoteTip || typeof remoteTip !== 'object' || !Object.keys(remoteTip).length;
-      var remoteDwEmpty =
-        !remoteDw || typeof remoteDw !== 'object' || !Object.keys(remoteDw).length;
-      var remoteExtrasEmpty =
-        !remoteExtras || typeof remoteExtras !== 'object' || !Object.keys(remoteExtras).length;
-      if (
-        (remoteTipEmpty && Object.keys(localTip).length) ||
-        (remoteDwEmpty && Object.keys(localDw).length) ||
-        (remoteExtrasEmpty && Object.keys(localExtras).length)
-      ) {
-        scheduleTipPayrollDebouncedSync();
-      }
-    }
+    // Do not push local tip/VL stores when remote columns are empty — that resurrected
+    // per-browser localStorage onto shared team_state and made managers diverge.
 
     try {
       syncAllAssignmentTimesFromDraft();
@@ -2985,9 +3320,13 @@
         }
         renderCalendar();
         if (scheduleBody) renderSchedule();
+        if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
+          window.gmCalloutEmployeeScheduleRefreshUi();
+        }
       });
     }
     if (typeof updateRestaurantSwitcherUI === 'function') updateRestaurantSwitcherUI();
+    if (typeof renderEmpRestaurantSwitcher === 'function') renderEmpRestaurantSwitcher();
     if (typeof renderHistory === 'function') renderHistory();
     if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
     notifyTimecardsScheduleChanged();
@@ -3500,14 +3839,36 @@
     }
   }
 
+  function employeePhotoSlugVariants(emp) {
+    var seen = Object.create(null);
+    var out = [];
+    function add(raw) {
+      var slug = normNameKey(String(raw || '')).replace(/\s+/g, '_');
+      if (!slug || seen[slug]) return;
+      seen[slug] = true;
+      out.push(slug);
+      var alias = EMPLOYEE_PHOTO_SLUG_ALIASES[slug];
+      if (alias && !seen[alias]) {
+        seen[alias] = true;
+        out.push(alias);
+      }
+    }
+    if (!emp) return out;
+    if (emp.displayName) add(emp.displayName);
+    add(employeeDisplayName(emp));
+    add(((emp.firstName || '') + ' ' + (emp.lastName || '')).trim());
+    return out;
+  }
+
   function employeePhotoUrlCandidates(emp) {
     if (!emp) return [];
     var urls = [];
     var hideBundled = !!(emp.meta && emp.meta.photoHidden);
-    var slug = employeePhotoSlug(emp);
-    if (slug && !hideBundled) {
-      urls.push(appAssetUrl('assets/employee-photos/' + slug + '.jpg'));
-      urls.push(appAssetUrl('assets/employee-photos/' + slug + '.png'));
+    if (!hideBundled) {
+      employeePhotoSlugVariants(emp).forEach(function (slug) {
+        urls.push(appAssetUrl('assets/employee-photos/' + slug + '.jpg'));
+        urls.push(appAssetUrl('assets/employee-photos/' + slug + '.png'));
+      });
     }
     var custom =
       emp.meta && emp.meta.photoUrl && emp.meta.photoUseCustom
@@ -3980,6 +4341,36 @@
     }
   });
 
+  function applyKnownRosterDisplayRename(out) {
+    if (!out) return;
+    var label = String(
+      out.displayName || (String(out.firstName || '') + ' ' + String(out.lastName || '')).trim()
+    ).trim();
+    if (!label) return;
+    for (var i = 0; i < ROSTER_LEGACY_DISPLAY_RENAMES.length; i += 1) {
+      var rule = ROSTER_LEGACY_DISPLAY_RENAMES[i];
+      var hit = false;
+      for (var j = 0; j < rule.from.length; j += 1) {
+        if (normCsvInfoNameKey(label) === normCsvInfoNameKey(rule.from[j])) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) continue;
+      out.displayName = rule.to.display;
+      out.firstName = rule.to.first;
+      out.lastName = rule.to.last;
+      out.meta = out.meta && typeof out.meta === 'object' ? out.meta : {};
+      var aliases = Array.isArray(out.meta.scheduleAliases) ? out.meta.scheduleAliases.slice() : [];
+      rule.from.forEach(function (f) {
+        if (f && aliases.indexOf(f) === -1) aliases.push(f);
+      });
+      if (label && aliases.indexOf(label) === -1) aliases.push(label);
+      out.meta.scheduleAliases = aliases;
+      return;
+    }
+  }
+
   function migrateEmployeeRecord(e) {
     if (!e || typeof e !== 'object') return null;
     const staffType = e.staffType === 'Kitchen' || e.staffType === 'Bartender' || e.staffType === 'Server'
@@ -4001,6 +4392,13 @@
       lastName: String(e.lastName != null ? e.lastName : '').trim(),
       staffType: staffType,
       phone: String(e.phone != null ? e.phone : '').trim(),
+      email: String(
+        e.email != null
+          ? e.email
+          : e.meta && e.meta.email != null
+            ? e.meta.email
+            : ''
+      ).trim(),
       weeklyGrid: weeklyGrid,
       usualRestaurant: usualOk ? ur : 'both',
     };
@@ -4023,6 +4421,7 @@
     } else if (e.meta && e.meta.tipPoint != null && !Number.isNaN(Number(e.meta.tipPoint))) {
       out.tipPoint = normalizeTipPointValue(e.meta.tipPoint);
     }
+    applyKnownRosterDisplayRename(out);
     applyHourlyRatePresetIfMissing(out);
     applyTipPointPresetIfMissing(out);
     applyEmployeeInfoPresetIfMissing(out);
@@ -4215,7 +4614,8 @@
       var weekIdx = Math.floor(globalDayIdx / 7);
       if (weekOnly != null && weekIdx !== weekOnly) return;
       var wk = weekdayKeyFromScheduleDay(dayStr);
-      /* Auto-fill only: one person per slot (no multi-staff slots in default data) and at most one shift per person per day. Managers may add more people per shift or double-book days via edit / drag / saves. */
+      /* Auto-fill only: one person per slot and at most one shift per person per day.
+         Main schedule staffing is single-select (Person column / Edit Staffing). */
       var usedToday = Object.create(null);
       ROLE_DEFS.forEach(function (rd, roleIdx) {
         var n = slotCountForRole(rd.role, weekIdx, currentRestaurantId);
@@ -4444,11 +4844,22 @@
     if (!store || typeof store !== 'object') return false;
     var rid = restaurantId || currentRestaurantId;
     if (!store[rid]) store[rid] = {};
-    return replicateWeekZeroToFutureWeeksInStore(
+    var mondayIso = currentScheduleWeekMondayIso();
+    var furthest = SCHEDULE_TEMPLATE_WEEK_INDEX + SCHEDULE_FUTURE_WEEK_COUNT;
+    if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (restaurantWeekHasStaffedAssignments(store[rid], furthest)) return false;
+    var seedMeta = readFurthestSeedMeta();
+    if (seedMeta && seedMeta.mondayIso === mondayIso && seedMeta.seeded) return false;
+    var copied = copyRestaurantWeekAssignments(
       store[rid],
-      SCHEDULE_VIEW_WEEK_COUNT,
-      rid
+      SCHEDULE_TEMPLATE_WEEK_INDEX,
+      furthest
     );
+    if (copied) {
+      copyDraftWeekIndex(SCHEDULE_TEMPLATE_WEEK_INDEX, furthest);
+      writeFurthestSeedMeta({ mondayIso: mondayIso, seeded: true });
+    }
+    return copied;
   }
 
   function ensureScheduleTemplateIds(list) {
@@ -5533,10 +5944,17 @@
     if (isNaN(w) || w < 0 || w >= SCHEDULE_VIEW_WEEK_COUNT) return;
     scheduleCalendarWeekIndex = w;
     updateScheduleWeekNav();
+    updateEmpScheduleWeekNav();
     deferUiWork(function () {
       if (scheduleCalendarWeekIndex !== w) return;
       renderCalendar();
       if (scheduleBody) renderSchedule();
+      if (
+        document.documentElement.classList.contains('employee-app') &&
+        document.getElementById('empCalendarGrid')
+      ) {
+        renderEmployeeMasterSchedule();
+      }
     });
   }
 
@@ -5726,47 +6144,298 @@
     );
   }
 
-  function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount, restaurantId) {
-    weekCount = weekCount || SCHEDULE_VIEW_WEEK_COUNT;
+  /** Schedule rows are single-assignee; keep at most one staffed name. */
+  function clampScheduleWorkersToSingle(workers) {
+    var list = (Array.isArray(workers) ? workers : []).filter(function (w) {
+      return w && w !== 'Unassigned';
+    });
+    if (!list.length) return ['Unassigned'];
+    return [list[0]];
+  }
+
+  function readScheduleWindowMondayIso() {
+    try {
+      return String(localStorage.getItem(SCHEDULE_WINDOW_MONDAY_KEY) || '').slice(0, 10);
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function writeScheduleWindowMondayIso(iso) {
+    try {
+      if (iso) localStorage.setItem(SCHEDULE_WINDOW_MONDAY_KEY, String(iso).slice(0, 10));
+      else localStorage.removeItem(SCHEDULE_WINDOW_MONDAY_KEY);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function readFurthestSeedMeta() {
+    try {
+      var raw = localStorage.getItem(SCHEDULE_FURTHEST_SEED_KEY);
+      if (!raw) return null;
+      var p = JSON.parse(raw);
+      if (!p || typeof p !== 'object') return null;
+      return {
+        mondayIso: String(p.mondayIso || '').slice(0, 10),
+        seeded: !!p.seeded,
+      };
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function writeFurthestSeedMeta(meta) {
+    try {
+      if (!meta) localStorage.removeItem(SCHEDULE_FURTHEST_SEED_KEY);
+      else localStorage.setItem(SCHEDULE_FURTHEST_SEED_KEY, JSON.stringify(meta));
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function restaurantWeekHasDirectAssignments(restAssignments, weekIndex) {
     if (!restAssignments || typeof restAssignments !== 'object') return false;
-    var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
-    var tplStart = tpl * 7;
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var start = wi * 7;
+    var end = start + 7;
+    return Object.keys(restAssignments).some(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      return p && p.globalDayIdx >= start && p.globalDayIdx < end;
+    });
+  }
+
+  function restaurantWeekHasStaffedAssignments(restAssignments, weekIndex) {
+    if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var start = wi * 7;
+    var end = start + 7;
+    return Object.keys(restAssignments).some(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return false;
+      return scheduleAssignmentHasStaffedWorkers(restAssignments[shiftId]);
+    });
+  }
+
+  function clearRestaurantWeekAssignments(restAssignments, weekIndex) {
+    if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var start = wi * 7;
+    var end = start + 7;
     var changed = false;
     Object.keys(restAssignments).forEach(function (shiftId) {
       var p = parseShiftIdParts(shiftId);
-      if (!p) return;
-      if (p.globalDayIdx >= tplStart + 7 && p.globalDayIdx < weekCount * 7) {
-        delete restAssignments[shiftId];
-        changed = true;
-      }
+      if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+      delete restAssignments[shiftId];
+      changed = true;
     });
-    for (var w = tpl + 1; w < weekCount; w += 1) {
-      var weekStart = w * 7;
-      for (var dayInWeek = 0; dayInWeek < 7; dayInWeek += 1) {
-        for (var roleIdx = 0; roleIdx < ROLE_DEFS.length; roleIdx += 1) {
-          var slotCount = slotCountForRole(ROLE_DEFS[roleIdx].role, tpl, restaurantId);
-          for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
-            var templateId = 'shift-' + (tplStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
-            var targetId = 'shift-' + (weekStart + dayInWeek) + '-' + roleIdx + '-' + trIdx;
-            if (restAssignments[templateId] == null) continue;
-            restAssignments[targetId] = cloneScheduleAssignment(restAssignments[templateId]);
-            changed = true;
-          }
+    return changed;
+  }
+
+  /** Copy one week of direct assignments (workers + break/hours/time) onto another week index. */
+  function copyRestaurantWeekAssignments(restAssignments, fromWeekIndex, toWeekIndex) {
+    if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var fromWi = resolveDraftWeekIndex(fromWeekIndex);
+    var toWi = resolveDraftWeekIndex(toWeekIndex);
+    if (fromWi === toWi) return false;
+    var fromStart = fromWi * 7;
+    var toStart = toWi * 7;
+    var copies = [];
+    Object.keys(restAssignments).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p || p.globalDayIdx < fromStart || p.globalDayIdx >= fromStart + 7) return;
+      var dayInWeek = p.globalDayIdx - fromStart;
+      copies.push({
+        targetId: 'shift-' + (toStart + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx,
+        entry: cloneScheduleAssignment(restAssignments[shiftId]),
+      });
+    });
+    if (!copies.length) return false;
+    clearRestaurantWeekAssignments(restAssignments, toWi);
+    copies.forEach(function (c) {
+      var entry = c.entry;
+      entry.workers = clampScheduleWorkersToSingle(entry.workers);
+      restAssignments[c.targetId] = entry;
+    });
+    return true;
+  }
+
+  function copyDraftWeekIndex(fromWeekIndex, toWeekIndex) {
+    var fromWi = resolveDraftWeekIndex(fromWeekIndex);
+    var toWi = resolveDraftWeekIndex(toWeekIndex);
+    if (fromWi === toWi) return false;
+    var src = draftScheduleByWeekStore[String(fromWi)];
+    if (!src) return false;
+    draftScheduleByWeekStore[String(toWi)] = cloneDraftSchedule(src);
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+    } catch (_e) {
+      /* ignore */
+    }
+    return true;
+  }
+
+  /**
+   * When the calendar Monday advances, shift stored week indices backward so W+1 → W, W+2 → W+1.
+   * Drops weeks that fall off the past edge of the window.
+   */
+  function shiftAssignmentStoreByWeeks(store, deltaWeeks) {
+    if (!store || typeof store !== 'object' || !deltaWeeks) return false;
+    var dayDelta = -deltaWeeks * 7;
+    var maxDay = SCHEDULE_VIEW_WEEK_COUNT * 7;
+    var any = false;
+    Object.keys(store).forEach(function (rid) {
+      var rs = store[rid];
+      if (!rs || typeof rs !== 'object') return;
+      var next = {};
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) {
+          next[shiftId] = rs[shiftId];
+          return;
         }
+        var newDay = p.globalDayIdx + dayDelta;
+        if (newDay < 0 || newDay >= maxDay) {
+          any = true;
+          return;
+        }
+        if (newDay !== p.globalDayIdx) any = true;
+        next['shift-' + newDay + '-' + p.roleIdx + '-' + p.trIdx] = rs[shiftId];
+      });
+      store[rid] = next;
+    });
+    return any;
+  }
+
+  function shiftDraftScheduleByWeeks(deltaWeeks) {
+    if (!deltaWeeks) return false;
+    var next = {};
+    var any = false;
+    Object.keys(draftScheduleByWeekStore).forEach(function (k) {
+      var wi = parseInt(k, 10);
+      if (isNaN(wi)) return;
+      var newWi = wi - deltaWeeks;
+      if (newWi < 0 || newWi >= SCHEDULE_VIEW_WEEK_COUNT) {
+        any = true;
+        return;
       }
+      if (newWi !== wi) any = true;
+      next[String(newWi)] = draftScheduleByWeekStore[k];
+    });
+    if (!any && Object.keys(next).length === Object.keys(draftScheduleByWeekStore).length) {
+      return false;
+    }
+    draftScheduleByWeekStore = next;
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+    } catch (_e) {
+      /* ignore */
+    }
+    return true;
+  }
+
+  /**
+   * Seed W+2 from current week W when the furthest week is new/empty.
+   * Never overwrites a staffed W+2 or a week already marked seeded for this Monday.
+   * Leaves W+1 intact (it was typically last week's W+2 after a Monday roll).
+   */
+  function seedFurthestFutureWeekFromCurrent(store, mondayIso) {
+    if (!store || typeof store !== 'object') return false;
+    var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+    var furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
+    if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (furthest <= tpl) return false;
+    var seedMeta = readFurthestSeedMeta();
+    if (seedMeta && seedMeta.mondayIso === mondayIso && seedMeta.seeded) {
+      return false;
+    }
+    var any = false;
+    var anyStaffedFurthest = false;
+    restaurantsList.forEach(function (r) {
+      if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
+      if (!store[r.id]) store[r.id] = {};
+      if (restaurantWeekHasStaffedAssignments(store[r.id], furthest)) {
+        anyStaffedFurthest = true;
+        return;
+      }
+      if (copyRestaurantWeekAssignments(store[r.id], tpl, furthest)) any = true;
+    });
+    if (anyStaffedFurthest && !any) {
+      writeFurthestSeedMeta({ mondayIso: mondayIso, seeded: true });
+      return false;
+    }
+    if (any || !restaurantWeekHasDirectAssignments(
+      (store[currentRestaurantId] || {}),
+      furthest
+    )) {
+      copyDraftWeekIndex(tpl, furthest);
+    }
+    if (any || anyStaffedFurthest) {
+      writeFurthestSeedMeta({ mondayIso: mondayIso, seeded: true });
+    } else if (seedMeta && seedMeta.mondayIso !== mondayIso) {
+      /* Week rolled but source W had nothing to copy — still mark so we do not loop. */
+      writeFurthestSeedMeta({ mondayIso: mondayIso, seeded: true });
+    } else if (!seedMeta) {
+      writeFurthestSeedMeta({ mondayIso: mondayIso, seeded: true });
+    }
+    return any;
+  }
+
+  /**
+   * Rolling 2 future weeks: on load / Monday roll, shift the window if needed and ensure W+2
+   * is a fresh copy of current week W when that furthest week is new.
+   * Window Monday is shared via draft_schedule.windowMondayIso so multi-device rolls do not double-shift.
+   */
+  function ensureRollingFutureScheduleWeeks() {
+    var mondayIso = currentScheduleWeekMondayIso();
+    if (!mondayIso) return false;
+    var prevIso = readScheduleWindowMondayIso();
+    var store = loadScheduleAssignmentsStore();
+    var changed = false;
+    if (!prevIso) {
+      writeScheduleWindowMondayIso(mondayIso);
+      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+    } else {
+      var delta = mondayIsoDiffWeeks(prevIso, mondayIso);
+      if (delta > 0) {
+        if (shiftAssignmentStoreByWeeks(store, delta)) changed = true;
+        if (shiftDraftScheduleByWeeks(delta)) changed = true;
+        writeScheduleWindowMondayIso(mondayIso);
+        writeFurthestSeedMeta(null);
+        if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+      } else if (delta < 0) {
+        /* Clock skew / timezone — do not shift forward; just re-anchor. */
+        writeScheduleWindowMondayIso(mondayIso);
+      }
+    }
+    if (seedFurthestFutureWeekFromCurrent(store, mondayIso)) changed = true;
+    if (changed) {
+      saveScheduleAssignmentsStore(store);
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     }
     return changed;
   }
 
+  /**
+   * Legacy name: previously wiped W+1/W+2 and re-copied from template on every template edit.
+   * That stomped manager edits — now only ensures the furthest empty week is seeded.
+   */
+  function replicateWeekZeroToFutureWeeksInStore(restAssignments, weekCount, restaurantId) {
+    if (!restAssignments || typeof restAssignments !== 'object') return false;
+    var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+    var furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
+    if (weekCount != null && !isNaN(Number(weekCount))) {
+      furthest = Math.min(furthest, Number(weekCount) - 1);
+    }
+    if (furthest <= tpl) return false;
+    if (restaurantWeekHasStaffedAssignments(restAssignments, furthest)) return false;
+    return copyRestaurantWeekAssignments(restAssignments, tpl, furthest);
+  }
+
   function replicateWeekZeroToAllRestaurants(weekCount) {
-    var store = loadScheduleAssignmentsStore();
-    var any = false;
-    restaurantsList.forEach(function (r) {
-      if (!store[r.id]) store[r.id] = {};
-      if (replicateWeekZeroToFutureWeeksInStore(store[r.id], weekCount, r.id)) any = true;
-    });
-    if (any) saveScheduleAssignmentsStore(store);
-    return any;
+    return ensureRollingFutureScheduleWeeks();
   }
 
   function getCurrentRestaurantAssignments() {
@@ -5804,11 +6473,13 @@
       var one = shiftRow.worker || 'Unassigned';
       list = one && one !== 'Unassigned' ? [one] : ['Unassigned'];
     }
+    list = clampScheduleWorkersToSingle(list);
     var entry =
       rs[shiftRow.id] != null
         ? cloneScheduleAssignment(rs[shiftRow.id])
         : { workers: list.slice() };
     entry.workers = canonicalizeScheduleWorkerList(list, currentRestaurantId);
+    entry.workers = clampScheduleWorkersToSingle(entry.workers);
     if (shiftRow.redPokeBreak && !scheduleBreakIsHashPlaceholder(shiftRow, shiftRow.redPokeBreak)) {
       entry.break = shiftRow.redPokeBreak;
     }
@@ -5845,25 +6516,11 @@
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var rs = store[currentRestaurantId];
-    var tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
-    var templateWeekTouched = false;
-    var beforeTplWorkers = {};
-    SCHEDULE.forEach(function (s) {
-      var p = parseShiftIdParts(s.id);
-      if (!p || p.globalDayIdx < tplStart || p.globalDayIdx >= tplStart + 7) return;
-      beforeTplWorkers[s.id] = rs[s.id] != null ? scheduleAssignmentWorkersKey(rs[s.id]) : '';
-    });
     SCHEDULE.forEach(function (s) {
       rs[s.id] = buildDirectAssignmentEntryFromShiftRow(rs, s);
-      var pSave = parseShiftIdParts(s.id);
-      if (pSave && pSave.globalDayIdx >= tplStart && pSave.globalDayIdx < tplStart + 7) {
-        var afterKey = scheduleAssignmentWorkersKey(rs[s.id]);
-        if (afterKey !== (beforeTplWorkers[s.id] || '')) templateWeekTouched = true;
-      }
     });
-    if (templateWeekTouched) {
-      replicateTemplateWeekAssignmentsInStore(store, currentRestaurantId);
-    }
+    /* Do not re-copy current week onto W+1/W+2 on every edit — that stomps manager future-week edits.
+       Furthest-week seeding runs via ensureRollingFutureScheduleWeeks on schedule load / Monday roll. */
     saveScheduleAssignmentsStore(store);
   }
 
@@ -5951,7 +6608,7 @@
   function switchRestaurant(restaurantId) {
     if (!restaurantsList.some(function (r) { return r.id === restaurantId; })) return;
     if (restaurantId === currentRestaurantId) return;
-    saveScheduleAssignments();
+    if (gmCalloutSessionIsManager) saveScheduleAssignments();
     currentRestaurantId = restaurantId;
     slotStaffFilter = restaurantId;
     try {
@@ -5960,13 +6617,22 @@
       /* ignore */
     }
     updateRestaurantSwitcherUI();
-    if (GM_SUPABASE_DATA && window.gmSupabase) teamStateMetaDirty = true;
-    scheduleTeamStateDebouncedSync();
+    if (typeof renderEmpRestaurantSwitcher === 'function') renderEmpRestaurantSwitcher();
+    if (gmCalloutSessionIsManager && GM_SUPABASE_DATA && window.gmSupabase) {
+      teamStateMetaDirty = true;
+      scheduleTeamStateDebouncedSync();
+    }
     deferUiWork(function () {
       if (currentRestaurantId !== restaurantId) return;
       rebuildSchedule();
       renderCalendar();
       if (scheduleBody) renderSchedule();
+      if (
+        document.documentElement.classList.contains('employee-app') &&
+        document.getElementById('empCalendarGrid')
+      ) {
+        renderEmployeeMasterSchedule();
+      }
       if (currentScreen === 2 && currentShift) {
         if (shiftMode === 'edit') openShiftEdit();
         else openEligible();
@@ -6254,13 +6920,29 @@
         (a.displayName && workerNamesMatch(a.displayName, oldName)) ||
         a.loginKey === oldKey
       ) {
+        // Display name only — loginKey / sign-in username stays unchanged.
         a.displayName = newName;
-        a.loginKey = normPortalLoginKey(newName);
         changed = true;
       }
     });
     if (changed) savePortalEmployeeAccounts(accounts);
     return changed;
+  }
+
+  /** Sync linked portal profile display_name without touching login_name. */
+  async function syncPortalProfileDisplayName(emp, displayName) {
+    if (!emp || !emp.authUserId || !GM_SUPABASE_DATA || !window.gmSupabase) return;
+    var dn = String(displayName || '').trim();
+    if (!dn) return;
+    try {
+      var res = await window.gmSupabase
+        .from('profiles')
+        .update({ display_name: dn })
+        .eq('id', emp.authUserId);
+      if (res.error) console.warn('gm-callout: profile display_name sync', res.error);
+    } catch (err) {
+      console.warn('gm-callout: profile display_name sync', err);
+    }
   }
 
   /** Team renames update schedule cells that used the previous display name (exact/fuzzy), plus requests/callouts. */
@@ -6271,6 +6953,7 @@
     renameWorkerInStaffRequests(oldName, newName);
     renameWorkerInCalloutHistory(oldName, newName);
     renamePortalEmployeeAccount(oldName, newName);
+    void syncPortalProfileDisplayName(emp, newName);
   }
 
   /** All locations’ schedule rows (same data the manager calendar uses), for employee views. */
@@ -6531,6 +7214,7 @@
   function gmCalloutEnsureShellUiRendered() {
     if (gmCalloutShellUiRendered) return;
     gmCalloutShellUiRendered = true;
+    ensureRollingFutureScheduleWeeks();
     if (scheduleBody) renderSchedule();
     renderCalendar();
     renderHistory();
@@ -7061,6 +7745,16 @@
     syncTimeClockEntriesRealtimeForScreen();
     // Cheap updated_at probe may skip; avoid always re-pulling roster/requests on every tab focus.
     queueTeamStateRemoteRefresh();
+    // Punches live in time_clock_entries (not team_state). Refetch when Timecards is open so
+    // another manager's edits are not masked by this tab's in-memory weekEntries cache.
+    if (
+      gmCalloutSessionIsManager &&
+      timecardsScreenActive() &&
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
+    ) {
+      void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
+    }
     var now = Date.now();
     if (!visibilityRosterRefreshAt || now - visibilityRosterRefreshAt > 60000) {
       visibilityRosterRefreshAt = now;
@@ -7118,6 +7812,7 @@
   const empLastName = document.getElementById('empLastName');
   const empStaffType = document.getElementById('empStaffType');
   const empPhone = document.getElementById('empPhone');
+  const empEmail = document.getElementById('empEmail');
   const empUsualRestaurant = document.getElementById('empUsualRestaurant');
   const employeeSearchInput = document.getElementById('employeeSearch');
   const shiftEditSearchInput = document.getElementById('shiftEditSearch');
@@ -7590,7 +8285,7 @@
 
   function renderMessagingPreviews() {
     const voice = voiceTemplateInput ? voiceTemplateInput.value : '';
-    const v = buildMessagingTemplateVars(MESSAGING_PREVIEW_SHIFT, { name: 'ANGELYN GELLA' });
+    const v = buildMessagingTemplateVars(MESSAGING_PREVIEW_SHIFT, { name: 'MAEVE WILLIAMS' });
     if (voiceTemplatePreview) {
       voiceTemplatePreview.textContent = 'Preview (sample): ' + applyMessagingTemplate(voice, v);
     }
@@ -7662,8 +8357,9 @@
       var cur = (s.workers || []).filter(function (n) {
         return n && n !== 'Unassigned';
       });
-      if (cur.indexOf(name) === -1) cur.push(name);
-      s.workers = cur.length ? cur : ['Unassigned'];
+      /* Single assignee per shift — voice confirm replaces the row person. */
+      if (name) s.workers = [name];
+      else if (!cur.length) s.workers = ['Unassigned'];
       s.worker = s.workers[0];
       if (item.shift && item.shift.id === s.id) {
         item.shift.workers = s.workers.slice();
@@ -7788,6 +8484,7 @@
       updateScheduleWeekNav();
       deferUiWork(function () {
         if (currentScreen !== 1) return;
+        ensureRollingFutureScheduleWeeks();
         populateScheduleTemplateSelect();
         rebuildSchedule();
         renderCalendar();
@@ -8007,8 +8704,19 @@
     return bestCount > 0 ? best : 'Unassigned';
   }
 
-  function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays) {
-    var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays);
+  function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly) {
+    var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
+    if (readOnly) {
+      return (
+        '<td class="time-col calendar-row-person-col">' +
+        '<div class="calendar-row-person calendar-row-person--readonly">' +
+        '<span class="calendar-row-person-text">' +
+        escapeHtml(selected) +
+        '</span>' +
+        '</div>' +
+        '</td>'
+      );
+    }
     var pool = namesForScheduleRowPersonPicker(role, currentRestaurantId);
     if (selected && selected !== 'Unassigned') {
       var selKey = normalizeWorkerKey(selected);
@@ -8181,9 +8889,6 @@
     });
     if (!changed) return;
     saveDraftScheduleRowsForWeek(wi, draft, rid);
-    if (wi === SCHEDULE_TEMPLATE_WEEK_INDEX) {
-      replicateTemplateWeekAssignmentsInStore(store, rid);
-    }
     saveScheduleAssignmentsStore(store);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     rebuildSchedule();
@@ -8211,15 +8916,17 @@
     };
   }
 
-  function renderCalendar() {
+  function renderCalendarInto(targetEl, opts) {
+    opts = opts || {};
+    var readOnly = !!opts.readOnly;
     closeCalendarInlineWorkerEdit();
-    if (!calendarGrid) {
-      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+    if (!targetEl) {
+      if (!readOnly && !calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
       return;
     }
     if (!SCHEDULE.length) {
-      calendarGrid.innerHTML = '<p class="calendar-hint">No shifts to show.</p>';
-      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+      targetEl.innerHTML = '<p class="calendar-hint">No shifts to show.</p>';
+      if (!readOnly && !calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
       return;
     }
 
@@ -8294,7 +9001,7 @@
 
       var slotN = slotCountForRole(rd.role, scheduleCalendarWeekIndex, currentRestaurantId);
       for (var trIdx = 0; trIdx < slotN; trIdx += 1) {
-        const personTd = buildCalendarRowPersonSelectHtml(rd.role, trIdx, rd, visibleDays);
+        const personTd = buildCalendarRowPersonSelectHtml(rd.role, trIdx, rd, visibleDays, readOnly);
         const tds = visibleDays
           .map(function (dayStr) {
             const shift = SCHEDULE.find(function (s) {
@@ -8355,18 +9062,25 @@
             const rpHrs = scheduleAssignedHoursString(shift);
             const slotLabel =
               'Shift: ' + rd.groupLabel + ' on ' + dayStr + ', ' + rpTime + '.';
+            const slotTitle = readOnly
+              ? ''
+              : ' title="Click to edit staffing · Option/Alt-drag to copy times &amp; break"';
 
             return (
               '<td>' +
               '<div class="calendar-slot-wrap calendar-slot-compact ' +
               escapeHtml(rd.roleClass) +
+              (readOnly ? ' calendar-slot-readonly' : '') +
               '" data-shiftid="' +
               escapeHtml(shift.id) +
               '"' +
               slotMetaAttrs +
-              ' tabindex="0" role="group" aria-label="' +
+              (readOnly ? '' : ' tabindex="0"') +
+              ' role="group" aria-label="' +
               escapeHtml(slotLabel) +
-              '" title="Click to edit staffing · Option/Alt-drag to copy times &amp; break">' +
+              '"' +
+              slotTitle +
+              '>' +
               '<div class="calendar-slot-rp">' +
               '<div class="calendar-slot-rp-time">' +
               escapeHtml(rpTime) +
@@ -8420,8 +9134,10 @@
         .join('') +
       '</tr></tfoot>';
 
-    calendarGrid.innerHTML =
-      '<table class="calendar-matrix calendar-matrix--redpoke">' +
+    targetEl.innerHTML =
+      '<table class="calendar-matrix calendar-matrix--redpoke' +
+      (readOnly ? ' calendar-matrix--readonly' : '') +
+      '">' +
       headerHtml +
       '<tbody>' +
       bodyRows.join('') +
@@ -8429,8 +9145,66 @@
       footerHtml +
       '</table>';
 
-    ensureCalendarInteraction();
-    if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+    if (!readOnly) {
+      ensureCalendarInteraction();
+      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+    }
+  }
+
+  function renderCalendar() {
+    renderCalendarInto(calendarGrid, { readOnly: false });
+  }
+
+  function renderEmployeeMasterSchedule() {
+    var el = document.getElementById('empCalendarGrid');
+    if (!el) return;
+    rebuildSchedule();
+    if (!isScheduleWeekIndexPublished(scheduleCalendarWeekIndex)) {
+      var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
+      el.innerHTML =
+        '<p class="calendar-hint emp-schedule-unpublished">' +
+        'Week ' +
+        escapeHtml(range) +
+        ' has not been published yet. Your manager will notify you when it is ready.</p>';
+      updateEmpScheduleWeekNav();
+      renderEmpRestaurantSwitcher();
+      return;
+    }
+    renderCalendarInto(el, { readOnly: true });
+    updateEmpScheduleWeekNav();
+    renderEmpRestaurantSwitcher();
+  }
+
+  function updateEmpScheduleWeekNav() {
+    var label = document.getElementById('empScheduleWeekNavLabel');
+    var badge = document.getElementById('empScheduleWeekNavBadge');
+    var prev = document.getElementById('empScheduleWeekNavPrev');
+    var next = document.getElementById('empScheduleWeekNavNext');
+    var today = document.getElementById('empScheduleWeekNavToday');
+    var isCurrent = scheduleCalendarWeekIndex === SCHEDULE_TEMPLATE_WEEK_INDEX;
+    if (label) label.textContent = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
+    if (badge) badge.hidden = !isCurrent;
+    if (prev) prev.disabled = scheduleCalendarWeekIndex <= 0;
+    if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (today) today.hidden = isCurrent;
+  }
+
+  function renderEmpRestaurantSwitcher() {
+    var el = document.getElementById('empRestaurantSwitcher');
+    if (!el) return;
+    el.innerHTML = restaurantsList
+      .map(function (r) {
+        return (
+          '<button type="button" class="restaurant-chip' +
+          (r.id === currentRestaurantId ? ' active' : '') +
+          '" data-emp-restaurant-id="' +
+          escapeHtml(r.id) +
+          '">' +
+          escapeHtml(r.name) +
+          '</button>'
+        );
+      })
+      .join('');
   }
 
   function setScheduleDragHighlights(draggedWorkerName) {
@@ -8553,14 +9327,8 @@
         return;
       }
       if (!chosen) chosen = 'Unassigned';
-      var row2 = (shift.workers || [shift.worker].filter(Boolean)).slice();
-      while (row2.length <= workerIndex) row2.push('Unassigned');
-      row2[workerIndex] = chosen;
-      var nonU = row2.filter(function (n) {
-        return n && n !== 'Unassigned';
-      });
-      shift.workers = row2;
-      shift.worker = nonU.length ? nonU[0] : 'Unassigned';
+      shift.workers = clampScheduleWorkersToSingle([chosen]);
+      shift.worker = shift.workers[0];
       syncShiftWorkersOnSchedule(shift);
       if (currentShift && currentShift.id === shift.id) {
         rebindCurrentShiftFromSchedule();
@@ -10423,6 +11191,7 @@
     if (empLastName) empLastName.value = emp ? emp.lastName || '' : '';
     if (empStaffType) empStaffType.value = emp ? emp.staffType : 'Kitchen';
     if (empPhone) empPhone.value = emp ? emp.phone || '' : '';
+    if (empEmail) empEmail.value = emp ? emp.email || '' : '';
     if (empClockPinBlock) {
       empClockPinBlock.hidden = !(
         GM_SUPABASE_DATA && editingEmployeeId && isUuidCloudId(editingEmployeeId)
@@ -10594,45 +11363,54 @@
       currentShift.day +
       ', ' +
       (currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end)) +
-      ' · Choose one or more people (defaults use a single assignee per slot).';
+      ' · Choose one person for this shift.';
 
     if (editWorkerList) {
-      editWorkerList.innerHTML = pool
-        .map(function (name, i) {
-          const emp = employeeByDisplayName(name);
-          const availability = emp
-            ? availabilityForShiftSlot(emp, currentShift.day, currentShift.start, currentShift.end)
-            : '—';
-          const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
-          const seed = hashString(currentShift.role + '|' + name + '|' + i);
-          const checked = currentNames.some(function (n) {
-            return workerNamesMatch(n, name);
+      var selectedName = currentNames.length ? currentNames[0] : 'Unassigned';
+      editWorkerList.innerHTML =
+        '<li class="worker-item">' +
+        '<input type="radio" class="edit-shift-worker-cb" name="edit-shift-worker" id="edit-unassigned" value="Unassigned"' +
+        (selectedName === 'Unassigned' ? ' checked' : '') +
+        ' />' +
+        '<div class="worker-item-info">' +
+        '<p class="worker-item-name">Unassigned</p>' +
+        '<p class="worker-item-meta">' +
+        escapeHtml(displayRole) +
+        '</p>' +
+        '</div></li>' +
+        pool
+          .map(function (name, i) {
+            const emp = employeeByDisplayName(name);
+            const availability = emp
+              ? availabilityForShiftSlot(emp, currentShift.day, currentShift.start, currentShift.end)
+              : '—';
+            const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
+            const seed = hashString(currentShift.role + '|' + name + '|' + i);
+            const checked = workerNamesMatch(selectedName, name) ? ' checked' : '';
+            return (
+              '<li class="worker-item">' +
+              '<input type="radio" class="edit-shift-worker-cb" name="edit-shift-worker" id="edit-' +
+              seed +
+              '" value="' +
+              escapeHtml(name) +
+              '"' +
+              checked +
+              ' />' +
+              '<div class="worker-item-info">' +
+              '<p class="worker-item-name">' +
+              escapeHtml(name) +
+              '</p>' +
+              '<p class="worker-item-meta">' +
+              escapeHtml(displayRole) +
+              ' · ' +
+              escapeHtml(availability) +
+              escapeHtml(locPart) +
+              '</p>' +
+              '</div></li>'
+            );
           })
-            ? ' checked'
-            : '';
-          return (
-            '<li class="worker-item">' +
-            '<input type="checkbox" class="edit-shift-worker-cb" id="edit-' +
-            seed +
-            '" value="' +
-            escapeHtml(name) +
-            '"' +
-            checked +
-            ' />' +
-            '<div class="worker-item-info">' +
-            '<p class="worker-item-name">' +
-            escapeHtml(name) +
-            '</p>' +
-            '<p class="worker-item-meta">' +
-            escapeHtml(displayRole) +
-            ' · ' +
-            escapeHtml(availability) +
-            escapeHtml(locPart) +
-            '</p>' +
-            '</div></li>'
-          );
-        })
-        .join('');
+          .join('');
+      var q = String(shiftEditSearchQuery || '').trim();
       if (!pool.length && !q) {
         editWorkerList.innerHTML =
           '<li class="history-item"><p class="history-item-meta">No employees in this role for this location.</p></li>';
@@ -10748,12 +11526,9 @@
       if (!currentShift) return;
       if (!editWorkerList) return;
 
-      var selected = Array.from(editWorkerList.querySelectorAll('input.edit-shift-worker-cb:checked')).map(
-        function (c) {
-          return c.value;
-        }
-      );
-      if (!selected.length) selected = ['Unassigned'];
+      var selectedEl = editWorkerList.querySelector('input.edit-shift-worker-cb:checked');
+      var selected = selectedEl && selectedEl.value ? [selectedEl.value] : ['Unassigned'];
+      selected = clampScheduleWorkersToSingle(selected);
 
       currentShift.workers = selected;
       currentShift.worker = selected[0];
@@ -10895,18 +11670,13 @@
     // Update the schedule assignment to reflect the accepted replacement.
     if (last.shift && last.acceptedBy) {
       var nm = last.acceptedBy.name;
-      var workers = (last.shift.workers || []).filter(function (n) {
-        return n && n !== 'Unassigned';
-      });
-      if (workers.indexOf(nm) === -1) workers.push(nm);
-      if (!workers.length) workers = [nm];
-      last.shift.workers = workers;
-      last.shift.worker = workers[0];
+      last.shift.workers = nm ? [nm] : ['Unassigned'];
+      last.shift.worker = last.shift.workers[0];
       var live = SCHEDULE.find(function (x) {
         return x.id === last.shift.id;
       });
       if (live) {
-        live.workers = workers.slice();
+        live.workers = last.shift.workers.slice();
         live.worker = live.workers[0];
         saveScheduleAssignments();
       }
@@ -11207,6 +11977,22 @@
   }
   if (scheduleUndoBtn) {
     scheduleUndoBtn.addEventListener('click', undoScheduleChange);
+  }
+  var schedulePublishNotifyBtn = document.getElementById('schedulePublishNotifyBtn');
+  if (schedulePublishNotifyBtn) {
+    schedulePublishNotifyBtn.addEventListener('click', function () {
+      var nextIso = nextScheduleWeekMondayIso();
+      var already = nextIso && isScheduleWeekPublished(nextIso);
+      var range = formatScheduleWeekRangeLabel(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+      var msg = already
+        ? 'Send another notification that next week’s schedule (' + range + ') is ready?'
+        : 'Publish next week’s schedule (' +
+          range +
+          ') for employees and send a push notification?';
+      if (!window.confirm(msg)) return;
+      void publishNextWeekScheduleAndNotify();
+    });
+    updateSchedulePublishNotifyButton();
   }
   if (undoDraftScheduleBtn) {
     undoDraftScheduleBtn.addEventListener('click', undoScheduleChange);
@@ -11591,6 +12377,7 @@
         lastName: last,
         staffType: stSave,
         phone: empPhone ? (empPhone.value || '').trim() : '',
+        email: empEmail ? (empEmail.value || '').trim() : '',
         weeklyGrid: normalizeWeeklyGrid(wg, stSave),
         usualRestaurant: urVal,
       };
@@ -11625,6 +12412,7 @@
           return;
         }
         var portalRe = empRecoveryEmail ? String(empRecoveryEmail.value || '').trim() : '';
+        if (!portalRe && rec.email) portalRe = rec.email;
         var portalRoleEl = document.getElementById('empPortalAccountType');
         var portalRole =
           portalRoleEl && String(portalRoleEl.value || '').trim() === 'manager'
@@ -11638,7 +12426,10 @@
           staffType: stSave,
           role: portalRole,
         };
-        if (portalRe) portalPayload.recoveryEmail = portalRe;
+        if (portalRe) {
+          portalPayload.recoveryEmail = portalRe;
+          if (!rec.email) rec.email = portalRe;
+        }
         var saveBtnPortal = document.getElementById('saveEmployeeBtn');
         if (saveBtnPortal) saveBtnPortal.disabled = true;
         var portalRes = await window.gmPortalAuth.createEmployeeAccount(portalPayload);
@@ -11673,6 +12464,8 @@
         rec.meta.leaveBalance = L.normalizeBalance(readLeaveBalanceFromEditor());
       }
       rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+      if (rec.email) rec.meta.email = rec.email;
+      else if (rec.meta.email) delete rec.meta.email;
       if (empBreakPolicy) {
         rec.meta.breakPolicy = empBreakPolicy.value === 'paid' ? 'paid' : 'unpaid';
       }
@@ -11977,6 +12770,7 @@
     var ln = String(opts.lastName != null ? opts.lastName : '').trim();
     var staffType = String(opts.staffType != null ? opts.staffType : '').trim();
     var phone = String(opts.phone != null ? opts.phone : '').trim();
+    var email = String(opts.email != null ? opts.email : opts.recoveryEmail != null ? opts.recoveryEmail : '').trim();
     if (!fn || !ln) return { ok: false, message: 'First and last name are required.' };
     if (!phone) return { ok: false, message: 'Phone number is required.' };
     var phoneDigits = phone.replace(/\D/g, '');
@@ -12001,10 +12795,16 @@
       lastName: ln,
       staffType: staffType,
       phone: phone,
+      email: email,
       weeklyGrid: defaultWeeklyGridAllOpenForStaffType(staffType),
       usualRestaurant: 'both',
     });
     if (!rec) return { ok: false, message: 'Could not create employee record.' };
+    if (email) {
+      rec.email = email;
+      rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+      rec.meta.email = email;
+    }
 
     function pushAndRender() {
       employees.push(rec);
@@ -12161,6 +12961,8 @@
         var iso = meta ? meta.iso : '';
         if (windowStartIso && iso && iso < windowStartIso) return;
         if (windowEndIso && iso && iso > windowEndIso) return;
+        /* Employees only see published weeks (live SoT within those weeks). */
+        if (!isScheduleWeekPublished(iso)) return;
         var o = {
           id: s.id,
           restaurantId: s.restaurantId,
@@ -12246,6 +13048,50 @@
     },
     getAvailabilityViewWeekCount: function () {
       return SCHEDULE_VIEW_WEEK_COUNT;
+    },
+    getScheduleTemplateWeekIndex: function () {
+      return SCHEDULE_TEMPLATE_WEEK_INDEX;
+    },
+    getScheduleViewWeekCount: function () {
+      return SCHEDULE_VIEW_WEEK_COUNT;
+    },
+    getScheduleCalendarWeekIndex: function () {
+      return scheduleCalendarWeekIndex;
+    },
+    setScheduleCalendarWeekIndex: function (weekIndex) {
+      setScheduleCalendarWeekIndex(Number(weekIndex));
+    },
+    formatScheduleWeekRangeLabel: function (weekIndex) {
+      return formatScheduleWeekRangeLabel(weekIndex);
+    },
+    getScheduleRestaurants: function () {
+      return restaurantsList.map(function (r) {
+        return {
+          id: r.id,
+          name: r.name,
+          shortLabel: r.shortLabel || r.name,
+        };
+      });
+    },
+    getCurrentScheduleRestaurantId: function () {
+      return currentRestaurantId;
+    },
+    setCurrentScheduleRestaurantId: function (restaurantId) {
+      switchRestaurant(restaurantId);
+    },
+    renderEmployeeMasterSchedule: function () {
+      renderEmployeeMasterSchedule();
+    },
+    isScheduleWeekPublished: function (dayOrMondayIso) {
+      return isScheduleWeekPublished(dayOrMondayIso);
+    },
+    isScheduleWeekIndexPublished: function (weekIndex) {
+      return isScheduleWeekIndexPublished(weekIndex);
+    },
+    getPublishedScheduleWeekMondays: function () {
+      return Object.keys(schedulePublishedByMonday).filter(function (k) {
+        return !!schedulePublishedByMonday[k];
+      });
     },
     formatAvailabilityWeekLabel: function (weekIndex) {
       return formatScheduleWeekRangeLabel(weekIndex);
@@ -12557,13 +13403,11 @@
     var empRes;
     var profRes;
     var teamRes;
-    var empCols =
-      'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
     var reqCols = 'id, type, status, created_at, payload';
     try {
       var batch = await Promise.all([
         sb.from('staff_requests').select(reqCols).order('created_at', { ascending: false }),
-        employeesQueryForCompany(sb, empCols).order('display_name', { ascending: true }),
+        employeesSelectWithEmailFallback(sb),
         sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle(),
       ]);
       reqRes = batch[0];
@@ -12629,9 +13473,7 @@
         if (up.error) {
           console.warn('gm-callout: seed employees to empty cloud', up.error);
         } else {
-          var empReload = await employeesQueryForCompany(sb, empCols).order('display_name', {
-            ascending: true,
-          });
+          var empReload = await employeesSelectWithEmailFallback(sb);
           if (empReload.data && empReload.data.length) {
             applyEmployeesFromRemoteDbRows(empReload.data, { force: true });
           }
@@ -12685,6 +13527,7 @@
   window.gmCalloutManagerBootstrap = function (opts) {
     opts = opts || {};
     gmCalloutEnsureEmployeeDataReady();
+    ensureRollingFutureScheduleWeeks();
     gmCalloutEnsureShellUiRendered();
     var fohRestored = restoreFohTemplateWeekBreaks(
       SCHEDULE_TEMPLATE_WEEK_INDEX,
@@ -12863,6 +13706,14 @@
   if (GM_SUPABASE_DATA && typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', function () {
       syncRealtimeSubscriptionsForVisibility();
+      if (document.visibilityState === 'visible') {
+        ensureRollingFutureScheduleWeeks();
+        if (currentScreen === 1) {
+          rebuildSchedule();
+          renderCalendar();
+          if (scheduleBody) renderSchedule();
+        }
+      }
     });
   }
 

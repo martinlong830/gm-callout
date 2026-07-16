@@ -3,19 +3,21 @@ import { readStoredTeamStateId } from './companySession';
 
 /** Schedule JSON only — largest egress columns. */
 export const TEAM_STATE_SCHEDULE_COLUMNS =
-  'schedule_assignments,schedule_templates,draft_schedule,updated_at';
+  'schedule_assignments,schedule_templates,draft_schedule,schedule_published,updated_at';
 
 export const TEAM_STATE_MANAGER_COLUMNS =
   TEAM_STATE_SCHEDULE_COLUMNS +
   ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras';
 
+/** Employees need draft_schedule + schedule_published so views match manager SoT for published weeks. */
 export const TEAM_STATE_EMPLOYEE_COLUMNS =
-  'schedule_assignments,callout_history,current_restaurant_id,updated_at';
+  'schedule_assignments,draft_schedule,schedule_published,callout_history,current_restaurant_id,updated_at';
 
 const MANAGER_ALLOWED = [
   'schedule_assignments',
   'schedule_templates',
   'draft_schedule',
+  'schedule_published',
   'messaging_templates',
   'current_restaurant_id',
   'callout_history',
@@ -27,6 +29,8 @@ const MANAGER_ALLOWED = [
 
 const EMPLOYEE_ALLOWED = [
   'schedule_assignments',
+  'draft_schedule',
+  'schedule_published',
   'callout_history',
   'current_restaurant_id',
 ] as const;

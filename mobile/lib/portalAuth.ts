@@ -713,6 +713,20 @@ export async function portalUpdateRecoveryEmail(
   if (!isValidRecoveryEmail(norm)) {
     return { ok: false, message: 'Enter a valid email address.' };
   }
+  if (isPortalAuthConfigured()) {
+    const viaApi = await portalAuthedFetch<{ recoveryEmail?: string; message?: string }>(
+      'PUT',
+      '/api/portal/account/recovery-email',
+      { recoveryEmail: norm }
+    );
+    if (viaApi.ok) {
+      return {
+        ok: true,
+        recoveryEmail: viaApi.recoveryEmail || norm,
+        message: viaApi.message || 'Recovery email saved. Your sign-in name was not changed.',
+      };
+    }
+  }
   const dup = await supabase
     .from('profiles')
     .select('id')
@@ -740,6 +754,34 @@ export async function portalUpdateRecoveryEmail(
   };
 }
 
+export async function portalUpdateLoginName(
+  loginName: string
+): Promise<{ ok: true; loginName: string; message: string } | { ok: false; message: string }> {
+  const next = String(loginName || '').trim();
+  if (!next) return { ok: false, message: 'Enter a sign-in username.' };
+  if (next.length > 80) return { ok: false, message: 'Username must be 80 characters or fewer.' };
+  if (/@/.test(next)) {
+    return { ok: false, message: 'Use a username, not an email address, for sign-in.' };
+  }
+  if (!isPortalAuthConfigured()) {
+    return {
+      ok: false,
+      message: 'Set EXPO_PUBLIC_GM_WEB_URL to your web server to change username.',
+    };
+  }
+  const r = await portalAuthedFetch<{ loginName?: string; message?: string }>(
+    'PUT',
+    '/api/portal/account/login-name',
+    { loginName: next }
+  );
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    loginName: r.loginName || next,
+    message: r.message || 'Sign-in username updated. Your display name was not changed.',
+  };
+}
+
 /** Permanently delete the signed-in account. Requires typing DELETE. */
 export async function portalDeleteAccount(
   confirmText: string
@@ -764,4 +806,36 @@ export async function portalDeleteAccount(
     ok: true,
     message: r.message || 'Your account has been permanently deleted.',
   };
+}
+
+export async function portalRegisterPushToken(payload: {
+  expoPushToken: string;
+  teamStateId?: string;
+  platform?: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch('POST', '/api/portal/push/register', {
+    expoPushToken: payload.expoPushToken,
+    teamStateId: payload.teamStateId || '',
+    platform: payload.platform || '',
+  });
+  if (!r.ok) return r;
+  return { ok: true };
+}
+
+export async function portalNotifySchedulePublished(payload: {
+  weekMondayIso: string;
+  teamStateId?: string;
+}): Promise<{ ok: true; sent: number } | { ok: false; message: string }> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{ sent?: number }>('POST', '/api/portal/schedule/notify-published', {
+    weekMondayIso: payload.weekMondayIso,
+    teamStateId: payload.teamStateId || '',
+  });
+  if (!r.ok) return r;
+  return { ok: true, sent: r.sent != null ? Number(r.sent) : 0 };
 }

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -17,6 +18,8 @@ import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
 import { readStoredTeamStateId } from '../../lib/companySession';
+import { portalNotifySchedulePublished } from '../../lib/portalAuth';
+import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
 import type {
@@ -34,15 +37,21 @@ import {
   buildSchedule,
   buildWeeksFromMonday,
   defaultRestaurants,
+  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getVisibleWeekDays,
+  isScheduleWeekPublished,
   loadDraftFromTeamState,
   mergeRemoteAssignments,
   namesForScheduleRowPersonPicker,
+  nextScheduleWeekMondayIso,
+  normalizeSchedulePublishedMap,
   purgeDefaultUnassignedRestaurantAssignments,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
+  schedulePublishedPayload,
   scheduleRowPrimaryPerson,
+  seedDefaultPublishedWeeks,
   STAFF_TYPE_LABELS,
   type CalendarBodyRow,
   type CalendarCell,
@@ -108,6 +117,7 @@ export default function ManagerScheduleScreen() {
   const [pickerShift, setPickerShift] = useState<ScheduleRow | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** Single horizontal ScrollView for all day columns — Person column stays outside. */
@@ -123,42 +133,86 @@ export default function ManagerScheduleScreen() {
     [allWeekDays, weekIndex]
   );
 
+  const publishedMap = useMemo(() => {
+    const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
+    seedDefaultPublishedWeeks(map, weekMeta);
+    return map;
+  }, [teamState?.schedule_published, weekMeta]);
+
+  const nextWeekMonday = nextScheduleWeekMondayIso(weekMeta);
+  const nextWeekPublished = !!(nextWeekMonday && isScheduleWeekPublished(publishedMap, nextWeekMonday));
+
+  const publishNextWeek = useCallback(() => {
+    if (!nextWeekMonday || role !== 'manager') return;
+    const range = formatScheduleWeekRangeLabel(weekMeta, SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+    const msg = nextWeekPublished
+      ? `Send another notification that next week’s schedule (${range}) is ready?`
+      : `Publish next week’s schedule (${range}) for employees and send a push notification?`;
+    Alert.alert('Publish / Notify', msg, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: nextWeekPublished ? 'Notify again' : 'Publish',
+        onPress: () => {
+          void (async () => {
+            if (!supabase) return;
+            setPublishing(true);
+            try {
+              const map = { ...publishedMap, [nextWeekMonday]: true as const };
+              const payload = schedulePublishedPayload(map);
+              const teamStateId = await readStoredTeamStateId();
+              const up = await supabase.from('team_state').upsert(
+                { id: teamStateId, schedule_published: payload },
+                { onConflict: 'id' }
+              );
+              if (up.error) {
+                Alert.alert('Publish failed', up.error.message || 'Could not save publish state.');
+                return;
+              }
+              await broadcastTeamStateChanged(
+                supabase,
+                teamStateId,
+                ['schedule_published'],
+                session?.user?.id
+              );
+              const notify = await portalNotifySchedulePublished({
+                weekMondayIso: nextWeekMonday,
+                teamStateId,
+              });
+              await refetch({ silent: true });
+              if (!notify.ok) {
+                Alert.alert(
+                  'Published',
+                  `Next week is visible to employees, but push notify failed: ${notify.message}`
+                );
+              } else {
+                Alert.alert(
+                  'Published',
+                  notify.sent > 0
+                    ? `Notified ${notify.sent} device${notify.sent === 1 ? '' : 's'}.`
+                    : 'Employees can view next week now (no push tokens registered yet).'
+                );
+              }
+            } finally {
+              setPublishing(false);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [
+    nextWeekMonday,
+    nextWeekPublished,
+    publishedMap,
+    refetch,
+    role,
+    session?.user?.id,
+    weekMeta,
+  ]);
+
   const draftScheduleRaw = teamState?.draft_schedule;
   const draftRows = useMemo(
     () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
     [draftScheduleRaw, weekIndex, currentRestaurantId]
-  );
-
-  useEffect(() => {
-    const ids = restaurants.map((r) => r.id);
-    const raw = teamState?.schedule_assignments;
-    const shell = assignmentShell(restaurants);
-    setAssignmentStore(mergeRemoteAssignments(shell, raw, ids));
-  }, [teamState, restaurants]);
-
-  const lites = useMemo(() => employees.map(toLite), [employees]);
-
-  const schedule = useMemo(
-    () =>
-      buildSchedule({
-        allWeekDays,
-        draftScheduleRaw,
-        employees: lites,
-        restaurants,
-        currentRestaurantId,
-        assignmentStore,
-      }),
-    [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
-  );
-
-  const calendarBody = useMemo(
-    () => buildCalendarBody(schedule, visibleDays, draftRows),
-    [schedule, visibleDays, draftRows]
-  );
-
-  const daysWidth = Math.max(
-    Dimensions.get('window').width - PERSON_COL - 16,
-    visibleDays.length * CELL_MIN
   );
 
   useEffect(() => {
@@ -207,6 +261,44 @@ export default function ManagerScheduleScreen() {
       }, 3000);
     },
     [persistCloud]
+  );
+
+  useEffect(() => {
+    const ids = restaurants.map((r) => r.id);
+    const raw = teamState?.schedule_assignments;
+    const shell = assignmentShell(restaurants);
+    const merged = mergeRemoteAssignments(shell, raw, ids);
+    const rolled = ensureRollingFutureAssignments(merged, restaurants);
+    setAssignmentStore(rolled.store);
+    if (rolled.changed && role === 'manager') {
+      applyLocalScheduleAssignments(rolled.store);
+      queuePersist(rolled.store);
+    }
+  }, [teamState, restaurants, role, queuePersist, applyLocalScheduleAssignments]);
+
+  const lites = useMemo(() => employees.map(toLite), [employees]);
+
+  const schedule = useMemo(
+    () =>
+      buildSchedule({
+        allWeekDays,
+        draftScheduleRaw,
+        employees: lites,
+        restaurants,
+        currentRestaurantId,
+        assignmentStore,
+      }),
+    [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
+  );
+
+  const calendarBody = useMemo(
+    () => buildCalendarBody(schedule, visibleDays, draftRows),
+    [schedule, visibleDays, draftRows]
+  );
+
+  const daysWidth = Math.max(
+    Dimensions.get('window').width - PERSON_COL - 16,
+    visibleDays.length * CELL_MIN
   );
 
   function applyWorkerChoice(shift: ScheduleRow, workerName: string) {
@@ -306,6 +398,15 @@ export default function ManagerScheduleScreen() {
             maxWeekIndex={SCHEDULE_VIEW_WEEK_COUNT - 1}
             templateWeekIndex={SCHEDULE_TEMPLATE_WEEK_INDEX}
           />
+          <Pressable
+            onPress={publishNextWeek}
+            disabled={publishing}
+            style={[styles.publishBtn, publishing && styles.publishBtnDisabled]}
+          >
+            <Text style={styles.publishBtnText}>
+              {publishing ? 'Publishing…' : nextWeekPublished ? 'Notify again' : 'Publish / Notify'}
+            </Text>
+          </Pressable>
         </View>
 
         <View style={styles.locRow}>
@@ -478,7 +579,7 @@ type PersonColRowProps = {
   onOpenRowPerson: (t: RowPersonTarget) => void;
 };
 
-function PersonColRow({
+const PersonColRow = memo(function PersonColRow({
   row,
   schedule,
   visibleDays,
@@ -533,9 +634,9 @@ function PersonColRow({
       </Pressable>
     </View>
   );
-}
+});
 
-function DayColRow({
+const DayColRow = memo(function DayColRow({
   row,
   daysWidth,
   onOpenShift,
@@ -568,9 +669,9 @@ function DayColRow({
       ))}
     </View>
   );
-}
+});
 
-function CalendarCellView({
+const CalendarCellView = memo(function CalendarCellView({
   cell,
   onOpenShift,
 }: {
@@ -610,7 +711,7 @@ function CalendarCellView({
       <Text style={styles.slotHours}>{cell.hours}h</Text>
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f8fafc' },
@@ -619,6 +720,16 @@ const styles = StyleSheet.create({
   brandRow: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
   brandLogo: { width: 52, height: 52, resizeMode: 'contain' },
   toolbar: { paddingHorizontal: 12, paddingTop: 8 },
+  publishBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    backgroundColor: '#c41230',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  publishBtnDisabled: { opacity: 0.6 },
+  publishBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   locRow: { paddingHorizontal: 12, marginTop: 6 },
   locRowContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   locChipsScroll: { flex: 1 },

@@ -110,7 +110,13 @@
         ? bridge.getEmployeeLoginName()
         : bridge.employeeLoginName || '';
     if (!WORKER) return;
-    var titles = { home: 'Home', availability: 'Availability', messages: 'Messages', requests: 'Actions' };
+    var titles = {
+      home: 'Home',
+      schedule: 'Schedule',
+      availability: 'Availability',
+      messages: 'Messages',
+      requests: 'Actions',
+    };
 
     var screenTitle = el('empScreenTitle');
     var welcomeCard = el('empWelcomeCard');
@@ -411,6 +417,16 @@
       if (upcomingWeekLabel) upcomingWeekLabel.textContent = formatWeekHeaderLabel(wk);
       if (upcomingPrevWeekBtn) upcomingPrevWeekBtn.disabled = upcomingWeekCursor <= 0;
       if (upcomingNextWeekBtn) upcomingNextWeekBtn.disabled = upcomingWeekCursor >= upcomingWeekStarts.length - 1;
+    }
+
+    function renderMasterScheduleScreen() {
+      if (bridge.renderEmployeeMasterSchedule) bridge.renderEmployeeMasterSchedule();
+    }
+
+    function refreshEmployeeScheduleUi() {
+      renderHome();
+      var scheduleSec = document.querySelector('.emp-screen[data-emp-screen="schedule"]');
+      if (scheduleSec && !scheduleSec.hidden) renderMasterScheduleScreen();
     }
 
     function renderHome() {
@@ -944,6 +960,7 @@
         btn.addEventListener('click', function () {
           var key = btn.getAttribute('data-emp-nav');
           if (key === 'home') renderHome();
+          if (key === 'schedule') renderMasterScheduleScreen();
           if (key === 'messages') {
             store = loadChatStore();
             renderThreadsList();
@@ -964,6 +981,44 @@
           showEmpNav(key);
         });
       });
+
+      var empScheduleWeekNav = el('empScheduleWeekNav');
+      if (empScheduleWeekNav) {
+        empScheduleWeekNav.addEventListener('click', function (e) {
+          var stepBtn = e.target.closest('[data-emp-schedule-week-step]');
+          if (stepBtn) {
+            var step = parseInt(stepBtn.getAttribute('data-emp-schedule-week-step'), 10);
+            if (isNaN(step) || !bridge.getScheduleCalendarWeekIndex || !bridge.setScheduleCalendarWeekIndex) {
+              return;
+            }
+            var cur = Number(bridge.getScheduleCalendarWeekIndex());
+            var max =
+              bridge.getScheduleViewWeekCount && typeof bridge.getScheduleViewWeekCount === 'function'
+                ? Number(bridge.getScheduleViewWeekCount()) - 1
+                : cur;
+            var next = cur + step;
+            if (next < 0 || next > max) return;
+            bridge.setScheduleCalendarWeekIndex(next);
+            return;
+          }
+          if (e.target.closest('#empScheduleWeekNavToday')) {
+            var tpl =
+              bridge.getScheduleTemplateWeekIndex && typeof bridge.getScheduleTemplateWeekIndex === 'function'
+                ? bridge.getScheduleTemplateWeekIndex()
+                : 0;
+            if (bridge.setScheduleCalendarWeekIndex) bridge.setScheduleCalendarWeekIndex(tpl);
+          }
+        });
+      }
+
+      var empRestaurantSwitcher = el('empRestaurantSwitcher');
+      if (empRestaurantSwitcher) {
+        empRestaurantSwitcher.addEventListener('click', function (e) {
+          var chip = e.target.closest('[data-emp-restaurant-id]');
+          if (!chip || !bridge.setCurrentScheduleRestaurantId) return;
+          bridge.setCurrentScheduleRestaurantId(chip.getAttribute('data-emp-restaurant-id'));
+        });
+      }
 
       if (empAvailWeekPrev) {
         empAvailWeekPrev.addEventListener('click', function () {
@@ -1056,6 +1111,11 @@
       store = loadChatStore();
       closeThreadView();
       renderThreadsList();
+    };
+
+    window.gmCalloutEmployeeScheduleRefreshUi = function () {
+      if (!document.documentElement.classList.contains('employee-app')) return;
+      refreshEmployeeScheduleUi();
     };
 
     renderHome();
