@@ -145,12 +145,8 @@ export default function EmployeeScheduleScreen() {
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
-      <ScrollView
-        style={styles.outerScroll}
-        contentContainerStyle={styles.outerScrollContent}
-        nestedScrollEnabled
-        showsVerticalScrollIndicator
-      >
+      {/* Frozen chrome — week / location / legend stay put (grid scrolls below). */}
+      <View style={styles.chrome}>
         <View style={styles.brandRow}>
           <Image
             source={require('../../assets/red-poke-logo.png')}
@@ -191,88 +187,103 @@ export default function EmployeeScheduleScreen() {
           </ScrollView>
         </View>
 
-        {!weekPublished ? (
-          <View style={styles.unpublished}>
-            <Text style={styles.unpublishedTitle}>Not published yet</Text>
-            <Text style={styles.unpublishedBody}>
-              Week {formatScheduleWeekRangeLabel(weekMeta, weekIndex)} has not been published. Your
-              manager will notify you when it is ready.
-            </Text>
-          </View>
-        ) : (
-          <>
-            <View style={styles.legend}>
-              <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
-                <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>
-                  Front of the House
-                </Text>
-              </View>
-              <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-kitchen'].border }]}>
-                <Text style={[styles.legendTxt, { color: ROLE_PILL['role-kitchen'].fg }]}>
-                  Back of the House
-                </Text>
-              </View>
-              <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-server'].border }]}>
-                <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>
-                  Delivery/Dishwasher
-                </Text>
-              </View>
+        {weekPublished ? (
+          <View style={styles.legend}>
+            <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
+              <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>
+                Front of the House
+              </Text>
             </View>
+            <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-kitchen'].border }]}>
+              <Text style={[styles.legendTxt, { color: ROLE_PILL['role-kitchen'].fg }]}>
+                Back of the House
+              </Text>
+            </View>
+            <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-server'].border }]}>
+              <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>
+                Delivery/Dishwasher
+              </Text>
+            </View>
+          </View>
+        ) : null}
+      </View>
 
-            {loading && !teamState ? <Text style={styles.muted}>Loading schedule…</Text> : null}
+      {!weekPublished ? (
+        <View style={styles.unpublished}>
+          <Text style={styles.unpublishedTitle}>Not published yet</Text>
+          <Text style={styles.unpublishedBody}>
+            Week {formatScheduleWeekRangeLabel(weekMeta, weekIndex)} has not been published. Your
+            manager will notify you when it is ready.
+          </Text>
+        </View>
+      ) : (
+        /*
+         * Same scroll model as manager schedule: one vertical ScrollView for the
+         * whole matrix (Person + day headers travel with rows). Nested horizontal
+         * ScrollView only for day columns. Avoids a flex-bounded body ScrollView
+         * that failed to scroll after the sticky-header split.
+         */
+        <ScrollView
+          style={styles.gridScroll}
+          contentContainerStyle={styles.gridScrollContent}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+          keyboardShouldPersistTaps="handled"
+        >
+          {loading && !teamState ? <Text style={styles.muted}>Loading schedule…</Text> : null}
 
-            <View style={styles.matrix}>
-              <View style={styles.matrixInner}>
-                <View style={[styles.personCol, { width: PERSON_COL }]}>
-                  <View style={styles.personTh}>
-                    <Text style={styles.thFull}>PERSON</Text>
-                    <Text style={styles.thSub}>Row assignee</Text>
+          <View style={styles.matrix}>
+            <View style={styles.matrixInner}>
+              <View style={[styles.personCol, { width: PERSON_COL }]}>
+                <View style={styles.personTh}>
+                  <Text style={styles.thFull}>PERSON</Text>
+                  <Text style={styles.thSub}>Row assignee</Text>
+                </View>
+                {calendarBody.map((row, ri) => (
+                  <PersonColRow
+                    key={`p-${ri}`}
+                    row={row}
+                    schedule={schedule}
+                    visibleDays={visibleDays}
+                    employees={lites}
+                    restaurantId={currentRestaurantId}
+                  />
+                ))}
+              </View>
+
+              <ScrollView
+                ref={dayScrollRef}
+                horizontal
+                nestedScrollEnabled
+                showsHorizontalScrollIndicator
+                style={styles.dayLane}
+                contentContainerStyle={styles.dayLaneContent}
+                keyboardShouldPersistTaps="handled"
+              >
+                <View style={{ width: daysWidth }}>
+                  <View style={styles.headerDays}>
+                    {visibleDays.map((dayStr) => {
+                      const meta = weekMeta.find((m) => m.label === dayStr);
+                      const parts = dayStr.split(' ');
+                      const dow = parts[0] || '';
+                      const rest = parts.slice(1).join(' ');
+                      return (
+                        <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                          <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
+                          <Text style={styles.thSub}>{rest}</Text>
+                        </View>
+                      );
+                    })}
                   </View>
                   {calendarBody.map((row, ri) => (
-                    <PersonColRow
-                      key={`p-${ri}`}
-                      row={row}
-                      schedule={schedule}
-                      visibleDays={visibleDays}
-                      employees={lites}
-                      restaurantId={currentRestaurantId}
-                    />
+                    <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} />
                   ))}
                 </View>
-
-                <ScrollView
-                  ref={dayScrollRef}
-                  horizontal
-                  nestedScrollEnabled
-                  showsHorizontalScrollIndicator
-                  style={styles.dayLane}
-                  contentContainerStyle={styles.dayLaneContent}
-                >
-                  <View style={{ width: daysWidth }}>
-                    <View style={styles.headerDays}>
-                      {visibleDays.map((dayStr) => {
-                        const meta = weekMeta.find((m) => m.label === dayStr);
-                        const parts = dayStr.split(' ');
-                        const dow = parts[0] || '';
-                        const rest = parts.slice(1).join(' ');
-                        return (
-                          <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                            <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
-                            <Text style={styles.thSub}>{rest}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-                    {calendarBody.map((row, ri) => (
-                      <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} />
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
+              </ScrollView>
             </View>
-          </>
-        )}
-      </ScrollView>
+          </View>
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -378,8 +389,7 @@ function DayColRow({ row, daysWidth }: { row: CalendarBodyRow; daysWidth: number
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
-  outerScroll: { flex: 1 },
-  outerScrollContent: { paddingBottom: 24 },
+  chrome: { flexShrink: 0, backgroundColor: '#f4f6f8', zIndex: 2 },
   brandRow: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   brandLogo: { width: 72, height: 72, resizeMode: 'contain' },
   hint: { paddingHorizontal: 16, color: '#64748b', fontSize: 13, marginBottom: 8 },
@@ -398,7 +408,7 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: '#c41230', borderColor: '#c41230' },
   chipText: { fontSize: 13, fontWeight: '600', color: '#333' },
   chipTextActive: { color: '#fff' },
-  legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, marginBottom: 10 },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, marginBottom: 8 },
   legendPill: {
     borderWidth: 1,
     borderRadius: 999,
@@ -419,9 +429,18 @@ const styles = StyleSheet.create({
   unpublishedTitle: { fontSize: 16, fontWeight: '700', color: '#111', marginBottom: 6 },
   unpublishedBody: { fontSize: 14, color: '#555', lineHeight: 20 },
   muted: { paddingHorizontal: 16, color: '#888', marginBottom: 8 },
+  /* flex:1 + minHeight:0 so this ScrollView gets a real viewport under frozen chrome */
+  gridScroll: { flex: 1, minHeight: 0 },
+  gridScrollContent: { flexGrow: 1, paddingBottom: 24 },
   matrix: { paddingHorizontal: 8 },
-  matrixInner: { flexDirection: 'row' },
-  personCol: { backgroundColor: '#fff' },
+  matrixInner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  personCol: {
+    flexShrink: 0,
+    backgroundColor: '#fff',
+  },
   personTh: {
     height: HEADER_ROW_H,
     justifyContent: 'center',
@@ -455,8 +474,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
   },
   personSelectText: { fontSize: 12, fontWeight: '600', color: '#111' },
-  dayLane: { flexGrow: 0 },
-  dayLaneContent: {},
+  dayLane: { flex: 1 },
+  dayLaneContent: { flexGrow: 1 },
   headerDays: { flexDirection: 'row', height: HEADER_ROW_H },
   th: {
     justifyContent: 'center',

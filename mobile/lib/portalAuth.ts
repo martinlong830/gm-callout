@@ -827,6 +827,7 @@ export async function portalRegisterPushToken(payload: {
 
 export async function portalNotifySchedulePublished(payload: {
   weekMondayIso: string;
+  weekRangeLabel?: string;
   teamStateId?: string;
 }): Promise<{ ok: true; sent: number } | { ok: false; message: string }> {
   if (!isPortalAuthConfigured()) {
@@ -834,6 +835,7 @@ export async function portalNotifySchedulePublished(payload: {
   }
   const r = await portalAuthedFetch<{ sent?: number }>('POST', '/api/portal/schedule/notify-published', {
     weekMondayIso: payload.weekMondayIso,
+    weekRangeLabel: payload.weekRangeLabel || '',
     teamStateId: payload.teamStateId || '',
   });
   if (!r.ok) return r;

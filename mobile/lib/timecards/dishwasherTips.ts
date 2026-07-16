@@ -12,8 +12,30 @@ import type { PayWeekBounds, TimeClockEntry } from './types';
 
 const RP2_DELIVERY_TIP_LOCATION = 'rp-8';
 
+export function dishwasherTipRestaurantForShiftRow(
+  shiftRow: { shift?: { restaurantId?: string }; iso?: string } | null | undefined,
+  punchDayRestaurantId?: string | null
+): string {
+  if (!shiftRow?.shift) return punchDayRestaurantId || RP2_DELIVERY_TIP_LOCATION;
+  const sid = shiftRow.shift.restaurantId;
+  if (sid === 'rp-8' || sid === 'rp-9') return sid;
+  // Off-schedule / missing restaurant: prefer day attribution, else delivery default.
+  if (punchDayRestaurantId === 'rp-8' || punchDayRestaurantId === 'rp-9') {
+    return punchDayRestaurantId;
+  }
+  return RP2_DELIVERY_TIP_LOCATION;
+}
+
 export const DISHWASHER_TIP_REQUIRES_SHIFT_MSG =
   'Save a punch or vacation/sick hours before entering dishwasher tips.';
+
+/** Gross tip × this factor = net tip used for pay / totals. */
+export const TIP_NET_FACTOR = 0.95;
+
+export function netTipAmount(gross: number): number {
+  if (gross == null || Number.isNaN(gross) || gross <= 0) return 0;
+  return Math.round(gross * TIP_NET_FACTOR * 100) / 100;
+}
 
 export function isDeliveryDishwasherStaff(emp: { staffType?: string } | null): boolean {
   return !!(emp && emp.staffType === 'Server');
@@ -112,6 +134,17 @@ export function getEmployeeDayDishwasherTipSync(
   slice: Record<string, number>,
   restaurantId?: string
 ): number {
+  // When restaurant is omitted (person-week list), sum every store key for that day so tips
+  // saved under rp-9 / rp-8 (or legacy emp@iso) still show.
+  if (restaurantId == null || restaurantId === '') {
+    let sumAny = 0;
+    for (const k of Object.keys(slice)) {
+      const parsed = parseDishwasherTipStorageKey(k);
+      if (!parsed || parsed.empId !== empId || parsed.iso !== iso) continue;
+      sumAny += normalizeTipAmount(slice[k]);
+    }
+    return Math.round(sumAny * 100) / 100;
+  }
   const rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
   const keyed = slice[dayDishwasherTipStorageKey(empId, iso, rid)];
   if (keyed != null) return normalizeTipAmount(keyed);

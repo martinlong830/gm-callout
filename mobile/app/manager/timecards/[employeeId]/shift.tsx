@@ -16,8 +16,10 @@ import { useTimecards } from '../../../../contexts/TimecardsContext';
 import { employeeDisplayName, type EmployeeRow } from '../../../../lib/employees';
 import {
   DISHWASHER_TIP_REQUIRES_SHIFT_MSG,
+  dishwasherTipRestaurantForShiftRow,
   getEmployeeDayDishwasherTip,
   isDeliveryDishwasherStaff,
+  netTipAmount,
   setEmployeeDayDishwasherTip,
 } from '../../../../lib/timecards/dishwasherTips';
 import {
@@ -402,7 +404,8 @@ export default function TimecardsShiftScreen() {
       await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
       await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
       if (showDishwasherTip) {
-        await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
+        const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
+        await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
       }
       setBusy(false);
       await refresh();
@@ -483,7 +486,8 @@ export default function TimecardsShiftScreen() {
     await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
     await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
     if (showDishwasherTip) {
-      await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds);
+      const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
+      await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
     }
     await refresh();
     Alert.alert('Saved', 'Punch updated.');
@@ -684,6 +688,11 @@ export default function TimecardsShiftScreen() {
             onChangeText={setDishwasherTipText}
             keyboardType="decimal-pad"
           />
+          <Text style={styles.fieldLabel}>Net dishwasher tips</Text>
+          <Text style={styles.hint}>
+            {formatPayAmount(netTipAmount(Math.max(0, parseFloat(dishwasherTipText) || 0)))}{' '}
+            (tip × 0.95)
+          </Text>
         </>
       ) : null}
 

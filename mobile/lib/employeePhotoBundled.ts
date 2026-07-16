@@ -15,6 +15,7 @@ export const BUNDLED_EMPLOYEE_PHOTOS: Record<string, ImageSourcePropType> = {
   eugene_villarruz: require('../assets/employee-photos/eugene_villarruz.jpg'),
   jon_arellano: require('../assets/employee-photos/jon_arellano.jpg'),
   juan_salvatierra: require('../assets/employee-photos/juan_salvatierra.jpg'),
+  maeve_williams: require('../assets/employee-photos/maeve_williams.jpg'),
   mark_ong: require('../assets/employee-photos/mark_ong.jpg'),
   natalio_de_la_cruz: require('../assets/employee-photos/natalio_de_la_cruz.jpg'),
   zeferino_flores: require('../assets/employee-photos/zeferino_flores.jpg'),

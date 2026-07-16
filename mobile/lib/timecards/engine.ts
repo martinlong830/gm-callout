@@ -25,6 +25,7 @@ import { isoFromDate } from './payWeek';
 import {
   isDeliveryDishwasherStaff,
   loadDishwasherTipsSlice,
+  netTipAmount,
   sumEmployeeWeekDishwasherTipsSync,
 } from './dishwasherTips';
 import {
@@ -321,6 +322,43 @@ export function dailyRecordedMinutesForEmployeeAtRestaurant(
   return total;
 }
 
+/**
+ * Prefer store-attributed punches; when this is the only scheduled shift that day and
+ * attribution left punches stranded, count the day's meaningful punches so manual logs show pay.
+ */
+export function dailyRecordedMinutesForShiftRow(
+  emp: EmployeeRow,
+  row: ShiftDayRow,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext
+): number {
+  const rowRest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
+  const attributed = dailyRecordedMinutesForEmployeeAtRestaurant(
+    emp,
+    row.iso,
+    rowRest,
+    entries,
+    scheduleCtx
+  );
+  if (attributed > 0 || isOffScheduleShiftDayRow(row)) return attributed;
+  const name = employeeDisplayName(emp);
+  const byWorker = scheduleCtx.payWeekShiftsByWorkerKey;
+  let scheduledSameDay = 0;
+  if (byWorker) {
+    const list = byWorker[scheduleWorkerNameKey(name)] || [];
+    scheduledSameDay = list.filter(
+      (s) => s.iso === row.iso && shiftRowIncludesWorker(s, name)
+    ).length;
+  }
+  if (scheduledSameDay > 1) return attributed;
+  let total = 0;
+  for (const e of findEntriesForDay(entries, emp.id, row.iso)) {
+    if (!entryHasMeaningfulPunch(e, row.iso)) continue;
+    total += recordedPaidMinutes(e, null, emp);
+  }
+  return total;
+}
+
 export function weekRegOtForShiftRow(
   emp: EmployeeRow,
   row: ShiftDayRow,
@@ -332,7 +370,14 @@ export function weekRegOtForShiftRow(
     weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, locationFilter)
   );
   const rest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
-  return byRest[`${row.iso}\0${rest}`] || { regMins: 0, otMins: 0, totalMins: 0 };
+  const hit = byRest[`${row.iso}\0${rest}`];
+  if (hit && hit.totalMins > 0) return hit;
+  const fallbackMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
+  if (fallbackMins <= 0) return hit || { regMins: 0, otMins: 0, totalMins: 0 };
+  const byDay = weeklyRegOtByDay(
+    weekDayRecordedForEmployee([], emp, entries, undefined, scheduleCtx, locationFilter)
+  );
+  return byDay[row.iso] || { regMins: 0, otMins: 0, totalMins: 0 };
 }
 
 export function shiftPayForShiftRow(
@@ -1196,11 +1241,13 @@ export function buildRosterRowSync(
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
-        entries,
-        extrasSlice,
-        locationFilter,
-      })
+    ? netTipAmount(
+        sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
+          entries,
+          extrasSlice,
+          locationFilter,
+        })
+      )
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
@@ -1437,10 +1484,12 @@ export async function buildRosterRow(
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
-        entries,
-        extrasSlice,
-      })
+    ? netTipAmount(
+        sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
+          entries,
+          extrasSlice,
+        })
+      )
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';

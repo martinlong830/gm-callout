@@ -16,10 +16,10 @@ export type HydrationResult = {
 
 /** Roster columns — omit unused wide fields; managers still need weekly_grid for schedule. */
 export const EMPLOYEE_LIST_COLUMNS =
-  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
+  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
 
 export const EMPLOYEE_MANAGER_COLUMNS =
-  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
 
 export const STAFF_REQUEST_COLUMNS = 'id, type, status, created_at, payload';
 
@@ -27,6 +27,30 @@ function employeesSelectForCompany(sb: SupabaseClient, cols: string, companyId: 
   const q = sb.from('employees').select(cols);
   if (companyId) return q.eq('company_id', companyId);
   return q;
+}
+
+const EMPLOYEE_LIST_COLUMNS_NO_EMAIL =
+  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
+
+const EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL =
+  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+
+async function selectEmployees(
+  sb: SupabaseClient,
+  cols: string,
+  fallbackCols: string,
+  companyId: string
+) {
+  const primary = await employeesSelectForCompany(sb, cols, companyId).order('display_name', {
+    ascending: true,
+  });
+  if (!primary.error) return primary;
+  if (/email/i.test(primary.error.message || '')) {
+    return employeesSelectForCompany(sb, fallbackCols, companyId).order('display_name', {
+      ascending: true,
+    });
+  }
+  return primary;
 }
 
 export async function hydrateFromSupabase(
@@ -38,9 +62,10 @@ export async function hydrateFromSupabase(
   const isManager = opts?.role === 'manager';
   const teamCols = isManager ? TEAM_STATE_MANAGER_COLUMNS : TEAM_STATE_EMPLOYEE_COLUMNS;
   const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
+  const empFallback = isManager ? EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL : EMPLOYEE_LIST_COLUMNS_NO_EMAIL;
 
   const [empRes, reqRes, teamRes] = await Promise.all([
-    employeesSelectForCompany(sb, empCols, companyId).order('display_name', { ascending: true }),
+    selectEmployees(sb, empCols, empFallback, companyId),
     sb.from('staff_requests').select(STAFF_REQUEST_COLUMNS).order('created_at', { ascending: false }),
     sb.from('team_state').select(teamCols).eq('id', teamStateId).maybeSingle(),
   ]);
@@ -101,9 +126,8 @@ export async function fetchEmployeesOnly(
   const companyId = await resolveCompanyIdForEmployees();
   const isManager = opts?.role === 'manager';
   const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
-  const empRes = await employeesSelectForCompany(sb, empCols, companyId).order('display_name', {
-    ascending: true,
-  });
+  const empFallback = isManager ? EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL : EMPLOYEE_LIST_COLUMNS_NO_EMAIL;
+  const empRes = await selectEmployees(sb, empCols, empFallback, companyId);
   const employees: EmployeeRow[] = [];
   if (empRes.data?.length) {
     for (const row of empRes.data) {

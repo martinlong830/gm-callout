@@ -13,9 +13,9 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") });
 /** [display name, 4-digit PIN] — birthday MMDD where known */
 const PIN_ASSIGNMENTS = [
   ["MARK ONG", "0317"],
-  ["SIED SUMOG - OY", "1023"],
-  ["ANGELYN GELLA", "0114"],
-  ["JONG SARDUA", "1004"],
+  ["CHARLES JAKOB ZACANI", "1023"],
+  ["MAEVE WILLIAMS", "0114"],
+  ["JON ARELLANO", "1004"],
   ["EUGENE VILLARRUZ", "1225"],
   ["BALTAZAR LUCAS", "0606"],
   ["ENRIQUE CUMES", "0802"],

@@ -12,10 +12,31 @@ const TIP_PAYROLL_PUSH_DEBOUNCE_MS = 4000;
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Snapshot of tip/VL/SL last applied from (or confirmed to) Supabase. */
+let tipPayrollRemoteBaseline: {
+  tipPool: Record<string, unknown>;
+  dishwasher: Record<string, unknown>;
+  weekExtras: Record<string, unknown>;
+} = { tipPool: {}, dishwasher: {}, weekExtras: {} };
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+function tipPayrollSliceJson(slice: unknown): string {
+  if (!isRecord(slice)) return '';
+  try {
+    return JSON.stringify(slice);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Merge tip/VL/SL for push: start from remote SoT, overlay only week keys this device
+ * changed since the last remote apply. Prevents one manager's AsyncStorage from
+ * clobbering another manager's tip/VL edits.
+ */
 function mergeTipPayrollStoresForPush(
   localTip: Record<string, unknown>,
   localDw: Record<string, unknown>,
@@ -24,22 +45,43 @@ function mergeTipPayrollStoresForPush(
   localExtras: Record<string, unknown>,
   remoteExtras: Record<string, unknown>
 ): { tipPool: Record<string, unknown>; dishwasher: Record<string, unknown>; weekExtras: Record<string, unknown> } {
+  const baseTip = isRecord(tipPayrollRemoteBaseline.tipPool) ? tipPayrollRemoteBaseline.tipPool : {};
+  const baseDw = isRecord(tipPayrollRemoteBaseline.dishwasher)
+    ? tipPayrollRemoteBaseline.dishwasher
+    : {};
+  const baseExtras = isRecord(tipPayrollRemoteBaseline.weekExtras)
+    ? tipPayrollRemoteBaseline.weekExtras
+    : {};
   const mergedTip = { ...remoteTip };
   Object.keys(localTip).forEach((key) => {
     const slice = localTip[key];
-    if (isRecord(slice)) mergedTip[key] = slice;
+    if (!isRecord(slice)) return;
+    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseTip[key])) mergedTip[key] = slice;
   });
   const mergedDw = { ...remoteDw };
   Object.keys(localDw).forEach((key) => {
     const slice = localDw[key];
-    if (isRecord(slice)) mergedDw[key] = slice;
+    if (!isRecord(slice)) return;
+    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseDw[key])) mergedDw[key] = slice;
   });
   const mergedExtras = { ...remoteExtras };
   Object.keys(localExtras).forEach((key) => {
     const slice = localExtras[key];
-    if (isRecord(slice)) mergedExtras[key] = slice;
+    if (!isRecord(slice)) return;
+    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseExtras[key])) {
+      mergedExtras[key] = slice;
+    }
   });
   return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
+}
+
+async function snapshotTipPayrollRemoteBaseline(): Promise<void> {
+  const [tipPool, dishwasher, weekExtras] = await Promise.all([
+    loadTipPoolStore(),
+    loadDishwasherTipsStore(),
+    loadWeekExtrasStore(),
+  ]);
+  tipPayrollRemoteBaseline = { tipPool, dishwasher, weekExtras };
 }
 
 async function fetchRemoteTipPayrollStores(
@@ -116,6 +158,8 @@ export async function applyTipPayrollFromTeamState(
     await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(weekExtras));
     changed = true;
   }
+  // Snapshot even when remote columns were empty so stale AsyncStorage is not treated as edits.
+  await snapshotTipPayrollRemoteBaseline();
   return changed;
 }
 
@@ -160,6 +204,11 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
     console.warn('team_state tip payroll upsert', res.error);
     return;
   }
+  tipPayrollRemoteBaseline = {
+    tipPool: merged.tipPool,
+    dishwasher: merged.dishwasher,
+    weekExtras: merged.weekExtras,
+  };
   const sess = await sb.auth.getSession();
   await broadcastTeamStateChanged(
     sb,

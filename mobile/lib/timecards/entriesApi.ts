@@ -89,6 +89,28 @@ export async function loadWeekEntries(
   return { ok: true, entries, schema };
 }
 
+/**
+ * Cheap freshness probe for pay-week punches (single row). Used to skip full
+ * week loads when another manager has not changed anything since our cache.
+ */
+export async function fetchWeekEntriesMaxUpdatedAt(
+  sb: SupabaseClient,
+  bounds: PayWeekBounds
+): Promise<string | null> {
+  const weekStartIso = bounds.start.toISOString();
+  const weekEndIso = bounds.end.toISOString();
+  const { data, error } = await sb
+    .from('time_clock_entries')
+    .select('updated_at')
+    .gte('clock_in_at', weekStartIso)
+    .lte('clock_in_at', weekEndIso)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  if (error || !data?.length) return null;
+  const at = data[0]?.updated_at;
+  return at != null ? String(at) : null;
+}
+
 export type SavePunchInput = {
   employeeId: string;
   shiftId: string | null;

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Align profiles.login_name / display_name with employees.display_name for every
- * roster row that has auth_user_id (web + mobile sign-in).
+ * Align profiles.display_name with employees.display_name for linked roster rows.
+ * Preserves profiles.login_name (sign-in username) — display name and username are separate.
+ *
+ * Usage: node scripts/sync-portal-login-names.js
  */
 /* eslint-disable no-console */
 const path = require("path");
@@ -17,62 +19,57 @@ function normalizeLoginName(name) {
     .replace(/\s+/g, " ");
 }
 
-async function renameProfile(admin, userId, loginName) {
-  const ln = String(loginName || "").trim();
-  const norm = normalizeLoginName(ln);
-  if (!ln || !norm) {
-    throw new Error("Empty login name for user " + userId);
+async function syncProfileDisplayName(admin, userId, displayName) {
+  const dn = String(displayName || "").trim();
+  if (!dn) {
+    throw new Error("Empty display name for user " + userId);
   }
 
   const { data: prof, error: profErr } = await admin
     .from("profiles")
-    .select("id, login_name, display_name, role")
+    .select("id, login_name, login_name_norm, display_name, role")
     .eq("id", userId)
     .maybeSingle();
   if (profErr) throw new Error(profErr.message);
   if (!prof) throw new Error("No profile for user " + userId);
 
-  if (prof.login_name === ln && prof.display_name === ln && prof.login_name_norm === norm) {
-    return { userId, loginName: ln, skipped: true };
+  // Ensure login_name is set (migrate legacy accounts that only had display_name).
+  let loginName = String(prof.login_name || "").trim();
+  let loginNorm = String(prof.login_name_norm || "").trim();
+  if (!loginName) {
+    loginName = String(prof.display_name || dn).trim();
+    loginNorm = normalizeLoginName(loginName);
   }
 
-  const { data: conflict } = await admin
-    .from("profiles")
-    .select("id")
-    .eq("login_name_norm", norm)
-    .neq("id", userId)
-    .maybeSingle();
-  if (conflict) {
-    throw new Error(
-      "Login name already used by another profile: " + ln + " (" + conflict.id + ")"
-    );
+  if (prof.display_name === dn && prof.login_name === loginName && prof.login_name_norm === loginNorm) {
+    return { userId, displayName: dn, loginName, skipped: true };
   }
 
-  const { error: updErr } = await admin
-    .from("profiles")
-    .update({
-      login_name: ln,
-      login_name_norm: norm,
-      display_name: ln,
-    })
-    .eq("id", userId);
-  if (updErr) throw new Error(ln + " profile: " + updErr.message);
+  const patch = {
+    display_name: dn,
+    login_name: loginName,
+    login_name_norm: loginNorm,
+  };
+
+  const { error: updErr } = await admin.from("profiles").update(patch).eq("id", userId);
+  if (updErr) throw new Error(dn + " profile: " + updErr.message);
 
   const { error: metaErr } = await admin.auth.admin.updateUserById(userId, {
     user_metadata: {
       role: prof.role,
-      display_name: ln,
-      login_name: ln,
-      login_name_norm: norm,
+      display_name: dn,
+      login_name: loginName,
+      login_name_norm: loginNorm,
     },
   });
-  if (metaErr) throw new Error(ln + " auth metadata: " + metaErr.message);
+  if (metaErr) throw new Error(dn + " auth metadata: " + metaErr.message);
 
   return {
     userId,
-    loginName: ln,
+    displayName: dn,
+    loginName,
     skipped: false,
-    from: prof.login_name || prof.display_name,
+    fromDisplay: prof.display_name,
   };
 }
 
@@ -106,18 +103,25 @@ async function main() {
     const userId = emp.auth_user_id;
     if (!name || !userId) continue;
 
-    const result = await renameProfile(admin, userId, name);
+    const result = await syncProfileDisplayName(admin, userId, name);
     if (result.skipped) {
       skipped += 1;
-      console.log("ok (unchanged):", name);
+      console.log("ok (unchanged):", name, "| login:", result.loginName);
     } else {
       updated += 1;
-      console.log("renamed:", result.from, "→", result.loginName);
+      console.log(
+        "display:",
+        result.fromDisplay,
+        "→",
+        result.displayName,
+        "| login kept:",
+        result.loginName
+      );
     }
   }
 
   console.log("\nDone.", updated, "updated,", skipped, "already matched.");
-  console.log("Employees sign in with display_name on the roster; password unchanged.");
+  console.log("Login usernames were preserved; only display_name was synced from the roster.");
 }
 
 main().catch((e) => {

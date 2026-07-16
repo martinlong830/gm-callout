@@ -143,7 +143,7 @@ export function GrandTotalsSection({
           pay={payVlSl}
         />
         <TotalCard label="SoH" hours={String(totals.sohCount)} pay={paySoh} />
-        <TotalCard label="Dishwasher tips" hours={payDishwasherTips} />
+        <TotalCard label="Net dishwasher tips" hours={payDishwasherTips} />
         <TotalCard label="Coverage compensation" hours={payCoverage} />
         {hourlyRateLabel != null ? (
           <TotalCard label="Pay/hr" hours={hourlyRateLabel} />

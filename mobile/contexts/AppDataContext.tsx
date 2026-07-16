@@ -21,10 +21,6 @@ import { readStoredTeamStateId } from '../lib/companySession';
 import { subscribeTeamState } from '../lib/teamStateSync';
 import {
   applyTipPayrollFromTeamState,
-  loadDishwasherTipsStore,
-  loadTipPoolStore,
-  loadWeekExtrasStore,
-  queueTipPayrollPushToSupabase,
 } from '../lib/timecards/tipPayrollSync';
 import {
   fetchTeamStateColumns,
@@ -65,7 +61,6 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const refetchAgainRef = useRef(false);
   const silentRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appActiveRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tipPayrollHydratePushRef = useRef(false);
   const teamStateRef = useRef<HydrationResult['teamState']>(null);
   const lastHydrateAtRef = useRef(0);
   const teamStateFieldsPendingRef = useRef<Set<string> | null>(null);
@@ -76,7 +71,6 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     async (opts?: { showLoading?: boolean }) => {
       if (!isSupabaseConfigured || !supabase || !session?.user) {
         hydratedRef.current = false;
-        tipPayrollHydratePushRef.current = false;
         setEmployees([]);
         setStaffRequests([]);
         setTeamState(null);
@@ -97,35 +91,9 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           userId: session.user.id,
         });
         if (data.teamState) {
+          // Apply remote tip/VL as SoT; do not push local AsyncStorage when remote is empty —
+          // that resurrected per-device caches onto shared team_state for other managers.
           await applyTipPayrollFromTeamState(data.teamState);
-          if (role === 'manager' && !tipPayrollHydratePushRef.current) {
-            const remoteTip = data.teamState.timecard_week_tip_pool;
-            const remoteDw = data.teamState.timecard_dishwasher_tips;
-            const remoteExtras = data.teamState.timecard_week_extras;
-            const remoteTipEmpty =
-              !remoteTip || typeof remoteTip !== 'object' || !Object.keys(remoteTip as object).length;
-            const remoteDwEmpty =
-              !remoteDw || typeof remoteDw !== 'object' || !Object.keys(remoteDw as object).length;
-            const remoteExtrasEmpty =
-              !remoteExtras ||
-              typeof remoteExtras !== 'object' ||
-              !Object.keys(remoteExtras as object).length;
-            if (remoteTipEmpty || remoteDwEmpty || remoteExtrasEmpty) {
-              const [localTip, localDw, localExtras] = await Promise.all([
-                loadTipPoolStore(),
-                loadDishwasherTipsStore(),
-                loadWeekExtrasStore(),
-              ]);
-              if (
-                (remoteTipEmpty && Object.keys(localTip).length) ||
-                (remoteDwEmpty && Object.keys(localDw).length) ||
-                (remoteExtrasEmpty && Object.keys(localExtras).length)
-              ) {
-                tipPayrollHydratePushRef.current = true;
-                queueTipPayrollPushToSupabase(supabase);
-              }
-            }
-          }
         }
         setEmployees(data.employees);
         setStaffRequests(data.staffRequests);
@@ -226,7 +194,6 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     hydratedRef.current = false;
-    tipPayrollHydratePushRef.current = false;
     void runRefetch();
   }, [runRefetch, role, session?.user?.id]);
 
@@ -284,7 +251,15 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
             if (known) {
               const remoteAt = await fetchTeamStateUpdatedAt(supabase!);
               if (remoteAt && remoteAt === known) return;
+              // team_state changed while still relatively fresh — refresh it without
+              // also pulling full roster/requests unless the hydrate is older.
+              await refreshTeamStateSelective();
+              if (age < FOREGROUND_SKIP_IF_FRESH_MS / 2) return;
+              await Promise.all([refreshEmployeesOnly(), refreshStaffRequestsOnly()]);
+              return;
             }
+            // Hydrated recently but no updated_at to probe — skip noisy trio.
+            return;
           }
           // Prefer selective team_state + light roster/request refresh over full hydrate.
           await Promise.all([

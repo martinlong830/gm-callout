@@ -1,7 +1,8 @@
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   InteractionManager,
   Pressable,
   RefreshControl,
@@ -72,15 +73,15 @@ function clockBadgeStyle(status: RosterRow['clockStatus']) {
   return styles.clockOff;
 }
 
-function RosterRowCard({
+const RosterRowCard = memo(function RosterRowCard({
   row,
   onPress,
 }: {
   row: RosterRow;
-  onPress: () => void;
+  onPress: (empId: string) => void;
 }) {
   return (
-    <Pressable style={styles.card} onPress={onPress}>
+    <Pressable style={styles.card} onPress={() => onPress(row.empId)}>
       <View style={styles.cardTop}>
         <Text style={styles.name}>{row.name}</Text>
         <Text style={[styles.clockBadge, clockBadgeStyle(row.clockStatus)]}>
@@ -112,7 +113,7 @@ function RosterRowCard({
         </View>
         {row.dishwasherTipsPay > 0 ? (
           <View style={styles.statRow}>
-            <Text style={styles.statLabel}>Dishwasher tips</Text>
+            <Text style={styles.statLabel}>Net dishwasher tips</Text>
             <Text style={styles.statPay}>{formatPayAmount(row.dishwasherTipsPay)}</Text>
           </View>
         ) : null}
@@ -132,7 +133,7 @@ function RosterRowCard({
       </View>
     </Pressable>
   );
-}
+});
 
 type WeekSlices = {
   key: string;
@@ -301,109 +302,145 @@ export default function TimecardsRosterScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    void refresh().finally(() => setRefreshing(false));
+    void refresh({ force: true, showLoading: true }).finally(() => setRefreshing(false));
   }, [refresh]);
+
+  const onPressRow = useCallback(
+    (empId: string) => {
+      router.push({
+        pathname: '/manager/timecards/[employeeId]',
+        params: { employeeId: empId },
+      });
+    },
+    [router]
+  );
 
   const totals = useMemo(() => computeRosterTotals(rows), [rows]);
   const initialBusy = (loading || !dataReady) && !rows.length;
 
+  const listRows = useMemo(
+    () => rows.filter((row) => !!employeeById[row.empId]),
+    [rows, employeeById]
+  );
+
+  const listHeader = useMemo(
+    () => (
+      <View>
+        <PayWeekPicker
+          options={payWeekOptions}
+          selectedStartIso={selectedWeekStartIso}
+          onSelect={setPayWeekStartIso}
+        />
+
+        <View style={styles.locationSection}>
+          <Text style={styles.locationLabel}>Location</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            nestedScrollEnabled
+            contentContainerStyle={styles.locationPicker}
+          >
+            {TIMECARDS_LOCATION_OPTIONS.map((opt) => {
+              const on = opt.id === locationFilter;
+              return (
+                <Pressable
+                  key={opt.id}
+                  style={[styles.locationChip, on && styles.locationChipOn]}
+                  onPress={() => void onLocationChange(opt.id)}
+                >
+                  <Text style={[styles.locationChipText, on && styles.locationChipTextOn]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <View style={styles.sohRateSection}>
+          <Text style={styles.locationLabel}>SoH rate</Text>
+          <View style={styles.sohRateRow}>
+            <Text style={styles.sohRatePrefix}>$</Text>
+            <TextInput
+              style={styles.sohRateInput}
+              value={sohRateText}
+              onChangeText={setSohRateText}
+              onEndEditing={() => void persistSohRate()}
+              keyboardType="decimal-pad"
+              accessibilityLabel="Spread of hours rate"
+            />
+            <Text style={styles.sohRateSuffix}>/hr</Text>
+          </View>
+        </View>
+
+        {error ? <Text style={styles.err}>{error}</Text> : null}
+
+        {initialBusy ? (
+          <>
+            <ActivityIndicator style={styles.spinner} color="#c41230" />
+            <RosterSkeleton />
+          </>
+        ) : null}
+
+        {!initialBusy && showGrandTotals && rows.length > 0 ? (
+          <GrandTotalsSection totals={totals} bounds={bounds} locationFilter={locationFilter} />
+        ) : null}
+      </View>
+    ),
+    [
+      payWeekOptions,
+      selectedWeekStartIso,
+      setPayWeekStartIso,
+      locationFilter,
+      onLocationChange,
+      sohRateText,
+      persistSohRate,
+      error,
+      initialBusy,
+      showGrandTotals,
+      rows.length,
+      totals,
+      bounds,
+    ]
+  );
+
+  const listEmpty = useMemo(() => {
+    if (initialBusy) return null;
+    if (!employees.length) {
+      return <Text style={styles.muted}>No employees on the roster.</Text>;
+    }
+    if (!rows.length) {
+      return <Text style={styles.muted}>No employees at this location for this pay week.</Text>;
+    }
+    return null;
+  }, [initialBusy, employees.length, rows.length]);
+
+  const renderItem = useCallback(
+    ({ item }: { item: RosterRow }) => <RosterRowCard row={item} onPress={onPressRow} />,
+    [onPressRow]
+  );
+
+  const keyExtractor = useCallback((item: RosterRow) => item.empId, []);
+
   return (
-    <ScrollView
+    <FlatList
       style={styles.screen}
       contentContainerStyle={styles.scrollContent}
-      showsVerticalScrollIndicator
+      data={initialBusy ? [] : listRows}
+      keyExtractor={keyExtractor}
+      renderItem={renderItem}
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={listEmpty}
+      initialNumToRender={8}
+      maxToRenderPerBatch={6}
+      windowSize={7}
+      removeClippedSubviews
       keyboardShouldPersistTaps="handled"
-      nestedScrollEnabled
+      showsVerticalScrollIndicator
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c41230" />
       }
-    >
-      <PayWeekPicker
-        options={payWeekOptions}
-        selectedStartIso={selectedWeekStartIso}
-        onSelect={setPayWeekStartIso}
-      />
-
-      <View style={styles.locationSection}>
-        <Text style={styles.locationLabel}>Location</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          nestedScrollEnabled
-          contentContainerStyle={styles.locationPicker}
-        >
-          {TIMECARDS_LOCATION_OPTIONS.map((opt) => {
-            const on = opt.id === locationFilter;
-            return (
-              <Pressable
-                key={opt.id}
-                style={[styles.locationChip, on && styles.locationChipOn]}
-                onPress={() => void onLocationChange(opt.id)}
-              >
-                <Text style={[styles.locationChipText, on && styles.locationChipTextOn]}>
-                  {opt.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      </View>
-
-      <View style={styles.sohRateSection}>
-        <Text style={styles.locationLabel}>SoH rate</Text>
-        <View style={styles.sohRateRow}>
-          <Text style={styles.sohRatePrefix}>$</Text>
-          <TextInput
-            style={styles.sohRateInput}
-            value={sohRateText}
-            onChangeText={setSohRateText}
-            onEndEditing={() => void persistSohRate()}
-            keyboardType="decimal-pad"
-            accessibilityLabel="Spread of hours rate"
-          />
-          <Text style={styles.sohRateSuffix}>/hr</Text>
-        </View>
-      </View>
-
-      {error ? <Text style={styles.err}>{error}</Text> : null}
-
-      {initialBusy ? (
-        <>
-          <ActivityIndicator style={styles.spinner} color="#c41230" />
-          <RosterSkeleton />
-        </>
-      ) : null}
-
-      {!initialBusy && showGrandTotals && rows.length > 0 ? (
-        <GrandTotalsSection totals={totals} bounds={bounds} locationFilter={locationFilter} />
-      ) : null}
-
-      <View style={styles.list}>
-        {!initialBusy
-          ? rows.map((row) => {
-              if (!employeeById[row.empId]) return null;
-              return (
-                <RosterRowCard
-                  key={row.empId}
-                  row={row}
-                  onPress={() =>
-                    router.push({
-                      pathname: '/manager/timecards/[employeeId]',
-                      params: { employeeId: row.empId },
-                    })
-                  }
-                />
-              );
-            })
-          : null}
-        {!initialBusy && !employees.length ? (
-          <Text style={styles.muted}>No employees on the roster.</Text>
-        ) : null}
-        {!initialBusy && employees.length > 0 && !rows.length ? (
-          <Text style={styles.muted}>No employees at this location for this pay week.</Text>
-        ) : null}
-      </View>
-    </ScrollView>
+    />
   );
 }
 
@@ -480,6 +517,8 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: '#e2e6ea',
+    marginHorizontal: 16,
+    marginBottom: 10,
   },
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   name: { fontSize: 17, fontWeight: '700', color: '#0f172a', flex: 1 },

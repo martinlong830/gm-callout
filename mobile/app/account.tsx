@@ -21,6 +21,7 @@ import {
   portalDeleteAccount,
   portalGetAccount,
   portalUpdateCompany,
+  portalUpdateLoginName,
   portalUpdateRecoveryEmail,
 } from '../lib/portalAuth';
 
@@ -97,6 +98,19 @@ export default function AccountScreen() {
       });
       setCompanyName(co.companyName || name);
     }
+    const loginNext = loginName.trim();
+    if (!loginNext) {
+      setBusy(false);
+      setMessage('Enter a sign-in username.');
+      return;
+    }
+    const loginRes = await portalUpdateLoginName(loginNext);
+    if (!loginRes.ok) {
+      setBusy(false);
+      setMessage(loginRes.message);
+      return;
+    }
+    setLoginName(loginRes.loginName);
     const res = await portalUpdateRecoveryEmail(recoveryEmail);
     setBusy(false);
     if (!res.ok) {
@@ -105,7 +119,7 @@ export default function AccountScreen() {
     }
     setRecoveryEmail(res.recoveryEmail);
     setHasRecovery(true);
-    Alert.alert('Saved', res.message);
+    Alert.alert('Saved', loginRes.message || res.message);
   }
 
   function onStartDelete() {
@@ -146,8 +160,8 @@ export default function AccountScreen() {
           </View>
           <Text style={styles.title}>Account</Text>
           <Text style={styles.subtitle}>
-            Your sign-in name stays the same. Add a recovery email so you can reset your password from the app or
-            web.
+            Change your sign-in username and recovery email. Changing username does not change your display name on
+            the roster.
             {isManager ? ' Managers can also edit the company name.' : ''}
           </Text>
 
@@ -155,8 +169,19 @@ export default function AccountScreen() {
             <ActivityIndicator style={{ marginTop: 20 }} />
           ) : (
             <View style={styles.card}>
-              <Text style={styles.label}>Sign-in name</Text>
-              <Text style={styles.readonly}>{loginName || '—'}</Text>
+              <Text style={styles.label}>Sign-in username</Text>
+              <TextInput
+                style={styles.input}
+                value={loginName}
+                onChangeText={setLoginName}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="username"
+                maxLength={80}
+                placeholder="Sign-in username"
+                placeholderTextColor="#888"
+              />
+              <Text style={styles.hint}>Used when you sign in — separate from your roster display name.</Text>
               <Text style={styles.label}>Role</Text>
               <Text style={styles.readonly}>{role === 'manager' ? 'Manager' : 'Employee'}</Text>
 

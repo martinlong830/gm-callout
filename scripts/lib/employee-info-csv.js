@@ -118,8 +118,11 @@ function splitDisplayName(full) {
 }
 
 const CSV_NAME_ALIASES = {
-  'seid sumog oy': 'sied sumog oy',
-  'angel gella': 'angelyn gella',
+  'seid sumog oy': 'charles jakob zacani',
+  'sied sumog oy': 'charles jakob zacani',
+  'angel gella': 'maeve williams',
+  'angelyn gella': 'maeve williams',
+  'jong sardua': 'jon arellano',
   'abel lujon': 'abel lujan',
 };
 

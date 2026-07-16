@@ -22,6 +22,9 @@ export function employeeToDbRow(
   } else if ('tipPoint' in meta) {
     delete meta.tipPoint;
   }
+  const emailVal = emp.email != null ? String(emp.email).trim() : '';
+  if (emailVal) meta.email = emailVal;
+  else if ('email' in meta) delete meta.email;
   const row: Record<string, unknown> = {
     id: emp.id,
     auth_user_id: emp.authUserId ?? null,
@@ -29,6 +32,7 @@ export function employeeToDbRow(
     last_name: emp.lastName || '',
     display_name: (display || '').trim() || 'Staff',
     phone: emp.phone != null ? String(emp.phone) : '',
+    email: emailVal,
     staff_type: emp.staffType,
     usual_restaurant: urDb,
     weekly_grid: emp.weeklyGrid || {},
@@ -48,7 +52,11 @@ export async function saveEmployeeRow(
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const companyId = await resolveCompanyIdForEmployees();
   const row = employeeToDbRow(emp, companyId || undefined);
-  const { error } = await sb.from('employees').upsert(row, { onConflict: 'id' });
+  let { error } = await sb.from('employees').upsert(row, { onConflict: 'id' });
+  if (error && /email/i.test(error.message || '') && 'email' in row) {
+    const { email: _drop, ...withoutEmail } = row;
+    ({ error } = await sb.from('employees').upsert(withoutEmail, { onConflict: 'id' }));
+  }
   if (error) return { ok: false, message: error.message || 'Could not save employee.' };
   return { ok: true };
 }

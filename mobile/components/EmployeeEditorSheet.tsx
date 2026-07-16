@@ -27,6 +27,7 @@ import {
   saveEmployeeRow,
   setEmployeeClockPin,
 } from '../lib/employeeSave';
+import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
   employeeDisplayName,
   isCloudEmployeeId,
@@ -125,6 +126,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [lastName, setLastName] = useState('');
   const [staffType, setStaffType] = useState('Kitchen');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [usualRestaurant, setUsualRestaurant] = useState('rp-9');
   const [hourlyRate, setHourlyRate] = useState('');
   const [tipPoint, setTipPoint] = useState('');
@@ -152,6 +154,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setLastName('');
     setStaffType('Kitchen');
     setPhone('');
+    setEmail('');
     setUsualRestaurant('rp-9');
     setHourlyRate('');
     setTipPoint('');
@@ -197,6 +200,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       setLastName(emp.lastName || '');
       setStaffType(emp.staffType || 'Kitchen');
       setPhone(emp.phone || '');
+      setEmail(emp.email || '');
       setUsualRestaurant(
         emp.usualRestaurant === 'both' || emp.usualRestaurant === 'rp-8'
           ? emp.usualRestaurant
@@ -324,6 +328,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
 
     let authUserId = employee?.authUserId;
     let portalCreateWarning: string | null = null;
+    const emailTrim = email.trim();
     if (isCreate) {
       const pw = portalPassword.trim() || 'pass';
       if (pw.length < 4) {
@@ -340,7 +345,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
           staffType,
           role: canCreateManager ? portalAccountType : 'employee',
         };
-        const recovery = portalRecoveryEmail.trim();
+        const recovery = portalRecoveryEmail.trim() || emailTrim;
         if (recovery) portalPayload.recoveryEmail = recovery;
         setBusy(true);
         const portalRes = await portalCreateEmployeeAccount(portalPayload);
@@ -356,6 +361,8 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
 
     const meta = { ...(employee?.meta ?? {}) } as Record<string, unknown>;
     meta.breakPolicy = breakPolicy;
+    if (emailTrim) meta.email = emailTrim;
+    else if ('email' in meta) delete meta.email;
     applyLeaveAllowancesToMeta(meta, {
       vacAllowanceDays,
       sickAllowanceDays,
@@ -363,6 +370,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       sickHoursRemaining,
     });
 
+    const previousDisplayName = employee ? employeeDisplayName(employee) : '';
     const updated: EmployeeRow = {
       ...(employee ?? {
         id:
@@ -375,6 +383,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       displayName: `${first} ${last}`.trim(),
       staffType,
       phone: phoneTrim,
+      email: emailTrim || undefined,
       usualRestaurant,
       hourlyRate: hrNum != null ? Math.round(hrNum * 100) / 100 : undefined,
       tipPoint: tpNum != null ? tpNum : undefined,
@@ -386,6 +395,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       authUserId,
       meta,
     };
+
+    if (!isCreate && previousDisplayName && namesDiffer(previousDisplayName, updated.displayName)) {
+      await propagateEmployeeRename(supabase, updated, previousDisplayName, updated.displayName);
+    }
 
     setBusy(true);
     const saved = await saveEmployeeRow(supabase, updated);
@@ -575,6 +588,17 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                   keyboardType="phone-pad"
                   placeholder="e.g. 609-250-8527"
                 />
+                <FieldLabel>Email</FieldLabel>
+                <TextInput
+                  style={styles.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="name@example.com"
+                />
+                <Text style={styles.photoHint}>Account / profile email (not the sign-in username).</Text>
                 <FieldLabel>Location</FieldLabel>
                 <ChipRow
                   options={LOCATIONS}
@@ -635,7 +659,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       onChangeText={setPortalRecoveryEmail}
                       keyboardType="email-address"
                       autoCapitalize="none"
-                      placeholder="forgot-password link"
+                      placeholder="Uses Email above if blank"
                     />
                     {!isPortalAuthConfigured() ? (
                       <Text style={styles.readOnlyNote}>

@@ -19,6 +19,14 @@ export function employeePhotoSlug(emp: EmployeeRow): string {
 }
 
 /** Alternate slugs (display name vs first+last) so bundled files still match. */
+const PHOTO_SLUG_ALIASES: Record<string, string> = {
+  angelyn_gella: 'maeve_williams',
+  maeve_williams: 'angelyn_gella',
+  jong_sardua: 'jon_arellano',
+  sied_sumog_oy: 'charles_jakob_zacani',
+  seid_sumog_oy: 'charles_jakob_zacani',
+};
+
 export function employeePhotoSlugVariants(emp: EmployeeRow): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -27,6 +35,11 @@ export function employeePhotoSlugVariants(emp: EmployeeRow): string[] {
     if (!slug || seen.has(slug)) return;
     seen.add(slug);
     out.push(slug);
+    const alias = PHOTO_SLUG_ALIASES[slug];
+    if (alias && !seen.has(alias)) {
+      seen.add(alias);
+      out.push(alias);
+    }
   };
   if (emp.displayName) add(String(emp.displayName));
   add(employeeDisplayName(emp));

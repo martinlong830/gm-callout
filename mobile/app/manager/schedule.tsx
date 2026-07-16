@@ -44,7 +44,6 @@ import {
   loadDraftFromTeamState,
   mergeRemoteAssignments,
   namesForScheduleRowPersonPicker,
-  nextScheduleWeekMondayIso,
   normalizeSchedulePublishedMap,
   purgeDefaultUnassignedRestaurantAssignments,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
@@ -139,25 +138,28 @@ export default function ManagerScheduleScreen() {
     return map;
   }, [teamState?.schedule_published, weekMeta]);
 
-  const nextWeekMonday = nextScheduleWeekMondayIso(weekMeta);
-  const nextWeekPublished = !!(nextWeekMonday && isScheduleWeekPublished(publishedMap, nextWeekMonday));
+  const selectedWeekMonday = weekMeta[weekIndex * 7]?.iso || '';
+  const selectedWeekPublished = !!(
+    selectedWeekMonday && isScheduleWeekPublished(publishedMap, selectedWeekMonday)
+  );
+  const selectedWeekIsPast = weekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
+  const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
 
-  const publishNextWeek = useCallback(() => {
-    if (!nextWeekMonday || role !== 'manager') return;
-    const range = formatScheduleWeekRangeLabel(weekMeta, SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
-    const msg = nextWeekPublished
-      ? `Send another notification that next week’s schedule (${range}) is ready?`
-      : `Publish next week’s schedule (${range}) for employees and send a push notification?`;
+  const publishSelectedWeek = useCallback(() => {
+    if (!selectedWeekMonday || role !== 'manager' || selectedWeekIsPast) return;
+    const msg = selectedWeekPublished
+      ? `Send another notification that the schedule for ${selectedWeekRange} is ready?`
+      : `Publish the schedule for ${selectedWeekRange} for employees and send a push notification?`;
     Alert.alert('Publish / Notify', msg, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: nextWeekPublished ? 'Notify again' : 'Publish',
+        text: selectedWeekPublished ? 'Notify again' : 'Publish',
         onPress: () => {
           void (async () => {
             if (!supabase) return;
             setPublishing(true);
             try {
-              const map = { ...publishedMap, [nextWeekMonday]: true as const };
+              const map = { ...publishedMap, [selectedWeekMonday]: true as const };
               const payload = schedulePublishedPayload(map);
               const teamStateId = await readStoredTeamStateId();
               const up = await supabase.from('team_state').upsert(
@@ -175,21 +177,22 @@ export default function ManagerScheduleScreen() {
                 session?.user?.id
               );
               const notify = await portalNotifySchedulePublished({
-                weekMondayIso: nextWeekMonday,
+                weekMondayIso: selectedWeekMonday,
+                weekRangeLabel: selectedWeekRange,
                 teamStateId,
               });
               await refetch({ silent: true });
               if (!notify.ok) {
                 Alert.alert(
                   'Published',
-                  `Next week is visible to employees, but push notify failed: ${notify.message}`
+                  `Week (${selectedWeekRange}) is visible to employees, but push notify failed: ${notify.message}`
                 );
               } else {
                 Alert.alert(
                   'Published',
                   notify.sent > 0
                     ? `Notified ${notify.sent} device${notify.sent === 1 ? '' : 's'}.`
-                    : 'Employees can view next week now (no push tokens registered yet).'
+                    : `Employees can view ${selectedWeekRange} now (no push tokens registered yet).`
                 );
               }
             } finally {
@@ -200,13 +203,14 @@ export default function ManagerScheduleScreen() {
       },
     ]);
   }, [
-    nextWeekMonday,
-    nextWeekPublished,
     publishedMap,
     refetch,
     role,
+    selectedWeekIsPast,
+    selectedWeekMonday,
+    selectedWeekPublished,
+    selectedWeekRange,
     session?.user?.id,
-    weekMeta,
   ]);
 
   const draftScheduleRaw = teamState?.draft_schedule;
@@ -399,12 +403,21 @@ export default function ManagerScheduleScreen() {
             templateWeekIndex={SCHEDULE_TEMPLATE_WEEK_INDEX}
           />
           <Pressable
-            onPress={publishNextWeek}
-            disabled={publishing}
-            style={[styles.publishBtn, publishing && styles.publishBtnDisabled]}
+            onPress={publishSelectedWeek}
+            disabled={publishing || selectedWeekIsPast}
+            style={[
+              styles.publishBtn,
+              (publishing || selectedWeekIsPast) && styles.publishBtnDisabled,
+            ]}
           >
             <Text style={styles.publishBtnText}>
-              {publishing ? 'Publishing…' : nextWeekPublished ? 'Notify again' : 'Publish / Notify'}
+              {publishing
+                ? 'Publishing…'
+                : selectedWeekIsPast
+                  ? 'Past week'
+                  : selectedWeekPublished
+                    ? 'Notify again'
+                    : 'Publish / Notify'}
             </Text>
           </Pressable>
         </View>

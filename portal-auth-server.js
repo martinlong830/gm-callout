@@ -1771,6 +1771,41 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
         return res.status(400).json({ ok: false, message: "weekMondayIso is required (YYYY-MM-DD)." });
       }
+      let weekRangeLabel = String(body.weekRangeLabel || body.weekLabel || "").trim();
+      if (!weekRangeLabel) {
+        const m = weekMondayIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) {
+          const start = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+          const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+          const months = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+          ];
+          if (start.getMonth() === end.getMonth()) {
+            weekRangeLabel =
+              months[start.getMonth()] + " " + start.getDate() + "–" + end.getDate();
+          } else {
+            weekRangeLabel =
+              months[start.getMonth()] +
+              " " +
+              start.getDate() +
+              "–" +
+              months[end.getMonth()] +
+              " " +
+              end.getDate();
+          }
+        }
+      }
       let teamStateId = String(body.teamStateId || "").trim();
       const companyId = auth.profile.company_id || null;
       if (!teamStateId && companyId) {
@@ -1809,8 +1844,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return res.json({ ok: true, sent: 0, message: "No registered devices." });
       }
 
-      const title = "Next week’s schedule is ready";
-      const bodyText = "Open Shiflow to view your upcoming shifts.";
+      const title = weekRangeLabel
+        ? "Schedule for " + weekRangeLabel + " is ready"
+        : "Your schedule is ready";
+      const bodyText = "Open Shiflow to view your shifts.";
       const messages = tokens.map((to) => ({
         to,
         sound: "default",

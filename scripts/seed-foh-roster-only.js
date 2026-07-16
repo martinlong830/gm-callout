@@ -9,9 +9,9 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 const FOH = [
   "MARK ONG",
-  "SIED SUMOG - OY",
-  "ANGELYN GELLA",
-  "JONG SARDUA",
+  "CHARLES JAKOB ZACANI",
+  "MAEVE WILLIAMS",
+  "JON ARELLANO",
   "EUGENE VILLARRUZ",
 ];
 

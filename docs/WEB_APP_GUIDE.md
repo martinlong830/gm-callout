@@ -124,23 +124,25 @@ Times are rounded to the nearest **5 minutes** for payroll.
 
 # Employee roster and clock PINs
 
-Use the name **exactly as spelled** when signing into the employee app. Use the **PIN** only on the time clock tablet.
+**Display name** on the roster (Team / schedule / timecards) is separate from your **sign-in username**. Managers can rename someone on Team without changing how they log in. Change your username under **Account**.
+
+Use your **sign-in username** when signing into the employee app. Use the **PIN** only on the time clock tablet.
 
 | Employee | Role | Clock PIN |
 |----------|------|-----------|
 | ABEL LUJAN | Server | 631265 |
-| ANGELYN GELLA | Bartender | 179837 |
 | ARMANDO CUMES | Kitchen | 946166 |
 | BALTAZAR LUCAS | Kitchen | 802270 |
 | BERNABE DE LEON | Kitchen | 570868 |
+| CHARLES JAKOB ZACANI | Bartender | 841764 |
 | ENRIQUE CUMES | Kitchen | 560042 |
 | EUGENE VILLARRUZ | Bartender | 194971 |
 | IRINEO PINEDA | Kitchen | 624574 |
-| JONG SARDUA | Bartender | 106981 |
+| JON ARELLANO | Bartender | 106981 |
 | JUAN SALVATIERRA | Server | 218688 |
+| MAEVE WILLIAMS | Bartender | 179837 |
 | MARK ONG | Bartender | 838749 |
 | NATALIO DE LA CRUZ | Server | 311437 |
-| SIED SUMOG - OY | Bartender | 841764 |
 | ZEFERINO FLORES | Kitchen | 700910 |
 
 If your PIN stops working, a manager may have issued a new one — check with them on the **Team** screen.
@@ -151,11 +153,33 @@ If your PIN stops working, a manager may have issued a new one — check with th
 
 | Issue | What to try |
 |-------|-------------|
-| “Name or password is incorrect” | Managers: use **Martin Long** or **Ongi Management**. Employees: match the spelling in the table above. Password is **redpoke**. |
+| “Name or password is incorrect” | Managers: use **Martin Long** or **Ongi Management**. Employees: use your **sign-in username** (Account → Sign-in username). Password is **redpoke**. |
 | PIN not recognized on the tablet | Double-check the 6 digits. Ask a manager to read your PIN from **Team → your profile**. |
-| Employee app shows no shifts | You may not be scheduled that week, or your name on the schedule must match your sign-in name. |
+| Employee app shows no shifts | You may not be scheduled that week, or your name on the schedule must match your roster display name. |
 | Manager cannot open Timecards | Sign out and sign in again as **Martin Long** or **Ongi Management**. |
 | Forgot employee password | Use **Forgot password?** on the login screen with your recovery email, or ask a manager. |
+
+---
+
+# Production migration (roster renames + employee email)
+
+After deploying this build, run once against production Supabase:
+
+1. Apply SQL (adds `employees.email`, renames display names, backfills email from recovery email, ensures `login_name` is set):
+
+   - `supabase/fix-employees-email-and-roster-renames-oneshot.sql`  
+     (or migration `supabase/migrations/20260716090000_employees_email_and_roster_renames.sql`)
+
+2. Rewrite schedule / request JSON string keys and finish renames:
+
+```bash
+node scripts/rename-roster-employees-oneshot.js --dry-run
+node scripts/rename-roster-employees-oneshot.js
+```
+
+Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`.
+
+**Login usernames are not changed** by Team renames or this migration — only display names. Users can change username under **Account**.
 
 ---
 

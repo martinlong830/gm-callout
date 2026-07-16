@@ -10,6 +10,7 @@ export type RegisterEmployeeInput = {
   firstName: string;
   lastName: string;
   phone: string;
+  email?: string;
   staffType: 'Kitchen' | 'Bartender' | 'Server';
   authUserId?: string;
 };
@@ -31,6 +32,7 @@ export async function createEmployeeRosterRow(
 
   const displayName = `${fn} ${ln}`.trim();
   const staffType = input.staffType;
+  const email = String(input.email || '').trim();
   const emp: EmployeeRow = {
     id:
       typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
@@ -42,9 +44,10 @@ export async function createEmployeeRosterRow(
     displayName,
     staffType,
     phone,
+    email: email || undefined,
     usualRestaurant: 'rp-9',
     weeklyGrid: normalizeWeeklyGrid({}, staffType, draftRows) as unknown as Record<string, unknown>,
-    meta: {},
+    meta: email ? { email } : {},
   };
 
   const saved = await saveEmployeeRow(sb, emp);

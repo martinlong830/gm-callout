@@ -7,7 +7,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { loadWeekEntries } from '../lib/timecards/entriesApi';
+import { AppState, type AppStateStatus } from 'react-native';
+import {
+  fetchWeekEntriesMaxUpdatedAt,
+  loadWeekEntries,
+} from '../lib/timecards/entriesApi';
 import {
   buildPayWeekOptions,
   formatPayWeekLabel,
@@ -29,8 +33,18 @@ type CachedWeekEntries = {
   maxUpdatedAt: string | null;
 };
 
-/** Skip punch refetch when Realtime fires but week cache is still fresh. */
-const WEEK_CACHE_FRESH_MS = 45_000;
+/** Skip punch refetch when Realtime fires but week cache is still fresh. Keep short so other clients converge quickly. */
+const WEEK_CACHE_FRESH_MS = 5_000;
+/** Skip AppState / soft focus refetch when week cache is still warm (mirrors AppData 90s pattern, shorter for punches). */
+const FOREGROUND_SKIP_IF_FRESH_MS = 45_000;
+/** Soft refresh (focus) treats cache as fresh for this long unless force=true. */
+const SOFT_REFRESH_FRESH_MS = 30_000;
+
+export type TimecardsRefreshOpts = {
+  /** When true (default), always hit the network. When false, skip if cache is within SOFT_REFRESH_FRESH_MS. */
+  force?: boolean;
+  showLoading?: boolean;
+};
 
 type TimecardsState = {
   entries: TimeClockEntry[];
@@ -44,7 +58,7 @@ type TimecardsState = {
   payWeekOptions: PayWeekOption[];
   selectedWeekStartIso: string;
   setPayWeekStartIso: (startIso: string) => void;
-  refresh: () => Promise<void>;
+  refresh: (opts?: TimecardsRefreshOpts) => Promise<void>;
 };
 
 const TimecardsContext = createContext<TimecardsState | null>(null);
@@ -69,9 +83,10 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const refreshChainRef = useRef(Promise.resolve());
   const entriesCacheRef = useRef<Map<string, CachedWeekEntries>>(new Map());
-  const runRefreshRef = useRef<(opts?: { showLoading?: boolean; force?: boolean }) => Promise<void>>(
-    async () => {}
-  );
+  const boundsRef = useRef(bounds);
+  boundsRef.current = bounds;
+  const appActiveRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runRefreshRef = useRef<(opts?: TimecardsRefreshOpts) => Promise<void>>(async () => {});
 
   useEffect(() => {
     (async () => {
@@ -86,79 +101,94 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
   const weekLabel = useMemo(() => formatPayWeekLabel(bounds), [bounds]);
   const boundsKey = weekBoundsStorageKey(bounds);
 
-  const runRefresh = useCallback(
-    async (opts?: { showLoading?: boolean; force?: boolean }) => {
-      if (!isSupabaseConfigured || !supabase) {
-        setEntries([]);
-        setEntriesWeekKey(null);
-        setError('Supabase is not configured.');
+  const runRefresh = useCallback(async (opts?: TimecardsRefreshOpts) => {
+    if (!isSupabaseConfigured || !supabase) {
+      setEntries([]);
+      setEntriesWeekKey(null);
+      setError('Supabase is not configured.');
+      setLoading(false);
+      return;
+    }
+    const sb = supabase;
+    const force = opts?.force !== false;
+
+    const run = async () => {
+      const weekKey = weekBoundsStorageKey(bounds);
+      const cached = entriesCacheRef.current.get(weekKey);
+      const hasCache = !!cached;
+
+      if (
+        !force &&
+        cached &&
+        Date.now() - cached.fetchedAt < SOFT_REFRESH_FRESH_MS
+      ) {
+        setEntries(cached.entries);
+        setSchema(cached.schema);
+        setEntriesWeekKey(weekKey);
+        setError(null);
         setLoading(false);
         return;
       }
-      const sb = supabase;
 
-      const run = async () => {
-        const weekKey = weekBoundsStorageKey(bounds);
-        const cached = entriesCacheRef.current.get(weekKey);
-        const hasCache = !!cached;
-        const showLoading = opts?.showLoading ?? !hasCache;
+      const showLoading = opts?.showLoading ?? !hasCache;
 
-        if (hasCache) {
-          // Keep prior week punches visible while refreshing — never flash empty zeros.
-          setEntries(cached.entries);
-          setSchema(cached.schema);
+      if (hasCache) {
+        // Keep prior week punches visible while refreshing — never flash empty zeros.
+        setEntries(cached.entries);
+        setSchema(cached.schema);
+        setEntriesWeekKey(weekKey);
+        setError(null);
+        setLoading(!!showLoading && force);
+      } else {
+        // Do not keep a different week's punches — that paints false zeros under the new week label.
+        setEntries([]);
+        setEntriesWeekKey(null);
+        if (showLoading) setLoading(true);
+        setError(null);
+      }
+
+      try {
+        const res = await loadWeekEntries(sb, bounds);
+        if (!res.ok) {
+          if (!hasCache) {
+            setError(res.reason);
+            setEntries([]);
+            setEntriesWeekKey(null);
+          }
+        } else {
+          const maxUpdatedAt = res.entries.reduce<string | null>((acc, e) => {
+            const at = e.updated_at ? String(e.updated_at) : null;
+            if (!at) return acc;
+            if (!acc || at > acc) return at;
+            return acc;
+          }, null);
+          entriesCacheRef.current.set(weekKey, {
+            entries: res.entries,
+            schema: res.schema,
+            fetchedAt: Date.now(),
+            maxUpdatedAt,
+          });
+          setEntries(res.entries);
+          setSchema(res.schema);
           setEntriesWeekKey(weekKey);
           setError(null);
-          setLoading(!!showLoading && !!opts?.force);
-        } else {
-          // Do not keep a different week's punches — that paints false zeros under the new week label.
-          setEntries([]);
-          setEntriesWeekKey(null);
-          if (showLoading) setLoading(true);
-          setError(null);
         }
+      } finally {
+        setLoading(false);
+      }
+    };
 
-        try {
-          const res = await loadWeekEntries(sb, bounds);
-          if (!res.ok) {
-            if (!hasCache) {
-              setError(res.reason);
-              setEntries([]);
-              setEntriesWeekKey(null);
-            }
-          } else {
-            const maxUpdatedAt = res.entries.reduce<string | null>((acc, e) => {
-              const at = e.updated_at ? String(e.updated_at) : null;
-              if (!at) return acc;
-              if (!acc || at > acc) return at;
-              return acc;
-            }, null);
-            entriesCacheRef.current.set(weekKey, {
-              entries: res.entries,
-              schema: res.schema,
-              fetchedAt: Date.now(),
-              maxUpdatedAt,
-            });
-            setEntries(res.entries);
-            setSchema(res.schema);
-            setEntriesWeekKey(weekKey);
-            setError(null);
-          }
-        } finally {
-          setLoading(false);
-        }
-      };
+    // Serialize refreshes so await refresh() after save always sees post-save punches.
+    const next = refreshChainRef.current.then(run, run);
+    refreshChainRef.current = next.catch(() => {});
+    await next;
+  }, [bounds]);
 
-      // Serialize refreshes so await refresh() after save always sees post-save punches.
-      const next = refreshChainRef.current.then(run, run);
-      refreshChainRef.current = next.catch(() => {});
-      await next;
-    },
-    [bounds]
-  );
-
-  const refresh = useCallback(async () => {
-    await runRefresh({ showLoading: true, force: true });
+  const refresh = useCallback(async (opts?: TimecardsRefreshOpts) => {
+    await runRefresh({
+      force: opts?.force !== false,
+      showLoading: opts?.showLoading ?? opts?.force !== false,
+    });
   }, [runRefresh]);
 
   runRefreshRef.current = runRefresh;
@@ -179,6 +209,39 @@ export function TimecardsProvider({ children }: { children: React.ReactNode }) {
       void runRefreshRef.current({ showLoading: false, force: true });
     });
   }, [bounds]);
+
+  // Foreground: converge with other managers' punch edits, but skip when cache is warm
+  // and a cheap updated_at probe matches (avoids refetch storms on brief backgrounding).
+  useEffect(() => {
+    if (!ready) return;
+    const onAppState = (state: AppStateStatus) => {
+      if (state !== 'active') return;
+      if (appActiveRefetchTimerRef.current) clearTimeout(appActiveRefetchTimerRef.current);
+      appActiveRefetchTimerRef.current = setTimeout(() => {
+        appActiveRefetchTimerRef.current = null;
+        void (async () => {
+          if (!isSupabaseConfigured || !supabase) return;
+          const currentBounds = boundsRef.current;
+          const weekKey = weekBoundsStorageKey(currentBounds);
+          const cached = entriesCacheRef.current.get(weekKey);
+          if (cached && Date.now() - cached.fetchedAt < FOREGROUND_SKIP_IF_FRESH_MS) {
+            if (cached.maxUpdatedAt) {
+              const remoteAt = await fetchWeekEntriesMaxUpdatedAt(supabase, currentBounds);
+              if (remoteAt && remoteAt === cached.maxUpdatedAt) return;
+            } else {
+              return;
+            }
+          }
+          void runRefreshRef.current({ showLoading: false, force: true });
+        })();
+      }, 400);
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => {
+      if (appActiveRefetchTimerRef.current) clearTimeout(appActiveRefetchTimerRef.current);
+      sub.remove();
+    };
+  }, [ready]);
 
   const setPayWeekStartIso = useCallback((startIso: string) => {
     void saveSelectedPayWeekStartIso(startIso);

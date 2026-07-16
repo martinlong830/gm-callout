@@ -6,12 +6,13 @@ import { useAppData } from '../../../contexts/AppDataContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
 import { employeeDisplayName, type EmployeeRow } from '../../../lib/employees';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
+import { PayWeekPicker } from '../../../components/PayWeekPicker';
 import {
   buildRosterRow,
   buildScheduleContext,
   buildShiftsForEmployeeInWeek,
   computeRosterTotals,
-  dailyRecordedMinutesForEmployeeAtRestaurant,
+  dailyRecordedMinutesForShiftRow,
   decimalHoursFromMinutes,
   findEntriesForDay,
   formatDayBreakLabel,
@@ -21,20 +22,25 @@ import {
   formatShiftPayLabel,
   scheduledPaidMinutes,
   shiftPayForShiftRow,
-  shiftRowAttributionRestaurant,
   type RosterTotals,
   type ShiftDayRow,
 } from '../../../lib/timecards/engine';
 import {
   availableOffScheduleDayOptions,
   addOffScheduleDay,
+  entryHasMeaningfulPunch,
   getAddedOffScheduleDays,
   isOffScheduleShiftDayRow,
   offScheduleShiftIdForIso,
 } from '../../../lib/timecards/offScheduleShift';
 import { applyCrossRestaurantPunchSideEffects } from '../../../lib/timecards/crossRestaurantPunch';
 import { removeShiftDay } from '../../../lib/timecards/shiftDayCleanup';
-import { isDeliveryDishwasherStaff, getEmployeeDayDishwasherTipSync, loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
+import {
+  isDeliveryDishwasherStaff,
+  getEmployeeDayDishwasherTipSync,
+  loadDishwasherTipsSlice,
+  netTipAmount,
+} from '../../../lib/timecards/dishwasherTips';
 import {
   getEmployeeDayAdditionalCashTipSync,
   getEmployeeDayLeaveSync,
@@ -60,12 +66,37 @@ function toLite(e: EmployeeRow): EmployeeLite {
   };
 }
 
+function formatClockTimeOnly(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return '—';
+  return dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatDayClockInOutLabel(entries: TimeClockEntry[], empId: string, iso: string): string {
+  const parts: string[] = [];
+  for (const e of findEntriesForDay(entries, empId, iso)) {
+    if (!entryHasMeaningfulPunch(e, iso)) continue;
+    const inLabel = formatClockTimeOnly(e.clock_in_at);
+    const outLabel = e.clock_out_at ? formatClockTimeOnly(e.clock_out_at) : 'still in';
+    parts.push(`${inLabel}–${outLabel}`);
+  }
+  return parts.length ? parts.join(' · ') : '—';
+}
+
 export default function TimecardsEmployeeScreen() {
   const { employeeId } = useLocalSearchParams<{ employeeId: string }>();
   const router = useRouter();
   const navigation = useNavigation();
   const { employees, staffRequests, teamState } = useAppData();
-  const { entries, bounds, weekLabel, refresh } = useTimecards();
+  const {
+    entries,
+    bounds,
+    payWeekOptions,
+    selectedWeekStartIso,
+    setPayWeekStartIso,
+    refresh,
+  } = useTimecards();
 
   const emp = useMemo(
     () => employees.find((e) => e.id === employeeId) ?? null,
@@ -94,8 +125,13 @@ export default function TimecardsEmployeeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void loadShiftListData();
-    }, [loadShiftListData])
+      // Soft refresh: skip network when week punches were fetched recently (Realtime +
+      // post-save force refresh still keep multi-manager sync correct).
+      void Promise.all([
+        refresh({ force: false, showLoading: false }),
+        loadShiftListData(),
+      ]);
+    }, [refresh, loadShiftListData])
   );
 
   useEffect(() => {
@@ -184,7 +220,13 @@ export default function TimecardsEmployeeScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.weekMeta}>Pay week: {weekLabel}</Text>
+      <View style={styles.weekPickerWrap}>
+        <PayWeekPicker
+          options={payWeekOptions}
+          selectedStartIso={selectedWeekStartIso}
+          onSelect={setPayWeekStartIso}
+        />
+      </View>
       {weekTotals ? (
         <GrandTotalsSection
           totals={weekTotals}
@@ -289,14 +331,7 @@ function ShiftRowCard({
 }) {
   const s = row.shift;
   const dayEntries = findEntriesForDay(entries, empId, row.iso);
-  const rowRest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
-  const recMins = dailyRecordedMinutesForEmployeeAtRestaurant(
-    emp,
-    row.iso,
-    rowRest,
-    entries,
-    scheduleCtx
-  );
+  const recMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
   const breakLabel = formatDayBreakLabel(entries, empId, row.iso);
   const offSchedule = isOffScheduleShiftDayRow(row);
   const shiftPay = shiftPayForShiftRow(emp, row, entries, scheduleCtx);
@@ -306,6 +341,7 @@ function ShiftRowCard({
   const shiftTime = offSchedule ? 'Off schedule' : compactShiftTimeLabel(s);
   const when =
     (row.isToday ? 'Today · ' : row.isUpcoming ? 'Upcoming · ' : '') + shiftTime;
+  const inOutLabel = formatDayClockInOutLabel(entries, empId, row.iso);
   const dayLeave = getEmployeeDayLeaveSync(empId, row.iso, extrasSlice);
   const showDishwasherTips = isDeliveryDishwasherStaff(emp);
   const dayDishwasherTip = showDishwasherTips
@@ -362,6 +398,7 @@ function ShiftRowCard({
           <Ionicons name="trash-outline" size={18} color="#94a3b8" />
         </Pressable>
       </View>
+      <Text style={styles.shiftMeta}>In / Out {inOutLabel}</Text>
       <Text style={styles.shiftMeta}>
         Sched {offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)) + 'h'} · Rec{' '}
         {formatRecordedHoursLabel(recMins)}
@@ -373,13 +410,16 @@ function ShiftRowCard({
       </Text>
       {showDishwasherTips ? (
         <Text style={styles.shiftMeta}>
-          Dishwasher tips {dayDishwasherTip > 0 ? formatPayAmount(dayDishwasherTip) : '—'}
+          Net delivery tip{' '}
+          {dayDishwasherTip > 0 ? formatPayAmount(netTipAmount(dayDishwasherTip)) : '—'}
         </Text>
       ) : null}
       {dayCoverage > 0 ? (
         <Text style={styles.shiftMeta}>Coverage {formatPayAmount(dayCoverage)}</Text>
       ) : null}
-      <Text style={styles.shiftPay}>Pay {payLabel} · Pay/hr {rateLabel}</Text>
+      <Text style={styles.shiftPay}>
+        Pay {payLabel} · Pay/hr {rateLabel}
+      </Text>
     </Pressable>
   );
 }
@@ -387,7 +427,7 @@ function ShiftRowCard({
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
   content: { padding: 16, paddingBottom: 40 },
-  weekMeta: { fontSize: 13, color: '#64748b', marginBottom: 10 },
+  weekPickerWrap: { marginHorizontal: -16, marginBottom: 4 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   sectionHeader: {
     flexDirection: 'row',
@@ -414,8 +454,6 @@ const styles = StyleSheet.create({
   },
   shiftDate: { fontSize: 13, fontWeight: '600', color: '#64748b' },
   shiftWhen: { fontSize: 15, fontWeight: '600', color: '#0f172a' },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  badgeText: { fontSize: 12, fontWeight: '700' },
   shiftMeta: { fontSize: 13, color: '#64748b', marginTop: 6 },
   shiftPay: { fontSize: 13, fontWeight: '600', color: '#0f172a', marginTop: 4 },
   muted: { color: '#888', textAlign: 'center', marginTop: 20 },
@@ -450,5 +488,5 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
-  addDayMenuText: { fontSize: 14, fontWeight: '500', color: '#0f172a' },
+  addDayMenuText: { fontSize: 14, color: '#0f172a' },
 });

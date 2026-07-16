@@ -910,8 +910,9 @@
     return isScheduleWeekPublished(mondayIsoForScheduleWeekIndex(weekIndex));
   }
 
-  function nextScheduleWeekMondayIso() {
-    return mondayIsoForScheduleWeekIndex(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+  function isScheduleWeekIndexPast(weekIndex) {
+    var wi = Number(weekIndex);
+    return !isNaN(wi) && wi < SCHEDULE_TEMPLATE_WEEK_INDEX;
   }
 
   function markScheduleWeekPublished(mondayIso) {
@@ -923,28 +924,46 @@
     return true;
   }
 
-  function updateSchedulePublishNotifyButton() {
+  function updateSchedulePublishNotifyButton(opts) {
     var btn = document.getElementById('schedulePublishNotifyBtn');
     if (!btn) return;
-    var nextIso = nextScheduleWeekMondayIso();
-    var published = nextIso && isScheduleWeekPublished(nextIso);
-    btn.textContent = published ? 'Notify again' : 'Publish / Notify';
-    btn.disabled = false;
+    var forceDisabled = !!(opts && opts.forceDisabled);
+    var wi = scheduleCalendarWeekIndex;
+    var weekIso = mondayIsoForScheduleWeekIndex(wi);
+    var range = formatScheduleWeekRangeLabel(wi);
+    var past = isScheduleWeekIndexPast(wi);
+    if (past) {
+      btn.textContent = 'Past week';
+      btn.disabled = true;
+      btn.title = 'Cannot publish or notify for a week that has already passed';
+      return;
+    }
+    var published = weekIso && isScheduleWeekPublished(weekIso);
+    btn.textContent = forceDisabled
+      ? 'Publishing…'
+      : published
+        ? 'Notify again'
+        : 'Publish / Notify';
+    btn.disabled = forceDisabled;
     btn.title = published
-      ? 'Next week is already published — send another push notification'
-      : 'Publish next week’s schedule and notify employees';
+      ? 'This week (' + range + ') is already published — send another push notification'
+      : 'Publish this week’s schedule (' + range + ') and notify employees';
   }
 
-  async function publishNextWeekScheduleAndNotify() {
-    var nextIso = nextScheduleWeekMondayIso();
-    if (!nextIso) {
-      showScheduleNotice('Could not resolve next week’s start date.', false);
+  async function publishSelectedWeekScheduleAndNotify() {
+    var wi = scheduleCalendarWeekIndex;
+    if (isScheduleWeekIndexPast(wi)) {
+      showScheduleNotice('Cannot publish a past week.', false);
       return { ok: false };
     }
-    var btn = document.getElementById('schedulePublishNotifyBtn');
-    if (btn) btn.disabled = true;
-    var newlyPublished = markScheduleWeekPublished(nextIso);
-    updateSchedulePublishNotifyButton();
+    var weekIso = mondayIsoForScheduleWeekIndex(wi);
+    if (!weekIso) {
+      showScheduleNotice('Could not resolve this week’s start date.', false);
+      return { ok: false };
+    }
+    updateSchedulePublishNotifyButton({ forceDisabled: true });
+    var newlyPublished = markScheduleWeekPublished(weekIso);
+    var range = formatScheduleWeekRangeLabel(wi);
     try {
       if (newlyPublished || schedulePublishedDirty) {
         await flushTeamStateSyncNow();
@@ -955,14 +974,14 @@
         typeof window.gmPortalAuth.notifySchedulePublished === 'function'
       ) {
         notifyResult = await window.gmPortalAuth.notifySchedulePublished({
-          weekMondayIso: nextIso,
+          weekMondayIso: weekIso,
+          weekRangeLabel: range,
           teamStateId: gmCalloutTeamStateRowId(),
         });
       }
-      var range = formatScheduleWeekRangeLabel(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
       if (notifyResult && notifyResult.ok === false) {
         showScheduleNotice(
-          'Next week (' +
+          'Week (' +
             range +
             ') is published for employees, but push notify failed: ' +
             (notifyResult.message || 'unknown error'),
@@ -971,7 +990,7 @@
       } else {
         var sent = notifyResult && notifyResult.sent != null ? Number(notifyResult.sent) : 0;
         showScheduleNotice(
-          'Next week (' +
+          'Week (' +
             range +
             ') is published.' +
             (sent > 0
@@ -983,14 +1002,13 @@
       if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
         window.gmCalloutEmployeeScheduleRefreshUi();
       }
-      return { ok: true, weekMondayIso: nextIso, newlyPublished: newlyPublished, notify: notifyResult };
+      return { ok: true, weekMondayIso: weekIso, newlyPublished: newlyPublished, notify: notifyResult };
     } catch (err) {
-      console.warn('publish next week', err);
-      showScheduleNotice('Could not publish next week’s schedule.', false);
+      console.warn('publish selected week', err);
+      showScheduleNotice('Could not publish this week’s schedule.', false);
       return { ok: false };
     } finally {
       updateSchedulePublishNotifyButton();
-      if (btn) btn.disabled = false;
     }
   }
 
@@ -5970,6 +5988,7 @@
     if (prev) prev.disabled = scheduleCalendarWeekIndex <= 0;
     if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
     if (today) today.hidden = isCurrent;
+    updateSchedulePublishNotifyButton();
   }
 
   function initScheduleWeekNav() {
@@ -11990,16 +12009,17 @@
   var schedulePublishNotifyBtn = document.getElementById('schedulePublishNotifyBtn');
   if (schedulePublishNotifyBtn) {
     schedulePublishNotifyBtn.addEventListener('click', function () {
-      var nextIso = nextScheduleWeekMondayIso();
-      var already = nextIso && isScheduleWeekPublished(nextIso);
-      var range = formatScheduleWeekRangeLabel(SCHEDULE_TEMPLATE_WEEK_INDEX + 1);
+      if (isScheduleWeekIndexPast(scheduleCalendarWeekIndex)) return;
+      var weekIso = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+      var already = weekIso && isScheduleWeekPublished(weekIso);
+      var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
       var msg = already
-        ? 'Send another notification that next week’s schedule (' + range + ') is ready?'
-        : 'Publish next week’s schedule (' +
+        ? 'Send another notification that the schedule for ' + range + ' is ready?'
+        : 'Publish the schedule for ' +
           range +
-          ') for employees and send a push notification?';
+          ' for employees and send a push notification?';
       if (!window.confirm(msg)) return;
-      void publishNextWeekScheduleAndNotify();
+      void publishSelectedWeekScheduleAndNotify();
     });
     updateSchedulePublishNotifyButton();
   }

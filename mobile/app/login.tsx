@@ -428,7 +428,7 @@ export default function LoginScreen() {
         recoveryEmail: recoveryEmail.trim(),
         accessCode: verifiedAccessCode || undefined,
       },
-      { firstName: fn, lastName: ln, phone: phone.trim(), staffType }
+      { firstName: fn, lastName: ln, phone: phone.trim(), staffType, email: recoveryEmail.trim() }
     );
     setBusy(false);
     if (!res.ok) {

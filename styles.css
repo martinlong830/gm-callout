@@ -40,6 +40,8 @@
   --app-nav-row-h: 3rem;
   --app-top-total-h: calc(var(--app-header-row-h) + var(--app-nav-row-h));
   --shift-edit-chrome: calc(var(--app-top-total-h) + var(--space-main) + var(--safe-bottom));
+  /* Person / Mon–Sun thead height — role section sticky top sits just below it */
+  --calendar-thead-h: 3.75rem;
 }
 
 html {
@@ -110,12 +112,21 @@ html.authed.timeclock-app .app-timeclock {
   min-height: 100dvh;
 }
 
-/* Employee portal: main fills viewport so Messages inbox scrolls inside the list */
+/*
+ * Employee portal app shell: lock to the viewport so nested panes
+ * (Messages inbox, Schedule matrix) get a definite height and can scroll.
+ * min-height alone lets the shell grow with content, which makes
+ * overflow:hidden children clip with no inner scrollport.
+ */
 html.authed.employee-app .app-employee {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 html.authed.employee-app .app-employee .app-top {
@@ -123,17 +134,21 @@ html.authed.employee-app .app-employee .app-top {
 }
 
 html.authed.employee-app .app-employee .main.emp-main {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  /* Shell is viewport-locked; drop extra bottom padding that stole grid space */
+  padding-bottom: var(--space-main);
 }
 
 html.authed.employee-app .main.emp-main > .emp-screen {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 html.authed.employee-app .main.emp-main > #empScreenMessages:not([hidden]) {
@@ -145,6 +160,44 @@ html.authed.employee-app .main.emp-main > #empScreenMessages:not([hidden]) {
 html.authed.employee-app #empScreenMessages .emp-messages-layout {
   flex: 1;
   min-height: 0;
+}
+
+/*
+ * Employee Schedule: freeze week/location/legend chrome (same idea as manager
+ * #screen-schedule flex + scrolling #calendarGrid). Only the matrix scrolls.
+ */
+html.authed.employee-app .main.emp-main > #empScreenSchedule:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html.authed.employee-app #empScreenSchedule .emp-schedule-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 12px;
+  /* Avoid the card growing past the flex pane (breaks #empCalendarGrid scroll). */
+  overflow: hidden;
+}
+
+html.authed.employee-app #empScreenSchedule .schedule-toolbar-compact,
+html.authed.employee-app #empScreenSchedule .emp-schedule-readonly-hint,
+html.authed.employee-app #empScreenSchedule .restaurant-switcher,
+html.authed.employee-app #empScreenSchedule .calendar-legend {
+  flex-shrink: 0;
+}
+
+html.authed.employee-app #empCalendarGrid {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: 100%;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 html.authed .login-screen {
@@ -2362,6 +2415,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   letter-spacing: 0.03em;
 }
 
+/* Person + day headers stay visible while the schedule grid scrolls. */
+#calendarGrid .calendar-matrix thead th,
+#empCalendarGrid .calendar-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+#calendarGrid .calendar-matrix thead th.calendar-row-person-col,
+#empCalendarGrid .calendar-matrix thead th.calendar-row-person-col {
+  z-index: 6;
+}
+
 /* Sticky per-day hours/pay summary — stays visible while the grid scrolls. */
 .calendar-matrix tfoot.schedule-day-totals {
   position: sticky;
@@ -2752,6 +2819,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   vertical-align: middle;
   line-height: 1.25;
   box-shadow: 0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+/* Sit role section bars under the sticky Person/day thead (not on top of it). */
+#calendarGrid .calendar-matrix .calendar-group-row td.calendar-group-label,
+#empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-group-label,
+#calendarGrid .calendar-matrix .calendar-group-row td.calendar-group-fill,
+#empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-group-fill {
+  top: var(--calendar-thead-h);
 }
 
 .calendar-slot-wrap.calendar-slot-empty {
@@ -4479,6 +4554,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     --space-main: 12px;
     --space-block: 12px;
     --space-tight: 8px;
+    --calendar-thead-h: 3.25rem;
   }
 
   .title {

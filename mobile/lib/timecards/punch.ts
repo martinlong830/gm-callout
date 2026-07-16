@@ -15,23 +15,24 @@ export function scheduledShiftStartAt(isoDate: string, startTime: string): Date 
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Round closed punch times to 5 minutes for storage.
+ * Do not rewrite early clock-in to shift start — managers can log actual arrival
+ * (e.g. 10:30 when the shift starts at 12:00). Paid hours still floor early arrival
+ * via punchShiftRoundedMinutes.
+ */
 export function normalizePunchTimesForShift(
   clockInIso: string,
   clockOutIso: string,
-  shiftIso: string,
-  shiftStartTime: string
+  _shiftIso: string,
+  _shiftStartTime: string
 ): { clockInAt: string; clockOutAt: string } {
   const out = { clockInAt: clockInIso, clockOutAt: clockOutIso };
   if (!clockInIso || !clockOutIso) return out;
-  const start = scheduledShiftStartAt(shiftIso, shiftStartTime);
   const inD = new Date(clockInIso);
   if (Number.isNaN(inD.getTime())) return out;
   const rin = roundDateToNearest5Minutes(inD);
-  if (rin && start && rin.getTime() < start.getTime()) {
-    out.clockInAt = start.toISOString();
-  } else if (rin) {
-    out.clockInAt = rin.toISOString();
-  }
+  if (rin) out.clockInAt = rin.toISOString();
   const outD = new Date(clockOutIso);
   if (!Number.isNaN(outD.getTime())) {
     const rout = roundDateToNearest5Minutes(outD);

@@ -20,9 +20,9 @@ dotenv.config({ path: path.join(__dirname, "..", ".env") });
 const ROSTER = {
   Bartender: [
     "MARK ONG",
-    "SIED SUMOG - OY",
-    "ANGELYN GELLA",
-    "JONG SARDUA",
+    "CHARLES JAKOB ZACANI",
+    "MAEVE WILLIAMS",
+    "JON ARELLANO",
     "EUGENE VILLARRUZ",
   ],
   Kitchen: [

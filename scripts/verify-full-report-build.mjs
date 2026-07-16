@@ -228,6 +228,20 @@ const deps = {
       redPokeHours: '8',
       workers: ['BALTAZAR LUCAS'],
     },
+    {
+      id: 'shift-8-0-0',
+      restaurantId: 'rp-8',
+      restaurantName: 'Red Poke 885 8th Ave',
+      day: 'Mon May 18',
+      trIdx: 0,
+      role: 'Kitchen',
+      start: '10:00',
+      end: '18:00',
+      timeLabel: '10:00AM - 6:00PM',
+      redPokeBreak: '(2:00PM BREAK TIME)',
+      redPokeHours: '8',
+      workers: ['EIGHTH ONLY'],
+    },
   ],
   buildScheduleSnapshotForPayWeek() {
     return (deps.__scheduleSnapshotRows || []).map((row) => Object.assign({}, row, {
@@ -351,6 +365,12 @@ if (scheduleText.indexOf('TEAM MEMBERS') < 0) {
 if (scheduleText.indexOf('MARK ONG') < 0) {
   throw new Error('Schedule sheet missing assigned worker MARK ONG');
 }
+if (scheduleText.indexOf('JUAN SALVATIERRA') >= 0) {
+  throw new Error('Schedule sheet should omit unscheduled roster employee JUAN SALVATIERRA');
+}
+if (scheduleText.indexOf('BOTH STORES') >= 0) {
+  throw new Error('Schedule sheet should omit unscheduled roster employee BOTH STORES');
+}
 if (scheduleText.indexOf('11:00AM - 9:00PM') < 0) {
   throw new Error('Schedule sheet missing shift times for MARK ONG');
 }
@@ -389,6 +409,100 @@ if (freshSched.indexOf('4:00PM BREAK TIME') < 0) {
   throw new Error('forceFresh did not pick up updated break annotation');
 }
 console.log('OK: Schedule sheet reflects live snapshot; forceFresh bypasses stale cache');
+
+/* Full report must exclude staff not on main schedule rows this week (Mike Clarino case). */
+sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
+const scheduledOnlyBuild = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
+function sheetHasName(sheets, sheetName, person) {
+  const sh = sheets.find((s) => s.name === sheetName);
+  return worksheetText(sh && sh.worksheet).indexOf(person) >= 0;
+}
+for (const sheetName of ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Information', 'Schedule']) {
+  if (sheetHasName(scheduledOnlyBuild, sheetName, 'JUAN SALVATIERRA')) {
+    throw new Error(sheetName + ' should omit unscheduled JUAN SALVATIERRA');
+  }
+  if (sheetHasName(scheduledOnlyBuild, sheetName, 'BOTH STORES')) {
+    throw new Error(sheetName + ' should omit unscheduled BOTH STORES');
+  }
+}
+if (!sheetHasName(scheduledOnlyBuild, 'Labor Cost', 'MARK') || !sheetHasName(scheduledOnlyBuild, 'Labor Cost', 'ONG')) {
+  throw new Error('Labor Cost should still include scheduled MARK ONG');
+}
+console.log('OK: full report excludes employees not on main schedule rows');
+
+/* Payslip omits empty day-off / off-schedule rows with no punches or day pay. */
+{
+  const emp = mockEmployees[0];
+  const emptyOff = {
+    iso: '2026-05-24',
+    shift: { id: 'off-schedule:2026-05-24', start: '', end: '', day: 'Sun May 24' },
+  };
+  if (sandbox.__gmTimecardsTest.payslipShiftRowHasPayableActivity(emp, emptyOff)) {
+    throw new Error('Empty off-schedule day should be omitted from payslip');
+  }
+  const emptyScheduled = {
+    iso: '2026-05-18',
+    shift: {
+      id: 'shift-0-0-0',
+      start: '11:00',
+      end: '21:00',
+      redPokeHours: '10',
+      redPokeBreak: '(3:00PM BREAK TIME)',
+    },
+  };
+  if (sandbox.__gmTimecardsTest.payslipShiftRowHasPayableActivity(emp, emptyScheduled)) {
+    throw new Error('Scheduled day with no punches/pay should be omitted from payslip');
+  }
+  console.log('OK: payslip omits empty day-off / unworked shift rows');
+}
+
+/* Restore multi-location schedule for location-scoping checks below. */
+deps.__scheduleSnapshotRows = [
+  {
+    id: 'shift-0-0-0',
+    restaurantId: 'rp-9',
+    restaurantName: 'Red Poke 598 9th Ave',
+    day: 'Mon May 18',
+    trIdx: 0,
+    role: 'Bartender',
+    start: '11:00',
+    end: '21:00',
+    timeLabel: '11:00AM - 9:00PM',
+    redPokeBreak: '(3:00PM BREAK TIME)',
+    redPokeHours: '10',
+    workers: ['MARK ONG'],
+  },
+  {
+    id: 'shift-0-1-0',
+    restaurantId: 'rp-9',
+    restaurantName: 'Red Poke 598 9th Ave',
+    day: 'Mon May 18',
+    trIdx: 0,
+    role: 'Kitchen',
+    start: '10:00',
+    end: '18:00',
+    timeLabel: '10:00AM - 6:00PM',
+    redPokeBreak: '(2:00PM BREAK TIME)',
+    redPokeHours: '8',
+    workers: ['BALTAZAR LUCAS'],
+  },
+  {
+    id: 'shift-8-0-0',
+    restaurantId: 'rp-8',
+    restaurantName: 'Red Poke 885 8th Ave',
+    day: 'Mon May 18',
+    trIdx: 0,
+    role: 'Kitchen',
+    start: '10:00',
+    end: '18:00',
+    timeLabel: '10:00AM - 6:00PM',
+    redPokeBreak: '(2:00PM BREAK TIME)',
+    redPokeHours: '8',
+    workers: ['EIGHTH ONLY'],
+  },
+];
+sandbox.__gmTimecardsTest.invalidatePayWeekScheduleCache();
+sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
 
 const wb = XLSX.utils.book_new();
 for (const sh of build) {
@@ -458,10 +572,10 @@ if (eighth.fileBase.indexOf('8th-ave') < 0) {
 
 sandbox.__gmTimecardsTest.setTimecardsLocationFilterForTest('rp-9');
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
-const sheets9 = sandbox.__gmTimecardsTest.buildFullReportSheets();
+const sheets9 = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
 sandbox.__gmTimecardsTest.setTimecardsLocationFilterForTest('rp-8');
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
-const sheets8 = sandbox.__gmTimecardsTest.buildFullReportSheets();
+const sheets8 = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
 const payslip9 = sheets9.find((s) => s.name === 'Payslip');
 const payslip8 = sheets8.find((s) => s.name === 'Payslip');
 const schedule9 = sheets9.find((s) => s.name === 'Schedule');
@@ -508,8 +622,10 @@ function assertWellFormedXml(xml, label) {
 
 async function verifyPayslipPatchedExport() {
   sandbox.__gmTimecardsTest.setTimecardsLocationFilterForTest('rp-9');
+  sandbox.__gmTimecardsTest.setRosterCacheForTest(mockRows);
+  sandbox.__gmTimecardsTest.invalidatePayWeekScheduleCache();
   sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
-  const sheets = sandbox.__gmTimecardsTest.buildFullReportSheets();
+  const sheets = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
   const payslip = sheets.find((s) => s.name === 'Payslip');
   if (!payslip || !payslip.worksheet) throw new Error('Payslip worksheet missing');
   const cellKeys = Object.keys(payslip.worksheet).filter((k) => k.charAt(0) !== '!');
