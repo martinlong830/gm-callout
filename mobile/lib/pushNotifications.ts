@@ -1,17 +1,32 @@
 import Constants from 'expo-constants';
-import * as Device from 'expo-device';
 import { InteractionManager, Platform } from 'react-native';
 import { portalRegisterPushToken } from './portalAuth';
 import { readStoredTeamStateId } from './companySession';
 
-type NotificationsModule = typeof import('expo-notifications');
+/**
+ * IMPORTANT: Do not statically import `expo-notifications` or `expo-device` here.
+ * Expo Router loads routes in sync mode at root Stack setup, so any static import
+ * from `app/employee/index.tsx` would run at cold start (before login) and can
+ * crash the process if native modules are missing or version-mismatched.
+ */
+
+type NotificationsModule = {
+  AndroidImportance: { DEFAULT: number };
+  IosAuthorizationStatus?: { PROVISIONAL?: number };
+  setNotificationChannelAsync: (
+    id: string,
+    config: { name: string; importance: number }
+  ) => Promise<unknown>;
+  getPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
+  requestPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
+  getExpoPushTokenAsync: (opts: { projectId: string }) => Promise<{ data?: string }>;
+};
 
 let registrationInFlight: Promise<{ ok: boolean; reason?: string }> | null = null;
 let deferredTimer: ReturnType<typeof setTimeout> | null = null;
 
 function isExpoGoRuntime(): boolean {
   try {
-    // Expo Go cannot reliably obtain production push tokens (Android throws; iOS is limited).
     return Constants.appOwnership === 'expo';
   } catch {
     return false;
@@ -20,10 +35,20 @@ function isExpoGoRuntime(): boolean {
 
 async function loadNotifications(): Promise<NotificationsModule | null> {
   try {
-    return await import('expo-notifications');
+    return (await import('expo-notifications')) as unknown as NotificationsModule;
   } catch (err) {
     console.warn('expo-notifications unavailable', err);
     return null;
+  }
+}
+
+async function isPhysicalDevice(): Promise<boolean> {
+  try {
+    const Device = await import('expo-device');
+    return !!Device.isDevice;
+  } catch {
+    // If expo-device cannot load, allow registration attempt; native APIs will no-op/fail safely.
+    return true;
   }
 }
 
@@ -35,7 +60,7 @@ async function loadNotifications(): Promise<NotificationsModule | null> {
 export async function registerEmployeePushToken(): Promise<{ ok: boolean; reason?: string }> {
   // Outer shield: nothing in this path may reject into the UI / login flow.
   try {
-    if (!Device.isDevice) return { ok: false, reason: 'not_a_device' };
+    if (!(await isPhysicalDevice())) return { ok: false, reason: 'not_a_device' };
     if (isExpoGoRuntime()) return { ok: false, reason: 'expo_go' };
 
     if (registrationInFlight) return registrationInFlight;
@@ -52,20 +77,14 @@ export async function registerEmployeePushToken(): Promise<{ ok: boolean; reason
           });
         }
 
-        const existing = (await Notifications.getPermissionsAsync()) as {
-          granted?: boolean;
-          ios?: { status?: number };
-        };
+        const existing = await Notifications.getPermissionsAsync();
         const provisional = Notifications.IosAuthorizationStatus?.PROVISIONAL;
         let granted = !!(
           existing.granted ||
           (provisional != null && existing.ios?.status === provisional)
         );
         if (!granted) {
-          const req = (await Notifications.requestPermissionsAsync()) as {
-            granted?: boolean;
-            ios?: { status?: number };
-          };
+          const req = await Notifications.requestPermissionsAsync();
           granted = !!(req.granted || (provisional != null && req.ios?.status === provisional));
         }
         if (!granted) return { ok: false, reason: 'permission_denied' };
@@ -108,8 +127,9 @@ export async function registerEmployeePushToken(): Promise<{ ok: boolean; reason
 /**
  * Defer push registration until after navigation/animations settle so a push
  * failure (or native module load) cannot race login → home transition.
+ * Dynamically imports this module's registration path only when invoked.
  */
-export function scheduleEmployeePushTokenRegistration(delayMs = 1500): void {
+export function scheduleEmployeePushTokenRegistration(delayMs = 2500): void {
   try {
     if (deferredTimer) clearTimeout(deferredTimer);
     const task = InteractionManager.runAfterInteractions(() => {
@@ -118,11 +138,9 @@ export function scheduleEmployeePushTokenRegistration(delayMs = 1500): void {
         void registerEmployeePushToken();
       }, delayMs);
     });
-    // InteractionManager returns a cancellable handle on RN; ignore if not.
     void task;
   } catch (err) {
     console.warn('scheduleEmployeePushTokenRegistration', err);
-    // Last resort: still attempt later without blocking the caller.
     deferredTimer = setTimeout(() => {
       deferredTimer = null;
       void registerEmployeePushToken();

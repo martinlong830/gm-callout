@@ -5,7 +5,6 @@ import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../../lib/employees';
-import { scheduleEmployeePushTokenRegistration } from '../../lib/pushNotifications';
 import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
@@ -78,9 +77,21 @@ export default function EmployeeHome() {
     return displayName.trim();
   }, [myEmployee, displayName]);
 
-  // Push must never block or crash login → home. Defer until after navigation.
+  // Push must never load at cold start. Expo Router sync-loads this route module
+  // when the root Stack mounts, so avoid any static import of push/notifications.
   useEffect(() => {
-    scheduleEmployeePushTokenRegistration();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void import('../../lib/pushNotifications')
+        .then((m) => {
+          if (!cancelled) m.scheduleEmployeePushTokenRegistration(0);
+        })
+        .catch((err) => console.warn('pushNotifications dynamic import', err));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   const buckets = useMemo(() => {
