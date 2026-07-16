@@ -93,7 +93,11 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         if (data.teamState) {
           // Apply remote tip/VL as SoT; do not push local AsyncStorage when remote is empty —
           // that resurrected per-device caches onto shared team_state for other managers.
-          await applyTipPayrollFromTeamState(data.teamState);
+          try {
+            await applyTipPayrollFromTeamState(data.teamState);
+          } catch (tipErr) {
+            console.warn('applyTipPayrollFromTeamState', tipErr);
+          }
         }
         setEmployees(data.employees);
         setStaffRequests(data.staffRequests);

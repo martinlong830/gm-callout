@@ -5,7 +5,7 @@ import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../../lib/employees';
-import { registerEmployeePushToken } from '../../lib/pushNotifications';
+import { scheduleEmployeePushTokenRegistration } from '../../lib/pushNotifications';
 import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
@@ -60,10 +60,15 @@ export default function EmployeeHome() {
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
 
   const assignmentStore = useMemo(() => {
-    const ids = restaurants.map((r) => r.id);
-    const shell = assignmentShell(restaurants);
-    const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
-    return ensureRollingFutureAssignments(merged, restaurants).store;
+    try {
+      const ids = restaurants.map((r) => r.id);
+      const shell = assignmentShell(restaurants);
+      const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
+      return ensureRollingFutureAssignments(merged, restaurants).store;
+    } catch (err) {
+      console.warn('employee home assignmentStore', err);
+      return assignmentShell(restaurants);
+    }
   }, [teamState, restaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
@@ -73,22 +78,28 @@ export default function EmployeeHome() {
     return displayName.trim();
   }, [myEmployee, displayName]);
 
+  // Push must never block or crash login → home. Defer until after navigation.
   useEffect(() => {
-    void registerEmployeePushToken();
+    scheduleEmployeePushTokenRegistration();
   }, []);
 
   const buckets = useMemo(() => {
     if (!workerName) return { today: [], upcoming: [] };
-    return getWorkerScheduleBuckets({
-      workerName,
-      weekMeta,
-      allWeekDays,
-      draftScheduleRaw: teamState?.draft_schedule,
-      employees: lites,
-      restaurants,
-      assignmentStore,
-      schedulePublishedRaw: teamState?.schedule_published,
-    });
+    try {
+      return getWorkerScheduleBuckets({
+        workerName,
+        weekMeta,
+        allWeekDays,
+        draftScheduleRaw: teamState?.draft_schedule,
+        employees: lites,
+        restaurants,
+        assignmentStore,
+        schedulePublishedRaw: teamState?.schedule_published,
+      });
+    } catch (err) {
+      console.warn('employee home schedule buckets', err);
+      return { today: [], upcoming: [] };
+    }
   }, [
     workerName,
     weekMeta,
