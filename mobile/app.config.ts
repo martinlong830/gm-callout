@@ -53,6 +53,12 @@ const config: ExpoConfig = {
     config: {
       usesNonExemptEncryption: false,
     },
+    // Required for expo-notifications; production App Store builds use "production".
+    // Regenerating the App Store provisioning profile must include Push Notifications
+    // so this entitlement is covered (see EAS credentials / Apple Developer App ID).
+    entitlements: {
+      'aps-environment': 'production',
+    },
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       UIBackgroundModes: ['remote-notification'],
