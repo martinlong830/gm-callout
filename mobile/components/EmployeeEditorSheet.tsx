@@ -1,4 +1,3 @@
-import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -433,6 +432,8 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       Alert.alert('Photo', employeePhotoUploadHint(emp));
       return;
     }
+    // Dynamic import keeps expo-image-picker off any sync route evaluation path.
+    const ImagePicker = await import('expo-image-picker');
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
       Alert.alert('Photos', 'Allow photo library access to upload a profile picture.');

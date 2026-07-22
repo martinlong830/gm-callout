@@ -71,10 +71,18 @@ export async function registerEmployeePushToken(): Promise<{ ok: boolean; reason
         if (!Notifications) return { ok: false, reason: 'notifications_unavailable' };
 
         if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('schedule', {
-            name: 'Schedule',
-            importance: Notifications.AndroidImportance.DEFAULT,
-          });
+          try {
+            // AndroidImportance.DEFAULT === 5; use numeric fallback if the enum is missing.
+            const importance =
+              Notifications.AndroidImportance?.DEFAULT ?? 5;
+            await Notifications.setNotificationChannelAsync('schedule', {
+              name: 'Schedule',
+              importance,
+            });
+          } catch (channelErr) {
+            console.warn('setNotificationChannelAsync', channelErr);
+            // Channel setup failure must not block token registration / login.
+          }
         }
 
         const existing = await Notifications.getPermissionsAsync();

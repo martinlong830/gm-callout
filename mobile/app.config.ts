@@ -10,7 +10,7 @@ const ANDROID_PACKAGE = 'com.shiflow.app';
 const config: ExpoConfig = {
   name: 'Shiflow',
   slug: 'gm-callout',
-  version: '1.0.1',
+  version: '1.0.2',
   orientation: 'portrait',
   icon: './assets/icon.png',
   userInterfaceStyle: 'light',
@@ -22,7 +22,17 @@ const config: ExpoConfig = {
     backgroundColor: '#ffffff',
   },
   plugins: [
-    'expo-router',
+    [
+      'expo-router',
+      {
+        // Defer non-initial route evaluation in dev; native production still uses sync requires
+        // on navigate, but Tabs already use lazy:true so employee screens stay off cold start.
+        asyncRoutes: {
+          web: true,
+          default: 'development',
+        },
+      },
+    ],
     [
       'expo-image-picker',
       {
@@ -41,8 +51,10 @@ const config: ExpoConfig = {
     [
       'expo-notifications',
       {
-        icon: './assets/icon.png',
+        // Android requires an all-white transparent icon (not the full-color app icon).
+        icon: './assets/notification-icon.png',
         color: '#c41230',
+        defaultChannel: 'schedule',
       },
     ],
   ],
@@ -71,6 +83,8 @@ const config: ExpoConfig = {
       backgroundColor: '#1e3a5f',
     },
     edgeToEdgeEnabled: true,
+    // Android 13+ runtime permission; also declared by expo-notifications, kept explicit.
+    permissions: ['POST_NOTIFICATIONS', 'RECEIVE_BOOT_COMPLETED'],
   },
   web: {
     favicon: './assets/favicon.png',
