@@ -39,7 +39,7 @@ export type EmployeeLite = {
   displayName?: string;
   staffType: RoleKey;
   usualRestaurant: string;
-  meta?: { scheduleAliases?: string[] };
+  meta?: { scheduleAliases?: string[]; hiringDate?: string };
 };
 
 export type DraftGrid = Record<RoleKey, (Array<string | null> | null)[][]>;

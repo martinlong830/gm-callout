@@ -43,7 +43,7 @@ import {
 } from '../../../lib/timecards/dishwasherTips';
 import {
   getEmployeeDayAdditionalCashTipSync,
-  getEmployeeDayLeaveSync,
+  getEffectiveDayLeaveSync,
   loadWeekExtrasSlice,
   type WeekExtrasSlice,
 } from '../../../lib/timecards/weekExtras';
@@ -155,9 +155,10 @@ export default function TimecardsEmployeeScreen() {
             extrasSlice,
             dishwasherTipsSlice,
             addedDayIsos,
+            staffRequests,
           })
         : [],
-    [emp, teamState, lites, bounds, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos]
+    [emp, teamState, lites, bounds, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos, staffRequests]
   );
   const existingIsos = useMemo(() => new Set(shifts.map((r) => r.iso)), [shifts]);
   const availableDays = useMemo(
@@ -279,6 +280,7 @@ export default function TimecardsEmployeeScreen() {
             scheduleCtx={scheduleCtx}
             extrasSlice={extrasSlice}
             dishwasherTipsSlice={dishwasherTipsSlice}
+            staffRequests={staffRequests}
             onRemoved={async () => {
               await refresh();
               await loadShiftListData();
@@ -315,6 +317,7 @@ function ShiftRowCard({
   scheduleCtx,
   extrasSlice,
   dishwasherTipsSlice,
+  staffRequests,
   onRemoved,
   onPress,
 }: {
@@ -326,6 +329,7 @@ function ShiftRowCard({
   scheduleCtx: ReturnType<typeof buildScheduleContext>;
   extrasSlice: WeekExtrasSlice;
   dishwasherTipsSlice: Record<string, number>;
+  staffRequests: import('../../../lib/staffRequests').StaffRequestUi[];
   onRemoved: () => Promise<void>;
   onPress: () => void;
 }) {
@@ -342,7 +346,15 @@ function ShiftRowCard({
   const when =
     (row.isToday ? 'Today · ' : row.isUpcoming ? 'Upcoming · ' : '') + shiftTime;
   const inOutLabel = formatDayClockInOutLabel(entries, empId, row.iso);
-  const dayLeave = getEmployeeDayLeaveSync(empId, row.iso, extrasSlice);
+  const dayLeave = getEffectiveDayLeaveSync(
+    emp,
+    employeeDisplayName(emp),
+    row.iso,
+    bounds,
+    staffRequests,
+    {},
+    extrasSlice
+  );
   const showDishwasherTips = isDeliveryDishwasherStaff(emp);
   const dayDishwasherTip = showDishwasherTips
     ? getEmployeeDayDishwasherTipSync(empId, row.iso, dishwasherTipsSlice)

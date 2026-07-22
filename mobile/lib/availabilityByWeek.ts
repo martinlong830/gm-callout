@@ -8,13 +8,31 @@ import type { DraftGrid } from './schedule/types';
 import type { StaffRequestUi } from './staffRequests';
 import { normalizeWeeklyGrid, type WeeklyGridNormalized } from './weeklyAvailabilityMatrix';
 
-export type AvailabilityWeekStatus = 'draft' | 'submitted';
+/** draft | submitted (pending review) | approved | declined */
+export type AvailabilityWeekStatus = 'draft' | 'submitted' | 'approved' | 'declined';
 
 export type AvailabilityWeekEntry = {
   grid: WeeklyGridNormalized;
   status: AvailabilityWeekStatus;
   submittedAt: string | null;
 };
+
+export function normalizeAvailabilityWeekStatus(raw: unknown): AvailabilityWeekStatus {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'approved') return 'approved';
+  if (s === 'declined' || s === 'rejected' || s === 'denied') return 'declined';
+  if (s === 'submitted' || s === 'pending') return 'submitted';
+  return 'draft';
+}
+
+export function availabilityStatusLabel(status: AvailabilityWeekStatus): string {
+  if (status === 'approved') return 'Approved';
+  if (status === 'declined') return 'Declined';
+  if (status === 'submitted') return 'Pending';
+  return 'Draft';
+}
 
 export function cloneAvailabilityGrid(
   grid: unknown,
@@ -77,15 +95,17 @@ export function getEmployeeAvailabilityWeekEntry(
     const s = stored as { grid: unknown; status?: string; submittedAt?: string | null };
     return {
       grid: cloneAvailabilityGrid(s.grid, st, draftRows),
-      status: s.status === 'submitted' ? 'submitted' : 'draft',
+      status: normalizeAvailabilityWeekStatus(s.status),
       submittedAt: s.submittedAt || null,
     };
   }
   const fromReq = findStaffRequestAvailabilityForWeek(emp, weekIndex, staffRequests);
   if (fromReq?.submittedGrid) {
+    let reqStatus = normalizeAvailabilityWeekStatus(fromReq.status);
+    if (reqStatus === 'draft') reqStatus = 'submitted';
     return {
       grid: cloneAvailabilityGrid(fromReq.submittedGrid, st, draftRows),
-      status: 'submitted',
+      status: reqStatus === 'approved' || reqStatus === 'declined' ? reqStatus : 'submitted',
       submittedAt: fromReq.submittedAt || null,
     };
   }
@@ -104,13 +124,15 @@ export function applyAvailabilityWeekEntry(
   opts: { syncWeeklyGrid?: boolean; draftRows: DraftGrid; todayIso?: string }
 ): EmployeeRow {
   const st = emp.staffType || 'Kitchen';
-  const status: AvailabilityWeekStatus = entry.status === 'submitted' ? 'submitted' : 'draft';
+  const status = normalizeAvailabilityWeekStatus(entry.status);
   const grid = cloneAvailabilityGrid(entry.grid, st, opts.draftRows);
   const today = opts.todayIso || localTodayISO();
+  const keepSubmittedAt =
+    status === 'submitted' || status === 'approved' || status === 'declined';
   const nextEntry: AvailabilityWeekEntry = {
     grid,
     status,
-    submittedAt: status === 'submitted' ? entry.submittedAt || today : null,
+    submittedAt: keepSubmittedAt ? entry.submittedAt || today : null,
   };
   const meta = ensureMeta(emp);
   const prevByWeek =
@@ -124,4 +146,23 @@ export function applyAvailabilityWeekEntry(
     next.weeklyGrid = grid as unknown as Record<string, unknown>;
   }
   return next;
+}
+
+export function listPendingAvailabilityEmployees(
+  employees: EmployeeRow[],
+  weekIndex: number,
+  draftRows: DraftGrid,
+  staffRequests: StaffRequestUi[] = []
+): EmployeeRow[] {
+  return employees
+    .filter(
+      (emp) =>
+        getEmployeeAvailabilityWeekEntry(emp, weekIndex, draftRows, staffRequests).status ===
+        'submitted'
+    )
+    .sort((a, b) =>
+      employeeDisplayName(a).localeCompare(employeeDisplayName(b), undefined, {
+        sensitivity: 'base',
+      })
+    );
 }

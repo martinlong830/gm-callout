@@ -5,6 +5,7 @@ import { isMidnightOnShiftDate } from './punch';
 import {
   getEmployeeDayAdditionalCashTipSync,
   getEmployeeDayLeaveSync,
+  leaveHoursFromBalanceForDay,
   type WeekExtrasSlice,
 } from './weekExtras';
 import type { PayWeekBounds, ShiftDayRow, TimeClockEntry } from './types';
@@ -89,11 +90,32 @@ export type OffScheduleDaySources = {
   extrasSlice?: WeekExtrasSlice;
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
+  /** Optional: include leaveBalance / approved request days. */
+  emp?: { id: string; meta?: { leaveBalance?: unknown }; firstName?: string; lastName?: string; displayName?: string };
+  displayName?: string;
+  staffRequests?: Array<{
+    status?: string;
+    type?: string;
+    employeeName?: string;
+    leaveType?: string;
+    timeoffStart?: string;
+    timeoffEnd?: string;
+    summary?: string;
+  }>;
 };
 
 export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string[] {
-  const { empId, bounds, scheduledIsos, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos } =
-    params;
+  const {
+    empId,
+    bounds,
+    scheduledIsos,
+    entries,
+    extrasSlice,
+    dishwasherTipsSlice,
+    addedDayIsos,
+    emp,
+    staffRequests,
+  } = params;
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
   const found = new Set<string>();
@@ -124,7 +146,8 @@ export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string
     if (at < 0 || k.slice(0, at) !== empId) continue;
     const row = extrasSlice![k];
     if (!row || typeof row !== 'object') continue;
-    if ((parseFloat(String(row.vl)) || 0) <= 0 && (parseFloat(String(row.sl)) || 0) <= 0) {
+    if ((parseFloat(String((row as { vl?: number }).vl)) || 0) <= 0 &&
+        (parseFloat(String((row as { sl?: number }).sl)) || 0) <= 0) {
       continue;
     }
     maybeAdd(k.slice(at + 1));
@@ -143,6 +166,53 @@ export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string
 
   for (const iso of addedDayIsos ?? []) {
     maybeAdd(iso);
+  }
+
+  const bal = emp?.meta?.leaveBalance as
+    | { vacation?: { entries?: { date?: string; hours?: number }[] }; sick?: { entries?: { date?: string; hours?: number }[] } }
+    | undefined;
+  if (bal) {
+    for (const e of bal.vacation?.entries ?? []) {
+      const dIso = String(e.date ?? '').slice(0, 10);
+      if ((parseFloat(String(e.hours)) || 0) <= 0) continue;
+      const override = extrasSlice?.[`${empId}@${dIso}`];
+      if (override && typeof override === 'object' && (override as { manual?: boolean }).manual !== false) {
+        continue;
+      }
+      maybeAdd(dIso);
+    }
+    for (const e of bal.sick?.entries ?? []) {
+      const dIso = String(e.date ?? '').slice(0, 10);
+      if ((parseFloat(String(e.hours)) || 0) <= 0) continue;
+      const override = extrasSlice?.[`${empId}@${dIso}`];
+      if (override && typeof override === 'object' && (override as { manual?: boolean }).manual !== false) {
+        continue;
+      }
+      maybeAdd(dIso);
+    }
+  }
+
+  if (emp && staffRequests?.length) {
+    for (const req of staffRequests) {
+      if (req.status !== 'approved' || req.type !== 'timeoff') continue;
+      const summary = String(req.summary || '');
+      let start = req.timeoffStart ? String(req.timeoffStart).slice(0, 10) : '';
+      let end = req.timeoffEnd ? String(req.timeoffEnd).slice(0, 10) : '';
+      const m = summary.match(
+        /(?:Time Off|Vacation leave|Sick leave):\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/i
+      );
+      if (m) {
+        if (!start) start = m[1];
+        if (!end) end = m[2];
+      }
+      if (!start || !end || end < start) continue;
+      let cur = new Date(start + 'T12:00:00');
+      const endD = new Date(end + 'T12:00:00');
+      while (cur <= endD) {
+        maybeAdd(isoFromDate(cur));
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
   }
 
   return Array.from(found).sort();
@@ -173,10 +243,11 @@ export type DayTimecardActivitySources = {
   extrasSlice?: WeekExtrasSlice;
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
+  emp?: { id: string; meta?: { leaveBalance?: unknown } };
 };
 
 export function dayHasTimecardActivity(params: DayTimecardActivitySources): boolean {
-  const { empId, iso, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos } = params;
+  const { empId, iso, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos, emp } = params;
   if (!empId || !iso) return false;
   if ((addedDayIsos ?? getAddedOffScheduleDays(empId)).includes(iso)) return true;
   for (const e of entries ?? []) {
@@ -185,6 +256,10 @@ export function dayHasTimecardActivity(params: DayTimecardActivitySources): bool
   }
   const leave = getEmployeeDayLeaveSync(empId, iso, extrasSlice ?? {});
   if (leave.vl > 0 || leave.sl > 0) return true;
+  if (emp && emp.id === empId) {
+    const fromBal = leaveHoursFromBalanceForDay(emp as Parameters<typeof leaveHoursFromBalanceForDay>[0], iso);
+    if (fromBal.vl > 0 || fromBal.sl > 0) return true;
+  }
   if (getEmployeeDayAdditionalCashTipSync(empId, iso, extrasSlice ?? {}) > 0) return true;
   for (const k of Object.keys(dishwasherTipsSlice ?? {})) {
     const tip = dishwasherTipsSlice![k];

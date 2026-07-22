@@ -39,6 +39,8 @@ import {
   buildScheduleContext,
   getEmployeeDayLeave,
   getSuggestedDayLeave,
+  getEffectiveDayLeaveSync,
+  loadWeekExtrasSlice,
   setEmployeeDayLeave,
   dailyRecordedMinutesForEmployeeAtRestaurant,
   decimalHoursFromMinutes,
@@ -153,12 +155,21 @@ export default function TimecardsShiftScreen() {
     setSlText('0');
     setSuggestedLeave(null);
     setCoverageText('0');
-    const dayLeave = await getEmployeeDayLeave(emp.id, iso, bounds);
+    const slice = await loadWeekExtrasSlice(bounds);
+    const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
+    const dayLeave = getEffectiveDayLeaveSync(
+      emp,
+      employeeDisplayName(emp),
+      iso,
+      bounds,
+      staffRequests,
+      schedMinsByDay,
+      slice
+    );
     setVlText(String(dayLeave.vl));
     setSlText(String(dayLeave.sl));
     const coverage = await getEmployeeDayAdditionalCashTip(emp.id, iso, bounds);
     setCoverageText(String(coverage));
-    const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
     const suggested = await getSuggestedDayLeave(
       emp,
       employeeDisplayName(emp),

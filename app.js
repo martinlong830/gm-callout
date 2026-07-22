@@ -9551,36 +9551,55 @@
     });
   }
 
-  function rosterNamesForStaffType(staffType) {
-    if (staffType === 'Bartender') return TEAM_ROSTER_BARTENDER;
-    if (staffType === 'Kitchen') return TEAM_ROSTER_KITCHEN;
-    if (staffType === 'Server') return TEAM_ROSTER_SERVER;
-    return [];
-  }
-
-  function employeeMatchesRosterName(emp, rosterName) {
-    var a = normNameKey(employeeDisplayName(emp));
-    var b = normNameKey(rosterName);
-    if (!a || !b) return false;
-    if (a === b) return true;
-    return nameFirstToken(a) === nameFirstToken(b) && nameLastToken(a) === nameLastToken(b);
-  }
-
-  function scheduleRosterIndexInGroup(emp) {
-    var order = rosterNamesForStaffType(emp.staffType);
-    for (var i = 0; i < order.length; i += 1) {
-      if (employeeMatchesRosterName(emp, order[i])) return i;
+  function parseEmployeeHiringDateMs(emp) {
+    var raw =
+      emp && emp.meta && emp.meta.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
+    if (!raw) return null;
+    var mdy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mdy) {
+      var month = Number(mdy[1]) - 1;
+      var day = Number(mdy[2]);
+      var year = Number(mdy[3]);
+      var d = new Date(year, month, day);
+      if (d.getFullYear() === year && d.getMonth() === month && d.getDate() === day) {
+        return d.getTime();
+      }
+      return null;
     }
-    return 1000;
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+      var iso = new Date(raw.slice(0, 10) + 'T12:00:00');
+      if (!Number.isNaN(iso.getTime())) return iso.getTime();
+    }
+    var parsed = Date.parse(raw);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  function employeeFirstNameSortKey(emp) {
+    var f = ((emp && emp.firstName) || '').trim();
+    if (f) return f;
+    var dn = employeeDisplayName(emp) || '';
+    var parts = dn.split(/\s+/).filter(Boolean);
+    return parts[0] || dn;
+  }
+
+  /**
+   * Within a role group: hire date ascending (most senior first);
+   * missing hire date → after dated; ties / no-date → alphabetical by first name.
+   */
+  function compareEmployeesBySeniority(a, b) {
+    var ta = parseEmployeeHiringDateMs(a);
+    var tb = parseEmployeeHiringDateMs(b);
+    var aHas = ta != null;
+    var bHas = tb != null;
+    if (aHas && bHas && ta !== tb) return ta - tb;
+    if (aHas !== bHas) return aHas ? -1 : 1;
+    return employeeFirstNameSortKey(a).localeCompare(employeeFirstNameSortKey(b), undefined, {
+      sensitivity: 'base',
+    });
   }
 
   function sortEmployeesInGroup(a, b) {
-    var ia = scheduleRosterIndexInGroup(a);
-    var ib = scheduleRosterIndexInGroup(b);
-    if (ia !== ib) return ia - ib;
-    return employeeDisplayName(a).localeCompare(employeeDisplayName(b), undefined, {
-      sensitivity: 'base',
-    });
+    return compareEmployeesBySeniority(a, b);
   }
 
   function employeeSearchHaystack(emp) {
@@ -9825,6 +9844,25 @@
     return best;
   }
 
+  /** draft | submitted (pending review) | approved | declined */
+  function normalizeAvailabilityWeekStatus(raw) {
+    var s = String(raw || '')
+      .trim()
+      .toLowerCase();
+    if (s === 'approved') return 'approved';
+    if (s === 'declined' || s === 'rejected' || s === 'denied') return 'declined';
+    if (s === 'submitted' || s === 'pending') return 'submitted';
+    return 'draft';
+  }
+
+  function availabilityStatusLabel(status) {
+    var s = normalizeAvailabilityWeekStatus(status);
+    if (s === 'approved') return 'Approved';
+    if (s === 'declined') return 'Declined';
+    if (s === 'submitted') return 'Pending';
+    return 'Draft';
+  }
+
   function getEmployeeAvailabilityWeekEntry(emp, weekIndex) {
     var st = emp && emp.staffType ? emp.staffType : 'Kitchen';
     var meta = ensureEmployeeMetaObject(emp);
@@ -9836,15 +9874,17 @@
     if (stored && typeof stored === 'object' && stored.grid) {
       return {
         grid: cloneAvailabilityGrid(stored.grid, st, weekIndex),
-        status: stored.status === 'submitted' ? 'submitted' : 'draft',
+        status: normalizeAvailabilityWeekStatus(stored.status),
         submittedAt: stored.submittedAt || null,
       };
     }
     var fromReq = findStaffRequestAvailabilityForWeek(emp, weekIndex);
     if (fromReq && fromReq.submittedGrid) {
+      var reqStatus = normalizeAvailabilityWeekStatus(fromReq.status);
+      if (reqStatus === 'draft') reqStatus = 'submitted';
       return {
         grid: cloneAvailabilityGrid(fromReq.submittedGrid, st, weekIndex),
-        status: 'submitted',
+        status: reqStatus === 'approved' || reqStatus === 'declined' ? reqStatus : 'submitted',
         submittedAt: fromReq.submittedAt || null,
       };
     }
@@ -9863,23 +9903,62 @@
     if (!meta.availabilityByWeek || typeof meta.availabilityByWeek !== 'object') {
       meta.availabilityByWeek = {};
     }
-    var status = entry && entry.status === 'submitted' ? 'submitted' : 'draft';
+    var status = normalizeAvailabilityWeekStatus(entry && entry.status);
     var grid = cloneAvailabilityGrid(entry && entry.grid, st, weekIndex);
+    var keepSubmittedAt =
+      status === 'submitted' || status === 'approved' || status === 'declined';
     var next = {
       grid: grid,
       status: status,
-      submittedAt:
-        status === 'submitted'
-          ? entry && entry.submittedAt
-            ? entry.submittedAt
-            : localTodayISO()
-          : null,
+      submittedAt: keepSubmittedAt
+        ? entry && entry.submittedAt
+          ? entry.submittedAt
+          : localTodayISO()
+        : null,
     };
     meta.availabilityByWeek[String(weekIndex)] = next;
     if (opts.syncWeeklyGrid !== false) {
       emp.weeklyGrid = cloneAvailabilityGrid(grid, st, weekIndex);
     }
     return next;
+  }
+
+  function listPendingAvailabilityEmployees(weekIndex) {
+    return employees
+      .filter(function (emp) {
+        return getEmployeeAvailabilityWeekEntry(emp, weekIndex).status === 'submitted';
+      })
+      .sort(function (a, b) {
+        return employeeDisplayName(a).localeCompare(employeeDisplayName(b), undefined, {
+          sensitivity: 'base',
+        });
+      });
+  }
+
+  function syncMatchingAvailabilityStaffRequest(emp, weekIndex, nextStatus) {
+    if (!emp) return;
+    var nameKey = String(employeeDisplayName(emp) || '')
+      .trim()
+      .toLowerCase();
+    if (!nameKey) return;
+    var uxStatus =
+      nextStatus === 'approved' ? 'approved' : nextStatus === 'declined' ? 'declined' : null;
+    if (!uxStatus) return;
+    staffRequests.forEach(function (r) {
+      if (!r || r.type !== 'availability' || r.status !== 'pending') return;
+      if (r.submittedWeekIndex != null && Number(r.submittedWeekIndex) !== Number(weekIndex)) {
+        return;
+      }
+      var rn = String(r.employeeName || '')
+        .trim()
+        .toLowerCase();
+      if (rn !== nameKey) return;
+      r.status = uxStatus;
+      if (GM_SUPABASE_DATA && isUuidCloudId(r.id)) {
+        updateStaffRequestStatusRemote(r.id, uxStatus);
+      }
+    });
+    persistStaffRequestStatuses();
   }
 
   function collectAvailabilityGridFromRoot(root) {
@@ -9900,10 +9979,12 @@
 
   function setAvailabilityStatusBadge(el, status) {
     if (!el) return;
-    var submitted = status === 'submitted';
-    el.textContent = submitted ? 'Submitted' : 'Draft';
-    el.classList.toggle('avail-status-badge--submitted', submitted);
-    el.classList.toggle('avail-status-badge--draft', !submitted);
+    var s = normalizeAvailabilityWeekStatus(status);
+    el.textContent = availabilityStatusLabel(s);
+    el.classList.toggle('avail-status-badge--draft', s === 'draft');
+    el.classList.toggle('avail-status-badge--submitted', s === 'submitted');
+    el.classList.toggle('avail-status-badge--approved', s === 'approved');
+    el.classList.toggle('avail-status-badge--declined', s === 'declined');
   }
 
   function bindAvailabilityGridDragDrop(root) {
@@ -10037,6 +10118,42 @@
     sel.value = mgrAvailEmployeeId;
   }
 
+  function renderMgrAvailPendingList() {
+    var listEl = document.getElementById('mgrAvailPendingList');
+    if (!listEl) return;
+    var pending = listPendingAvailabilityEmployees(mgrAvailWeekIndex);
+    if (!pending.length) {
+      listEl.hidden = true;
+      listEl.innerHTML = '';
+      return;
+    }
+    listEl.hidden = false;
+    listEl.innerHTML =
+      '<span class="avail-pending-list-label">Pending</span>' +
+      pending
+        .map(function (emp) {
+          var active = emp.id === mgrAvailEmployeeId;
+          return (
+            '<button type="button" class="avail-pending-chip' +
+            (active ? ' avail-pending-chip--active' : '') +
+            '" data-mgr-avail-pending-id="' +
+            escapeHtml(emp.id) +
+            '">' +
+            escapeHtml(employeeDisplayName(emp)) +
+            '</button>'
+          );
+        })
+        .join('');
+  }
+
+  function updateMgrAvailReviewActions(status) {
+    var approveBtn = document.getElementById('mgrAvailApproveBtn');
+    var declineBtn = document.getElementById('mgrAvailDeclineBtn');
+    var pending = normalizeAvailabilityWeekStatus(status) === 'submitted';
+    if (approveBtn) approveBtn.hidden = !pending;
+    if (declineBtn) declineBtn.hidden = !pending;
+  }
+
   function renderManagerAvailabilityScreen() {
     var gridEl = document.getElementById('mgrAvailGrid');
     var statusEl = document.getElementById('mgrAvailStatus');
@@ -10053,12 +10170,60 @@
     if (!emp || !gridEl) {
       if (gridEl) gridEl.innerHTML = '<p class="calendar-hint">No employees on the roster yet.</p>';
       setAvailabilityStatusBadge(statusEl, 'draft');
+      updateMgrAvailReviewActions('draft');
+      renderMgrAvailPendingList();
       return;
     }
     var entry = getEmployeeAvailabilityWeekEntry(emp, mgrAvailWeekIndex);
     setAvailabilityStatusBadge(statusEl, entry.status);
+    updateMgrAvailReviewActions(entry.status);
+    renderMgrAvailPendingList();
     gridEl.innerHTML = renderEmployeeAvailabilityGrid(entry.grid, emp.staffType, mgrAvailWeekIndex);
     bindAvailabilityGridDragDrop(gridEl);
+  }
+
+  function showMgrAvailFeedback(msg) {
+    var feedback = document.getElementById('mgrAvailFeedback');
+    if (!feedback) return;
+    feedback.hidden = false;
+    feedback.textContent = msg || '';
+    setTimeout(function () {
+      if (feedback) {
+        feedback.hidden = true;
+        feedback.textContent = '';
+      }
+    }, 2500);
+  }
+
+  function reviewManagerAvailability(action) {
+    var emp = employees.find(function (e) {
+      return e.id === mgrAvailEmployeeId;
+    });
+    var gridEl = document.getElementById('mgrAvailGrid');
+    if (!emp || !gridEl) return;
+    var nextStatus = action === 'approve' ? 'approved' : 'declined';
+    var collected = collectAvailabilityGridFromRoot(gridEl);
+    var prev = getEmployeeAvailabilityWeekEntry(emp, mgrAvailWeekIndex);
+    if (prev.status !== 'submitted') return;
+    setEmployeeAvailabilityWeekEntry(
+      emp,
+      mgrAvailWeekIndex,
+      {
+        grid: collected,
+        status: nextStatus,
+        submittedAt: prev.submittedAt || localTodayISO(),
+      },
+      { syncWeeklyGrid: nextStatus === 'approved' }
+    );
+    saveEmployees({ singleEmployee: emp });
+    syncMatchingAvailabilityStaffRequest(emp, mgrAvailWeekIndex, nextStatus);
+    renderManagerAvailabilityScreen();
+    showMgrAvailFeedback(
+      (nextStatus === 'approved' ? 'Approved' : 'Declined') +
+        ' availability for ' +
+        employeeDisplayName(emp) +
+        '.'
+    );
   }
 
   function saveManagerAvailabilityFromDom() {
@@ -10066,7 +10231,6 @@
       return e.id === mgrAvailEmployeeId;
     });
     var gridEl = document.getElementById('mgrAvailGrid');
-    var feedback = document.getElementById('mgrAvailFeedback');
     if (!emp || !gridEl) return;
     var collected = collectAvailabilityGridFromRoot(gridEl);
     var prev = getEmployeeAvailabilityWeekEntry(emp, mgrAvailWeekIndex);
@@ -10082,16 +10246,7 @@
     );
     saveEmployees({ singleEmployee: emp });
     renderManagerAvailabilityScreen();
-    if (feedback) {
-      feedback.hidden = false;
-      feedback.textContent = 'Saved availability for ' + employeeDisplayName(emp) + '.';
-      setTimeout(function () {
-        if (feedback) {
-          feedback.hidden = true;
-          feedback.textContent = '';
-        }
-      }, 2500);
-    }
+    showMgrAvailFeedback('Saved availability for ' + employeeDisplayName(emp) + '.');
   }
 
   function openAvailabilitySubmissionModal(reqId) {
@@ -11842,6 +11997,25 @@
       if (GM_SUPABASE_DATA && isUuidCloudId(id)) {
         updateStaffRequestStatusRemote(id, req.status);
       }
+      if (req.type === 'availability' && req.submittedGrid) {
+        var availEmp = employeeByDisplayName(req.employeeName);
+        if (availEmp) {
+          var availWi =
+            req.submittedWeekIndex != null ? Number(req.submittedWeekIndex) : SCHEDULE_TEMPLATE_WEEK_INDEX;
+          setEmployeeAvailabilityWeekEntry(
+            availEmp,
+            availWi,
+            {
+              grid: req.submittedGrid,
+              status: req.status === 'approved' ? 'approved' : 'declined',
+              submittedAt: req.submittedAt || localTodayISO(),
+            },
+            { syncWeeklyGrid: req.status === 'approved' }
+          );
+          saveEmployees({ singleEmployee: availEmp });
+          if (currentScreen === 13) renderManagerAvailabilityScreen();
+        }
+      }
       persistStaffRequestStatuses();
       renderRequestsList();
       if (req.type === 'timeoff' && timecardsScreenActive() && window.gmCalloutTimecards) {
@@ -11866,8 +12040,39 @@
     var empSelect = document.getElementById('mgrAvailEmployeeSelect');
     var saveBtn = document.getElementById('mgrAvailSaveBtn');
     var checkAllBtn = document.getElementById('mgrAvailCheckAllBtn');
+    var approveBtn = document.getElementById('mgrAvailApproveBtn');
+    var declineBtn = document.getElementById('mgrAvailDeclineBtn');
     if (screenAvail) {
       screenAvail.addEventListener('click', function (e) {
+        var pendingChip = e.target.closest('[data-mgr-avail-pending-id]');
+        if (pendingChip && screenAvail.contains(pendingChip)) {
+          var pendingId = pendingChip.getAttribute('data-mgr-avail-pending-id');
+          if (pendingId && pendingId !== mgrAvailEmployeeId) {
+            var curEmp = employees.find(function (x) {
+              return x.id === mgrAvailEmployeeId;
+            });
+            var gridEl = document.getElementById('mgrAvailGrid');
+            if (curEmp && gridEl) {
+              var collected = collectAvailabilityGridFromRoot(gridEl);
+              var prev = getEmployeeAvailabilityWeekEntry(curEmp, mgrAvailWeekIndex);
+              setEmployeeAvailabilityWeekEntry(
+                curEmp,
+                mgrAvailWeekIndex,
+                {
+                  grid: collected,
+                  status: prev.status,
+                  submittedAt: prev.submittedAt,
+                },
+                { syncWeeklyGrid: false }
+              );
+              saveEmployees({ singleEmployee: curEmp });
+            }
+            mgrAvailEmployeeId = pendingId;
+            if (empSelect) empSelect.value = pendingId;
+            renderManagerAvailabilityScreen();
+          }
+          return;
+        }
         var stepBtn = e.target.closest('[data-mgr-avail-week-step]');
         if (!stepBtn || stepBtn.disabled) return;
         var step = parseInt(stepBtn.getAttribute('data-mgr-avail-week-step'), 10);
@@ -11877,17 +12082,17 @@
         var emp = employees.find(function (x) {
           return x.id === mgrAvailEmployeeId;
         });
-        var gridEl = document.getElementById('mgrAvailGrid');
-        if (emp && gridEl) {
-          var collected = collectAvailabilityGridFromRoot(gridEl);
-          var prev = getEmployeeAvailabilityWeekEntry(emp, mgrAvailWeekIndex);
+        var gridElStep = document.getElementById('mgrAvailGrid');
+        if (emp && gridElStep) {
+          var collectedStep = collectAvailabilityGridFromRoot(gridElStep);
+          var prevStep = getEmployeeAvailabilityWeekEntry(emp, mgrAvailWeekIndex);
           setEmployeeAvailabilityWeekEntry(
             emp,
             mgrAvailWeekIndex,
             {
-              grid: collected,
-              status: prev.status,
-              submittedAt: prev.submittedAt,
+              grid: collectedStep,
+              status: prevStep.status,
+              submittedAt: prevStep.submittedAt,
             },
             { syncWeeklyGrid: false }
           );
@@ -11925,6 +12130,16 @@
     if (saveBtn) {
       saveBtn.addEventListener('click', function () {
         saveManagerAvailabilityFromDom();
+      });
+    }
+    if (approveBtn) {
+      approveBtn.addEventListener('click', function () {
+        reviewManagerAvailability('approve');
+      });
+    }
+    if (declineBtn) {
+      declineBtn.addEventListener('click', function () {
+        reviewManagerAvailability('decline');
       });
     }
     if (checkAllBtn) {
@@ -13586,6 +13801,7 @@
       escapeHtml: escapeHtml,
       employees: employees,
       employeeDisplayName: employeeDisplayName,
+      compareEmployeesBySeniority: compareEmployeesBySeniority,
       employeePhotoUrlCandidates: employeePhotoUrlCandidates,
       normNameKey: normNameKey,
       nameFirstToken: nameFirstToken,

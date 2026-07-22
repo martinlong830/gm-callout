@@ -15,7 +15,9 @@ import { ScheduleWeekPicker } from './ScheduleWeekPicker';
 import { useAppData } from '../contexts/AppDataContext';
 import {
   applyAvailabilityWeekEntry,
+  availabilityStatusLabel,
   getEmployeeAvailabilityWeekEntry,
+  listPendingAvailabilityEmployees,
   type AvailabilityWeekStatus,
 } from '../lib/availabilityByWeek';
 import { saveEmployeeRow } from '../lib/employeeSave';
@@ -30,6 +32,7 @@ import {
 } from '../lib/schedule/engine';
 import { compareEmployeesByScheduleOrder } from '../lib/schedule/rosterOrder';
 import { supabase } from '../lib/supabase';
+import { updateStaffRequestStatus } from '../lib/staffRequests';
 import type { WeeklyGridNormalized } from '../lib/weeklyAvailabilityMatrix';
 
 type Mode = 'manager' | 'employee';
@@ -41,12 +44,26 @@ type Props = {
 };
 
 function StatusBadge({ status }: { status: AvailabilityWeekStatus }) {
-  const submitted = status === 'submitted';
+  const label = availabilityStatusLabel(status);
+  const tone =
+    status === 'approved'
+      ? styles.badgeApproved
+      : status === 'declined'
+        ? styles.badgeDeclined
+        : status === 'submitted'
+          ? styles.badgeSubmitted
+          : styles.badgeDraft;
+  const textTone =
+    status === 'approved'
+      ? styles.badgeTextApproved
+      : status === 'declined'
+        ? styles.badgeTextDeclined
+        : status === 'submitted'
+          ? styles.badgeTextSubmitted
+          : styles.badgeTextDraft;
   return (
-    <View style={[styles.badge, submitted ? styles.badgeSubmitted : styles.badgeDraft]}>
-      <Text style={[styles.badgeText, submitted ? styles.badgeTextSubmitted : styles.badgeTextDraft]}>
-        {submitted ? 'Submitted' : 'Draft'}
-      </Text>
+    <View style={[styles.badge, tone]}>
+      <Text style={[styles.badgeText, textTone]}>{label}</Text>
     </View>
   );
 }
@@ -84,6 +101,11 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
     const id = selectedEmployeeId || roster[0]?.id;
     return roster.find((e) => e.id === id) ?? roster[0] ?? null;
   }, [mode, selfEmployee, roster, selectedEmployeeId]);
+
+  const pendingEmployees = useMemo(() => {
+    if (mode !== 'manager') return [];
+    return listPendingAvailabilityEmployees(roster, weekIndex, draftRows, staffRequests);
+  }, [mode, roster, weekIndex, draftRows, staffRequests]);
 
   useEffect(() => {
     if (mode !== 'manager' || !roster.length) return;
@@ -126,21 +148,30 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
         forceDraft?: boolean;
         preserveStatus?: AvailabilityWeekStatus;
         preserveSubmittedAt?: string | null;
+        forceStatus?: AvailabilityWeekStatus;
       }
     ) => {
       if (!supabase) return { ok: false as const, message: 'Not configured' };
       const nextStatus: AvailabilityWeekStatus = opts.forceDraft
         ? 'draft'
-        : opts.preserveStatus === 'submitted'
-          ? 'submitted'
-          : 'draft';
+        : opts.forceStatus
+          ? opts.forceStatus
+          : opts.preserveStatus && opts.preserveStatus !== 'draft'
+            ? opts.preserveStatus
+            : 'draft';
+      const keepSubmittedAt =
+        nextStatus === 'submitted' ||
+        nextStatus === 'approved' ||
+        nextStatus === 'declined';
       const updated = applyAvailabilityWeekEntry(
         emp,
         wi,
         {
           grid: nextGrid,
           status: nextStatus,
-          submittedAt: nextStatus === 'submitted' ? opts.preserveSubmittedAt || localTodayISO() : null,
+          submittedAt: keepSubmittedAt
+            ? opts.preserveSubmittedAt || localTodayISO()
+            : null,
         },
         { syncWeeklyGrid: opts.syncWeeklyGrid, draftRows }
       );
@@ -151,6 +182,26 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
       return { ok: true as const, employee: updated };
     },
     [draftRows, refetch]
+  );
+
+  const syncMatchingAvailabilityStaffRequest = useCallback(
+    async (emp: EmployeeRow, wi: number, nextStatus: 'approved' | 'declined') => {
+      if (!supabase) return;
+      const nameKey = employeeDisplayName(emp).trim().toLowerCase();
+      if (!nameKey) return;
+      for (const r of staffRequests) {
+        if (!r || r.type !== 'availability' || r.status !== 'pending') continue;
+        if (r.submittedWeekIndex != null && Number(r.submittedWeekIndex) !== Number(wi)) {
+          continue;
+        }
+        const rn = String(r.employeeName || '')
+          .trim()
+          .toLowerCase();
+        if (rn !== nameKey) continue;
+        await updateStaffRequestStatus(supabase, r.id, nextStatus);
+      }
+    },
+    [staffRequests]
   );
 
   const onGridChange = useCallback(
@@ -241,6 +292,45 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
     }
   }, [activeEmployee, grid, weekIndex, status, submittedAt, persistWeekOverlay]);
 
+  const onManagerReview = useCallback(
+    async (action: 'approve' | 'decline') => {
+      if (!activeEmployee || !grid || status !== 'submitted') return;
+      setBusy(true);
+      setFeedback('');
+      try {
+        const nextStatus: AvailabilityWeekStatus =
+          action === 'approve' ? 'approved' : 'declined';
+        const res = await persistWeekOverlay(activeEmployee, weekIndex, grid, {
+          syncWeeklyGrid: nextStatus === 'approved',
+          forceStatus: nextStatus,
+          preserveSubmittedAt: submittedAt,
+        });
+        if (!res.ok) {
+          Alert.alert('Availability', res.message);
+          return;
+        }
+        await syncMatchingAvailabilityStaffRequest(activeEmployee, weekIndex, nextStatus);
+        setStatus(nextStatus);
+        setFeedback(
+          `${nextStatus === 'approved' ? 'Approved' : 'Declined'} availability for ${employeeDisplayName(activeEmployee)}.`
+        );
+        void refetch({ silent: true });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      activeEmployee,
+      grid,
+      status,
+      weekIndex,
+      submittedAt,
+      persistWeekOverlay,
+      syncMatchingAvailabilityStaffRequest,
+      refetch,
+    ]
+  );
+
   const onEmployeeSubmit = useCallback(async () => {
     if (!supabase || !activeEmployee || !grid) return;
     setBusy(true);
@@ -261,7 +351,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
       skipNextHydrate.current = true;
       setStatus('submitted');
       setSubmittedAt(today);
-      setFeedback('Submitted. Your manager can see this on Availability.');
+      setFeedback('Submitted. Waiting for your manager to approve.');
       void refetch({ silent: true });
     } finally {
       setBusy(false);
@@ -287,6 +377,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
   }
 
   const staffType = activeEmployee.staffType || 'Kitchen';
+  const showReviewActions = mode === 'manager' && status === 'submitted';
 
   return (
     <View style={styles.screen}>
@@ -318,6 +409,35 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
           templateWeekIndex={SCHEDULE_TEMPLATE_WEEK_INDEX}
         />
 
+        {mode === 'manager' && pendingEmployees.length > 0 ? (
+          <View style={styles.pendingBlock}>
+            <Text style={styles.pendingLabel}>Pending</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pendingChips}
+            >
+              {pendingEmployees.map((emp) => {
+                const on = emp.id === activeEmployee.id;
+                return (
+                  <Pressable
+                    key={emp.id}
+                    style={[styles.pendingChip, on && styles.pendingChipOn]}
+                    onPress={() => void changeEmployee(emp)}
+                  >
+                    <Text
+                      style={[styles.pendingChipText, on && styles.pendingChipTextOn]}
+                      numberOfLines={1}
+                    >
+                      {employeeDisplayName(emp)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
+
         <View style={styles.statusRow}>
           <StatusBadge status={status} />
           {feedback ? <Text style={styles.feedback}>{feedback}</Text> : null}
@@ -338,13 +458,33 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
             <Text style={styles.btnSecondaryText}>Check all</Text>
           </Pressable>
           {mode === 'manager' ? (
-            <Pressable
-              style={[styles.btnPrimary, busy && styles.btnDisabled]}
-              disabled={busy || !grid}
-              onPress={() => void onManagerSave()}
-            >
-              <Text style={styles.btnPrimaryText}>{busy ? 'Saving…' : 'Save'}</Text>
-            </Pressable>
+            <>
+              <Pressable
+                style={[styles.btnPrimary, busy && styles.btnDisabled]}
+                disabled={busy || !grid}
+                onPress={() => void onManagerSave()}
+              >
+                <Text style={styles.btnPrimaryText}>{busy ? 'Saving…' : 'Save'}</Text>
+              </Pressable>
+              {showReviewActions ? (
+                <>
+                  <Pressable
+                    style={[styles.btnPrimary, busy && styles.btnDisabled]}
+                    disabled={busy || !grid}
+                    onPress={() => void onManagerReview('approve')}
+                  >
+                    <Text style={styles.btnPrimaryText}>Approve</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.btnSecondary, busy && styles.btnDisabled]}
+                    disabled={busy || !grid}
+                    onPress={() => void onManagerReview('decline')}
+                  >
+                    <Text style={styles.btnSecondaryText}>Decline</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </>
           ) : (
             <Pressable
               style={[styles.btnPrimary, busy && styles.btnDisabled]}
@@ -371,6 +511,12 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
               keyExtractor={(item) => item.id}
               renderItem={({ item }) => {
                 const on = item.id === activeEmployee.id;
+                const entry = getEmployeeAvailabilityWeekEntry(
+                  item,
+                  weekIndex,
+                  draftRows,
+                  staffRequests
+                );
                 return (
                   <Pressable
                     style={[styles.rosterRow, on && styles.rosterRowOn]}
@@ -378,7 +524,11 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
                   >
                     <View style={styles.rosterBody}>
                       <Text style={styles.rosterName}>{employeeDisplayName(item)}</Text>
-                      <Text style={styles.rosterMeta}>{staffTypeLabel(item.staffType)}</Text>
+                      <Text style={styles.rosterMeta}>
+                        {staffTypeLabel(item.staffType)}
+                        {entry.status === 'submitted' ? ' · Pending' : ''}
+                        {entry.status === 'approved' ? ' · Approved' : ''}
+                      </Text>
                     </View>
                     {on ? <Text style={styles.rosterCheck}>✓</Text> : null}
                   </Pressable>
@@ -420,6 +570,37 @@ const styles = StyleSheet.create({
   employeeSelectText: { flex: 1, fontSize: 16, fontWeight: '700', color: '#0f172a' },
   employeeSelectChevron: { fontSize: 16, color: '#64748b', marginLeft: 8 },
   roleLine: { marginTop: 6, fontSize: 13, color: '#64748b' },
+  pendingBlock: {
+    marginTop: 10,
+    marginBottom: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+  },
+  pendingLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#92400e',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 8,
+  },
+  pendingChips: { flexDirection: 'row', gap: 8 },
+  pendingChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+    maxWidth: 160,
+  },
+  pendingChipOn: { backgroundColor: '#fef2f2', borderColor: '#c41230' },
+  pendingChipText: { fontSize: 13, fontWeight: '700', color: '#92400e' },
+  pendingChipTextOn: { color: '#c41230' },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -434,11 +615,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   badgeDraft: { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1' },
-  badgeSubmitted: { backgroundColor: '#ecfdf5', borderColor: '#86efac' },
+  badgeSubmitted: { backgroundColor: '#fffbeb', borderColor: '#fcd34d' },
+  badgeApproved: { backgroundColor: '#ecfdf5', borderColor: '#86efac' },
+  badgeDeclined: { backgroundColor: '#fef2f2', borderColor: '#fca5a5' },
   badgeText: { fontSize: 12, fontWeight: '800' },
   badgeTextDraft: { color: '#475569' },
-  badgeTextSubmitted: { color: '#15803d' },
-  feedback: { fontSize: 13, color: '#15803d', fontWeight: '600' },
+  badgeTextSubmitted: { color: '#92400e' },
+  badgeTextApproved: { color: '#15803d' },
+  badgeTextDeclined: { color: '#b91c1c' },
+  feedback: { fontSize: 13, color: '#15803d', fontWeight: '600', flexShrink: 1 },
   actions: { marginTop: 16, gap: 10 },
   btnPrimary: {
     backgroundColor: '#c41230',

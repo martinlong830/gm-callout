@@ -100,6 +100,51 @@ type LeaveBalance = {
   sick?: LeaveBalanceSide;
 };
 
+export function leaveHoursFromBalanceForDay(emp: EmployeeRow, iso: string): { vl: number; sl: number } {
+  if (!iso) return { vl: 0, sl: 0 };
+  const bal = emp.meta?.leaveBalance as LeaveBalance | undefined;
+  if (!bal) return { vl: 0, sl: 0 };
+  let vl = 0;
+  let sl = 0;
+  for (const e of bal.vacation?.entries ?? []) {
+    if (String(e.date ?? '').slice(0, 10) === iso) {
+      vl += Math.max(0, parseFloat(String(e.hours)) || 0);
+    }
+  }
+  for (const e of bal.sick?.entries ?? []) {
+    if (String(e.date ?? '').slice(0, 10) === iso) {
+      sl += Math.max(0, parseFloat(String(e.hours)) || 0);
+    }
+  }
+  return { vl, sl };
+}
+
+function leaveHoursFromRequestsForDay(
+  emp: EmployeeRow,
+  displayName: string,
+  iso: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>
+): { vl: number; sl: number } {
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  if (!iso || iso < weekStart || iso > weekEnd) return { vl: 0, sl: 0 };
+  let vlMins = 0;
+  let slMins = 0;
+  for (const req of staffRequests) {
+    if (req.status !== 'approved') continue;
+    if (!staffRequestMatchesEmployee(req, emp, displayName)) continue;
+    const range = parseTimeoffRequest(req);
+    if (!range) continue;
+    if (iso < range.start || iso > range.end) continue;
+    const dayMins = leaveMinutesForIsoDay(schedMinsByDay, iso);
+    if (range.leaveType === 'sick') slMins += dayMins;
+    else vlMins += dayMins;
+  }
+  return { vl: vlMins / 60, sl: slMins / 60 };
+}
+
 function computeLeaveHoursFromBalance(emp: EmployeeRow, bounds: PayWeekBounds): WeekExtras {
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
@@ -118,7 +163,36 @@ function computeLeaveHoursFromBalance(emp: EmployeeRow, bounds: PayWeekBounds): 
   return { vl, sl, manual: false };
 }
 
-/** Auto VL/SL for one calendar day from approved time off (not saved per-day storage). */
+/**
+ * Effective VL/SL for a day: per-day week-extras, else leaveBalance, else approved requests.
+ * Week-level manual override suppresses auto sources for per-day display.
+ */
+export function getEffectiveDayLeaveSync(
+  emp: EmployeeRow,
+  displayName: string,
+  iso: string,
+  bounds: PayWeekBounds,
+  staffRequests: StaffRequestUi[],
+  schedMinsByDay: Record<string, number>,
+  slice: WeekExtrasSlice
+): { vl: number; sl: number } {
+  if (!iso) return { vl: 0, sl: 0 };
+  const key = dayLeaveStorageKey(emp.id, iso);
+  const row = slice[key];
+  if (isDayLeaveRow(row) && row.manual !== false) {
+    return {
+      vl: Math.max(0, parseFloat(String(row.vl)) || 0),
+      sl: Math.max(0, parseFloat(String(row.sl)) || 0),
+    };
+  }
+  const weekRow = slice[emp.id];
+  if (isDayLeaveRow(weekRow) && weekRow.manual) return { vl: 0, sl: 0 };
+  const fromBal = leaveHoursFromBalanceForDay(emp, iso);
+  if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
+  return leaveHoursFromRequestsForDay(emp, displayName, iso, bounds, staffRequests, schedMinsByDay);
+}
+
+/** Auto VL/SL for one calendar day (not yet saved to per-day storage). */
 export function getSuggestedDayLeaveSync(
   emp: EmployeeRow,
   displayName: string,
@@ -129,25 +203,15 @@ export function getSuggestedDayLeaveSync(
   slice: WeekExtrasSlice
 ): { vl: number; sl: number } {
   if (!iso) return { vl: 0, sl: 0 };
-  if (sumManualDayLeaveForEmployee(emp.id, bounds, slice)) return { vl: 0, sl: 0 };
+  const key = dayLeaveStorageKey(emp.id, iso);
+  if (isDayLeaveRow(slice[key]) && (slice[key] as DayLeaveRow).manual !== false) {
+    return { vl: 0, sl: 0 };
+  }
   const weekRow = slice[emp.id];
   if (isDayLeaveRow(weekRow) && weekRow.manual) return { vl: 0, sl: 0 };
-  const weekStart = isoFromDate(bounds.start);
-  const weekEnd = isoFromDate(bounds.end);
-  if (iso < weekStart || iso > weekEnd) return { vl: 0, sl: 0 };
-  let vlMins = 0;
-  let slMins = 0;
-  for (const req of staffRequests) {
-    if (req.status !== 'approved') continue;
-    if (!staffRequestMatchesEmployee(req, emp, displayName)) continue;
-    const range = parseTimeoffRequest(req);
-    if (!range) continue;
-    if (iso < range.start || iso > range.end) continue;
-    const dayMins = leaveMinutesForIsoDay(schedMinsByDay, iso);
-    if (range.leaveType === 'sick') slMins += dayMins;
-    else vlMins += dayMins;
-  }
-  return { vl: vlMins / 60, sl: slMins / 60 };
+  const fromBal = leaveHoursFromBalanceForDay(emp, iso);
+  if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
+  return leaveHoursFromRequestsForDay(emp, displayName, iso, bounds, staffRequests, schedMinsByDay);
 }
 
 export async function getSuggestedDayLeave(
@@ -199,9 +263,19 @@ export async function setEmployeeDayLeave(
   const key = dayLeaveStorageKey(empId, iso);
   const v = Math.max(0, vl);
   const s = Math.max(0, sl);
-  if (v <= 0 && s <= 0) delete slice[key];
-  else slice[key] = { vl: v, sl: s, manual: true };
+  // Keep explicit zeros so leaveBalance / requests do not reappear after clear.
+  slice[key] = { vl: v, sl: s, manual: true };
   delete slice[empId];
+  await saveWeekExtrasMap(bounds, slice);
+}
+
+export async function clearEmployeeDayLeave(
+  empId: string,
+  iso: string,
+  bounds: PayWeekBounds
+): Promise<void> {
+  const slice = await loadWeekExtrasMap(bounds);
+  delete slice[dayLeaveStorageKey(empId, iso)];
   await saveWeekExtrasMap(bounds, slice);
 }
 
@@ -238,8 +312,6 @@ export function getEmployeeWeekExtrasSync(
   schedMinsByDay: Record<string, number>,
   slice: WeekExtrasSlice
 ): WeekExtras {
-  const daySum = sumManualDayLeaveForEmployee(emp.id, bounds, slice);
-  if (daySum) return daySum;
   const row = slice[emp.id];
   if (isDayLeaveRow(row) && row.manual) {
     const manualVl = Math.max(0, parseFloat(String(row.vl)) || 0);
@@ -248,9 +320,33 @@ export function getEmployeeWeekExtrasSync(
       return { vl: manualVl, sl: manualSl, manual: true };
     }
   }
-  const fromBalance = computeLeaveHoursFromBalance(emp, bounds);
-  if (fromBalance.vl > 0 || fromBalance.sl > 0) return fromBalance;
-  return computeLeaveExtrasFromRequests(emp, displayName, bounds, staffRequests, schedMinsByDay);
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  let vl = 0;
+  let sl = 0;
+  let anyManual = false;
+  const cur = new Date(bounds.start.getFullYear(), bounds.start.getMonth(), bounds.start.getDate());
+  const end = new Date(bounds.end.getFullYear(), bounds.end.getMonth(), bounds.end.getDate());
+  while (cur <= end) {
+    const iso = isoFromDate(cur);
+    if (iso >= weekStart && iso <= weekEnd) {
+      const day = getEffectiveDayLeaveSync(
+        emp,
+        displayName,
+        iso,
+        bounds,
+        staffRequests,
+        schedMinsByDay,
+        slice
+      );
+      vl += day.vl;
+      sl += day.sl;
+      if (slice[dayLeaveStorageKey(emp.id, iso)]) anyManual = true;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  if (vl > 0 || sl > 0) return { vl, sl, manual: anyManual };
+  return { vl: 0, sl: 0, manual: false };
 }
 
 export async function getEmployeeWeekExtras(

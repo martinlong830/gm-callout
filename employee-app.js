@@ -722,11 +722,36 @@
     }
 
     function setEmpAvailStatusBadge(status) {
-      currentAvailStatus = status === 'submitted' ? 'submitted' : 'draft';
+      var s = String(status || '')
+        .trim()
+        .toLowerCase();
+      if (s === 'approved') currentAvailStatus = 'approved';
+      else if (s === 'declined' || s === 'rejected' || s === 'denied') currentAvailStatus = 'declined';
+      else if (s === 'submitted' || s === 'pending') currentAvailStatus = 'submitted';
+      else currentAvailStatus = 'draft';
       if (!empAvailStatus) return;
-      empAvailStatus.textContent = currentAvailStatus === 'submitted' ? 'Submitted' : 'Draft';
-      empAvailStatus.classList.toggle('avail-status-badge--submitted', currentAvailStatus === 'submitted');
-      empAvailStatus.classList.toggle('avail-status-badge--draft', currentAvailStatus !== 'submitted');
+      var label =
+        currentAvailStatus === 'approved'
+          ? 'Approved'
+          : currentAvailStatus === 'declined'
+            ? 'Declined'
+            : currentAvailStatus === 'submitted'
+              ? 'Pending'
+              : 'Draft';
+      empAvailStatus.textContent = label;
+      empAvailStatus.classList.toggle('avail-status-badge--draft', currentAvailStatus === 'draft');
+      empAvailStatus.classList.toggle(
+        'avail-status-badge--submitted',
+        currentAvailStatus === 'submitted'
+      );
+      empAvailStatus.classList.toggle(
+        'avail-status-badge--approved',
+        currentAvailStatus === 'approved'
+      );
+      empAvailStatus.classList.toggle(
+        'avail-status-badge--declined',
+        currentAvailStatus === 'declined'
+      );
     }
 
     function updateEmpAvailWeekNav() {
@@ -805,7 +830,7 @@
         return;
       }
       setEmpAvailStatusBadge('submitted');
-      showAvailFeedback('Submitted. Your manager can see this week on Availability.');
+      showAvailFeedback('Submitted. Waiting for your manager to approve this week.');
       setTimeout(function () {
         showAvailFeedback('');
       }, 4000);

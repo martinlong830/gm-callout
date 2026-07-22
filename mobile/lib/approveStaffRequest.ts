@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { applyAvailabilityWeekEntry } from './availabilityByWeek';
 import { saveEmployeeRow } from './employeeSave';
 import { employeeDisplayName, type EmployeeRow } from './employees';
 import type { DraftGrid } from './schedule/types';
@@ -33,10 +34,19 @@ export async function approveStaffRequest(
     if (emp) {
       const staffType = emp.staffType || request.role || 'Kitchen';
       const merged = normalizeWeeklyGrid(request.submittedGrid, staffType, draftRows);
-      const saved = await saveEmployeeRow(sb, {
-        ...emp,
-        weeklyGrid: merged as unknown as Record<string, unknown>,
-      });
+      const weekIndex =
+        request.submittedWeekIndex != null ? Number(request.submittedWeekIndex) : 0;
+      const withWeek = applyAvailabilityWeekEntry(
+        emp,
+        weekIndex,
+        {
+          grid: merged,
+          status: 'approved',
+          submittedAt: request.submittedAt || null,
+        },
+        { syncWeeklyGrid: true, draftRows }
+      );
+      const saved = await saveEmployeeRow(sb, withWeek);
       if (!saved.ok) {
         return {
           ok: false,

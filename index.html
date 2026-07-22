@@ -1174,13 +1174,16 @@
           </div>
           <span class="avail-status-badge" id="mgrAvailStatus" aria-live="polite">Draft</span>
         </div>
+        <div id="mgrAvailPendingList" class="avail-pending-list" hidden aria-live="polite"></div>
         <p class="calendar-hint avail-tab-hint">
-          View or edit each employee’s week. Drag a time block onto another day to copy it (hold Shift while dropping to move).
+          View or edit each employee’s week. Drag a time block onto another day to copy it (hold Shift while dropping to move). Approve pending submissions when ready.
         </p>
         <div id="mgrAvailGrid" class="availability-grid-wrap avail-tab-grid" aria-label="Employee availability"></div>
         <div class="avail-tab-actions">
           <button type="button" class="btn btn-secondary" id="mgrAvailCheckAllBtn">Check all</button>
           <button type="button" class="btn btn-primary" id="mgrAvailSaveBtn">Save availability</button>
+          <button type="button" class="btn btn-primary" id="mgrAvailApproveBtn" hidden>Approve</button>
+          <button type="button" class="btn btn-secondary" id="mgrAvailDeclineBtn" hidden>Decline</button>
         </div>
         <p class="calendar-hint avail-tab-feedback" id="mgrAvailFeedback" hidden></p>
       </section>

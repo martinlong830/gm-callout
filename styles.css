@@ -920,15 +920,75 @@ html.authed .header-signout-btn {
 }
 
 .avail-status-badge--submitted {
+  background: #fff8e1;
+  color: #8d6e00;
+  border-color: #ffe082;
+}
+
+.avail-status-badge--approved {
   background: #e8f5e9;
   color: #1b5e20;
   border-color: #a5d6a7;
 }
 
+.avail-status-badge--declined {
+  background: #fce8e6;
+  color: #b71c1c;
+  border-color: #ef9a9a;
+}
+
 .avail-status-badge--draft {
-  background: #fff8e1;
-  color: #8d6e00;
-  border-color: #ffe082;
+  background: #f3f4f6;
+  color: #4b5563;
+  border-color: #d1d5db;
+}
+
+.avail-pending-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--surface-2, #f8fafc);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.avail-pending-list-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.avail-pending-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.avail-pending-chip:hover,
+.avail-pending-chip:focus-visible {
+  border-color: var(--accent, #c41230);
+  color: var(--accent, #c41230);
+  outline: none;
+}
+
+.avail-pending-chip--active {
+  border-color: var(--accent, #c41230);
+  background: #fef2f2;
+  color: var(--accent, #c41230);
 }
 
 .availability-matrix-cell-time--draggable {

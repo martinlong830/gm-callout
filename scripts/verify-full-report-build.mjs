@@ -80,6 +80,18 @@ const mockEmployees = [
     weeklyGrid: {},
     meta: { position: 'SERVICE REP' },
   },
+  {
+    id: 'e-paid-off',
+    firstName: 'PAID',
+    lastName: 'OFFSCHEDULE',
+    staffType: 'Kitchen',
+    phone: '',
+    usualRestaurant: 'rp-9',
+    hourlyRate: 16,
+    tipPoint: 2,
+    weeklyGrid: {},
+    meta: { position: 'COOK', hiringDate: '6/1/2024' },
+  },
 ];
 
 const storage = new Map();
@@ -301,22 +313,30 @@ vm.runInContext(code, sandbox);
 
 sandbox.gmCalloutTimecards.init(deps);
 
-const mockRows = mockEmployees.map((emp) => ({
-  emp,
-  name: deps.employeeDisplayName(emp),
-  regMins: 2400,
-  otMins: 0,
-  vlHours: 0,
-  slHours: 0,
-  regPay: (emp.hourlyRate || 15) * 40,
-  otPay: 0,
-  sohCount: 0,
-  sohDatesLabel: '—',
-  sohPay: null,
-  grandTotalPay: (emp.hourlyRate || 15) * 40,
-  dishwasherTipsPay: 0,
-  additionalCashTip: 0,
-}));
+const mockRows = mockEmployees.map((emp) => {
+  const onSchedule = emp.id === 'e1' || emp.id === 'e2' || emp.id === 'e8';
+  const paidOffSchedule = emp.id === 'e-paid-off';
+  const hasPay = onSchedule || paidOffSchedule;
+  return {
+    emp,
+    name: deps.employeeDisplayName(emp),
+    deptRank: emp.staffType === 'Bartender' ? 0 : emp.staffType === 'Kitchen' ? 1 : 2,
+    scheduleIndex: 0,
+    regMins: hasPay ? 2400 : 0,
+    otMins: 0,
+    totalMins: hasPay ? 2400 : 0,
+    vlHours: 0,
+    slHours: 0,
+    regPay: hasPay ? (emp.hourlyRate || 15) * 40 : 0,
+    otPay: 0,
+    sohCount: 0,
+    sohDatesLabel: '—',
+    sohPay: null,
+    grandTotalPay: hasPay ? (emp.hourlyRate || 15) * 40 : 0,
+    dishwasherTipsPay: 0,
+    additionalCashTip: 0,
+  };
+});
 
 sandbox.__gmTimecardsTest.setRosterCacheForTest(mockRows);
 
@@ -410,9 +430,10 @@ if (freshSched.indexOf('4:00PM BREAK TIME') < 0) {
 }
 console.log('OK: Schedule sheet reflects live snapshot; forceFresh bypasses stale cache');
 
-/* Full report must exclude staff not on main schedule rows this week (Mike Clarino case). */
+/* Full report: exclude zero-work roster-only staff; include off-schedule paid workers. */
+sandbox.__gmTimecardsTest.setRosterCacheForTest(mockRows);
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
-const scheduledOnlyBuild = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
+const scheduledOnlyBuild = sandbox.__gmTimecardsTest.buildFullReportSheets();
 function sheetHasName(sheets, sheetName, person) {
   const sh = sheets.find((s) => s.name === sheetName);
   return worksheetText(sh && sh.worksheet).indexOf(person) >= 0;
@@ -428,7 +449,13 @@ for (const sheetName of ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Inform
 if (!sheetHasName(scheduledOnlyBuild, 'Labor Cost', 'MARK') || !sheetHasName(scheduledOnlyBuild, 'Labor Cost', 'ONG')) {
   throw new Error('Labor Cost should still include scheduled MARK ONG');
 }
-console.log('OK: full report excludes employees not on main schedule rows');
+if (!sheetHasName(scheduledOnlyBuild, 'Labor Cost', 'PAID') || !sheetHasName(scheduledOnlyBuild, 'Payroll', 'PAID')) {
+  throw new Error('Full report should include off-schedule employee with payable hours');
+}
+if (!sheetHasName(scheduledOnlyBuild, 'Employee Information', 'PAID OFFSCHEDULE')) {
+  throw new Error('Employee Information should include off-schedule paid employee');
+}
+console.log('OK: full report excludes zero-work roster-only; includes payable off-schedule staff');
 
 /* Payslip omits empty day-off / off-schedule rows with no punches or day pay. */
 {
@@ -687,4 +714,82 @@ async function verifyPayslipPatchedExport() {
 }
 
 await verifyPayslipPatchedExport();
+
+/* Person-week view: leaveBalance VL/SL days surface as rows + week extras; punch days not
+ * hidden by location filter when personWeekView is used. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  const leaveEmp = {
+    id: 'e-leave',
+    firstName: 'LEAVE',
+    lastName: 'TESTER',
+    staffType: 'Kitchen',
+    usualRestaurant: 'rp-9',
+    hourlyRate: 18,
+    weeklyGrid: {},
+    meta: {
+      leaveBalance: {
+        vacation: { entries: [{ date: '2026-05-20', hours: 8 }] },
+        sick: { entries: [{ date: '2026-05-21', hours: 4 }] },
+      },
+    },
+  };
+  deps.employees = mockEmployees.concat([leaveEmp]);
+  T.setWeekEntriesForTest([]);
+  const leaveExtras = T.getEmployeeWeekExtras(leaveEmp);
+  if (Math.abs(leaveExtras.vl - 8) > 0.01 || Math.abs(leaveExtras.sl - 4) > 0.01) {
+    throw new Error(
+      'Week extras should include leaveBalance VL/SL (got vl=' +
+        leaveExtras.vl +
+        ' sl=' +
+        leaveExtras.sl +
+        ')'
+    );
+  }
+  const leaveShifts = T.buildShiftsForEmployeeInWeek(leaveEmp, { personWeekView: true });
+  const leaveIsos = leaveShifts.map((r) => r.iso);
+  if (leaveIsos.indexOf('2026-05-20') < 0 || leaveIsos.indexOf('2026-05-21') < 0) {
+    throw new Error('Person week view must list leaveBalance VL/SL days: ' + leaveIsos.join(','));
+  }
+  const effVl = T.getEffectiveDayLeave(leaveEmp, '2026-05-20');
+  const effSl = T.getEffectiveDayLeave(leaveEmp, '2026-05-21');
+  if (Math.abs(effVl.vl - 8) > 0.01 || Math.abs(effSl.sl - 4) > 0.01) {
+    throw new Error('getEffectiveDayLeave should read leaveBalance entries');
+  }
+
+  /* Manual VL-only off-schedule day appears even when location filter is set. */
+  T.setTimecardsLocationFilterForTest('rp-8');
+  T.setEmployeeDayLeave('e1', '2026-05-22', 7.5, 0);
+  const mark = mockEmployees[0];
+  const markRows = T.buildShiftsForEmployeeInWeek(mark, { personWeekView: true });
+  if (!markRows.some((r) => r.iso === '2026-05-22')) {
+    throw new Error('Person week view must show VL-only day despite location filter');
+  }
+  if (!T.payslipShiftRowHasPayableActivity(mark, {
+    iso: '2026-05-22',
+    shift: { id: 'off-schedule:2026-05-22', start: '', end: '' },
+  })) {
+    throw new Error('VL-only day should be payable on payslip');
+  }
+
+  /* Cross-location punch still surfaces on person week view. */
+  T.setWeekEntriesForTest([
+    {
+      id: 'punch-x',
+      employee_id: 'e1',
+      clock_in_at: '2026-05-19T15:00:00.000Z',
+      clock_out_at: '2026-05-19T23:00:00.000Z',
+      clock_restaurant_id: 'rp-9',
+      break_minutes: 0,
+    },
+  ]);
+  T.setTimecardsLocationFilterForTest('rp-8');
+  const punchRows = T.buildShiftsForEmployeeInWeek(mark, { personWeekView: true });
+  if (!punchRows.some((r) => r.iso === '2026-05-19')) {
+    throw new Error('Person week view must show cross-location punch day');
+  }
+  T.setTimecardsLocationFilterForTest('rp-9');
+  T.setWeekEntriesForTest([]);
+  console.log('OK: person week view shows leaveBalance + VL-only + cross-location punch days');
+}
 

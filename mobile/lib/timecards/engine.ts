@@ -31,6 +31,8 @@ import {
 import {
   getEmployeeWeekExtras,
   getEmployeeWeekExtrasSync,
+  getEmployeeDayLeaveSync,
+  leaveHoursFromBalanceForDay,
   loadWeekExtrasSlice,
   sumEmployeeWeekAdditionalCashTipsSync,
   type WeekExtrasSlice,
@@ -340,7 +342,15 @@ export function dailyRecordedMinutesForShiftRow(
     entries,
     scheduleCtx
   );
-  if (attributed > 0 || isOffScheduleShiftDayRow(row)) return attributed;
+  if (attributed > 0) return attributed;
+  if (isOffScheduleShiftDayRow(row)) {
+    let offTotal = 0;
+    for (const e of findEntriesForDay(entries, emp.id, row.iso)) {
+      if (!entryHasMeaningfulPunch(e, row.iso)) continue;
+      offTotal += recordedPaidMinutes(e, null, emp);
+    }
+    return offTotal;
+  }
   const name = employeeDisplayName(emp);
   const byWorker = scheduleCtx.payWeekShiftsByWorkerKey;
   let scheduledSameDay = 0;
@@ -884,6 +894,7 @@ export type BuildShiftsOptions = {
   extrasSlice?: WeekExtrasSlice;
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
+  staffRequests?: StaffRequestUi[];
 };
 
 /** Scheduled paid minutes by day (all schedule rows in pay week, not activity-filtered). */
@@ -937,6 +948,8 @@ export function buildShiftsForEmployeeInWeek(
     extrasSlice: options?.extrasSlice,
     dishwasherTipsSlice: options?.dishwasherTipsSlice,
     addedDayIsos,
+    emp,
+    staffRequests: options?.staffRequests,
   });
   const offSchedule = offIsos.map((iso) => makeOffScheduleShiftDayRow(iso));
   const activityParams = {
@@ -945,20 +958,45 @@ export function buildShiftsForEmployeeInWeek(
     extrasSlice: options?.extrasSlice,
     dishwasherTipsSlice: options?.dishwasherTipsSlice,
     addedDayIsos,
+    emp,
   };
 
-  return [...scheduled, ...offSchedule]
-    .filter((row) => {
-      const hasActivity = dayHasTimecardActivity({ ...activityParams, iso: row.iso });
-      if (isOffScheduleShiftDayRow(row)) return hasActivity;
-      return scheduledPaidMinutes(row.shift, emp) > 0 || hasActivity;
-    })
-    .sort((a, b) => {
-      if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
-      if (isOffScheduleShiftDayRow(a) && !isOffScheduleShiftDayRow(b)) return 1;
-      if (!isOffScheduleShiftDayRow(a) && isOffScheduleShiftDayRow(b)) return -1;
-      return String(a.shift.start).localeCompare(String(b.shift.start));
-    });
+  const rows = [...scheduled, ...offSchedule].filter((row) => {
+    const hasActivity = dayHasTimecardActivity({ ...activityParams, iso: row.iso });
+    if (isOffScheduleShiftDayRow(row)) return hasActivity;
+    return scheduledPaidMinutes(row.shift, emp) > 0 || hasActivity;
+  });
+
+  // Safety net: punches or leave can feed weekly totals while the day was dropped from the list.
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  const covered = new Set(rows.map((r) => r.iso).filter(Boolean));
+  for (const e of options?.entries ?? []) {
+    if (e.employee_id !== emp.id || !e.clock_in_at) continue;
+    const punchIso = isoFromDate(new Date(e.clock_in_at));
+    if (!punchIso || punchIso < weekStart || punchIso > weekEnd) continue;
+    if (covered.has(punchIso)) continue;
+    if (!entryHasMeaningfulPunch(e, punchIso)) continue;
+    rows.push(makeOffScheduleShiftDayRow(punchIso));
+    covered.add(punchIso);
+  }
+  const cur = new Date(bounds.start.getFullYear(), bounds.start.getMonth(), bounds.start.getDate());
+  const end = new Date(bounds.end.getFullYear(), bounds.end.getMonth(), bounds.end.getDate());
+  while (cur <= end) {
+    const dayIso = isoFromDate(cur);
+    if (!covered.has(dayIso) && dayHasTimecardActivity({ ...activityParams, iso: dayIso })) {
+      rows.push(makeOffScheduleShiftDayRow(dayIso));
+      covered.add(dayIso);
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  return rows.sort((a, b) => {
+    if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
+    if (isOffScheduleShiftDayRow(a) && !isOffScheduleShiftDayRow(b)) return 1;
+    if (!isOffScheduleShiftDayRow(a) && isOffScheduleShiftDayRow(b)) return -1;
+    return String(a.shift.start).localeCompare(String(b.shift.start));
+  });
 }
 
 export function dailyRecordedMinutesForEmployee(
@@ -1152,11 +1190,26 @@ export function shiftMatchesLocationFilter(
   emp: EmployeeRow,
   entries: TimeClockEntry[],
   scheduleCtx: ScheduleContext,
-  locationFilter: LocationFilter
+  locationFilter: LocationFilter,
+  extrasSlice?: WeekExtrasSlice
 ): boolean {
   if (locationFilter === 'all') return true;
   if (!shiftRow?.shift) return true;
   if (isOffScheduleShiftDayRow(shiftRow)) {
+    const dayEntries = entries.filter(
+      (e) => e.employee_id === emp.id && punchDayIso(e) === shiftRow.iso
+    );
+    let sawMeaningful = false;
+    for (const e of dayEntries) {
+      if (!entryHasMeaningfulPunch(e, shiftRow.iso)) continue;
+      sawMeaningful = true;
+      if (entryRestaurantId(emp, e, entries, scheduleCtx) === locationFilter) return true;
+    }
+    if (sawMeaningful) return false;
+    const leave = getEmployeeDayLeaveSync(emp.id, shiftRow.iso, extrasSlice ?? {});
+    if (leave.vl > 0 || leave.sl > 0) return true;
+    const fromBal = leaveHoursFromBalanceForDay(emp, shiftRow.iso);
+    if (fromBal.vl > 0 || fromBal.sl > 0) return true;
     return punchDayRestaurantId(emp, shiftRow.iso, entries, scheduleCtx) === locationFilter;
   }
   return shiftRestaurantId(shiftRow.shift) === locationFilter;
@@ -1180,6 +1233,7 @@ export function buildRosterRowSync(
     entries,
     extrasSlice,
     dishwasherTipsSlice,
+    staffRequests,
   });
   const schedMinsByDay = buildScheduledMinutesByDayForEmployee(
     emp,
@@ -1198,7 +1252,7 @@ export function buildRosterRowSync(
   for (const row of shifts) {
     if (
       locationFilter !== 'all' &&
-      !shiftMatchesLocationFilter(row, emp, entries, scheduleCtx, locationFilter)
+      !shiftMatchesLocationFilter(row, emp, entries, scheduleCtx, locationFilter, extrasSlice)
     ) {
       continue;
     }
@@ -1588,9 +1642,11 @@ export function formatHistoryLines(entry: TimeClockEntry): { when: string; lines
 export {
   getEmployeeDayLeave,
   getEmployeeWeekExtras,
+  getEffectiveDayLeaveSync,
   getSuggestedDayLeave,
   setEmployeeDayLeave,
   setEmployeeWeekExtras,
+  loadWeekExtrasSlice,
 } from './weekExtras';
 export { formatPunchClock } from './punch';
 export { normalizePunchTimesForShift } from './punch';

@@ -13,6 +13,7 @@ import type {
   WeekMeta,
   WeekdayKey,
 } from './types';
+import { compareEmployeesBySeniority } from './rosterOrder';
 
 /** Matches web portal `SCHEDULE_PAST_WEEK_COUNT` / anchor week grid. */
 export const SCHEDULE_PAST_WEEK_COUNT = 12;
@@ -608,49 +609,8 @@ export function weekdayKeyFromScheduleDay(dayStr: string): WeekdayKey {
   return (parts[0] || 'Mon') as WeekdayKey;
 }
 
-function normNameKeyLite(s: string): string {
-  return String(s || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
-
-function nameFirstTokenLite(s: string): string {
-  const parts = normNameKeyLite(s).split(' ').filter(Boolean);
-  return parts.length ? parts[0] : '';
-}
-
-function nameLastTokenLite(s: string): string {
-  const parts = normNameKeyLite(s).split(' ').filter(Boolean);
-  return parts.length ? parts[parts.length - 1].replace(/\.$/, '') : '';
-}
-
-function employeeMatchesSheetNameLite(emp: EmployeeLite, sheetName: string): boolean {
-  const a = normNameKeyLite(employeeDisplayNameLite(emp));
-  const b = normNameKeyLite(sheetName);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  return nameFirstTokenLite(a) === nameFirstTokenLite(b) && nameLastTokenLite(a) === nameLastTokenLite(b);
-}
-
-function scheduleIndexForEmployeeLite(emp: EmployeeLite): number {
-  const sheetOrder = [
-    ...TEAM_ROSTER_BARTENDER,
-    ...TEAM_ROSTER_KITCHEN,
-    ...TEAM_ROSTER_SERVER,
-  ];
-  for (let i = 0; i < sheetOrder.length; i += 1) {
-    if (employeeMatchesSheetNameLite(emp, sheetOrder[i])) return i;
-  }
-  const deptRank: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
-  return 1000 + (deptRank[emp.staffType] ?? 99) * 100;
-}
-
 function compareEmployeesByScheduleOrderLite(a: EmployeeLite, b: EmployeeLite): number {
-  const ia = scheduleIndexForEmployeeLite(a);
-  const ib = scheduleIndexForEmployeeLite(b);
-  if (ia !== ib) return ia - ib;
-  return employeeDisplayNameLite(a).localeCompare(employeeDisplayNameLite(b), undefined, { sensitivity: 'base' });
+  return compareEmployeesBySeniority(a, b);
 }
 
 function employeeDisplayNameLite(emp: EmployeeLite): string {
@@ -1064,7 +1024,13 @@ function applyScheduleAssignmentsMerge(
     const list = entry.workers.filter(
       (n) => n && n !== 'Unassigned' && scheduleWorkerIsOnTeamLite(employees, n, restaurantId)
     );
-    if (!list.length) return;
+    if (!list.length) {
+      // Explicit Unassigned (or empty) assignment must clear pickDefault roster names —
+      // otherwise the slot stays staffed and blocks off-schedule punch rows for that day.
+      s.workers = ['Unassigned'];
+      s.worker = 'Unassigned';
+      return;
+    }
     const canon = canonicalizeScheduleWorkerListLite(employees, list, restaurantId);
     s.workers = canon.slice();
     s.worker = s.workers[0];
