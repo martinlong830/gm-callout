@@ -444,8 +444,12 @@ function normNameKey(name: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function staffRequestMatchesEmployee(req: StaffRequestUi, emp: EmployeeRow, displayName: string): boolean {
-  const a = normNameKey(displayName);
+export function staffRequestMatchesEmployee(
+  req: { employeeName?: string },
+  emp: EmployeeRow,
+  displayName: string
+): boolean {
+  const a = normNameKey(displayName || '');
   const b = normNameKey(req.employeeName || '');
   if (!a || !b) return false;
   if (a === b) return true;
@@ -459,18 +463,32 @@ function staffRequestMatchesEmployee(req: StaffRequestUi, emp: EmployeeRow, disp
   return tl === bl || (tl.length > 0 && bl.length > 0 && tl[0] === bl[0]);
 }
 
-function parseTimeoffRequest(req: StaffRequestUi): { start: string; end: string; leaveType: 'sick' | 'vacation' } | null {
-  if (req.type !== 'timeoff') return null;
+/** Parity with web `parseTimeoffRequest` — prefer explicit start/end, else summary range. */
+export function parseTimeoffRequest(req: {
+  type?: string;
+  summary?: string;
+  leaveType?: string;
+  timeoffStart?: string;
+  timeoffEnd?: string;
+}): { start: string; end: string; leaveType: 'sick' | 'vacation' } | null {
+  if (!req || req.type !== 'timeoff') return null;
   const summary = String(req.summary || '');
+  let start = req.timeoffStart ? String(req.timeoffStart).slice(0, 10) : '';
+  let end = req.timeoffEnd ? String(req.timeoffEnd).slice(0, 10) : '';
   const m = summary.match(
     /(?:Time Off|Vacation leave|Sick leave):\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/i
   );
-  let start = m ? m[1] : '';
-  let end = m ? m[2] : '';
+  if (m) {
+    if (!start) start = m[1];
+    if (!end) end = m[2];
+  }
   if (!start || !end || end < start) return null;
-  let leaveType: 'sick' | 'vacation' = 'vacation';
-  if (/^sick leave:/i.test(summary)) leaveType = 'sick';
-  else if (/^vacation leave:/i.test(summary)) leaveType = 'vacation';
+  let leaveType: 'sick' | 'vacation' =
+    req.leaveType === 'sick' || req.leaveType === 'vacation' ? req.leaveType : 'vacation';
+  if (req.leaveType !== 'sick' && req.leaveType !== 'vacation') {
+    if (/^sick leave:/i.test(summary)) leaveType = 'sick';
+    else if (/^vacation leave:/i.test(summary)) leaveType = 'vacation';
+  }
   return { start, end, leaveType };
 }
 

@@ -117,8 +117,12 @@ export default function TimecardsShiftScreen() {
 
   const weekShifts = useMemo(() => {
     if (!emp) return [];
-    return buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, scheduleCtx, { entries });
-  }, [emp, teamState, lites, bounds, entries, scheduleCtx]);
+    return buildShiftsForEmployeeInWeek(emp, teamState, lites, bounds, scheduleCtx, {
+      entries,
+      staffRequests,
+      personWeekView: true,
+    });
+  }, [emp, teamState, lites, bounds, entries, scheduleCtx, staffRequests]);
 
   const shiftRow = useMemo((): ShiftDayRow | null => {
     if (!emp || !iso) return null;

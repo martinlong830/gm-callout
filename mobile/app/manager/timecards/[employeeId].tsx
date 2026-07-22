@@ -156,6 +156,7 @@ export default function TimecardsEmployeeScreen() {
             dishwasherTipsSlice,
             addedDayIsos,
             staffRequests,
+            personWeekView: true,
           })
         : [],
     [emp, teamState, lites, bounds, entries, extrasSlice, dishwasherTipsSlice, addedDayIsos, staffRequests]

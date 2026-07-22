@@ -31,6 +31,7 @@ import {
 import {
   getEmployeeWeekExtras,
   getEmployeeWeekExtrasSync,
+  getEffectiveDayLeaveSync,
   getEmployeeDayLeaveSync,
   leaveHoursFromBalanceForDay,
   loadWeekExtrasSlice,
@@ -66,7 +67,7 @@ import {
   unpaidBreakMinutes,
   formatBreakPolicyLabel,
 } from './breakPolicy';
-import { entryRestaurantId, punchDayRestaurantId, type LocationFilter } from './restaurantAttribution';
+import { employeeHomeRestaurant, entryRestaurantId, punchDayRestaurantId, type LocationFilter } from './restaurantAttribution';
 
 export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds, EmployeeClockStatus };
 
@@ -895,6 +896,8 @@ export type BuildShiftsOptions = {
   dishwasherTipsSlice?: Record<string, number>;
   addedDayIsos?: string[];
   staffRequests?: StaffRequestUi[];
+  /** Person week list (screen 11) — match web `personWeekView`. */
+  personWeekView?: boolean;
 };
 
 /** Scheduled paid minutes by day (all schedule rows in pay week, not activity-filtered). */
@@ -924,9 +927,11 @@ export function buildShiftsForEmployeeInWeek(
   cachedCtx?: ScheduleContext,
   options?: BuildShiftsOptions
 ): ShiftDayRow[] {
+  const personWeek = options?.personWeekView === true;
   const scheduleCtx =
     cachedCtx ?? buildScheduleContext(teamState, { bounds, employees });
   const todayIso = isoFromDate(new Date());
+  const name = employeeDisplayName(emp);
   const all = getWorkerScheduleShiftsForContext(emp, scheduleCtx, employees, bounds);
   const scheduled = all.map((s) => {
     const iso = s.iso ?? '';
@@ -940,6 +945,13 @@ export function buildShiftsForEmployeeInWeek(
 
   const scheduledIsos = new Set(scheduled.map((r) => r.iso).filter(Boolean));
   const addedDayIsos = options?.addedDayIsos ?? getAddedOffScheduleDays(emp.id);
+  const schedMinsByDay = buildScheduledMinutesByDayForEmployee(
+    emp,
+    teamState,
+    employees,
+    bounds,
+    scheduleCtx
+  );
   const offIsos = collectOffScheduleDayIsos({
     empId: emp.id,
     bounds,
@@ -949,6 +961,7 @@ export function buildShiftsForEmployeeInWeek(
     dishwasherTipsSlice: options?.dishwasherTipsSlice,
     addedDayIsos,
     emp,
+    displayName: name,
     staffRequests: options?.staffRequests,
   });
   const offSchedule = offIsos.map((iso) => makeOffScheduleShiftDayRow(iso));
@@ -959,21 +972,33 @@ export function buildShiftsForEmployeeInWeek(
     dishwasherTipsSlice: options?.dishwasherTipsSlice,
     addedDayIsos,
     emp,
+    displayName: name,
+    bounds,
+    staffRequests: options?.staffRequests,
+    schedMinsByDay,
   };
+  const entries = options?.entries ?? [];
 
   const rows = [...scheduled, ...offSchedule].filter((row) => {
     const hasActivity = dayHasTimecardActivity({ ...activityParams, iso: row.iso });
     if (isOffScheduleShiftDayRow(row)) return hasActivity;
-    return scheduledPaidMinutes(row.shift, emp) > 0 || hasActivity;
+    const sched = scheduledPaidMinutes(row.shift, emp);
+    const locMins = dailyRecordedMinutesForEmployee(entries, emp.id, row.iso, emp);
+    if (!personWeek) {
+      const home = employeeHomeRestaurant(emp);
+      const restId = shiftRestaurantId(row.shift);
+      if (home !== 'both' && home !== restId && locMins <= 0 && !hasActivity) return false;
+    }
+    return sched > 0 || locMins > 0 || hasActivity;
   });
 
-  // Safety net: punches or leave can feed weekly totals while the day was dropped from the list.
+  // Safety net (web `ensureActivityDaysHaveShiftRows`): meaningful punches + effective leave only.
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
   const covered = new Set(rows.map((r) => r.iso).filter(Boolean));
-  for (const e of options?.entries ?? []) {
+  for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
-    const punchIso = isoFromDate(new Date(e.clock_in_at));
+    const punchIso = punchDayIso(e);
     if (!punchIso || punchIso < weekStart || punchIso > weekEnd) continue;
     if (covered.has(punchIso)) continue;
     if (!entryHasMeaningfulPunch(e, punchIso)) continue;
@@ -984,9 +1009,20 @@ export function buildShiftsForEmployeeInWeek(
   const end = new Date(bounds.end.getFullYear(), bounds.end.getMonth(), bounds.end.getDate());
   while (cur <= end) {
     const dayIso = isoFromDate(cur);
-    if (!covered.has(dayIso) && dayHasTimecardActivity({ ...activityParams, iso: dayIso })) {
-      rows.push(makeOffScheduleShiftDayRow(dayIso));
-      covered.add(dayIso);
+    if (!covered.has(dayIso)) {
+      const leave = getEffectiveDayLeaveSync(
+        emp,
+        name,
+        dayIso,
+        bounds,
+        options?.staffRequests ?? [],
+        schedMinsByDay,
+        options?.extrasSlice ?? {}
+      );
+      if (leave.vl > 0 || leave.sl > 0) {
+        rows.push(makeOffScheduleShiftDayRow(dayIso));
+        covered.add(dayIso);
+      }
     }
     cur.setDate(cur.getDate() + 1);
   }
@@ -1208,8 +1244,25 @@ export function shiftMatchesLocationFilter(
     if (sawMeaningful) return false;
     const leave = getEmployeeDayLeaveSync(emp.id, shiftRow.iso, extrasSlice ?? {});
     if (leave.vl > 0 || leave.sl > 0) return true;
-    const fromBal = leaveHoursFromBalanceForDay(emp, shiftRow.iso);
-    if (fromBal.vl > 0 || fromBal.sl > 0) return true;
+    // Match web getEffectiveDayLeave: raw leaveBalance only when no day/week override.
+    const weekRow = (extrasSlice ?? {})[emp.id];
+    const weekManual =
+      !!weekRow &&
+      typeof weekRow === 'object' &&
+      !Array.isArray(weekRow) &&
+      (weekRow as { manual?: boolean }).manual === true;
+    if (!weekManual) {
+      const dayKey = `${emp.id}@${shiftRow.iso}`;
+      const dayOverride = (extrasSlice ?? {})[dayKey];
+      const blocked =
+        !!dayOverride &&
+        typeof dayOverride === 'object' &&
+        (dayOverride as { manual?: boolean }).manual !== false;
+      if (!blocked) {
+        const fromBal = leaveHoursFromBalanceForDay(emp, shiftRow.iso);
+        if (fromBal.vl > 0 || fromBal.sl > 0) return true;
+      }
+    }
     return punchDayRestaurantId(emp, shiftRow.iso, entries, scheduleCtx) === locationFilter;
   }
   return shiftRestaurantId(shiftRow.shift) === locationFilter;
