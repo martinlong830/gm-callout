@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { AppState, type AppStateStatus } from 'react-native';
 import { readStoredTeamStateId } from '../companySession';
 import { broadcastTeamStateChanged } from '../teamStateSync';
 
@@ -8,9 +9,13 @@ export const TIMECARD_DISHWASHER_TIPS_KEY = 'gm-timecard-dishwasher-tips-v1';
 export const TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
 
 /** Coalesce tip/VL/SL edits — full payroll JSON blobs are expensive to push. */
-const TIP_PAYROLL_PUSH_DEBOUNCE_MS = 4000;
+const TIP_PAYROLL_PUSH_DEBOUNCE_MS = 1200;
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let pushInFlight = false;
+let pushQueued = false;
+let tipPayrollBaselineReady = false;
+let appStateFlushBound = false;
 
 /** Snapshot of tip/VL/SL last applied from (or confirmed to) Supabase. */
 let tipPayrollRemoteBaseline: {
@@ -24,18 +29,43 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function tipPayrollSliceJson(slice: unknown): string {
-  if (!isRecord(slice)) return '';
+  if (slice == null) return '';
   try {
     return JSON.stringify(slice);
   } catch {
-    return '';
+    return typeof slice === 'string' ? slice : '';
   }
 }
 
 /**
- * Merge tip/VL/SL for push: start from remote SoT, overlay only week keys this device
- * changed since the last remote apply. Prevents one manager's AsyncStorage from
- * clobbering another manager's tip/VL edits.
+ * Within one pay-week map (delivery tips / VL-SL extras), overlay only keys this device
+ * changed vs baseline. Replacing the whole week object wiped sibling day tips.
+ */
+function mergeTipPayrollWeekSliceForPush(
+  localSlice: Record<string, unknown>,
+  remoteSlice: Record<string, unknown>,
+  baselineSlice: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...remoteSlice };
+  const keys = new Set([...Object.keys(localSlice), ...Object.keys(baselineSlice)]);
+  for (const k of keys) {
+    const localHas = Object.prototype.hasOwnProperty.call(localSlice, k);
+    const baseHas = Object.prototype.hasOwnProperty.call(baselineSlice, k);
+    const localVal = localHas ? localSlice[k] : undefined;
+    const baseVal = baseHas ? baselineSlice[k] : undefined;
+    if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
+      continue;
+    }
+    if (!localHas) delete merged[k];
+    else merged[k] = localVal;
+  }
+  return merged;
+}
+
+/**
+ * Merge tip/VL/SL for push: start from remote SoT, overlay only keys this device
+ * changed since the last remote apply. Tip-pool weeks stay whole-object; dishwasher tips
+ * + week extras deep-merge per day key so saving day B does not drop day A.
  */
 function mergeTipPayrollStoresForPush(
   localTip: Record<string, unknown>,
@@ -62,26 +92,25 @@ function mergeTipPayrollStoresForPush(
   Object.keys(localDw).forEach((key) => {
     const slice = localDw[key];
     if (!isRecord(slice)) return;
-    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseDw[key])) mergedDw[key] = slice;
+    if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
+    mergedDw[key] = mergeTipPayrollWeekSliceForPush(
+      slice,
+      isRecord(remoteDw[key]) ? (remoteDw[key] as Record<string, unknown>) : {},
+      isRecord(baseDw[key]) ? (baseDw[key] as Record<string, unknown>) : {}
+    );
   });
   const mergedExtras = { ...remoteExtras };
   Object.keys(localExtras).forEach((key) => {
     const slice = localExtras[key];
     if (!isRecord(slice)) return;
-    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseExtras[key])) {
-      mergedExtras[key] = slice;
-    }
+    if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseExtras[key])) return;
+    mergedExtras[key] = mergeTipPayrollWeekSliceForPush(
+      slice,
+      isRecord(remoteExtras[key]) ? (remoteExtras[key] as Record<string, unknown>) : {},
+      isRecord(baseExtras[key]) ? (baseExtras[key] as Record<string, unknown>) : {}
+    );
   });
   return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
-}
-
-async function snapshotTipPayrollRemoteBaseline(): Promise<void> {
-  const [tipPool, dishwasher, weekExtras] = await Promise.all([
-    loadTipPoolStore(),
-    loadDishwasherTipsStore(),
-    loadWeekExtrasStore(),
-  ]);
-  tipPayrollRemoteBaseline = { tipPool, dishwasher, weekExtras };
 }
 
 async function fetchRemoteTipPayrollStores(
@@ -142,29 +171,90 @@ export async function applyTipPayrollFromTeamState(
   teamState: Record<string, unknown> | null | undefined
 ): Promise<boolean> {
   if (!teamState) return false;
+  const hasTipPool = Object.prototype.hasOwnProperty.call(teamState, 'timecard_week_tip_pool');
+  const hasDishwasher = Object.prototype.hasOwnProperty.call(teamState, 'timecard_dishwasher_tips');
+  const hasWeekExtras = Object.prototype.hasOwnProperty.call(teamState, 'timecard_week_extras');
+  const remoteTip =
+    hasTipPool && isRecord(teamState.timecard_week_tip_pool) ? teamState.timecard_week_tip_pool : null;
+  const remoteDw =
+    hasDishwasher && isRecord(teamState.timecard_dishwasher_tips)
+      ? teamState.timecard_dishwasher_tips
+      : null;
+  const remoteExtras =
+    hasWeekExtras && isRecord(teamState.timecard_week_extras) ? teamState.timecard_week_extras : null;
+
+  if (!tipPayrollBaselineReady) {
+    let changed = false;
+    if (remoteTip && Object.keys(remoteTip).length > 0) {
+      await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(remoteTip));
+      changed = true;
+    }
+    if (remoteDw && Object.keys(remoteDw).length > 0) {
+      await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(remoteDw));
+      changed = true;
+    }
+    if (remoteExtras && Object.keys(remoteExtras).length > 0) {
+      await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(remoteExtras));
+      changed = true;
+    }
+    tipPayrollRemoteBaseline = {
+      tipPool: remoteTip || (await loadTipPoolStore()),
+      dishwasher: remoteDw || (await loadDishwasherTipsStore()),
+      weekExtras: remoteExtras || (await loadWeekExtrasStore()),
+    };
+    tipPayrollBaselineReady = true;
+    return changed;
+  }
+
+  const localTip = await loadTipPoolStore();
+  const localDw = await loadDishwasherTipsStore();
+  const localExtras = await loadWeekExtrasStore();
+  const merged = mergeTipPayrollStoresForPush(
+    localTip,
+    localDw,
+    remoteTip || localTip,
+    remoteDw || localDw,
+    localExtras,
+    remoteExtras || localExtras
+  );
+  const nextBaseline = {
+    tipPool: tipPayrollRemoteBaseline.tipPool,
+    dishwasher: tipPayrollRemoteBaseline.dishwasher,
+    weekExtras: tipPayrollRemoteBaseline.weekExtras,
+  };
   let changed = false;
-  const tipPool = teamState.timecard_week_tip_pool;
-  if (isRecord(tipPool) && Object.keys(tipPool).length > 0) {
-    await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(tipPool));
+  if (hasTipPool && remoteTip && Object.keys(remoteTip).length > 0) {
+    await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
+    nextBaseline.tipPool = remoteTip;
     changed = true;
   }
-  const dishwasher = teamState.timecard_dishwasher_tips;
-  if (isRecord(dishwasher) && Object.keys(dishwasher).length > 0) {
-    await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(dishwasher));
+  if (hasDishwasher && remoteDw && Object.keys(remoteDw).length > 0) {
+    await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
+    nextBaseline.dishwasher = remoteDw;
     changed = true;
   }
-  const weekExtras = teamState.timecard_week_extras;
-  if (isRecord(weekExtras) && Object.keys(weekExtras).length > 0) {
-    await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(weekExtras));
+  if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {
+    await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
+    nextBaseline.weekExtras = remoteExtras;
     changed = true;
   }
-  // Snapshot even when remote columns were empty so stale AsyncStorage is not treated as edits.
-  await snapshotTipPayrollRemoteBaseline();
+  tipPayrollRemoteBaseline = nextBaseline;
   return changed;
+}
+
+function ensureAppStateFlushBound(sb: SupabaseClient): void {
+  if (appStateFlushBound) return;
+  appStateFlushBound = true;
+  AppState.addEventListener('change', (state: AppStateStatus) => {
+    if (state === 'background' || state === 'inactive') {
+      flushTipPayrollPushToSupabase(sb);
+    }
+  });
 }
 
 export function queueTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
   if (!sb) return;
+  ensureAppStateFlushBound(sb);
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
     pushTimer = null;
@@ -172,48 +262,71 @@ export function queueTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
   }, TIP_PAYROLL_PUSH_DEBOUNCE_MS);
 }
 
+export function flushTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
+  if (!sb) return;
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  void pushTipPayrollToSupabase(sb);
+}
+
 export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void> {
-  const teamStateId = await readStoredTeamStateId();
-  const remote = await fetchRemoteTipPayrollStores(sb);
-  const [localTip, localDw, localExtras] = await Promise.all([
-    loadTipPoolStore(),
-    loadDishwasherTipsStore(),
-    loadWeekExtrasStore(),
-  ]);
-  const merged = mergeTipPayrollStoresForPush(
-    localTip,
-    localDw,
-    remote.tipPool,
-    remote.dishwasher,
-    localExtras,
-    remote.weekExtras
-  );
-  await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
-  await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
-  await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
-  const res = await sb.from('team_state').upsert(
-    {
-      id: teamStateId,
-      timecard_week_tip_pool: merged.tipPool,
-      timecard_dishwasher_tips: merged.dishwasher,
-      timecard_week_extras: merged.weekExtras,
-    },
-    { onConflict: 'id' }
-  );
-  if (res.error) {
-    console.warn('team_state tip payroll upsert', res.error);
+  if (pushInFlight) {
+    pushQueued = true;
     return;
   }
-  tipPayrollRemoteBaseline = {
-    tipPool: merged.tipPool,
-    dishwasher: merged.dishwasher,
-    weekExtras: merged.weekExtras,
-  };
-  const sess = await sb.auth.getSession();
-  await broadcastTeamStateChanged(
-    sb,
-    teamStateId,
-    ['timecard_week_tip_pool', 'timecard_dishwasher_tips', 'timecard_week_extras'],
-    sess.data.session?.user.id
-  );
+  pushInFlight = true;
+  try {
+    const teamStateId = await readStoredTeamStateId();
+    const remote = await fetchRemoteTipPayrollStores(sb);
+    const [localTip, localDw, localExtras] = await Promise.all([
+      loadTipPoolStore(),
+      loadDishwasherTipsStore(),
+      loadWeekExtrasStore(),
+    ]);
+    const merged = mergeTipPayrollStoresForPush(
+      localTip,
+      localDw,
+      remote.tipPool,
+      remote.dishwasher,
+      localExtras,
+      remote.weekExtras
+    );
+    await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
+    await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
+    await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
+    const res = await sb.from('team_state').upsert(
+      {
+        id: teamStateId,
+        timecard_week_tip_pool: merged.tipPool,
+        timecard_dishwasher_tips: merged.dishwasher,
+        timecard_week_extras: merged.weekExtras,
+      },
+      { onConflict: 'id' }
+    );
+    if (res.error) {
+      console.warn('team_state tip payroll upsert', res.error);
+      return;
+    }
+    tipPayrollRemoteBaseline = {
+      tipPool: merged.tipPool,
+      dishwasher: merged.dishwasher,
+      weekExtras: merged.weekExtras,
+    };
+    tipPayrollBaselineReady = true;
+    const sess = await sb.auth.getSession();
+    await broadcastTeamStateChanged(
+      sb,
+      teamStateId,
+      ['timecard_week_tip_pool', 'timecard_dishwasher_tips', 'timecard_week_extras'],
+      sess.data.session?.user.id
+    );
+  } finally {
+    pushInFlight = false;
+    if (pushQueued) {
+      pushQueued = false;
+      void pushTipPayrollToSupabase(sb);
+    }
+  }
 }

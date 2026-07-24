@@ -793,3 +793,188 @@ await verifyPayslipPatchedExport();
   console.log('OK: person week view shows leaveBalance + VL-only + cross-location punch days');
 }
 
+/* Collapse same-day duplicate schedule clones (e.g. both stores, same times). */
+{
+  const T = sandbox.__gmTimecardsTest;
+  const emp = {
+    id: 'e-dup',
+    firstName: 'ZEF',
+    lastName: 'TEST',
+    staffType: 'Server',
+    usualRestaurant: 'rp-9',
+    hourlyRate: 17,
+  };
+  const rows = [
+    {
+      iso: '2026-07-15',
+      shift: { id: 's1', start: '11:00', end: '21:00', restaurantId: 'rp-9' },
+    },
+    {
+      iso: '2026-07-15',
+      shift: { id: 's2', start: '11:00', end: '21:00', restaurantId: 'rp-8' },
+    },
+    {
+      iso: '2026-07-15',
+      shift: { id: 'off-schedule:2026-07-15', start: '', end: '' },
+    },
+    {
+      iso: '2026-07-16',
+      shift: { id: 's3', start: '11:00', end: '15:00', restaurantId: 'rp-9' },
+    },
+    {
+      iso: '2026-07-16',
+      shift: { id: 's4', start: '16:00', end: '21:00', restaurantId: 'rp-9' },
+    },
+  ];
+  const collapsed = T.collapseDuplicateShiftDayRows(rows, emp);
+  const jul15 = collapsed.filter((r) => r.iso === '2026-07-15');
+  const jul16 = collapsed.filter((r) => r.iso === '2026-07-16');
+  if (jul15.length !== 1) {
+    throw new Error('Same-time multi-store + off-schedule must collapse to 1 Jul 15 row, got ' + jul15.length);
+  }
+  if (jul15[0].shift.id === 'off-schedule:2026-07-15') {
+    throw new Error('Prefer scheduled row over off-schedule duplicate');
+  }
+  if (jul16.length !== 2) {
+    throw new Error('Distinct start/end same day must keep 2 rows, got ' + jul16.length);
+  }
+  console.log('OK: collapseDuplicateShiftDayRows keeps distinct slots, drops clones');
+}
+
+/* VL/SL pay: Payroll TOTAL GROSS + Labor totals include straight-time leave pay. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  const leavePayRow = {
+    emp: {
+      id: 'e-bernabe',
+      firstName: 'BERNABE',
+      lastName: 'DE LEON',
+      staffType: 'Kitchen',
+      hourlyRate: 19,
+      tipPoint: 0,
+    },
+    name: 'BERNABE DE LEON',
+    regMins: 22.5 * 60,
+    otMins: 0,
+    totalMins: 22.5 * 60,
+    vlHours: 0,
+    slHours: 12,
+    regPay: 22.5 * 19,
+    otPay: 0,
+    vlPay: 0,
+    slPay: 12 * 19,
+    sohCount: 0,
+    sohPay: null,
+    sohDatesLabel: '—',
+    additionalCashTip: 0,
+    dishwasherTipsPay: 0,
+    grandTotalPay: 22.5 * 19 + 12 * 19,
+  };
+  const metrics = T.computePayrollRowMetrics(leavePayRow);
+  const expectedGross = 22.5 * 19 + 12 * 19; // 655.5
+  if (Math.abs(metrics.gross - expectedGross) > 0.01) {
+    throw new Error(
+      'Payroll TOTAL GROSS must include SL pay (expected ' + expectedGross + ', got ' + metrics.gross + ')'
+    );
+  }
+  if (Math.abs(metrics.totalH - 34.5) > 0.01) {
+    throw new Error('Payroll TOTAL HOURS should be reg+ot+VL+SL, got ' + metrics.totalH);
+  }
+
+  T.setRosterCacheForTest([leavePayRow]);
+  T.invalidateFullReportSheetsCache();
+  const laborAoa = T.buildLaborExportAoa();
+  const laborData = laborAoa && laborAoa[1];
+  if (!laborData) throw new Error('Labor export missing Bernabe row');
+  // cols: first, last, regH, otH, totalH, regCost, otCost, totalCost
+  if (Math.abs(Number(laborData[4]) - 34.5) > 0.01) {
+    throw new Error('Labor total paid hours must include SL (got ' + laborData[4] + ')');
+  }
+  if (Math.abs(Number(laborData[7]) - expectedGross) > 0.01) {
+    throw new Error('Labor total cost must include SL pay (got ' + laborData[7] + ')');
+  }
+  console.log('OK: Payroll/Labor include VL/SL straight-time pay (Bernabe-style $655.50)');
+}
+
+/* forceFresh: Employee Information + PTO rebuild from live employees / week extras. */
+{
+  const leaveCode = fs.readFileSync(path.join(ROOT, 'employee-leave.js'), 'utf8');
+  vm.runInContext(leaveCode, sandbox);
+
+  const T = sandbox.__gmTimecardsTest;
+  const mark = mockEmployees[0];
+  mark.meta = mark.meta || {};
+  mark.meta.position = 'STORE MANAGER';
+  mark.meta.hiringDate = '3/25/2023';
+  mark.meta.leaveBalance = {
+    version: 1,
+    vacation: {
+      allowanceDays: 5,
+      allowanceHours: 40,
+      hoursPerDay: 8,
+      entries: [{ date: '2026-02-01', hours: 8 }],
+    },
+    sick: {
+      allowanceDays: 5,
+      allowanceHours: 40,
+      hoursPerDay: 8,
+      entries: [{ date: '2026-02-04', hours: 8 }],
+      note: '',
+    },
+  };
+
+  T.setRosterCacheForTest(
+    mockRows.map((r) =>
+      r.emp.id === 'e1'
+        ? Object.assign({}, r, { emp: mark, vlHours: 0, slHours: 12, vlPay: 0, slPay: 12 * 22 })
+        : r
+    )
+  );
+  const firstBuild = T.buildFullReportSheets({ forceFresh: true });
+  const firstInfo = worksheetText(firstBuild.find((s) => s.name === 'Employee Information').worksheet);
+  if (firstInfo.indexOf('STORE MANAGER') < 0) {
+    throw new Error('Employee Information missing initial position');
+  }
+
+  mark.meta.position = 'GENERAL MANAGER';
+  mark.meta.hiringDate = '1/1/2020';
+  mark.hourlyRate = 25;
+  // Stale sheet cache would keep STORE MANAGER without forceFresh invalidation path.
+  const stale = T.buildFullReportSheets();
+  const staleInfo = worksheetText(stale.find((s) => s.name === 'Employee Information').worksheet);
+  if (staleInfo.indexOf('GENERAL MANAGER') >= 0) {
+    // Cache may already have been cleared by prior dirty marks — either outcome is ok if forceFresh works.
+  }
+
+  const fresh = T.buildFullReportSheets({ forceFresh: true });
+  const freshInfo = worksheetText(fresh.find((s) => s.name === 'Employee Information').worksheet);
+  if (freshInfo.indexOf('GENERAL MANAGER') < 0) {
+    throw new Error('forceFresh Employee Information must pick up Team position edits');
+  }
+  if (freshInfo.indexOf('1/1/2020') < 0) {
+    throw new Error('forceFresh Employee Information must pick up hiring date edits');
+  }
+
+  /* Person-week SL extras must appear on PTO sheet after leave updates. */
+  T.setEmployeeDayLeave('e1', '2026-05-22', 0, 6);
+  T.setEmployeeDayLeave('e1', '2026-05-23', 0, 6);
+  const ptoBal = T.ptoBalanceForEmployee(mark);
+  const sickDates = (ptoBal.sick.entries || []).map((e) => e.date);
+  if (sickDates.indexOf('2026-05-22') < 0 || sickDates.indexOf('2026-05-23') < 0) {
+    throw new Error('PTO sick entries must include week-extras SL days: ' + sickDates.join(','));
+  }
+  if (sickDates.indexOf('2026-02-04') < 0) {
+    throw new Error('PTO sick entries must retain leaveBalance dates');
+  }
+
+  const ptoFresh = T.buildFullReportSheets({ forceFresh: true });
+  const ptoText = worksheetText(ptoFresh.find((s) => s.name === 'PTO').worksheet);
+  if (ptoText.indexOf('05/22/2026') < 0 && ptoText.indexOf('5/22/2026') < 0) {
+    // formatUsDate pads MM/DD/YYYY
+    if (ptoText.indexOf('05/22') < 0) {
+      throw new Error('PTO sheet must show week-extras SL date after leave update');
+    }
+  }
+  console.log('OK: forceFresh refreshes Employee Info + PTO from live leave/profile data');
+}
+

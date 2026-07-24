@@ -11,9 +11,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
-import type { EmployeeRow } from '../../lib/employees';
+import {
+  employeePrimaryLocationId,
+  filterRestaurantsForUsualLocation,
+  type EmployeeRow,
+} from '../../lib/employees';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
-import type { EmployeeLite, Restaurant, RoleKey, ScheduleRow } from '../../lib/schedule/types';
+import type { EmployeeLite, RoleKey, ScheduleRow } from '../../lib/schedule/types';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -80,11 +84,27 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const { employees, teamState, loading } = useAppData();
+  const { myEmployee, employees, teamState, loading } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
-  const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
-  const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
+  const allRestaurants = useMemo(() => defaultRestaurants(), []);
+  /** Team `usualRestaurant`: single store → that store only; `both` → all. */
+  const restaurants = useMemo(
+    () => filterRestaurantsForUsualLocation(allRestaurants, myEmployee?.usualRestaurant),
+    [allRestaurants, myEmployee?.usualRestaurant]
+  );
+  const [currentRestaurantId, setCurrentRestaurantId] = useState(
+    () => defaultRestaurants()[0]?.id ?? 'rp-9'
+  );
   const dayScrollRef = useRef<ScrollView | null>(null);
+
+  useEffect(() => {
+    if (!restaurants.length) return;
+    if (restaurants.some((r) => r.id === currentRestaurantId)) return;
+    const primary = employeePrimaryLocationId(myEmployee);
+    const next =
+      (primary && restaurants.find((r) => r.id === primary)?.id) || restaurants[0]?.id;
+    if (next) setCurrentRestaurantId(next);
+  }, [restaurants, currentRestaurantId, myEmployee]);
 
   const weekMeta = useMemo(
     () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
@@ -116,11 +136,11 @@ export default function EmployeeScheduleScreen() {
 
   /** Derive store — avoid useEffect + setState layout thrash on every teamState tick. */
   const assignmentStore = useMemo(() => {
-    const ids = restaurants.map((r) => r.id);
-    const shell = assignmentShell(restaurants);
+    const ids = allRestaurants.map((r) => r.id);
+    const shell = assignmentShell(allRestaurants);
     const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
-    return ensureRollingFutureAssignments(merged, restaurants).store;
-  }, [teamState?.schedule_assignments, restaurants]);
+    return ensureRollingFutureAssignments(merged, allRestaurants).store;
+  }, [teamState?.schedule_assignments, allRestaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -130,11 +150,11 @@ export default function EmployeeScheduleScreen() {
         allWeekDays,
         draftScheduleRaw,
         employees: lites,
-        restaurants,
+        restaurants: allRestaurants,
         currentRestaurantId,
         assignmentStore,
       }),
-    [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
+    [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore]
   );
 
   const calendarBody = useMemo(

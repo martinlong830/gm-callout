@@ -1,6 +1,6 @@
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -19,6 +19,35 @@ import {
   portalResetPassword,
   portalVerifyResetToken,
 } from '../lib/portalAuth';
+
+const INPUT_TEXT = '#0f172a';
+const INPUT_PLACEHOLDER = '#94a3b8';
+
+function PasswordInput({
+  style,
+  autoComplete = 'new-password',
+  textContentType = 'newPassword',
+  placeholder = 'Password',
+  placeholderTextColor = INPUT_PLACEHOLDER,
+  ...rest
+}: React.ComponentProps<typeof TextInput>) {
+  return (
+    <TextInput
+      {...rest}
+      style={[styles.input, style]}
+      secureTextEntry
+      autoCapitalize="none"
+      autoCorrect={false}
+      spellCheck={false}
+      keyboardType="default"
+      textContentType={textContentType}
+      autoComplete={autoComplete}
+      placeholder={placeholder}
+      placeholderTextColor={placeholderTextColor}
+      importantForAutofill="yes"
+    />
+  );
+}
 
 function tokenFromUrl(url: string | null): string {
   if (!url) return '';
@@ -140,20 +169,16 @@ export default function ResetPasswordScreen() {
               {!success ? (
                 <>
                   <Text style={styles.label}>New password</Text>
-                  <TextInput
-                    style={styles.input}
-                    secureTextEntry
+                  <PasswordInput
                     value={password}
                     onChangeText={setPassword}
-                    autoComplete="new-password"
+                    placeholder="New password"
                   />
                   <Text style={styles.label}>Confirm password</Text>
-                  <TextInput
-                    style={styles.input}
-                    secureTextEntry
+                  <PasswordInput
                     value={confirm}
                     onChangeText={setConfirm}
-                    autoComplete="new-password"
+                    placeholder="Confirm password"
                   />
                   {message ? (
                     <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
@@ -207,8 +232,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === 'ios' ? 12 : 10,
     fontSize: 16,
+    color: INPUT_TEXT,
     marginBottom: 14,
     backgroundColor: '#fafbfc',
+    ...(Platform.OS === 'android'
+      ? {
+          minHeight: 48,
+          includeFontPadding: false,
+          textAlignVertical: 'center' as const,
+        }
+      : null),
   },
   buttonPrimary: {
     backgroundColor: '#c41230',

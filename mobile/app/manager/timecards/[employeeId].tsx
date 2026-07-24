@@ -37,9 +37,9 @@ import { applyCrossRestaurantPunchSideEffects } from '../../../lib/timecards/cro
 import { removeShiftDay } from '../../../lib/timecards/shiftDayCleanup';
 import {
   isDeliveryDishwasherStaff,
-  getEmployeeDayDishwasherTipSync,
+  dishwasherTipRestaurantForShiftRow,
+  getEmployeeDayDishwasherTipNetSync,
   loadDishwasherTipsSlice,
-  netTipAmount,
 } from '../../../lib/timecards/dishwasherTips';
 import {
   getEmployeeDayAdditionalCashTipSync,
@@ -357,8 +357,9 @@ function ShiftRowCard({
     extrasSlice
   );
   const showDishwasherTips = isDeliveryDishwasherStaff(emp);
-  const dayDishwasherTip = showDishwasherTips
-    ? getEmployeeDayDishwasherTipSync(empId, row.iso, dishwasherTipsSlice)
+  const tipRest = dishwasherTipRestaurantForShiftRow(row);
+  const dayDishwasherTipNet = showDishwasherTips
+    ? getEmployeeDayDishwasherTipNetSync(empId, row.iso, dishwasherTipsSlice, tipRest)
     : 0;
   const dayCoverage = getEmployeeDayAdditionalCashTipSync(empId, row.iso, extrasSlice);
 
@@ -424,7 +425,7 @@ function ShiftRowCard({
       {showDishwasherTips ? (
         <Text style={styles.shiftMeta}>
           Net delivery tip{' '}
-          {dayDishwasherTip > 0 ? formatPayAmount(netTipAmount(dayDishwasherTip)) : '—'}
+          {dayDishwasherTipNet > 0 ? formatPayAmount(dayDishwasherTipNet) : '—'}
         </Text>
       ) : null}
       {dayCoverage > 0 ? (

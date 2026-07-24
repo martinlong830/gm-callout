@@ -21,6 +21,7 @@ import {
   isDeliveryDishwasherStaff,
   netTipAmount,
   setEmployeeDayDishwasherTip,
+  tipTakehomePctForRestaurant,
 } from '../../../../lib/timecards/dishwasherTips';
 import {
   getEmployeeDayAdditionalCashTip,
@@ -186,10 +187,11 @@ export default function TimecardsShiftScreen() {
       setSuggestedLeave(suggested);
     }
     if (isDeliveryDishwasherStaff(emp)) {
-      const tip = await getEmployeeDayDishwasherTip(emp.id, iso, bounds);
+      const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
+      const tip = await getEmployeeDayDishwasherTip(emp.id, iso, bounds, tipRest);
       setDishwasherTipText(String(tip));
     }
-  }, [emp, iso, bounds, teamState, lites, staffRequests]);
+  }, [emp, iso, bounds, teamState, lites, staffRequests, shiftRow]);
 
   const loadEntry = useCallback(
     (entry: TimeClockEntry | null) => {
@@ -705,8 +707,14 @@ export default function TimecardsShiftScreen() {
           />
           <Text style={styles.fieldLabel}>Net dishwasher tips</Text>
           <Text style={styles.hint}>
-            {formatPayAmount(netTipAmount(Math.max(0, parseFloat(dishwasherTipText) || 0)))}{' '}
-            (tip × 0.95)
+            {formatPayAmount(
+              netTipAmount(
+                Math.max(0, parseFloat(dishwasherTipText) || 0),
+                dishwasherTipRestaurantForShiftRow(shiftRow)
+              )
+            )}{' '}
+            (tip × {tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))}
+            % take-home)
           </Text>
         </>
       ) : null}

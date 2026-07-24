@@ -7,7 +7,7 @@ export const TEAM_STATE_SCHEDULE_COLUMNS =
 
 export const TEAM_STATE_MANAGER_COLUMNS =
   TEAM_STATE_SCHEDULE_COLUMNS +
-  ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras';
+  ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,timecard_tip_takehome_pct';
 
 /** Employees need draft_schedule + schedule_published so views match manager SoT for published weeks. */
 export const TEAM_STATE_EMPLOYEE_COLUMNS =
@@ -25,6 +25,7 @@ const MANAGER_ALLOWED = [
   'timecard_week_tip_pool',
   'timecard_dishwasher_tips',
   'timecard_week_extras',
+  'timecard_tip_takehome_pct',
 ] as const;
 
 const EMPLOYEE_ALLOWED = [

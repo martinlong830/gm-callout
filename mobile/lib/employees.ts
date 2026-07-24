@@ -178,3 +178,39 @@ export function employeeUsualLocationLine(usualRestaurant: string): string {
   if (u === 'both') return LOCATION_NAMES.both;
   return LOCATION_NAMES[u] || u;
 }
+
+export function employeeIsMultiLocation(usualRestaurant: string): boolean {
+  return String(usualRestaurant || '') === 'both';
+}
+
+/**
+ * Team location eligibility for schedule views (matches manager assignment pools).
+ * `usualRestaurant === 'both'` → all stores; otherwise only that restaurant id.
+ */
+export function employeeMatchesUsualLocation(
+  usualRestaurant: string | null | undefined,
+  restaurantId: string
+): boolean {
+  const u = usualRestaurant || 'both';
+  if (u === 'both') return true;
+  return u === restaurantId;
+}
+
+/** Restaurants an employee may open in schedule views (Team `usualRestaurant`). */
+export function filterRestaurantsForUsualLocation<T extends { id: string }>(
+  restaurants: T[],
+  usualRestaurant: string | null | undefined
+): T[] {
+  const allowed = restaurants.filter((r) => employeeMatchesUsualLocation(usualRestaurant, r.id));
+  return allowed.length ? allowed : restaurants;
+}
+
+/** Canonical primary store id for multi-location staff (`meta.primaryLocationId`). */
+export function employeePrimaryLocationId(emp: EmployeeRow | null | undefined): string | null {
+  if (!emp || !employeeIsMultiLocation(emp.usualRestaurant)) return null;
+  const meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+  const raw = meta.primaryLocationId ?? meta.primaryRestaurantId;
+  const id = raw != null ? String(raw).trim() : '';
+  if (id === 'rp-8' || id === 'rp-9') return id;
+  return null;
+}

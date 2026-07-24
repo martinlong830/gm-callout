@@ -25,7 +25,6 @@ import { isoFromDate } from './payWeek';
 import {
   isDeliveryDishwasherStaff,
   loadDishwasherTipsSlice,
-  netTipAmount,
   sumEmployeeWeekDishwasherTipsSync,
 } from './dishwasherTips';
 import {
@@ -73,7 +72,7 @@ export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, 
 
 const OT_RATE_MULTIPLIER = 1.5;
 const PAY_ROUND_MINUTES = 15;
-/** First 40h of recorded work in the pay week are regular; remainder is overtime. */
+/** First 40h of recorded work per restaurant in the pay week are regular; remainder is overtime. */
 export const WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 const SOH_THRESHOLD_MINUTES = 10 * 60;
 const SOH_PAY_HOURS = 1;
@@ -276,6 +275,7 @@ export function weekDayRecordedByRestaurantForEmployee(
     });
 }
 
+/** Allocate reg/OT with a separate 40h regular cap per restaurant (not company-wide). */
 export function weeklyRegOtByRestaurantDay(
   buckets: Array<{ iso: string; restaurantId: string; recordedMins: number }>
 ): Record<string, RegOtMinutes> {
@@ -283,11 +283,15 @@ export function weeklyRegOtByRestaurantDay(
     if (a.iso !== b.iso) return a.iso.localeCompare(b.iso);
     return a.restaurantId.localeCompare(b.restaurantId);
   });
-  let regularRemaining = WEEKLY_REGULAR_CAP_MINUTES;
+  const remainingByRestaurant: Record<string, number> = {};
   const out: Record<string, RegOtMinutes> = {};
   for (const b of sorted) {
-    const split = allocateRecordedRegOtMinutes(b.recordedMins, regularRemaining);
-    regularRemaining = split.regularRemaining;
+    const remaining =
+      remainingByRestaurant[b.restaurantId] != null
+        ? remainingByRestaurant[b.restaurantId]
+        : WEEKLY_REGULAR_CAP_MINUTES;
+    const split = allocateRecordedRegOtMinutes(b.recordedMins, remaining);
+    remainingByRestaurant[b.restaurantId] = split.regularRemaining;
     out[`${b.iso}\0${b.restaurantId}`] = {
       regMins: split.regMins,
       otMins: split.otMins,
@@ -295,6 +299,16 @@ export function weeklyRegOtByRestaurantDay(
     };
   }
   return out;
+}
+
+export function sumRegOtFromByKey(byKey: Record<string, RegOtMinutes>): RegOtMinutes {
+  let regMins = 0;
+  let otMins = 0;
+  for (const k of Object.keys(byKey)) {
+    regMins += byKey[k].regMins || 0;
+    otMins += byKey[k].otMins || 0;
+  }
+  return { regMins, otMins, totalMins: regMins + otMins };
 }
 
 export function shiftRowAttributionRestaurant(
@@ -377,18 +391,25 @@ export function weekRegOtForShiftRow(
   scheduleCtx: ScheduleContext,
   locationFilter: LocationFilter = 'all'
 ): RegOtMinutes {
-  const byRest = weeklyRegOtByRestaurantDay(
-    weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, locationFilter)
+  let buckets = weekDayRecordedByRestaurantForEmployee(
+    emp,
+    entries,
+    scheduleCtx,
+    locationFilter
   );
   const rest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
-  const hit = byRest[`${row.iso}\0${rest}`];
+  const key = `${row.iso}\0${rest}`;
+  let byRest = weeklyRegOtByRestaurantDay(buckets);
+  const hit = byRest[key];
   if (hit && hit.totalMins > 0) return hit;
   const fallbackMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
   if (fallbackMins <= 0) return hit || { regMins: 0, otMins: 0, totalMins: 0 };
-  const byDay = weeklyRegOtByDay(
-    weekDayRecordedForEmployee([], emp, entries, undefined, scheduleCtx, locationFilter)
-  );
-  return byDay[row.iso] || { regMins: 0, otMins: 0, totalMins: 0 };
+  const hasBucket = buckets.some((b) => b.iso === row.iso && b.restaurantId === rest);
+  if (!hasBucket) {
+    buckets = buckets.concat([{ iso: row.iso, restaurantId: rest, recordedMins: fallbackMins }]);
+    byRest = weeklyRegOtByRestaurantDay(buckets);
+  }
+  return byRest[key] || { regMins: 0, otMins: 0, totalMins: 0 };
 }
 
 export function shiftPayForShiftRow(
@@ -1027,12 +1048,83 @@ export function buildShiftsForEmployeeInWeek(
     cur.setDate(cur.getDate() + 1);
   }
 
-  return rows.sort((a, b) => {
+  const collapsed = collapseDuplicateShiftDayRows(rows, emp, entries, scheduleCtx);
+  return collapsed.sort((a, b) => {
     if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
     if (isOffScheduleShiftDayRow(a) && !isOffScheduleShiftDayRow(b)) return 1;
     if (!isOffScheduleShiftDayRow(a) && isOffScheduleShiftDayRow(b)) return -1;
     return String(a.shift.start).localeCompare(String(b.shift.start));
   });
+}
+
+function shiftDayRowTimeKey(row: ShiftDayRow): string {
+  if (isOffScheduleShiftDayRow(row)) return '__off__';
+  return `${row.shift.start || ''}\0${row.shift.end || ''}`;
+}
+
+function scoreShiftDayRowForCollapse(
+  row: ShiftDayRow,
+  emp: EmployeeRow,
+  entries: TimeClockEntry[],
+  scheduleCtx?: ScheduleContext
+): number {
+  let score = 0;
+  if (!isOffScheduleShiftDayRow(row)) score += 100;
+  const rest = shiftRestaurantId(row.shift);
+  if (row.iso) {
+    const punchRest = punchDayRestaurantId(emp, row.iso, entries, scheduleCtx);
+    if (punchRest && rest && punchRest === rest) score += 20;
+    const home = employeeHomeRestaurant(emp);
+    if (home && home !== 'both' && rest && home === rest) score += 10;
+  }
+  return score;
+}
+
+/**
+ * At most one row per calendar day unless the employee has two scheduled slots with
+ * different start/end. Drops off-schedule duplicates when a scheduled row covers the day,
+ * and same-time multi-store schedule clones.
+ */
+export function collapseDuplicateShiftDayRows(
+  rows: ShiftDayRow[],
+  emp: EmployeeRow,
+  entries: TimeClockEntry[] = [],
+  scheduleCtx?: ScheduleContext
+): ShiftDayRow[] {
+  if (rows.length < 2) return rows;
+  const byIso = new Map<string, { row: ShiftDayRow; idx: number }[]>();
+  rows.forEach((row, idx) => {
+    const iso = row.iso || '';
+    const list = byIso.get(iso) ?? [];
+    list.push({ row, idx });
+    byIso.set(iso, list);
+  });
+  const keep: { row: ShiftDayRow; idx: number }[] = [];
+  for (const group of byIso.values()) {
+    if (group.length === 1) {
+      keep.push(group[0]);
+      continue;
+    }
+    const scheduled = group.filter((g) => !isOffScheduleShiftDayRow(g.row));
+    const pool = scheduled.length ? scheduled : group;
+    const bestByTime = new Map<string, { row: ShiftDayRow; idx: number }>();
+    for (const g of pool) {
+      const tk = shiftDayRowTimeKey(g.row);
+      const prev = bestByTime.get(tk);
+      if (!prev) {
+        bestByTime.set(tk, g);
+        continue;
+      }
+      const score = scoreShiftDayRowForCollapse(g.row, emp, entries, scheduleCtx);
+      const prevScore = scoreShiftDayRowForCollapse(prev.row, emp, entries, scheduleCtx);
+      if (score > prevScore || (score === prevScore && g.idx < prev.idx)) {
+        bestByTime.set(tk, g);
+      }
+    }
+    for (const g of bestByTime.values()) keep.push(g);
+  }
+  keep.sort((a, b) => a.idx - b.idx);
+  return keep.map((g) => g.row);
 }
 
 export function dailyRecordedMinutesForEmployee(
@@ -1320,22 +1412,13 @@ export function buildRosterRowSync(
     }
   }
 
-  const dayRecorded = weekDayRecordedForEmployee(
-    shifts,
-    emp,
-    entries,
-    entriesIndex,
-    scheduleCtx,
-    locationFilter
+  const otTotals = sumRegOtFromByKey(
+    weeklyRegOtByRestaurantDay(
+      weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, locationFilter)
+    )
   );
-  const regOtByDay = weeklyRegOtByDay(dayRecorded);
-  let regMins = 0;
-  let otMins = 0;
-  for (const day of dayRecorded) {
-    const split = regOtByDay[day.iso];
-    regMins += split.regMins;
-    otMins += split.otMins;
-  }
+  const regMins = otTotals.regMins;
+  const otMins = otTotals.otMins;
 
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
   const soh = computeSpreadOfHoursIndexed(emp, entriesByEmpId[emp.id] || [], {
@@ -1348,13 +1431,11 @@ export function buildRosterRowSync(
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? netTipAmount(
-        sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
-          entries,
-          extrasSlice,
-          locationFilter,
-        })
-      )
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, dishwasherTipsSlice, {
+        entries,
+        extrasSlice,
+        locationFilter,
+      })
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
@@ -1568,22 +1649,13 @@ export async function buildRosterRow(
     }
   }
 
-  const dayRecorded = weekDayRecordedForEmployee(
-    shifts,
-    emp,
-    entries,
-    undefined,
-    scheduleCtx,
-    'all'
+  const otTotals = sumRegOtFromByKey(
+    weeklyRegOtByRestaurantDay(
+      weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, 'all')
+    )
   );
-  const regOtByDay = weeklyRegOtByDay(dayRecorded);
-  let regMins = 0;
-  let otMins = 0;
-  for (const day of dayRecorded) {
-    const split = regOtByDay[day.iso];
-    regMins += split.regMins;
-    otMins += split.otMins;
-  }
+  const regMins = otTotals.regMins;
+  const otMins = otTotals.otMins;
 
   const pay = payFromRegOtMinutes(emp, regMins, otMins);
   const soh = computeSpreadOfHours(emp, entries, { bounds });
@@ -1591,12 +1663,10 @@ export async function buildRosterRow(
   const slPay = leavePayFromHours(emp, extras.sl);
   const sohPay = soh.hasRate ? soh.pay : null;
   const dishwasherTipsPay = isDeliveryDishwasherStaff(emp)
-    ? netTipAmount(
-        sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
-          entries,
-          extrasSlice,
-        })
-      )
+    ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
+        entries,
+        extrasSlice,
+      })
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';

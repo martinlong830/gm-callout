@@ -22,6 +22,9 @@ import { subscribeTeamState } from '../lib/teamStateSync';
 import {
   applyTipPayrollFromTeamState,
 } from '../lib/timecards/tipPayrollSync';
+import { applyTipTakehomeFromTeamState } from '../lib/timecards/tipTakehome';
+import { invalidateDishwasherTipsSliceCache } from '../lib/timecards/dishwasherTips';
+import { invalidateWeekExtrasSliceCache } from '../lib/timecards/weekExtras';
 import {
   fetchTeamStateColumns,
   fetchTeamStateUpdatedAt,
@@ -95,6 +98,9 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           // that resurrected per-device caches onto shared team_state for other managers.
           try {
             await applyTipPayrollFromTeamState(data.teamState);
+            await applyTipTakehomeFromTeamState(data.teamState);
+            invalidateDishwasherTipsSliceCache();
+            invalidateWeekExtrasSliceCache();
           } catch (tipErr) {
             console.warn('applyTipPayrollFromTeamState', tipErr);
           }
@@ -146,6 +152,9 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       const partial = await fetchTeamStateColumns(supabase, { role, fields });
       if (!partial) return;
       await applyTipPayrollFromTeamState(partial);
+      await applyTipTakehomeFromTeamState(partial);
+      invalidateDishwasherTipsSliceCache();
+      invalidateWeekExtrasSliceCache();
       setTeamState((prev) => mergeTeamStatePartial(prev, partial));
       lastHydrateAtRef.current = Date.now();
     },

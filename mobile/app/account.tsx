@@ -322,8 +322,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === 'ios' ? 12 : 10,
     fontSize: 16,
+    color: '#0f172a',
     marginBottom: 8,
     backgroundColor: '#fafbfc',
+    ...(Platform.OS === 'android'
+      ? {
+          minHeight: 48,
+          includeFontPadding: false,
+          textAlignVertical: 'center' as const,
+        }
+      : null),
   },
   hint: { fontSize: 13, color: '#64748b', marginBottom: 12, lineHeight: 18 },
   buttonPrimary: {

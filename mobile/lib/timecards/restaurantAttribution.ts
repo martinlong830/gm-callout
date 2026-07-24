@@ -171,7 +171,7 @@ export function punchDayRestaurantId(
   emp: EmployeeRow,
   iso: string,
   entries: TimeClockEntry[],
-  scheduleCtx: RestaurantAttributionContext
+  scheduleCtx?: RestaurantAttributionContext | null
 ): string {
   if (!iso) return 'rp-9';
   const dayEntries = entries.filter((e) => e.employee_id === emp.id && punchDayIso(e) === iso);
@@ -180,6 +180,7 @@ export function punchDayRestaurantId(
       return e.clock_restaurant_id;
     }
   }
+  if (!scheduleCtx) return 'rp-9';
   const name = employeeDisplayName(emp);
   const labelToMeta = new Map(scheduleCtx.weekMeta.map((m) => [m.label, m]));
   const restaurants = new Set<string>();

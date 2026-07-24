@@ -36,6 +36,12 @@ import type { EmployeeLite } from '../../../lib/schedule/types';
 import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
 import { weekBoundsStorageKey } from '../../../lib/timecards/payWeek';
 import { getSohRate, loadSohRate, saveSohRate } from '../../../lib/timecards/sohRate';
+import {
+  getTipTakehomePctMap,
+  loadTipTakehomePct,
+  saveTipTakehomePctForRestaurant,
+  DEFAULT_TIP_TAKEHOME_PCT,
+} from '../../../lib/timecards/tipTakehome';
 import { type EmployeeRow } from '../../../lib/employees';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -187,6 +193,14 @@ export default function TimecardsRosterScreen() {
   const [showGrandTotals, setShowGrandTotals] = useState(false);
   const [sohRateText, setSohRateText] = useState(String(getSohRate()));
   const [sohRateVersion, setSohRateVersion] = useState(0);
+  const [tipTakehomeText, setTipTakehomeText] = useState<Record<string, string>>(() => {
+    const map = getTipTakehomePctMap();
+    return {
+      'rp-9': String(map['rp-9'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-9']),
+      'rp-8': String(map['rp-8'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-8']),
+    };
+  });
+  const [tipTakehomeVersion, setTipTakehomeVersion] = useState(0);
 
   const boundsKey = weekBoundsStorageKey(bounds);
   const lites = useMemo(() => employees.map(toLite), [employees]);
@@ -209,11 +223,33 @@ export default function TimecardsRosterScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    void loadTipTakehomePct().then((map) => {
+      setTipTakehomeText({
+        'rp-9': String(map['rp-9'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-9']),
+        'rp-8': String(map['rp-8'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-8']),
+      });
+      setTipTakehomeVersion((v) => v + 1);
+    });
+  }, [teamState?.timecard_tip_takehome_pct, teamState?.updated_at]);
+
   const persistSohRate = useCallback(async () => {
     const applied = await saveSohRate(sohRateText);
     setSohRateText(String(applied));
     setSohRateVersion((v) => v + 1);
   }, [sohRateText]);
+
+  const persistTipTakehome = useCallback(async () => {
+    const map = await saveTipTakehomePctForRestaurant(
+      locationFilter,
+      tipTakehomeText[locationFilter]
+    );
+    setTipTakehomeText({
+      'rp-9': String(map['rp-9'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-9']),
+      'rp-8': String(map['rp-8'] ?? DEFAULT_TIP_TAKEHOME_PCT['rp-8']),
+    });
+    setTipTakehomeVersion((v) => v + 1);
+  }, [locationFilter, tipTakehomeText]);
 
   useEffect(() => {
     const cached = weekSlicesCache.get(boundsKey);
@@ -278,6 +314,7 @@ export default function TimecardsRosterScreen() {
     employeeById,
     teamState?.updated_at,
     sohRateVersion,
+    tipTakehomeVersion,
   ]);
 
   useEffect(() => {
@@ -373,6 +410,31 @@ export default function TimecardsRosterScreen() {
           </View>
         </View>
 
+        <View style={styles.sohRateSection}>
+          <Text style={styles.locationLabel}>Tip take-home %</Text>
+          {locationFilter === 'rp-9' || locationFilter === 'rp-8' ? (
+            <View style={styles.sohRateRow}>
+              <TextInput
+                style={styles.sohRateInput}
+                value={tipTakehomeText[locationFilter] ?? ''}
+                onChangeText={(t) =>
+                  setTipTakehomeText((prev) => ({ ...prev, [locationFilter]: t }))
+                }
+                onEndEditing={() => void persistTipTakehome()}
+                keyboardType="decimal-pad"
+                accessibilityLabel={`Tip take-home percent for ${
+                  locationFilter === 'rp-8' ? '8th Ave' : '9th Ave'
+                }`}
+              />
+              <Text style={styles.sohRateSuffix}>%</Text>
+            </View>
+          ) : (
+            <Text style={styles.tipTakehomeHint}>
+              Select 8th or 9th Ave to edit tip take-home %
+            </Text>
+          )}
+        </View>
+
         {error ? <Text style={styles.err}>{error}</Text> : null}
 
         {initialBusy ? (
@@ -395,6 +457,8 @@ export default function TimecardsRosterScreen() {
       onLocationChange,
       sohRateText,
       persistSohRate,
+      tipTakehomeText,
+      persistTipTakehome,
       error,
       initialBusy,
       showGrandTotals,
@@ -456,6 +520,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     maxWidth: 180,
+  },
+  tipTakehomeHint: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#64748b',
+    lineHeight: 18,
+    maxWidth: 280,
   },
   sohRatePrefix: { fontSize: 16, fontWeight: '600', color: '#475569' },
   sohRateSuffix: { fontSize: 14, color: '#64748b' },

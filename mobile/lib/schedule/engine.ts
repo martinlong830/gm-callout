@@ -1529,6 +1529,7 @@ export function getWorkerScheduleBuckets(params: {
     assignmentStore,
     workerName,
   });
+  const workerEmp = employeeByDisplayNameLite(employees, workerName);
   const todayIso = localTodayISO();
   const today: WorkerShiftRow[] = [];
   const upcoming: WorkerShiftRow[] = [];
@@ -1536,6 +1537,8 @@ export function getWorkerScheduleBuckets(params: {
     if (windowStartIso && o.iso && o.iso < windowStartIso) continue;
     if (windowEndIso && o.iso && o.iso > windowEndIso) continue;
     if (!isScheduleWeekPublished(published, o.iso)) continue;
+    /* Employee portal: only shifts at Team-assigned store(s) (`usualRestaurant` / both). */
+    if (workerEmp && !employeeMatchesScheduleRestaurantLite(workerEmp, o.restaurantId)) continue;
     if (o.iso === todayIso) today.push(o);
     else if (o.iso && o.iso > todayIso) upcoming.push(o);
   }

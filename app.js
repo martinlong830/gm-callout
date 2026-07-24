@@ -2006,7 +2006,15 @@
 
   function notifyTimecardsEmployeesChanged() {
     if (window.__gmTimecardsSuppressEmployeeNotify) return;
-    if (!timecardsScreenActive() || !window.gmCalloutTimecards) return;
+    if (!window.gmCalloutTimecards) return;
+    /* Always drop full-report caches when Team / leaveBalance / profile fields change —
+       even if Timecards UI is not open — so the next export rebuilds Employee Info + PTO. */
+    if (typeof window.gmCalloutTimecards.markRosterCacheRowsDirty === 'function') {
+      window.gmCalloutTimecards.markRosterCacheRowsDirty();
+    } else if (typeof window.gmCalloutTimecards.invalidateFullReportSheetsCache === 'function') {
+      window.gmCalloutTimecards.invalidateFullReportSheetsCache();
+    }
+    if (!timecardsScreenActive()) return;
     if (typeof window.gmCalloutTimecards.rebuildRosterCacheRows === 'function') {
       window.gmCalloutTimecards.rebuildRosterCacheRows();
     }
@@ -2276,7 +2284,14 @@
   }
 
   function tipPayrollSliceJson(slice) {
-    if (!slice || typeof slice !== 'object') return '';
+    if (slice == null) return '';
+    if (typeof slice !== 'object') {
+      try {
+        return JSON.stringify(slice);
+      } catch (_tp) {
+        return String(slice);
+      }
+    }
     try {
       return JSON.stringify(slice);
     } catch (_tj) {
@@ -2285,9 +2300,40 @@
   }
 
   /**
-   * Merge tip/VL/SL for push: start from remote SoT, overlay only week keys this browser
-   * changed since the last remote apply (vs tipPayrollRemoteBaseline). Prevents one manager's
-   * stale localStorage from clobbering another manager's tip/VL edits.
+   * Within one pay-week map (delivery tips / VL-SL extras), overlay only keys this browser
+   * changed vs baseline. Replacing the whole week object wiped sibling day tips.
+   */
+  function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice) {
+    localSlice = localSlice && typeof localSlice === 'object' ? localSlice : {};
+    remoteSlice = remoteSlice && typeof remoteSlice === 'object' ? remoteSlice : {};
+    baselineSlice = baselineSlice && typeof baselineSlice === 'object' ? baselineSlice : {};
+    var merged = Object.assign({}, remoteSlice);
+    var keys = Object.create(null);
+    Object.keys(localSlice).forEach(function (k) {
+      keys[k] = true;
+    });
+    Object.keys(baselineSlice).forEach(function (k) {
+      keys[k] = true;
+    });
+    Object.keys(keys).forEach(function (k) {
+      var localHas = Object.prototype.hasOwnProperty.call(localSlice, k);
+      var baseHas = Object.prototype.hasOwnProperty.call(baselineSlice, k);
+      var localVal = localHas ? localSlice[k] : undefined;
+      var baseVal = baseHas ? baselineSlice[k] : undefined;
+      if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
+        return;
+      }
+      if (!localHas) delete merged[k];
+      else merged[k] = localVal;
+    });
+    return merged;
+  }
+
+  /**
+   * Merge tip/VL/SL for push: start from remote SoT, overlay only keys this browser changed
+   * since the last remote apply (vs tipPayrollRemoteBaseline). Tip-pool weeks stay whole-object
+   * (one TipPoolInputs per week/location). Dishwasher tips + week extras deep-merge per day key
+   * so saving Tue does not drop Mon.
    */
   function mergeTipPayrollStoresForPush(localTip, localDw, remoteTip, remoteDw, localExtras, remoteExtras) {
     remoteTip = remoteTip && typeof remoteTip === 'object' ? remoteTip : {};
@@ -2318,18 +2364,20 @@
     Object.keys(localDw).forEach(function (key) {
       var slice = localDw[key];
       if (!slice || typeof slice !== 'object') return;
-      if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseDw[key])) mergedDw[key] = slice;
+      if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
+      mergedDw[key] = mergeTipPayrollWeekSliceForPush(slice, remoteDw[key], baseDw[key]);
     });
     var mergedExtras = Object.assign({}, remoteExtras);
     Object.keys(localExtras).forEach(function (key) {
       var slice = localExtras[key];
       if (!slice || typeof slice !== 'object') return;
-      if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseExtras[key])) {
-        mergedExtras[key] = slice;
-      }
+      if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseExtras[key])) return;
+      mergedExtras[key] = mergeTipPayrollWeekSliceForPush(slice, remoteExtras[key], baseExtras[key]);
     });
     return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
   }
+
+  var tipPayrollBaselineReady = false;
 
   function snapshotTipPayrollRemoteBaseline() {
     tipPayrollRemoteBaseline = {
@@ -2366,55 +2414,85 @@
     };
   }
 
+  var tipPayrollPushInFlight = false;
+  var tipPayrollPushQueued = false;
+
   function scheduleTipPayrollDebouncedSync() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (tipPayrollPushTimer) clearTimeout(tipPayrollPushTimer);
     tipPayrollPushTimer = setTimeout(function () {
       tipPayrollPushTimer = null;
       void pushTipPayrollToSupabase();
-    }, 4000);
+    }, 1200);
+  }
+
+  function flushTipPayrollPushToSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (tipPayrollPushTimer) {
+      clearTimeout(tipPayrollPushTimer);
+      tipPayrollPushTimer = null;
+    }
+    void pushTipPayrollToSupabase();
   }
 
   async function pushTipPayrollToSupabase() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (tipPayrollPushInFlight) {
+      tipPayrollPushQueued = true;
+      return;
+    }
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return;
     var prof = await sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle();
     if (prof.error || !prof.data || prof.data.role !== 'manager') return;
-    var remote = await fetchRemoteTipPayrollStores(sb);
-    var merged = mergeTipPayrollStoresForPush(
-      loadTimecardWeekTipPoolStore(),
-      loadTimecardDishwasherTipsStore(),
-      remote.tipPool,
-      remote.dishwasher,
-      loadTimecardWeekExtrasStore(),
-      remote.weekExtras
-    );
+    tipPayrollPushInFlight = true;
     try {
-      localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
-      localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
-      localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
-    } catch (_ls) {
-      /* ignore */
-    }
-    var res = await sb.from('team_state').upsert(
-      {
-        id: gmCalloutTeamStateRowId(),
-        timecard_week_tip_pool: merged.tipPool,
-        timecard_dishwasher_tips: merged.dishwasher,
-        timecard_week_extras: merged.weekExtras,
-      },
-      { onConflict: 'id' }
-    );
-    if (res.error) console.warn('gm-callout: team_state tip payroll upsert', res.error);
-    else {
-      snapshotTipPayrollRemoteBaseline();
-      void broadcastTeamStateChanged([
-        'timecard_week_tip_pool',
-        'timecard_dishwasher_tips',
-        'timecard_week_extras',
-      ]);
+      var remote = await fetchRemoteTipPayrollStores(sb);
+      var merged = mergeTipPayrollStoresForPush(
+        loadTimecardWeekTipPoolStore(),
+        loadTimecardDishwasherTipsStore(),
+        remote.tipPool,
+        remote.dishwasher,
+        loadTimecardWeekExtrasStore(),
+        remote.weekExtras
+      );
+      try {
+        localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
+        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
+        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
+      } catch (_ls) {
+        /* ignore */
+      }
+      var res = await sb.from('team_state').upsert(
+        {
+          id: gmCalloutTeamStateRowId(),
+          timecard_week_tip_pool: merged.tipPool,
+          timecard_dishwasher_tips: merged.dishwasher,
+          timecard_week_extras: merged.weekExtras,
+        },
+        { onConflict: 'id' }
+      );
+      if (res.error) console.warn('gm-callout: team_state tip payroll upsert', res.error);
+      else {
+        tipPayrollRemoteBaseline = {
+          tipPool: merged.tipPool,
+          dishwasher: merged.dishwasher,
+          weekExtras: merged.weekExtras,
+        };
+        tipPayrollBaselineReady = true;
+        void broadcastTeamStateChanged([
+          'timecard_week_tip_pool',
+          'timecard_dishwasher_tips',
+          'timecard_week_extras',
+        ]);
+      }
+    } finally {
+      tipPayrollPushInFlight = false;
+      if (tipPayrollPushQueued) {
+        tipPayrollPushQueued = false;
+        void pushTipPayrollToSupabase();
+      }
     }
   }
 
@@ -2434,7 +2512,7 @@
     'schedule_assignments,schedule_templates,draft_schedule,schedule_published,updated_at';
   var TEAM_STATE_MANAGER_COLUMNS =
     TEAM_STATE_SCHEDULE_COLUMNS +
-    ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras';
+    ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,timecard_tip_takehome_pct';
   /* Employees need draft_schedule (slot times/rows) + schedule_assignments so upcoming
      shifts and the read-only master calendar match the manager SoT.
      schedule_published gates which weeks employees can see. */
@@ -2461,6 +2539,7 @@
             'timecard_week_tip_pool',
             'timecard_dishwasher_tips',
             'timecard_week_extras',
+            'timecard_tip_takehome_pct',
           ]
         : [
             'schedule_assignments',
@@ -2540,37 +2619,105 @@
 
   function applyTimecardTipPayrollFromRemote(row) {
     if (!row || typeof row !== 'object') return false;
+    var hasTipPool = Object.prototype.hasOwnProperty.call(row, 'timecard_week_tip_pool');
+    var hasDishwasher = Object.prototype.hasOwnProperty.call(row, 'timecard_dishwasher_tips');
+    var hasWeekExtras = Object.prototype.hasOwnProperty.call(row, 'timecard_week_extras');
+    var remoteTip =
+      hasTipPool && row.timecard_week_tip_pool && typeof row.timecard_week_tip_pool === 'object'
+        ? row.timecard_week_tip_pool
+        : null;
+    var remoteDw =
+      hasDishwasher &&
+      row.timecard_dishwasher_tips &&
+      typeof row.timecard_dishwasher_tips === 'object'
+        ? row.timecard_dishwasher_tips
+        : null;
+    var remoteExtras =
+      hasWeekExtras && row.timecard_week_extras && typeof row.timecard_week_extras === 'object'
+        ? row.timecard_week_extras
+        : null;
+
+    // First hydrate: take remote when present; lock baseline so pre-hydrate localStorage is not
+    // treated as session edits. Later applies preserve in-session tip/VL day keys via deep merge.
+    if (!tipPayrollBaselineReady) {
+      var changedFirst = false;
+      if (remoteTip && Object.keys(remoteTip).length > 0) {
+        try {
+          localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(remoteTip));
+          changedFirst = true;
+        } catch (_tp0) {
+          /* ignore */
+        }
+      }
+      if (remoteDw && Object.keys(remoteDw).length > 0) {
+        try {
+          localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(remoteDw));
+          changedFirst = true;
+        } catch (_dt0) {
+          /* ignore */
+        }
+      }
+      if (remoteExtras && Object.keys(remoteExtras).length > 0) {
+        try {
+          localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(remoteExtras));
+          changedFirst = true;
+        } catch (_we0) {
+          /* ignore */
+        }
+      }
+      tipPayrollRemoteBaseline = {
+        tipPool: remoteTip || loadTimecardWeekTipPoolStore(),
+        dishwasher: remoteDw || loadTimecardDishwasherTipsStore(),
+        weekExtras: remoteExtras || loadTimecardWeekExtrasStore(),
+      };
+      tipPayrollBaselineReady = true;
+      if (
+        changedFirst &&
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
+      ) {
+        window.gmCalloutTimecards.applyRemoteTipPayroll();
+      }
+      return changedFirst;
+    }
+
+    var nextBaseline = {
+      tipPool: tipPayrollRemoteBaseline.tipPool,
+      dishwasher: tipPayrollRemoteBaseline.dishwasher,
+      weekExtras: tipPayrollRemoteBaseline.weekExtras,
+    };
+    var localTip = loadTimecardWeekTipPoolStore();
+    var localDw = loadTimecardDishwasherTipsStore();
+    var localExtras = loadTimecardWeekExtrasStore();
+    var merged = mergeTipPayrollStoresForPush(
+      localTip,
+      localDw,
+      remoteTip || localTip,
+      remoteDw || localDw,
+      localExtras,
+      remoteExtras || localExtras
+    );
     var changed = false;
-    var tipPool = row.timecard_week_tip_pool;
-    if (tipPool && typeof tipPool === 'object' && Object.keys(tipPool).length > 0) {
-      try {
-        localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(tipPool));
+    try {
+      if (hasTipPool && remoteTip && Object.keys(remoteTip).length > 0) {
+        localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
+        nextBaseline.tipPool = remoteTip;
         changed = true;
-      } catch (_tpSet) {
-        /* ignore */
       }
-    }
-    var dishwasher = row.timecard_dishwasher_tips;
-    if (dishwasher && typeof dishwasher === 'object' && Object.keys(dishwasher).length > 0) {
-      try {
-        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(dishwasher));
+      if (hasDishwasher && remoteDw && Object.keys(remoteDw).length > 0) {
+        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
+        nextBaseline.dishwasher = remoteDw;
         changed = true;
-      } catch (_dtSet) {
-        /* ignore */
       }
-    }
-    var weekExtras = row.timecard_week_extras;
-    if (weekExtras && typeof weekExtras === 'object' && Object.keys(weekExtras).length > 0) {
-      try {
-        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(weekExtras));
+      if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {
+        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
+        nextBaseline.weekExtras = remoteExtras;
         changed = true;
-      } catch (_weSet) {
-        /* ignore */
       }
+    } catch (_set) {
+      /* ignore */
     }
-    // Always snapshot baseline (even when remote columns were empty) so a later push does not
-    // treat pre-hydrate localStorage as session edits and overwrite shared tip/VL SoT.
-    snapshotTipPayrollRemoteBaseline();
+    tipPayrollRemoteBaseline = nextBaseline;
     if (
       changed &&
       window.gmCalloutTimecards &&
@@ -3330,6 +3477,9 @@
 
     applyCalloutHistoryFromRemote(row.callout_history, { isManager: isMgr });
     applyTimeclockSettingsFromRemote(row.timeclock_settings);
+    if (Object.prototype.hasOwnProperty.call(row, 'timecard_tip_takehome_pct')) {
+      applyTipTakehomePctFromRemote(row.timecard_tip_takehome_pct);
+    }
     applyTimecardTipPayrollFromRemote(row);
     // Do not push local tip/VL stores when remote columns are empty — that resurrected
     // per-browser localStorage onto shared team_state and made managers diverge.
@@ -6754,6 +6904,51 @@
     return u === restaurantId;
   }
 
+  /** Restaurants the signed-in employee may view (Team `usualRestaurant` / both). */
+  function restaurantsVisibleToEmployee(emp) {
+    if (!emp) return restaurantsList.slice();
+    var allowed = restaurantsList.filter(function (r) {
+      return employeeMatchesScheduleRestaurant(emp, r.id);
+    });
+    return allowed.length ? allowed : restaurantsList.slice();
+  }
+
+  function signedInEmployeeRecord() {
+    var name = '';
+    try {
+      var s = sessionStorage.getItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+      if (s && String(s).trim()) name = String(s).trim();
+    } catch (eSess) {
+      /* ignore */
+    }
+    if (!name && window.gmCalloutBridge && window.gmCalloutBridge.employeeLoginName) {
+      name = String(window.gmCalloutBridge.employeeLoginName || '').trim();
+    }
+    return name ? employeeByDisplayName(name) : null;
+  }
+
+  /** Clamp employee schedule location to Team-assigned store(s). Managers unchanged. */
+  function ensureEmployeeScheduleRestaurantAllowed() {
+    if (!document.documentElement.classList.contains('employee-app')) return;
+    var emp = signedInEmployeeRecord();
+    if (!emp) return;
+    if (employeeMatchesScheduleRestaurant(emp, currentRestaurantId)) return;
+    var visible = restaurantsVisibleToEmployee(emp);
+    var primary = '';
+    if (employeeIsMultiLocation(emp.usualRestaurant)) {
+      primary = normalizePrimaryLocationId(
+        emp.meta && (emp.meta.primaryLocationId || emp.meta.primaryRestaurantId)
+      );
+    }
+    var next =
+      (primary &&
+        visible.find(function (r) {
+          return r.id === primary;
+        })) ||
+      visible[0];
+    if (next && next.id !== currentRestaurantId) switchRestaurant(next.id);
+  }
+
   /** True when a schedule worker name matches someone on the current team roster. */
   function scheduleWorkerIsOnTeam(name, restaurantId) {
     if (!name || name === 'Unassigned') return false;
@@ -7128,6 +7323,54 @@
         : 'both';
     var ok = ur === 'both' || restaurantsList.some(function (r) { return r.id === ur; });
     empUsualRestaurant.value = ok ? ur : 'both';
+    syncEmployeePrimaryLocationField();
+  }
+
+  function employeeIsMultiLocation(usualRestaurant) {
+    return String(usualRestaurant || '') === 'both';
+  }
+
+  function defaultPrimaryLocationId() {
+    return restaurantsList[0] && restaurantsList[0].id ? restaurantsList[0].id : 'rp-9';
+  }
+
+  function normalizePrimaryLocationId(val) {
+    var id = val != null ? String(val).trim() : '';
+    if (!id || id === 'both') return '';
+    if (restaurantsList.some(function (r) { return r.id === id; })) return id;
+    return '';
+  }
+
+  function renderEmployeePrimaryLocationOptions(preferredId) {
+    if (!empPrimaryLocation) return;
+    empPrimaryLocation.innerHTML = restaurantsList
+      .map(function (r) {
+        return (
+          '<option value="' + escapeHtml(r.id) + '">' + escapeHtml(r.name) + '</option>'
+        );
+      })
+      .join('');
+    var preferred = normalizePrimaryLocationId(preferredId) || defaultPrimaryLocationId();
+    if (restaurantsList.some(function (r) { return r.id === preferred; })) {
+      empPrimaryLocation.value = preferred;
+    } else if (restaurantsList[0]) {
+      empPrimaryLocation.value = restaurantsList[0].id;
+    }
+  }
+
+  function syncEmployeePrimaryLocationField(preferredId) {
+    if (!empPrimaryLocationWrap || !empUsualRestaurant) return;
+    var multi = employeeIsMultiLocation(empUsualRestaurant.value);
+    empPrimaryLocationWrap.hidden = !multi;
+    if (multi) {
+      var pref =
+        preferredId != null
+          ? preferredId
+          : empPrimaryLocation && empPrimaryLocation.value
+            ? empPrimaryLocation.value
+            : defaultPrimaryLocationId();
+      renderEmployeePrimaryLocationOptions(pref);
+    }
   }
 
   function timeRangeForShift(shift) {
@@ -7518,6 +7761,126 @@
     if (input && document.activeElement !== input) input.value = time;
   }
 
+  var TIP_TAKEHOME_PCT_KEY = 'gm-timecard-tip-takehome-pct-v1';
+  var DEFAULT_TIP_TAKEHOME_PCT = { 'rp-9': 95, 'rp-8': 80 };
+
+  function normalizeTipTakehomePctValue(value) {
+    if (value == null || value === '') return null;
+    var n = typeof value === 'number' ? value : parseFloat(String(value));
+    if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+    return Math.round(n * 100) / 100;
+  }
+
+  function normalizeTipTakehomePctMap(raw) {
+    var out = Object.assign({}, DEFAULT_TIP_TAKEHOME_PCT);
+    if (!raw || typeof raw !== 'object') return out;
+    ['rp-9', 'rp-8'].forEach(function (id) {
+      var n = normalizeTipTakehomePctValue(raw[id]);
+      if (n != null) out[id] = n;
+    });
+    return out;
+  }
+
+  function loadTipTakehomePctMap() {
+    try {
+      var raw = localStorage.getItem(TIP_TAKEHOME_PCT_KEY);
+      if (!raw) return Object.assign({}, DEFAULT_TIP_TAKEHOME_PCT);
+      return normalizeTipTakehomePctMap(JSON.parse(raw));
+    } catch (_eTip) {
+      return Object.assign({}, DEFAULT_TIP_TAKEHOME_PCT);
+    }
+  }
+
+  function saveTipTakehomePctMap(map) {
+    var next = normalizeTipTakehomePctMap(map);
+    try {
+      localStorage.setItem(TIP_TAKEHOME_PCT_KEY, JSON.stringify(next));
+    } catch (_eSaveTip) {
+      /* ignore */
+    }
+    if (GM_SUPABASE_DATA && window.gmSupabase) {
+      tipTakehomePctDirty = true;
+      scheduleTipTakehomePctDebouncedSync();
+    }
+    if (window.gmCalloutTimecards && typeof window.gmCalloutTimecards.onTipTakehomePctChanged === 'function') {
+      window.gmCalloutTimecards.onTipTakehomePctChanged(next);
+    }
+    return next;
+  }
+
+  function tipTakehomePctForRestaurant(restaurantId) {
+    var map = loadTipTakehomePctMap();
+    var rid = restaurantId && map[restaurantId] != null ? restaurantId : 'rp-9';
+    return map[rid] != null ? map[rid] : DEFAULT_TIP_TAKEHOME_PCT['rp-9'];
+  }
+
+  var tipTakehomePctDirty = false;
+  var tipTakehomePctPushTimer = null;
+  var tipTakehomePctPushInFlight = false;
+
+  function scheduleTipTakehomePctDebouncedSync() {
+    if (tipTakehomePctPushTimer) clearTimeout(tipTakehomePctPushTimer);
+    tipTakehomePctPushTimer = setTimeout(function () {
+      tipTakehomePctPushTimer = null;
+      void pushTipTakehomePctToSupabase();
+    }, 500);
+  }
+
+  async function pushTipTakehomePctToSupabase() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !tipTakehomePctDirty) return;
+    if (tipTakehomePctPushInFlight) {
+      scheduleTipTakehomePctDebouncedSync();
+      return;
+    }
+    var sb = window.gmSupabase;
+    tipTakehomePctPushInFlight = true;
+    try {
+      var map = loadTipTakehomePctMap();
+      var res = await sb
+        .from('team_state')
+        .upsert(
+          {
+            id: gmCalloutTeamStateRowId(),
+            timecard_tip_takehome_pct: map,
+          },
+          { onConflict: 'id' }
+        )
+        .select('id')
+        .single();
+      if (res.error) {
+        console.warn('gm-callout: tip take-home upsert', res.error);
+        return;
+      }
+      tipTakehomePctDirty = false;
+      void broadcastTeamStateChanged(['timecard_tip_takehome_pct']);
+    } catch (err) {
+      console.warn('gm-callout: tip take-home upsert', err);
+    } finally {
+      tipTakehomePctPushInFlight = false;
+    }
+  }
+
+  function applyTipTakehomePctFromRemote(raw) {
+    if (raw == null) return;
+    var next = normalizeTipTakehomePctMap(raw);
+    var prev = loadTipTakehomePctMap();
+    var changed =
+      prev['rp-9'] !== next['rp-9'] || prev['rp-8'] !== next['rp-8'];
+    try {
+      localStorage.setItem(TIP_TAKEHOME_PCT_KEY, JSON.stringify(next));
+    } catch (_eApplyTip) {
+      /* ignore */
+    }
+    tipTakehomePctDirty = false;
+    if (
+      changed &&
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.onTipTakehomePctChanged === 'function'
+    ) {
+      window.gmCalloutTimecards.onTipTakehomePctChanged(next);
+    }
+  }
+
   function applyMessagingTemplate(template, vars) {
     return String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, key) {
       return vars[key] != null && vars[key] !== '' ? String(vars[key]) : '';
@@ -7856,6 +8219,8 @@
   const empPhone = document.getElementById('empPhone');
   const empEmail = document.getElementById('empEmail');
   const empUsualRestaurant = document.getElementById('empUsualRestaurant');
+  const empPrimaryLocation = document.getElementById('empPrimaryLocation');
+  const empPrimaryLocationWrap = document.getElementById('empPrimaryLocationWrap');
   const employeeSearchInput = document.getElementById('employeeSearch');
   const shiftEditSearchInput = document.getElementById('shiftEditSearch');
   const shiftCalloutSearchInput = document.getElementById('shiftCalloutSearch');
@@ -9200,6 +9565,7 @@
   function renderEmployeeMasterSchedule() {
     var el = document.getElementById('empCalendarGrid');
     if (!el) return;
+    ensureEmployeeScheduleRestaurantAllowed();
     rebuildSchedule();
     if (!isScheduleWeekIndexPublished(scheduleCalendarWeekIndex)) {
       var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
@@ -9234,7 +9600,10 @@
   function renderEmpRestaurantSwitcher() {
     var el = document.getElementById('empRestaurantSwitcher');
     if (!el) return;
-    el.innerHTML = restaurantsList
+    ensureEmployeeScheduleRestaurantAllowed();
+    var emp = signedInEmployeeRecord();
+    var visible = restaurantsVisibleToEmployee(emp);
+    el.innerHTML = visible
       .map(function (r) {
         return (
           '<button type="button" class="restaurant-chip' +
@@ -11402,6 +11771,10 @@
     if (empUsualRestaurant) {
       var urPref = emp && emp.usualRestaurant ? emp.usualRestaurant : 'both';
       renderEmployeeLocationSelectOptions(urPref);
+      var empMetaForPrimary = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+      var primaryPref =
+        empMetaForPrimary.primaryLocationId || empMetaForPrimary.primaryRestaurantId || '';
+      syncEmployeePrimaryLocationField(primaryPref);
     }
     if (empHourlyRate) {
       empHourlyRate.value =
@@ -12535,6 +12908,12 @@
     });
   }
 
+  if (empUsualRestaurant) {
+    empUsualRestaurant.addEventListener('change', function () {
+      syncEmployeePrimaryLocationField();
+    });
+  }
+
   (function wireEmployeePhotoControls() {
     var photoInput = document.getElementById('empPhotoInput');
     var photoRemove = document.getElementById('empPhotoRemoveBtn');
@@ -12736,6 +13115,17 @@
         var hireVal = String(empHiringDate.value || '').trim();
         if (hireVal) rec.meta.hiringDate = hireVal;
         else if (rec.meta.hiringDate) delete rec.meta.hiringDate;
+      }
+      if (employeeIsMultiLocation(urVal)) {
+        var primaryId = normalizePrimaryLocationId(
+          empPrimaryLocation ? empPrimaryLocation.value : ''
+        );
+        if (!primaryId) primaryId = defaultPrimaryLocationId();
+        rec.meta.primaryLocationId = primaryId;
+        rec.meta.primaryRestaurantId = primaryId;
+      } else {
+        if (rec.meta.primaryLocationId) delete rec.meta.primaryLocationId;
+        if (rec.meta.primaryRestaurantId) delete rec.meta.primaryRestaurantId;
       }
       if (empEmergencyContact) {
         var emergVal = String(empEmergencyContact.value || '').trim();
@@ -13203,6 +13593,7 @@
     getWorkerScheduleBuckets: function (workerName) {
       mergeEmployeeSubmittedFromStorage();
       var all = buildAllLocationScheduleSnapshot();
+      var workerEmp = employeeByDisplayName(workerName);
       var todayIso = localTodayISO();
       var windowStartMeta = WEEK_META[SCHEDULE_TEMPLATE_WEEK_INDEX * 7];
       var windowEndMeta =
@@ -13221,6 +13612,14 @@
         if (windowEndIso && iso && iso > windowEndIso) return;
         /* Employees only see published weeks (live SoT within those weeks). */
         if (!isScheduleWeekPublished(iso)) return;
+        /* Employee portal only: Team usualRestaurant / both. Managers keep full buckets. */
+        if (
+          document.documentElement.classList.contains('employee-app') &&
+          workerEmp &&
+          !employeeMatchesScheduleRestaurant(workerEmp, s.restaurantId)
+        ) {
+          return;
+        }
         var o = {
           id: s.id,
           restaurantId: s.restaurantId,
@@ -13335,6 +13734,10 @@
       return currentRestaurantId;
     },
     setCurrentScheduleRestaurantId: function (restaurantId) {
+      if (document.documentElement.classList.contains('employee-app')) {
+        var emp = signedInEmployeeRecord();
+        if (emp && !employeeMatchesScheduleRestaurant(emp, restaurantId)) return;
+      }
       switchRestaurant(restaurantId);
     },
     renderEmployeeMasterSchedule: function () {
@@ -13849,7 +14252,11 @@
       setAssignmentBreakPaidForShift: setAssignmentBreakPaidForShift,
       loadTimeclockSettings: loadTimeclockSettings,
       saveTimeclockSettings: saveTimeclockSettings,
+      loadTipTakehomePctMap: loadTipTakehomePctMap,
+      saveTipTakehomePctMap: saveTipTakehomePctMap,
+      tipTakehomePctForRestaurant: tipTakehomePctForRestaurant,
       scheduleTimecardPayrollDebouncedSync: scheduleTipPayrollDebouncedSync,
+      flushTimecardPayrollSync: flushTipPayrollPushToSupabase,
       expandEmployeeRestaurantForPunch: expandEmployeeRestaurantForPunch,
       showScreen: showScreen,
       setTimecardTitle: setTimecardScreenTitle,
@@ -13970,6 +14377,10 @@
   if (GM_SUPABASE_DATA && typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', function () {
       syncRealtimeSubscriptionsForVisibility();
+      if (document.visibilityState === 'hidden') {
+        flushTipPayrollPushToSupabase();
+        return;
+      }
       if (document.visibilityState === 'visible') {
         ensureRollingFutureScheduleWeeks();
         if (currentScreen === 1) {
@@ -13978,6 +14389,9 @@
           if (scheduleBody) renderSchedule();
         }
       }
+    });
+    window.addEventListener('pagehide', function () {
+      flushTipPayrollPushToSupabase();
     });
   }
 

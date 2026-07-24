@@ -29,6 +29,8 @@ import {
 import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
   employeeDisplayName,
+  employeeIsMultiLocation,
+  employeePrimaryLocationId,
   isCloudEmployeeId,
   staffTypeLabel,
   type EmployeeRow,
@@ -50,6 +52,8 @@ const LOCATIONS = [
   { value: 'rp-8', label: 'Red Poke 885 8th Ave' },
   { value: 'both', label: 'Both locations' },
 ] as const;
+
+const PRIMARY_LOCATIONS = LOCATIONS.filter((l) => l.value !== 'both');
 
 const BREAK_POLICIES = [
   { value: 'unpaid', label: 'Unpaid — break deducted' },
@@ -127,6 +131,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [usualRestaurant, setUsualRestaurant] = useState('rp-9');
+  const [primaryLocationId, setPrimaryLocationId] = useState('rp-9');
   const [hourlyRate, setHourlyRate] = useState('');
   const [tipPoint, setTipPoint] = useState('');
   const [breakPolicy, setBreakPolicy] = useState<'paid' | 'unpaid'>('unpaid');
@@ -155,6 +160,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setPhone('');
     setEmail('');
     setUsualRestaurant('rp-9');
+    setPrimaryLocationId('rp-9');
     setHourlyRate('');
     setTipPoint('');
     setBreakPolicy('unpaid');
@@ -205,6 +211,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
           ? emp.usualRestaurant
           : 'rp-9'
       );
+      setPrimaryLocationId(employeePrimaryLocationId(emp) || 'rp-9');
       setHourlyRate(emp.hourlyRate != null ? String(emp.hourlyRate) : '');
       setTipPoint(emp.tipPoint != null ? String(emp.tipPoint) : '');
       setBreakPolicy(emp.meta?.breakPolicy === 'paid' ? 'paid' : 'unpaid');
@@ -362,6 +369,15 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     meta.breakPolicy = breakPolicy;
     if (emailTrim) meta.email = emailTrim;
     else if ('email' in meta) delete meta.email;
+    if (employeeIsMultiLocation(usualRestaurant)) {
+      const primary =
+        primaryLocationId === 'rp-8' || primaryLocationId === 'rp-9' ? primaryLocationId : 'rp-9';
+      meta.primaryLocationId = primary;
+      meta.primaryRestaurantId = primary;
+    } else {
+      delete meta.primaryLocationId;
+      delete meta.primaryRestaurantId;
+    }
     applyLeaveAllowancesToMeta(meta, {
       vacAllowanceDays,
       sickAllowanceDays,
@@ -604,8 +620,26 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                 <ChipRow
                   options={LOCATIONS}
                   value={usualRestaurant}
-                  onChange={setUsualRestaurant}
+                  onChange={(v) => {
+                    setUsualRestaurant(v);
+                    if (v === 'both' && primaryLocationId !== 'rp-8' && primaryLocationId !== 'rp-9') {
+                      setPrimaryLocationId('rp-9');
+                    }
+                  }}
                 />
+                {employeeIsMultiLocation(usualRestaurant) ? (
+                  <>
+                    <FieldLabel>Primary location</FieldLabel>
+                    <ChipRow
+                      options={PRIMARY_LOCATIONS}
+                      value={primaryLocationId === 'rp-8' ? 'rp-8' : 'rp-9'}
+                      onChange={setPrimaryLocationId}
+                    />
+                    <Text style={styles.photoHint}>
+                      Stored for multi-location staff; does not change payroll assignment yet.
+                    </Text>
+                  </>
+                ) : null}
                 <View style={styles.row2}>
                   <View style={styles.fieldHalf}>
                     <FieldLabel>Hourly rate ($)</FieldLabel>
@@ -651,7 +685,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       value={portalPassword}
                       onChangeText={setPortalPassword}
                       secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
                       placeholder="Default: pass"
+                      placeholderTextColor="#94a3b8"
                     />
                     <FieldLabel>Recovery email (optional)</FieldLabel>
                     <TextInput

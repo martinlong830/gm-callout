@@ -5331,6 +5331,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-roster-toolbar .timecards-week-picker,
 .timecards-roster-toolbar .timecards-location-switcher,
 .timecards-roster-toolbar .timecards-soh-rate-control,
+.timecards-roster-toolbar .timecards-tip-takehome-control,
 .timecards-employee-toolbar .timecards-week-picker {
   display: flex;
   flex-direction: column;
@@ -5353,6 +5354,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .timecards-roster-toolbar .timecards-week-select,
 .timecards-roster-toolbar .filter-chip,
 .timecards-roster-toolbar .timecards-soh-rate-field,
+.timecards-roster-toolbar .timecards-tip-takehome-input-wrap,
 .timecards-roster-toolbar .timecards-download-btn,
 .timecards-employee-toolbar .timecards-week-select {
   box-sizing: border-box;
@@ -5445,6 +5447,52 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-soh-rate-input:focus {
   outline: none;
+}
+
+.timecards-tip-takehome-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timecards-tip-takehome-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.timecards-tip-takehome-input {
+  width: 3.25rem;
+  border: none;
+  background: transparent;
+  font-size: var(--timecards-toolbar-font-size, 0.8125rem);
+  font-weight: var(--timecards-toolbar-font-weight, 500);
+  color: var(--text);
+  text-align: right;
+}
+
+.timecards-tip-takehome-input:focus {
+  outline: none;
+}
+
+.timecards-tip-takehome-suffix {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.timecards-tip-takehome-disabled-hint,
+.timecards-tip-takehome-hint {
+  margin: 0;
+  max-width: 14rem;
+  font-size: 0.8em;
+  font-weight: 500;
+  color: var(--text-muted);
+  line-height: 1.35;
 }
 
 .timecards-download-group {

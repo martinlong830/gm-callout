@@ -8,10 +8,12 @@ import {
 } from './tipPayrollSync';
 import { getEmployeeDayLeaveSync, type WeekExtrasSlice } from './weekExtras';
 import type { LocationFilter } from './restaurantAttribution';
+import { netTipAmount } from './tipTakehome';
 import type { PayWeekBounds, TimeClockEntry } from './types';
 
-const RP2_DELIVERY_TIP_LOCATION = 'rp-8';
+export { netTipAmount, tipTakehomePctForRestaurant, tipTakehomeFactor } from './tipTakehome';
 
+const RP2_DELIVERY_TIP_LOCATION = 'rp-8';
 export function dishwasherTipRestaurantForShiftRow(
   shiftRow: { shift?: { restaurantId?: string }; iso?: string } | null | undefined,
   punchDayRestaurantId?: string | null
@@ -28,14 +30,6 @@ export function dishwasherTipRestaurantForShiftRow(
 
 export const DISHWASHER_TIP_REQUIRES_SHIFT_MSG =
   'Save a punch or vacation/sick hours before entering dishwasher tips.';
-
-/** Gross tip × this factor = net tip used for pay / totals. */
-export const TIP_NET_FACTOR = 0.95;
-
-export function netTipAmount(gross: number): number {
-  if (gross == null || Number.isNaN(gross) || gross <= 0) return 0;
-  return Math.round(gross * TIP_NET_FACTOR * 100) / 100;
-}
 
 export function isDeliveryDishwasherStaff(emp: { staffType?: string } | null): boolean {
   return !!(emp && emp.staffType === 'Server');
@@ -155,13 +149,36 @@ export function getEmployeeDayDishwasherTipSync(
   return 0;
 }
 
+/** Net tip pay for a day — applies each store’s tip take-home % when restaurant is omitted. */
+export function getEmployeeDayDishwasherTipNetSync(
+  empId: string,
+  iso: string,
+  slice: Record<string, number>,
+  restaurantId?: string
+): number {
+  if (restaurantId == null || restaurantId === '') {
+    let sumNet = 0;
+    for (const k of Object.keys(slice)) {
+      const parsed = parseDishwasherTipStorageKey(k);
+      if (!parsed || parsed.empId !== empId || parsed.iso !== iso) continue;
+      sumNet += netTipAmount(normalizeTipAmount(slice[k]), parsed.restaurantId);
+    }
+    return Math.round(sumNet * 100) / 100;
+  }
+  return netTipAmount(
+    getEmployeeDayDishwasherTipSync(empId, iso, slice, restaurantId),
+    restaurantId
+  );
+}
+
 export async function getEmployeeDayDishwasherTip(
   empId: string,
   iso: string,
-  bounds: PayWeekBounds
+  bounds: PayWeekBounds,
+  restaurantId?: string
 ): Promise<number> {
   const slice = await loadTipsMap(bounds);
-  return getEmployeeDayDishwasherTipSync(empId, iso, slice);
+  return getEmployeeDayDishwasherTipSync(empId, iso, slice, restaurantId);
 }
 
 export async function setEmployeeDayDishwasherTip(
@@ -193,6 +210,10 @@ export async function setEmployeeDayDishwasherTip(
   }
 }
 
+/**
+ * Week tip pay (net). Applies each tip key’s restaurant tip take-home % so “All”
+ * locations mix 9th Ave / 8th Ave rates correctly.
+ */
 export function sumEmployeeWeekDishwasherTipsSync(
   empId: string,
   bounds: PayWeekBounds,
@@ -201,11 +222,14 @@ export function sumEmployeeWeekDishwasherTipsSync(
     entries?: TimeClockEntry[];
     extrasSlice?: WeekExtrasSlice;
     locationFilter?: LocationFilter;
+    /** When false, return gross tip dollars. Default true (pay totals). */
+    asNet?: boolean;
   }
 ): number {
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
   const locationFilter = options?.locationFilter ?? 'all';
+  const asNet = options?.asNet !== false;
   let sum = 0;
   for (const k of Object.keys(slice)) {
     const parsed = parseDishwasherTipStorageKey(k);
@@ -218,7 +242,8 @@ export function sumEmployeeWeekDishwasherTipsSync(
     ) {
       continue;
     }
-    sum += normalizeTipAmount(slice[k]);
+    const gross = normalizeTipAmount(slice[k]);
+    sum += asNet ? netTipAmount(gross, parsed.restaurantId) : gross;
   }
   return Math.round(sum * 100) / 100;
 }
@@ -231,7 +256,7 @@ export function sumWeekDishwasherTipsSync(bounds: PayWeekBounds, slice: Record<s
     const parsed = parseDishwasherTipStorageKey(k);
     if (!parsed) continue;
     if (parsed.iso < weekStart || parsed.iso > weekEnd) continue;
-    sum += normalizeTipAmount(slice[k]);
+    sum += netTipAmount(normalizeTipAmount(slice[k]), parsed.restaurantId);
   }
   return Math.round(sum * 100) / 100;
 }

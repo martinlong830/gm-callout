@@ -1,5 +1,5 @@
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -53,6 +53,35 @@ const STAFF_TYPES = [
 ];
 
 const PRIMARY = '#1e3a5f';
+const INPUT_TEXT = '#0f172a';
+const INPUT_PLACEHOLDER = '#94a3b8';
+
+/** Password fields need an explicit text color on Android or dots can be invisible under dark system themes. */
+function PasswordInput({
+  style,
+  autoComplete = 'password',
+  textContentType = 'password',
+  placeholder = 'Password',
+  placeholderTextColor = INPUT_PLACEHOLDER,
+  ...rest
+}: React.ComponentProps<typeof TextInput>) {
+  return (
+    <TextInput
+      {...rest}
+      style={[styles.input, style]}
+      secureTextEntry
+      autoCapitalize="none"
+      autoCorrect={false}
+      spellCheck={false}
+      keyboardType="default"
+      textContentType={textContentType}
+      autoComplete={autoComplete}
+      placeholder={placeholder}
+      placeholderTextColor={placeholderTextColor}
+      importantForAutofill="yes"
+    />
+  );
+}
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -573,7 +602,7 @@ export default function LoginScreen() {
                   value={companyAccessCode}
                   onChangeText={setCompanyAccessCode}
                   placeholder="Company access code"
-                  placeholderTextColor="#888"
+                  placeholderTextColor={INPUT_PLACEHOLDER}
                   returnKeyType="go"
                   onSubmitEditing={() => void onVerifyAccessCode()}
                 />
@@ -631,20 +660,19 @@ export default function LoginScreen() {
                   maxLength={120}
                 />
                 <Text style={styles.label}>Password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={createPassword}
                   onChangeText={setCreatePassword}
                   autoComplete="new-password"
+                  textContentType="newPassword"
                 />
                 <Text style={styles.label}>Confirm password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={createPasswordConfirm}
                   onChangeText={setCreatePasswordConfirm}
                   autoComplete="new-password"
+                  textContentType="newPassword"
+                  placeholder="Confirm password"
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -703,7 +731,7 @@ export default function LoginScreen() {
                   autoCorrect={false}
                   maxLength={48}
                   placeholder="e.g. my-restaurant"
-                  placeholderTextColor="#94a3b8"
+                  placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 {message ? (
                   <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
@@ -736,17 +764,15 @@ export default function LoginScreen() {
                   value={loginName}
                   onChangeText={setLoginName}
                   placeholder="Your full name"
-                  placeholderTextColor="#888"
+                  placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 <Text style={styles.label}>Password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
-                  autoComplete="password"
+                <PasswordInput
                   value={password}
                   onChangeText={setPassword}
-                  placeholder="••••••••"
-                  placeholderTextColor="#888"
+                  placeholder="Password"
+                  returnKeyType="go"
+                  onSubmitEditing={() => void onSignIn()}
                 />
                 {message ? (
                   <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
@@ -808,7 +834,7 @@ export default function LoginScreen() {
                   value={loginName}
                   onChangeText={setLoginName}
                   placeholder="Your sign-in name"
-                  placeholderTextColor="#888"
+                  placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 {message ? (
                   <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
@@ -881,18 +907,19 @@ export default function LoginScreen() {
                   })}
                 </View>
                 <Text style={styles.label}>Password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={regPassword}
                   onChangeText={setRegPassword}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
                 />
                 <Text style={styles.label}>Confirm password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={regPasswordConfirm}
                   onChangeText={setRegPasswordConfirm}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  placeholder="Confirm password"
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -921,10 +948,13 @@ export default function LoginScreen() {
                 <Text style={styles.label}>Access code</Text>
                 <TextInput
                   style={styles.input}
-                  secureTextEntry
                   value={accessCode}
                   onChangeText={setAccessCode}
                   autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  placeholder="Access code"
+                  placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 <Text style={styles.label}>Name</Text>
                 <TextInput
@@ -944,18 +974,19 @@ export default function LoginScreen() {
                 />
                 <Text style={styles.hintTight}>Used to reset your password if you forget it.</Text>
                 <Text style={styles.label}>Password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={mgrPassword}
                   onChangeText={setMgrPassword}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
                 />
                 <Text style={styles.label}>Confirm password</Text>
-                <TextInput
-                  style={styles.input}
-                  secureTextEntry
+                <PasswordInput
                   value={mgrPasswordConfirm}
                   onChangeText={setMgrPasswordConfirm}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  placeholder="Confirm password"
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -1047,8 +1078,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === 'ios' ? 12 : 10,
     fontSize: 16,
+    // Explicit color required on Android: system dark theme can make default text
+    // (and secureTextEntry bullets) inherit a near-white color on #fafbfc.
+    color: INPUT_TEXT,
     marginBottom: 14,
     backgroundColor: '#fafbfc',
+    ...(Platform.OS === 'android'
+      ? {
+          minHeight: 48,
+          // Avoid clipping password bullets / descenders on some Android OEM fonts.
+          includeFontPadding: false,
+          textAlignVertical: 'center' as const,
+        }
+      : null),
   },
   button: { borderRadius: 8, paddingVertical: 14, alignItems: 'center' },
   buttonPrimary: { backgroundColor: PRIMARY },
