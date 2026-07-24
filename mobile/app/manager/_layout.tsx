@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -20,6 +21,25 @@ function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
 
 export default function ManagerLayout() {
   const { session, role, signOut } = useAuth();
+
+  // Register push for managers too so Publish/Notify self-tests reach this device.
+  // Dynamic import only — never statically load expo-notifications at cold start.
+  useEffect(() => {
+    if (!session || role !== 'manager') return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void import('../../lib/pushNotifications')
+        .then((m) => {
+          if (!cancelled) m.scheduleDevicePushTokenRegistration(0);
+        })
+        .catch((err) => console.warn('pushNotifications dynamic import', err));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [session, role]);
+
   if (!session || role !== 'manager') {
     return <Redirect href="/login" />;
   }

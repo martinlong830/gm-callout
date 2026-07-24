@@ -1752,7 +1752,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
-  /** Manager: notify employees that a week’s schedule is ready (Expo Push API). */
+  /** Manager: notify company devices that a week’s schedule is ready (Expo Push API). */
   router.post("/schedule/notify-published", async (req, res) => {
     try {
       const auth = await profileFromAccessToken(req);
@@ -1841,7 +1841,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       });
 
       if (!tokens.length) {
-        return res.json({ ok: true, sent: 0, message: "No registered devices." });
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          message:
+            "No registered devices. Open the Shiflow app on a physical phone, sign in, and allow notifications.",
+        });
       }
 
       const title = weekRangeLabel
@@ -1853,10 +1860,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         sound: "default",
         title,
         body: bodyText,
+        channelId: "schedule",
         data: { type: "schedule_published", weekMondayIso, teamStateId },
       }));
 
       let sent = 0;
+      let failed = 0;
+      const errorMessages = [];
+      const seenErrors = Object.create(null);
       for (let i = 0; i < messages.length; i += 100) {
         const chunk = messages.slice(i, i + 100);
         const pushRes = await fetch("https://exp.host/--/api/v2/push/send", {
@@ -1875,17 +1886,74 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             ok: false,
             message: "Expo push send failed (" + pushRes.status + ").",
             sent,
+            failed: tokens.length - sent,
+            tokens: tokens.length,
           });
         }
         const pushJson = await pushRes.json().catch(() => null);
         const tickets = (pushJson && pushJson.data) || [];
+        if (!tickets.length) {
+          // Unexpected empty ticket list — do not count as success.
+          failed += chunk.length;
+          const emptyMsg = "Expo returned no push tickets.";
+          if (!seenErrors[emptyMsg]) {
+            seenErrors[emptyMsg] = true;
+            errorMessages.push(emptyMsg);
+          }
+          continue;
+        }
         tickets.forEach((t) => {
-          if (t && t.status === "ok") sent += 1;
+          if (t && t.status === "ok") {
+            sent += 1;
+            return;
+          }
+          failed += 1;
+          const errMsg =
+            (t && (t.message || (t.details && t.details.error))) || "Push ticket error";
+          const key = String(errMsg);
+          if (!seenErrors[key]) {
+            seenErrors[key] = true;
+            errorMessages.push(key);
+          }
         });
-        if (!tickets.length) sent += chunk.length;
       }
 
-      return res.json({ ok: true, sent, weekMondayIso });
+      if (sent === 0) {
+        const detail = errorMessages.length ? errorMessages.join(" | ") : "unknown push error";
+        console.warn("schedule/notify-published delivery failed", {
+          tokens: tokens.length,
+          failed,
+          detail,
+        });
+        return res.status(502).json({
+          ok: false,
+          sent: 0,
+          failed,
+          tokens: tokens.length,
+          errors: errorMessages,
+          message:
+            "Push delivery failed for " +
+            tokens.length +
+            " device" +
+            (tokens.length === 1 ? "" : "s") +
+            ": " +
+            detail,
+          weekMondayIso,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        sent,
+        failed,
+        tokens: tokens.length,
+        errors: errorMessages.length ? errorMessages : undefined,
+        message:
+          failed > 0
+            ? "Notified " + sent + " device(s); " + failed + " failed (" + errorMessages.join(" | ") + ")."
+            : undefined,
+        weekMondayIso,
+      });
     } catch (err) {
       console.warn("schedule/notify-published", err);
       return res.status(500).json({ ok: false, message: "Could not send schedule notifications." });

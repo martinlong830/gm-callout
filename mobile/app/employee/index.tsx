@@ -84,7 +84,7 @@ export default function EmployeeHome() {
     const timer = setTimeout(() => {
       void import('../../lib/pushNotifications')
         .then((m) => {
-          if (!cancelled) m.scheduleEmployeePushTokenRegistration(0);
+          if (!cancelled) m.scheduleDevicePushTokenRegistration(0);
         })
         .catch((err) => console.warn('pushNotifications dynamic import', err));
     }, 2500);

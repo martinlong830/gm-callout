@@ -121,6 +121,28 @@ npm run submit:ios
 | EAS “No project ID” | Run `eas init` in `mobile/` |
 | Signing errors | `eas credentials` → iOS → reset distribution cert |
 | Missing compliance | Already set: `ITSAppUsesNonExemptEncryption = false` |
+| Publish/Notify shows push failure / APNs credentials | Push tokens can register, but Expo cannot deliver without Apple Push Key + Android FCM on the EAS project. See **Push notifications (required)** below. |
+
+## Push notifications (required)
+
+Schedule **Publish / Notify** uses Expo Push → APNs (iOS) / FCM (Android). Device tokens are stored in Supabase `device_push_tokens` after a physical-device production/TestFlight build signs in and allows notifications.
+
+**One-time credential setup** (Apple Developer + Google Cloud access required):
+
+```bash
+cd mobile
+# iOS — create/upload an Apple Push Notifications key for com.shiflow.app
+npx eas credentials -p ios
+# Choose the production profile → Push Notifications → set up a new key (or upload existing .p8)
+
+# Android — upload FCM server key / Google Service Account for Expo
+npx eas credentials -p android
+# Production → Google Service Account / FCM → follow prompts
+```
+
+Without these, Expo returns `InvalidCredentials` / “Could not find APNs credentials for com.shiflow.app” and notify reports `sent: 0` even when tokens exist.
+
+After credentials are set, **no app rebuild is required** for delivery to already-registered tokens. New installs still need notification permission + one successful sign-in so the token is registered.
 
 ## Android (Google Play)
 

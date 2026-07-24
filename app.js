@@ -989,15 +989,29 @@
         );
       } else {
         var sent = notifyResult && notifyResult.sent != null ? Number(notifyResult.sent) : 0;
-        showScheduleNotice(
-          'Week (' +
-            range +
-            ') is published.' +
-            (sent > 0
-              ? ' Notified ' + sent + ' device' + (sent === 1 ? '' : 's') + '.'
-              : ' Employees can view it now (no push tokens registered yet).'),
-          false
-        );
+        var failed = notifyResult && notifyResult.failed != null ? Number(notifyResult.failed) : 0;
+        var tokenCount =
+          notifyResult && notifyResult.tokens != null ? Number(notifyResult.tokens) : null;
+        var extra = '';
+        if (sent > 0) {
+          extra = ' Notified ' + sent + ' device' + (sent === 1 ? '' : 's') + '.';
+          if (failed > 0) {
+            extra +=
+              ' ' +
+              failed +
+              ' failed' +
+              (notifyResult.message ? ' (' + notifyResult.message + ')' : '') +
+              '.';
+          }
+        } else if (notifyResult && notifyResult.message) {
+          extra = ' ' + notifyResult.message;
+        } else if (tokenCount === 0 || tokenCount == null) {
+          extra =
+            ' Employees can view it now (no push tokens registered yet — open the app on a phone and allow notifications).';
+        } else {
+          extra = ' No notifications were delivered.';
+        }
+        showScheduleNotice('Week (' + range + ') is published.' + extra, false);
       }
       if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
         window.gmCalloutEmployeeScheduleRefreshUi();

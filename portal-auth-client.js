@@ -51,6 +51,7 @@
         ok: false,
         message: portalErrorMessage(res, data, "Request failed."),
         status: res.status,
+        data: data,
         needsSignIn: !!(data && data.needsSignIn),
         needsEmailConfirm: !!(data && data.needsEmailConfirm),
         wrongAccount: !!(data && data.wrongAccount),
@@ -672,13 +673,20 @@
         return {
           ok: true,
           sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+          failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : 0,
+          tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : 0,
           weekMondayIso: viaApi.data && viaApi.data.weekMondayIso,
           message: viaApi.data && viaApi.data.message,
+          errors: viaApi.data && viaApi.data.errors,
         };
       }
       return {
         ok: false,
+        sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+        failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : undefined,
+        tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : undefined,
         message: (viaApi && viaApi.message) || "Could not send notifications.",
+        errors: viaApi.data && viaApi.data.errors,
         needsSignIn: !!(viaApi && viaApi.needsSignIn),
       };
     },

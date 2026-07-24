@@ -829,15 +829,29 @@ export async function portalNotifySchedulePublished(payload: {
   weekMondayIso: string;
   weekRangeLabel?: string;
   teamStateId?: string;
-}): Promise<{ ok: true; sent: number } | { ok: false; message: string }> {
+}): Promise<
+  | { ok: true; sent: number; failed?: number; tokens?: number; message?: string }
+  | { ok: false; message: string; sent?: number; failed?: number; tokens?: number }
+> {
   if (!isPortalAuthConfigured()) {
     return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
   }
-  const r = await portalAuthedFetch<{ sent?: number }>('POST', '/api/portal/schedule/notify-published', {
+  const r = await portalAuthedFetch<{
+    sent?: number;
+    failed?: number;
+    tokens?: number;
+    message?: string;
+  }>('POST', '/api/portal/schedule/notify-published', {
     weekMondayIso: payload.weekMondayIso,
     weekRangeLabel: payload.weekRangeLabel || '',
     teamStateId: payload.teamStateId || '',
   });
   if (!r.ok) return r;
-  return { ok: true, sent: r.sent != null ? Number(r.sent) : 0 };
+  return {
+    ok: true,
+    sent: r.sent != null ? Number(r.sent) : 0,
+    failed: r.failed != null ? Number(r.failed) : 0,
+    tokens: r.tokens != null ? Number(r.tokens) : 0,
+    message: r.message,
+  };
 }

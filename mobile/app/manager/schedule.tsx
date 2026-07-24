@@ -187,12 +187,20 @@ export default function ManagerScheduleScreen() {
                   'Published',
                   `Week (${selectedWeekRange}) is visible to employees, but push notify failed: ${notify.message}`
                 );
+              } else if (notify.sent > 0) {
+                const failNote =
+                  notify.failed && notify.failed > 0
+                    ? ` ${notify.failed} failed${notify.message ? ` (${notify.message})` : ''}.`
+                    : '';
+                Alert.alert(
+                  'Published',
+                  `Notified ${notify.sent} device${notify.sent === 1 ? '' : 's'}.${failNote}`
+                );
               } else {
                 Alert.alert(
                   'Published',
-                  notify.sent > 0
-                    ? `Notified ${notify.sent} device${notify.sent === 1 ? '' : 's'}.`
-                    : `Employees can view ${selectedWeekRange} now (no push tokens registered yet).`
+                  notify.message ||
+                    `Employees can view ${selectedWeekRange} now (no push tokens registered yet — open the app on a phone and allow notifications).`
                 );
               }
             } finally {
