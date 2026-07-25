@@ -347,17 +347,17 @@ html.authed .login-screen {
   font: inherit;
   font-size: 1rem;
   background: #fff;
-  color: #0f172a;
-  caret-color: #0f172a;
+  color: #020617;
+  caret-color: #020617;
   /* Keep password bullets dark even when the OS prefers a dark color scheme. */
   color-scheme: light;
 }
 
 .login-input[type="password"] {
-  color: #0f172a;
-  -webkit-text-fill-color: #0f172a;
+  color: #020617;
+  -webkit-text-fill-color: #020617;
   background-color: #fff;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 .login-input[type="password"]::placeholder {
@@ -373,8 +373,8 @@ html.authed .login-screen {
 .login-input[type="password"]:-webkit-autofill,
 .login-input[type="password"]:-webkit-autofill:hover,
 .login-input[type="password"]:-webkit-autofill:focus {
-  -webkit-text-fill-color: #0f172a;
-  caret-color: #0f172a;
+  -webkit-text-fill-color: #020617;
+  caret-color: #020617;
   box-shadow: 0 0 0 1000px #fff inset;
   transition: background-color 99999s ease-out;
 }
@@ -4486,12 +4486,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .form-field input[type="password"] {
-  color: #0f172a;
-  -webkit-text-fill-color: #0f172a;
+  color: #020617;
+  -webkit-text-fill-color: #020617;
   background-color: #fff;
-  caret-color: #0f172a;
+  caret-color: #020617;
   color-scheme: light;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 .form-field input[type="password"]::placeholder {
@@ -4504,8 +4504,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .form-field input[type="password"]:-webkit-autofill,
 .form-field input[type="password"]:-webkit-autofill:hover,
 .form-field input[type="password"]:-webkit-autofill:focus {
-  -webkit-text-fill-color: #0f172a;
-  caret-color: #0f172a;
+  -webkit-text-fill-color: #020617;
+  caret-color: #020617;
   box-shadow: 0 0 0 1000px #fff inset;
   transition: background-color 99999s ease-out;
 }
