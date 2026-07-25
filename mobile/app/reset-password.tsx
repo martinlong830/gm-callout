@@ -20,8 +20,10 @@ import {
   portalVerifyResetToken,
 } from '../lib/portalAuth';
 
-const INPUT_TEXT = '#0f172a';
+/** Near-black so secureTextEntry bullets stay visible on light fields (Android OEM themes). */
+const INPUT_TEXT = '#020617';
 const INPUT_PLACEHOLDER = '#94a3b8';
+const PRIMARY = '#1e3a5f';
 
 function PasswordInput({
   style,
@@ -34,7 +36,7 @@ function PasswordInput({
   return (
     <TextInput
       {...rest}
-      style={[styles.input, style]}
+      style={[styles.input, style, styles.passwordInput]}
       secureTextEntry
       autoCapitalize="none"
       autoCorrect={false}
@@ -44,6 +46,8 @@ function PasswordInput({
       autoComplete={autoComplete}
       placeholder={placeholder}
       placeholderTextColor={placeholderTextColor}
+      selectionColor={PRIMARY}
+      cursorColor={INPUT_TEXT}
       importantForAutofill="yes"
     />
   );
@@ -234,7 +238,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: INPUT_TEXT,
     marginBottom: 14,
-    backgroundColor: '#fafbfc',
+    backgroundColor: '#ffffff',
     ...(Platform.OS === 'android'
       ? {
           minHeight: 48,
@@ -242,6 +246,12 @@ const styles = StyleSheet.create({
           textAlignVertical: 'center' as const,
         }
       : null),
+  },
+  passwordInput: {
+    color: INPUT_TEXT,
+    fontSize: 17,
+    letterSpacing: 1.2,
+    backgroundColor: '#ffffff',
   },
   buttonPrimary: {
     backgroundColor: '#c41230',

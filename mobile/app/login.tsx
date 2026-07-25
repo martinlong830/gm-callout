@@ -53,7 +53,8 @@ const STAFF_TYPES = [
 ];
 
 const PRIMARY = '#1e3a5f';
-const INPUT_TEXT = '#0f172a';
+/** Near-black so secureTextEntry bullets stay visible on light fields (Android OEM themes). */
+const INPUT_TEXT = '#020617';
 const INPUT_PLACEHOLDER = '#94a3b8';
 
 /** Password fields need an explicit text color on Android or dots can be invisible under dark system themes. */
@@ -68,7 +69,7 @@ function PasswordInput({
   return (
     <TextInput
       {...rest}
-      style={[styles.input, style]}
+      style={[styles.input, style, styles.passwordInput]}
       secureTextEntry
       autoCapitalize="none"
       autoCorrect={false}
@@ -78,6 +79,8 @@ function PasswordInput({
       autoComplete={autoComplete}
       placeholder={placeholder}
       placeholderTextColor={placeholderTextColor}
+      selectionColor={PRIMARY}
+      cursorColor={INPUT_TEXT}
       importantForAutofill="yes"
     />
   );
@@ -1082,7 +1085,7 @@ const styles = StyleSheet.create({
     // (and secureTextEntry bullets) inherit a near-white color on #fafbfc.
     color: INPUT_TEXT,
     marginBottom: 14,
-    backgroundColor: '#fafbfc',
+    backgroundColor: '#ffffff',
     ...(Platform.OS === 'android'
       ? {
           minHeight: 48,
@@ -1091,6 +1094,12 @@ const styles = StyleSheet.create({
           textAlignVertical: 'center' as const,
         }
       : null),
+  },
+  passwordInput: {
+    color: INPUT_TEXT,
+    fontSize: 17,
+    letterSpacing: 1.2,
+    backgroundColor: '#ffffff',
   },
   button: { borderRadius: 8, paddingVertical: 14, alignItems: 'center' },
   buttonPrimary: { backgroundColor: PRIMARY },

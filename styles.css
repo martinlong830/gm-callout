@@ -224,6 +224,8 @@ html.authed .login-screen {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   touch-action: manipulation;
+  /* Force light form controls so password bullets stay dark under OS dark mode. */
+  color-scheme: light;
 }
 
 /* Create account: grey band above the card (class toggled in index.html) */
@@ -344,8 +346,37 @@ html.authed .login-screen {
   border-radius: var(--radius-sm);
   font: inherit;
   font-size: 1rem;
-  background: var(--surface);
-  color: var(--text);
+  background: #fff;
+  color: #0f172a;
+  caret-color: #0f172a;
+  /* Keep password bullets dark even when the OS prefers a dark color scheme. */
+  color-scheme: light;
+}
+
+.login-input[type="password"] {
+  color: #0f172a;
+  -webkit-text-fill-color: #0f172a;
+  background-color: #fff;
+  letter-spacing: 0.06em;
+}
+
+.login-input[type="password"]::placeholder {
+  color: #94a3b8;
+  -webkit-text-fill-color: #94a3b8;
+  letter-spacing: normal;
+  opacity: 1;
+}
+
+.login-input:-webkit-autofill,
+.login-input:-webkit-autofill:hover,
+.login-input:-webkit-autofill:focus,
+.login-input[type="password"]:-webkit-autofill,
+.login-input[type="password"]:-webkit-autofill:hover,
+.login-input[type="password"]:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a;
+  caret-color: #0f172a;
+  box-shadow: 0 0 0 1000px #fff inset;
+  transition: background-color 99999s ease-out;
 }
 
 .login-input:focus {
@@ -4452,6 +4483,31 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: inherit;
   color: var(--text);
   background: var(--surface);
+}
+
+.form-field input[type="password"] {
+  color: #0f172a;
+  -webkit-text-fill-color: #0f172a;
+  background-color: #fff;
+  caret-color: #0f172a;
+  color-scheme: light;
+  letter-spacing: 0.06em;
+}
+
+.form-field input[type="password"]::placeholder {
+  color: #94a3b8;
+  -webkit-text-fill-color: #94a3b8;
+  letter-spacing: normal;
+  opacity: 1;
+}
+
+.form-field input[type="password"]:-webkit-autofill,
+.form-field input[type="password"]:-webkit-autofill:hover,
+.form-field input[type="password"]:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a;
+  caret-color: #0f172a;
+  box-shadow: 0 0 0 1000px #fff inset;
+  transition: background-color 99999s ease-out;
 }
 
 .form-field textarea {

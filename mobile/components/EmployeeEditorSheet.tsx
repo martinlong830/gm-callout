@@ -681,7 +681,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     ) : null}
                     <FieldLabel>App login password</FieldLabel>
                     <TextInput
-                      style={styles.input}
+                      style={[styles.input, styles.passwordInput]}
                       value={portalPassword}
                       onChangeText={setPortalPassword}
                       secureTextEntry
@@ -689,6 +689,8 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       autoCorrect={false}
                       placeholder="Default: pass"
                       placeholderTextColor="#94a3b8"
+                      selectionColor="#1e3a5f"
+                      cursorColor="#020617"
                     />
                     <FieldLabel>Recovery email (optional)</FieldLabel>
                     <TextInput
@@ -951,8 +953,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 16,
-    color: '#0f172a',
+    color: '#020617',
     backgroundColor: '#fff',
+  },
+  passwordInput: {
+    color: '#020617',
+    fontSize: 17,
+    letterSpacing: 1.2,
+    backgroundColor: '#ffffff',
   },
   row2: { flexDirection: 'row', gap: 10 },
   fieldHalf: { flex: 1, minWidth: 0 },
