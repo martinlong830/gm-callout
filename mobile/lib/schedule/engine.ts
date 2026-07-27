@@ -815,21 +815,22 @@ export function mergeRemoteAssignments(
   parsed: unknown,
   restaurantIds: string[],
   restaurants?: Restaurant[]
-): AssignmentStore {
+): { store: AssignmentStore; changed: boolean } {
   const next = JSON.parse(JSON.stringify(shell)) as AssignmentStore;
-  if (!parsed || typeof parsed !== 'object') return next;
+  if (!parsed || typeof parsed !== 'object') return { store: next, changed: false };
   const p = parsed as AssignmentStore;
   restaurantIds.forEach((rid) => {
     if (p[rid] && typeof p[rid] === 'object') next[rid] = p[rid];
   });
   const rests = restaurants?.length ? restaurants : defaultRestaurants();
-  mergeFormerRp8AssignmentsIntoRp9(next, rests);
+  let changed = mergeFormerRp8AssignmentsIntoRp9(next, rests);
   const mig = migrateScheduleAssignmentsForPastWeeks(next);
   const store = mig.store;
+  if (mig.changed) changed = true;
   /* Do not seed/copy future weeks on remote merge — that can stomp per-week edits.
      Schedule screen calls ensureRollingFutureAssignments to seed empty W+2 only. */
-  purgeDefaultUnassignedRestaurantAssignments(store, rests);
-  return store;
+  if (purgeDefaultUnassignedRestaurantAssignments(store, rests)) changed = true;
+  return { store, changed };
 }
 
 /**
@@ -856,8 +857,32 @@ function mergeFormerRp8AssignmentsIntoRp9(
   return true;
 }
 
-function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): { store: AssignmentStore; changed: boolean } {
-  if (!store || typeof store !== 'object') return { store, changed: false };
+/** Session flag — web uses localStorage `gm_schedule_past_weeks_migrated_v2`. */
+let legacyPastWeeksMigrationDone = false;
+
+/** True when keys are legacy single-week ids (shift-0..6 only), not multi-week global indices. */
+function scheduleAssignmentStoreUsesLegacySingleWeekKeys(
+  rs: Record<string, ScheduleAssignmentEntry>
+): boolean {
+  if (!rs || typeof rs !== 'object') return false;
+  let hasMultiWeekKey = false;
+  let hasWeekRelativeKey = false;
+  Object.keys(rs).forEach((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    if (!p) return;
+    if (p.globalDayIdx >= 7) hasMultiWeekKey = true;
+    else hasWeekRelativeKey = true;
+  });
+  return hasWeekRelativeKey && !hasMultiWeekKey;
+}
+
+/**
+ * Undo mistaken +offset migration that moved valid past-week keys beyond the view window
+ * (e.g. day 14 → 98). Matches web `repairDoubleMigratedAssignmentKeys`.
+ */
+function repairDoubleMigratedAssignmentKeys(store: AssignmentStore): boolean {
+  if (!store || typeof store !== 'object') return false;
+  const maxValid = SCHEDULE_VIEW_WEEK_COUNT * 7 - 1;
   const offset = SCHEDULE_PAST_WEEK_COUNT * 7;
   let changed = false;
   Object.keys(store).forEach((rid) => {
@@ -866,7 +891,44 @@ function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): { store
     const removeIds: string[] = [];
     Object.keys(rs).forEach((shiftId) => {
       const p = parseShiftIdParts(shiftId);
-      if (!p || p.globalDayIdx >= offset) return;
+      if (!p || p.globalDayIdx <= maxValid) return;
+      const repaired = p.globalDayIdx - offset;
+      if (repaired < 0 || repaired > maxValid) return;
+      const newId = `shift-${repaired}-${p.roleIdx}-${p.trIdx}`;
+      if (rs[newId] == null) rs[newId] = rs[shiftId];
+      removeIds.push(shiftId);
+      changed = true;
+    });
+    removeIds.forEach((shiftId) => {
+      delete rs[shiftId];
+    });
+  });
+  return changed;
+}
+
+/**
+ * One-time legacy migration: shift-0..6 → template week (dayIdx + PAST*7).
+ * Must NOT re-shift multi-week past keys (dayIdx < PAST*7) — that wiped past weeks and
+ * polluted current/future on every mobile hydrate (unlike web, which only migrates legacy).
+ */
+function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): {
+  store: AssignmentStore;
+  changed: boolean;
+} {
+  if (!store || typeof store !== 'object') return { store, changed: false };
+  let changed = repairDoubleMigratedAssignmentKeys(store);
+  if (legacyPastWeeksMigrationDone) {
+    return { store, changed };
+  }
+  const offset = SCHEDULE_PAST_WEEK_COUNT * 7;
+  Object.keys(store).forEach((rid) => {
+    const rs = store[rid];
+    if (!rs || typeof rs !== 'object') return;
+    if (!scheduleAssignmentStoreUsesLegacySingleWeekKeys(rs)) return;
+    const removeIds: string[] = [];
+    Object.keys(rs).forEach((shiftId) => {
+      const p = parseShiftIdParts(shiftId);
+      if (!p || p.globalDayIdx >= 7) return;
       const newId = `shift-${p.globalDayIdx + offset}-${p.roleIdx}-${p.trIdx}`;
       if (rs[newId] == null) {
         rs[newId] = rs[shiftId];
@@ -879,6 +941,7 @@ function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): { store
       changed = true;
     });
   });
+  legacyPastWeeksMigrationDone = true;
   return { store, changed };
 }
 
@@ -1091,6 +1154,7 @@ export function ensureRollingFutureAssignments(
     } else if (delta < 0 && draft && typeof draft === 'object') {
       /* Clock skew / timezone — re-anchor only; do not shift forward. */
       draft = { ...(draft as Record<string, unknown>), windowMondayIso: mondayIso };
+      changed = true;
     }
   }
 
@@ -1114,7 +1178,16 @@ export function hydrateScheduleAssignmentsFromTeamState(
     ids,
     restaurants
   );
-  return ensureRollingFutureAssignments(merged, restaurants, draftScheduleRaw);
+  const rolled = ensureRollingFutureAssignments(
+    merged.store,
+    restaurants,
+    draftScheduleRaw
+  );
+  return {
+    store: rolled.store,
+    draftSchedule: rolled.draftSchedule,
+    changed: merged.changed || rolled.changed,
+  };
 }
 
 function getCurrentRestaurantAssignments(
