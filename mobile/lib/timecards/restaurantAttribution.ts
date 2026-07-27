@@ -1,5 +1,5 @@
 import type { EmployeeRow } from '../employees';
-import { employeeDisplayName } from '../employees';
+import { employeeDisplayName, employeePrimaryLocationId } from '../employees';
 import type { AssignmentStore, DraftGrid, Restaurant, WeekMeta } from '../schedule/types';
 import {
   buildAllLocationsWorkerShiftRows,
@@ -46,11 +46,19 @@ export function employeeHomeRestaurant(emp: EmployeeRow): string {
   return u === 'rp-8' || u === 'rp-9' || u === 'both' ? u : 'rp-9';
 }
 
-/** Home store determines roster membership; callers may also keep rows with local schedule/punch activity. */
+/**
+ * Roster / store-filter membership (mirrors web full-report inclusion).
+ * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
+ * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
+ */
 export function rosterRowVisibleAtLocation(emp: EmployeeRow, locationFilter: LocationFilter): boolean {
   if (locationFilter === 'all') return true;
   const home = employeeHomeRestaurant(emp);
-  return home === 'both' || home === locationFilter;
+  if (home === locationFilter) return true;
+  if (home === 'both') {
+    return employeePrimaryLocationId(emp) === locationFilter;
+  }
+  return false;
 }
 
 /** True when a built roster row has schedule or punch activity at the filtered location. */

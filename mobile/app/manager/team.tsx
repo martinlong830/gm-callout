@@ -12,7 +12,7 @@ import {
 } from '../../lib/employees';
 import { leaveSummaryLines } from '../../lib/employeeLeave';
 import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
-import { compareEmployeesByScheduleOrder } from '../../lib/schedule/rosterOrder';
+import { compareEmployeesByDisplayName } from '../../lib/schedule/rosterOrder';
 
 type TeamRow =
   | { key: string; kind: 'section'; title: string }
@@ -62,15 +62,17 @@ const TeamMemberCard = memo(function TeamMemberCard({
 });
 
 function buildTeamRows(employees: EmployeeRow[]): TeamRow[] {
-  const sorted = [...employees].sort(compareEmployeesByScheduleOrder);
   const byTitle = new Map<string, EmployeeRow[]>();
-  for (const e of sorted) {
+  for (const e of employees) {
     const title = staffTypeLabel(e.staffType);
     const list = byTitle.get(title) ?? [];
     list.push(e);
     byTitle.set(title, list);
   }
-  const knownOrder = ['Front of the House', 'Back of the House', 'Delivery/Dishwasher'];
+  for (const list of byTitle.values()) {
+    list.sort(compareEmployeesByDisplayName);
+  }
+  const knownOrder = ['Front of the House', 'Back of the House', 'Delivery/Dishwasher', 'Unassigned'];
   const titles = [
     ...knownOrder.filter((t) => byTitle.has(t)),
     ...[...byTitle.keys()].filter((t) => !knownOrder.includes(t)).sort(),

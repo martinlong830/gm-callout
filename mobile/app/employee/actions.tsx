@@ -24,14 +24,12 @@ import {
   weekIndexFromIso,
 } from '../../lib/schedule/employeeShiftDisplay';
 import {
-  assignmentShell,
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
-  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
-  mergeRemoteAssignments,
+  hydrateScheduleAssignmentsFromTeamState,
   SCHEDULE_VIEW_WEEK_COUNT,
   type WorkerShiftRow,
 } from '../../lib/schedule/engine';
@@ -79,15 +77,17 @@ export default function EmployeeActions() {
     []
   );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
-  const assignmentStore = useMemo(() => {
-    const ids = restaurants.map((r) => r.id);
-    const merged = mergeRemoteAssignments(
-      assignmentShell(restaurants),
-      teamState?.schedule_assignments,
-      ids
-    );
-    return ensureRollingFutureAssignments(merged, restaurants).store;
-  }, [teamState, restaurants]);
+  const hydrated = useMemo(
+    () =>
+      hydrateScheduleAssignmentsFromTeamState(
+        teamState?.schedule_assignments,
+        restaurants,
+        teamState?.draft_schedule
+      ),
+    [teamState?.schedule_assignments, teamState?.draft_schedule, restaurants]
+  );
+  const assignmentStore = hydrated.store;
+  const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
   const workerShifts = useMemo(() => {
@@ -96,7 +96,7 @@ export default function EmployeeActions() {
       workerName: nameForRequests,
       weekMeta,
       allWeekDays,
-      draftScheduleRaw: teamState?.draft_schedule,
+      draftScheduleRaw,
       employees: lites,
       restaurants,
       assignmentStore,
@@ -107,7 +107,7 @@ export default function EmployeeActions() {
     nameForRequests,
     weekMeta,
     allWeekDays,
-    teamState?.draft_schedule,
+    draftScheduleRaw,
     teamState?.schedule_published,
     lites,
     restaurants,

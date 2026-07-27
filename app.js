@@ -186,6 +186,10 @@
 
   const DRAFT_SCHEDULE_STORAGE_KEY = 'gm-callout-draft-schedule-v1';
   const DRAFT_SCHEDULE_BY_WEEK_KEY = 'gm-callout-draft-schedule-by-week-v1';
+  /** Per-week custom schedule row order (mondayIso → restaurant → role → trIdx[]). Synced via draft_schedule. */
+  const SLOT_ORDER_BY_WEEK_KEY = 'gm-callout-slot-order-by-week-v1';
+  /** Legacy global slot order — read fallback only; no longer written as SoT. */
+  const SLOT_ORDER_BY_RESTAURANT_KEY = 'gm-callout-slot-order-by-restaurant-v1';
 
   /** Weeks before the current Mon–Sun block shown in the schedule navigator. */
   const SCHEDULE_PAST_WEEK_COUNT = 12;
@@ -289,6 +293,183 @@
   }
 
   var draftScheduleByWeekStore = loadDraftScheduleByWeekStore();
+  var slotOrderByWeekStore = loadSlotOrderByWeekStore();
+  /** Legacy global map kept for read fallback / older remote payloads; not updated by reorder. */
+  var legacySlotOrderByRestaurantStore = loadLegacySlotOrderByRestaurantStore();
+
+  function normalizeSlotOrderMondayIso(iso) {
+    var s = String(iso || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+  }
+
+  function sanitizeSlotOrderByRestaurant(raw) {
+    if (!raw || typeof raw !== 'object') return {};
+    var out = {};
+    Object.keys(raw).forEach(function (rid) {
+      var byRole = raw[rid];
+      if (!byRole || typeof byRole !== 'object') return;
+      var roleMap = {};
+      ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+        if (!Array.isArray(byRole[role])) return;
+        roleMap[role] = byRole[role]
+          .map(function (n) {
+            return Math.floor(Number(n));
+          })
+          .filter(function (n) {
+            return Number.isFinite(n);
+          });
+      });
+      if (Object.keys(roleMap).length) out[rid] = roleMap;
+    });
+    return out;
+  }
+
+  function sanitizeSlotOrderByWeek(raw) {
+    if (!raw || typeof raw !== 'object') return {};
+    var out = {};
+    Object.keys(raw).forEach(function (weekKey) {
+      var mon = normalizeSlotOrderMondayIso(weekKey);
+      if (!mon) return;
+      var byRest = sanitizeSlotOrderByRestaurant(raw[weekKey]);
+      if (Object.keys(byRest).length) out[mon] = byRest;
+    });
+    return out;
+  }
+
+  function loadLegacySlotOrderByRestaurantStore() {
+    try {
+      var raw = localStorage.getItem(SLOT_ORDER_BY_RESTAURANT_KEY);
+      if (!raw) return {};
+      return sanitizeSlotOrderByRestaurant(JSON.parse(raw));
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function loadSlotOrderByWeekStore() {
+    try {
+      var raw = localStorage.getItem(SLOT_ORDER_BY_WEEK_KEY);
+      if (!raw) return {};
+      return sanitizeSlotOrderByWeek(JSON.parse(raw));
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function persistSlotOrderStores(opts) {
+    try {
+      localStorage.setItem(SLOT_ORDER_BY_WEEK_KEY, JSON.stringify(slotOrderByWeekStore || {}));
+      /* Keep legacy key readable for older clients; do not clear unless empty. */
+      if (legacySlotOrderByRestaurantStore && Object.keys(legacySlotOrderByRestaurantStore).length) {
+        localStorage.setItem(
+          SLOT_ORDER_BY_RESTAURANT_KEY,
+          JSON.stringify(legacySlotOrderByRestaurantStore || {})
+        );
+      }
+      if (!(opts && opts.skipDirty) && GM_SUPABASE_DATA && window.gmSupabase) {
+        draftScheduleDirty = true;
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function normalizeSlotOrderList(custom, slotN) {
+    if (!Array.isArray(custom) || slotN <= 0) return null;
+    var seen = {};
+    var out = [];
+    var i;
+    for (i = 0; i < custom.length; i += 1) {
+      var idx = Math.floor(Number(custom[i]));
+      if (!Number.isFinite(idx) || idx < 0 || idx >= slotN || seen[idx]) continue;
+      seen[idx] = true;
+      out.push(idx);
+    }
+    if (!out.length) return null;
+    for (i = 0; i < slotN; i += 1) {
+      if (!seen[i]) out.push(i);
+    }
+    return out;
+  }
+
+  function resolveSlotOrderWeekMondayIso(weekMondayIso, weekIndex) {
+    var mon = normalizeSlotOrderMondayIso(weekMondayIso);
+    if (mon) return mon;
+    var wi = weekIndex != null && !isNaN(weekIndex) ? weekIndex : scheduleCalendarWeekIndex;
+    return mondayIsoForScheduleWeekIndex(wi) || '';
+  }
+
+  /**
+   * Custom order for restaurant/role in one week.
+   * Prefers slotOrderByWeek[mondayIso]; falls back to legacy global slotOrderByRestaurant.
+   */
+  function getCustomSlotOrderForRole(restaurantId, role, slotN, weekMondayIso) {
+    var rid = resolveDraftRestaurantId(restaurantId != null ? restaurantId : currentRestaurantId);
+    var mon = resolveSlotOrderWeekMondayIso(weekMondayIso, null);
+    var weekByRest = mon && slotOrderByWeekStore[mon] ? slotOrderByWeekStore[mon] : null;
+    var weekByRole = weekByRest ? weekByRest[rid] : null;
+    if (weekByRole && Array.isArray(weekByRole[role]) && weekByRole[role].length) {
+      return normalizeSlotOrderList(weekByRole[role], slotN);
+    }
+    var legacyByRole = legacySlotOrderByRestaurantStore[rid];
+    if (!legacyByRole) return null;
+    return normalizeSlotOrderList(legacyByRole[role], slotN);
+  }
+
+  /** Write custom order for one week only — does not mutate legacy global. */
+  function setCustomSlotOrderForRole(restaurantId, role, nextOrder, weekMondayIso) {
+    var rid = resolveDraftRestaurantId(restaurantId != null ? restaurantId : currentRestaurantId);
+    var mon = resolveSlotOrderWeekMondayIso(weekMondayIso, null);
+    if (!mon) return;
+    if (!slotOrderByWeekStore[mon]) slotOrderByWeekStore[mon] = {};
+    if (!slotOrderByWeekStore[mon][rid]) slotOrderByWeekStore[mon][rid] = {};
+    if (!nextOrder || !nextOrder.length) {
+      delete slotOrderByWeekStore[mon][rid][role];
+      if (!Object.keys(slotOrderByWeekStore[mon][rid]).length) {
+        delete slotOrderByWeekStore[mon][rid];
+      }
+      if (!Object.keys(slotOrderByWeekStore[mon]).length) {
+        delete slotOrderByWeekStore[mon];
+      }
+    } else {
+      slotOrderByWeekStore[mon][rid][role] = nextOrder.slice();
+    }
+    persistSlotOrderStores();
+  }
+
+  function copySlotOrderBetweenWeeks(fromMondayIso, toMondayIso) {
+    var fromMon = normalizeSlotOrderMondayIso(fromMondayIso);
+    var toMon = normalizeSlotOrderMondayIso(toMondayIso);
+    if (!fromMon || !toMon || fromMon === toMon) return false;
+    var src = slotOrderByWeekStore[fromMon];
+    if (!src || !Object.keys(src).length) return false;
+    slotOrderByWeekStore[toMon] = JSON.parse(JSON.stringify(src));
+    persistSlotOrderStores();
+    return true;
+  }
+
+  function remapSlotOrderAfterDelete(order, deletedTrIdx) {
+    var src = Array.isArray(order) ? order : [];
+    return src
+      .filter(function (i) {
+        return i !== deletedTrIdx;
+      })
+      .map(function (i) {
+        return i > deletedTrIdx ? i - 1 : i;
+      });
+  }
+
+  function moveTrIdxInSlotOrder(order, trIdx, direction) {
+    var pos = order.indexOf(trIdx);
+    if (pos < 0) return null;
+    var nextPos = pos + direction;
+    if (nextPos < 0 || nextPos >= order.length) return null;
+    var next = order.slice();
+    var tmp = next[pos];
+    next[pos] = next[nextPos];
+    next[nextPos] = tmp;
+    return next;
+  }
 
   function resolveDraftWeekIndex(weekIndex) {
     var wi = weekIndex;
@@ -1964,6 +2145,15 @@
     rebuildEmployeeDerivedData();
     gmCalloutEmployeeDataReady = true;
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
+    /* Person-column options are built at render time — refresh calendar after roster changes
+       (new hire, location/role edit, realtime insert) or the picker stays stale.
+       Defer while a Person <select> (or cell editor) is open so the menulist is not destroyed. */
+    if (typeof calendarScheduleUiBlocksRender === 'function' && calendarScheduleUiBlocksRender()) {
+      calendarInlineEditDeferredRemoteRefresh = true;
+    } else {
+      if (typeof renderCalendar === 'function') renderCalendar();
+      if (scheduleBody && typeof renderSchedule === 'function') renderSchedule();
+    }
     if (currentScreen === 13 && typeof renderManagerAvailabilityScreen === 'function') {
       renderManagerAvailabilityScreen();
     }
@@ -1985,7 +2175,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=full-report-3';
+      script.src = 'timecards-manager.js?v=full-report-4';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -3050,6 +3240,9 @@
       v: 2,
       byWeek: cloneDraftSchedule(store || draftScheduleByWeekStore),
       windowMondayIso: readScheduleWindowMondayIso() || currentScheduleWeekMondayIso(),
+      slotOrderByWeek: sanitizeSlotOrderByWeek(slotOrderByWeekStore),
+      /* Legacy global kept for older clients / read fallback; no longer the write SoT. */
+      slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(legacySlotOrderByRestaurantStore),
     };
   }
 
@@ -3060,6 +3253,8 @@
         v: 2,
         byWeek: dr.byWeek,
         windowMondayIso: dr.windowMondayIso ? String(dr.windowMondayIso).slice(0, 10) : '',
+        slotOrderByWeek: sanitizeSlotOrderByWeek(dr.slotOrderByWeek),
+        slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(dr.slotOrderByRestaurant),
       };
     }
     if (draftScheduleJsonHasLayers(dr)) {
@@ -3068,7 +3263,13 @@
       for (var wr = 0; wr < SCHEDULE_VIEW_WEEK_COUNT; wr += 1) {
         migratedRemote[String(wr)] = cloneDraftSchedule(remoteLayers);
       }
-      return { v: 2, byWeek: migratedRemote, windowMondayIso: '' };
+      return {
+        v: 2,
+        byWeek: migratedRemote,
+        windowMondayIso: '',
+        slotOrderByWeek: sanitizeSlotOrderByWeek(dr.slotOrderByWeek),
+        slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(dr.slotOrderByRestaurant),
+      };
     }
     return null;
   }
@@ -3346,9 +3547,20 @@
           }
           var rp8ResetRemote = resetRp8ScheduleAssignmentsOnce(mergedSched);
           if (rp8ResetRemote.changed) schedChanged = true;
-          localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mergedSched));
-          setScheduleAssignmentsConfirmedJson(JSON.stringify(mergedSched));
-          clearScheduleUndoStack();
+          var mergedSchedJson = JSON.stringify(mergedSched);
+          var prevConfirmedAssign = getScheduleAssignmentsConfirmedJson();
+          var prevLocalAssign = '';
+          try {
+            prevLocalAssign = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
+          } catch (_la) {
+            prevLocalAssign = '';
+          }
+          localStorage.setItem(SCHEDULE_ASSIGN_KEY, mergedSchedJson);
+          setScheduleAssignmentsConfirmedJson(mergedSchedJson);
+          /* Echo of our own push / already-local SoT must not wipe Undo. */
+          if (prevConfirmedAssign !== mergedSchedJson && prevLocalAssign !== mergedSchedJson) {
+            clearScheduleUndoStack();
+          }
         } catch (_s) {
           /* ignore */
         }
@@ -3395,13 +3607,25 @@
         } else {
           var remoteDraftPayload = draftSchedulePayloadFromRemote(dr);
           if (remoteDraftPayload && remoteDraftPayload.byWeek) {
+            var remoteDraftJson = JSON.stringify(remoteDraftPayload);
+            var prevConfirmedDraft = getDraftScheduleConfirmedJson();
+            var localDraftJson = JSON.stringify(
+              draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+            );
+            var draftEcho =
+              prevConfirmedDraft === remoteDraftJson || localDraftJson === remoteDraftJson;
             try {
               draftScheduleByWeekStore = remoteDraftPayload.byWeek;
               localStorage.setItem(
                 DRAFT_SCHEDULE_BY_WEEK_KEY,
                 JSON.stringify(remoteDraftPayload.byWeek)
               );
-              setDraftScheduleConfirmedJson(JSON.stringify(remoteDraftPayload));
+              slotOrderByWeekStore = sanitizeSlotOrderByWeek(remoteDraftPayload.slotOrderByWeek);
+              legacySlotOrderByRestaurantStore = sanitizeSlotOrderByRestaurant(
+                remoteDraftPayload.slotOrderByRestaurant
+              );
+              persistSlotOrderStores({ skipDirty: true });
+              setDraftScheduleConfirmedJson(remoteDraftJson);
               if (remoteDraftPayload.windowMondayIso) {
                 writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
               }
@@ -3410,7 +3634,8 @@
             }
             AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
             syncAllAssignmentTimesFromDraft();
-            clearScheduleUndoStack();
+            /* Echo of our own draft push must not wipe Undo. */
+            if (!draftEcho) clearScheduleUndoStack();
           }
         }
       } else if (isMgr && localDraftScheduleHasContent()) {
@@ -3492,11 +3717,11 @@
     }
     /* rebuildEmployeeDerivedData already rebuilds SCHEDULE — do not rebuild again. */
     rebuildEmployeeDerivedData();
-    if (calendarInlineWorkerEditIsOpen()) {
+    if (calendarScheduleUiBlocksRender()) {
       calendarInlineEditDeferredRemoteRefresh = true;
     } else {
       deferUiWork(function () {
-        if (calendarInlineWorkerEditIsOpen()) {
+        if (calendarScheduleUiBlocksRender()) {
           calendarInlineEditDeferredRemoteRefresh = true;
           return;
         }
@@ -3795,9 +4020,44 @@
   function formatBreakAnnotation(time, type) {
     var t = String(type || '').trim().toUpperCase();
     if (t === 'NO BREAK') return '(NO BREAK TIME)';
-    var tm = String(time || '').trim().toUpperCase().replace(/\s+/g, '');
+    var tm = normalizeBreakAnnotationTime(time);
     if (!tm || !t) return '';
     return '(' + tm + ' ' + t + ')';
+  }
+
+  /** Accept `15:00` (time input) or `3:00PM` → canonical `3:00PM`. */
+  function normalizeBreakAnnotationTime(val) {
+    var s = String(val || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '');
+    if (!s) return '';
+    var ampm = s.match(/^(\d{1,2}):(\d{2})(AM|PM)$/);
+    if (ampm) {
+      var h12 = Math.min(12, Math.max(1, parseInt(ampm[1], 10)));
+      var mi = Math.min(59, parseInt(ampm[2], 10));
+      return h12 + ':' + (mi < 10 ? '0' : '') + mi + ampm[3];
+    }
+    var hhmm = normalizeHHMM(s);
+    if (!hhmm) return '';
+    var parts = hhmm.split(':');
+    var h24 = parseInt(parts[0], 10);
+    var min = parseInt(parts[1], 10);
+    var ap = h24 >= 12 ? 'PM' : 'AM';
+    var h = h24 % 12 || 12;
+    return h + ':' + (min < 10 ? '0' : '') + min + ap;
+  }
+
+  function breakAnnotationTimeToHHMM(label) {
+    var tm = normalizeBreakAnnotationTime(label);
+    if (!tm) return '';
+    var m = tm.match(/^(\d{1,2}):(\d{2})(AM|PM)$/);
+    if (!m) return '';
+    var h = parseInt(m[1], 10);
+    var min = parseInt(m[2], 10);
+    if (m[3] === 'PM' && h !== 12) h += 12;
+    if (m[3] === 'AM' && h === 12) h = 0;
+    return String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
   }
 
   function parseBreakAnnotation(text) {
@@ -3807,7 +4067,7 @@
     var m = s.match(/\((\d{1,2}:\d{2}\s*[AP]M)\s+(OFFICE|BREAK\s*TIME)\)/i);
     if (m) {
       return {
-        time: String(m[1]).toUpperCase().replace(/\s+/g, ''),
+        time: normalizeBreakAnnotationTime(m[1]) || '3:00PM',
         type: /office/i.test(m[2]) ? 'OFFICE' : 'BREAK TIME',
         raw: s,
       };
@@ -4553,11 +4813,25 @@
     }
   }
 
+  function normalizeEmployeeStaffType(raw) {
+    var s = String(raw == null ? '' : raw).trim();
+    if (s === 'Kitchen' || s === 'Bartender' || s === 'Server') return s;
+    var lower = s.toLowerCase();
+    if (lower === 'kitchen' || lower === 'boh' || lower === 'back of the house' || lower === 'back of house') {
+      return 'Kitchen';
+    }
+    if (lower === 'bartender' || lower === 'foh' || lower === 'front of the house' || lower === 'front of house') {
+      return 'Bartender';
+    }
+    if (lower === 'server' || lower === 'delivery' || lower === 'dishwasher' || lower === 'delivery/dishwasher') {
+      return 'Server';
+    }
+    return null;
+  }
+
   function migrateEmployeeRecord(e) {
     if (!e || typeof e !== 'object') return null;
-    const staffType = e.staffType === 'Kitchen' || e.staffType === 'Bartender' || e.staffType === 'Server'
-      ? e.staffType
-      : 'Server';
+    const staffType = normalizeEmployeeStaffType(e.staffType) || 'Server';
     let weeklyGrid;
     if (e.weeklyGrid && typeof e.weeklyGrid === 'object') {
       weeklyGrid = normalizeWeeklyGrid(e.weeklyGrid, staffType);
@@ -4689,13 +4963,19 @@
 
   function refreshPools() {
     EMPLOYEE_POOLS.Kitchen = employees
-      .filter(function (e) { return e.staffType === 'Kitchen'; })
+      .filter(function (e) {
+        return (normalizeEmployeeStaffType(e.staffType) || e.staffType) === 'Kitchen';
+      })
       .map(employeeDisplayName);
     EMPLOYEE_POOLS.Bartender = employees
-      .filter(function (e) { return e.staffType === 'Bartender'; })
+      .filter(function (e) {
+        return (normalizeEmployeeStaffType(e.staffType) || e.staffType) === 'Bartender';
+      })
       .map(employeeDisplayName);
     EMPLOYEE_POOLS.Server = employees
-      .filter(function (e) { return e.staffType === 'Server'; })
+      .filter(function (e) {
+        return (normalizeEmployeeStaffType(e.staffType) || e.staffType) === 'Server';
+      })
       .map(employeeDisplayName);
   }
 
@@ -4703,7 +4983,8 @@
   function namesPoolForScheduleRole(role, restaurantId) {
     return employees
       .filter(function (e) {
-        if (e.staffType !== role) return false;
+        var st = normalizeEmployeeStaffType(e.staffType) || e.staffType;
+        if (st !== role) return false;
         var u = e.usualRestaurant || 'both';
         if (u === 'both') return true;
         return u === restaurantId;
@@ -4797,7 +5078,7 @@
       if (weekOnly != null && weekIdx !== weekOnly) return;
       var wk = weekdayKeyFromScheduleDay(dayStr);
       /* Auto-fill only: one person per slot and at most one shift per person per day.
-         Main schedule staffing is single-select (Person column / Edit Staffing). */
+         Main schedule staffing is single-select (Person column / inline name edit). */
       var usedToday = Object.create(null);
       ROLE_DEFS.forEach(function (rd, roleIdx) {
         var n = slotCountForRole(rd.role, weekIdx, currentRestaurantId);
@@ -5010,7 +5291,8 @@
     return assignmentStoreShell();
   }
 
-  function saveScheduleAssignmentsStore(store) {
+  function saveScheduleAssignmentsStore(store, opts) {
+    opts = opts || {};
     try {
       localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(store));
     } catch (err) {
@@ -5018,7 +5300,8 @@
     }
     if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
     scheduleTeamStateDebouncedSync();
-    flushTeamStateSyncNow();
+    /* Compact-during-delete must not flush mid-batch before draft/slotOrder are updated. */
+    if (!opts.skipFlush) flushTeamStateSyncNow();
     notifyTimecardsScheduleChanged();
   }
 
@@ -5392,8 +5675,7 @@
       });
     });
     if (changed) {
-      saveScheduleAssignmentsStore(store);
-      if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
+      saveScheduleAssignmentsStore(store, { skipFlush: true });
     }
     return changed;
   }
@@ -5406,17 +5688,188 @@
       compactAssignmentsAfterDraftSlotDeletes(wi, rid, pendingSlotDeletes);
     }
     saveDraftScheduleRowsForWeek(wi, nextRows, rid);
+    /* Remap custom row order after deletes — after undo snapshot so Undo restores prior order.
+       Process high→low per role (same as assignment compaction) using original trIdx values. */
+    if (pendingSlotDeletes && pendingSlotDeletes.length) {
+      var deletesByRole = {};
+      pendingSlotDeletes.forEach(function (d) {
+        if (!d || !d.role || d.originalTrIdx == null || isNaN(d.originalTrIdx)) return;
+        if (!deletesByRole[d.role]) deletesByRole[d.role] = [];
+        deletesByRole[d.role].push(d.originalTrIdx);
+      });
+      var weekMon = mondayIsoForScheduleWeekIndex(wi);
+      Object.keys(deletesByRole).forEach(function (delRole) {
+        var indices = deletesByRole[delRole]
+          .slice()
+          .sort(function (a, b) {
+            return b - a;
+          });
+        var postCount = Array.isArray(nextRows[delRole]) ? nextRows[delRole].length : 0;
+        var existingOrder = getCustomSlotOrderForRole(
+          rid,
+          delRole,
+          postCount + indices.length,
+          weekMon
+        );
+        if (!existingOrder) return;
+        var remapped = existingOrder;
+        indices.forEach(function (deletedTrIdx) {
+          remapped = remapSlotOrderAfterDelete(remapped, deletedTrIdx);
+        });
+        setCustomSlotOrderForRole(rid, delRole, remapped, weekMon);
+      });
+    }
     syncAssignmentBreaksFromDraftModal(wi, rid, nextRows, breakRows);
-    scheduleTeamStateDebouncedSync();
-    flushTeamStateSyncNow();
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     syncAssignmentTimesFromDraftForWeek(wi, rid);
     pruneScheduleAssignmentsInvalidSlots();
+    /* Flush only after draft + break + timeLabel/hours are all written locally. */
+    scheduleTeamStateDebouncedSync();
+    flushTeamStateSyncNow();
     rebuildEmployeeDerivedData();
     rebuildSchedule();
     renderCalendar();
     if (scheduleBody) renderSchedule();
     notifyTimecardsScheduleChanged();
+  }
+
+  /** Default start/end when enabling a day-off cell (same row or built-in template). */
+  function defaultTimesForDraftCell(role, ri, di, weekIndex, restaurantId) {
+    var rows = getDraftRowsForRole(role, weekIndex, restaurantId);
+    if (rows && rows[ri]) {
+      for (var i = 0; i < 7; i += 1) {
+        var c = rows[ri][i];
+        if (c && c[0] && c[1]) return [c[0], c[1]];
+      }
+    }
+    var def = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
+    if (def && def[ri]) {
+      if (def[ri][di] && def[ri][di][0] && def[ri][di][1]) return [def[ri][di][0], def[ri][di][1]];
+      for (var j = 0; j < 7; j += 1) {
+        if (def[ri][j] && def[ri][j][0] && def[ri][j][1]) return [def[ri][j][0], def[ri][j][1]];
+      }
+    }
+    return ['10:00', '18:00'];
+  }
+
+  /**
+   * Persist one cell's start/end + break (or day-off) from the in-shift editor.
+   * Writes draft times and assignment break/timeLabel/hours in one atomic local commit
+   * (avoids breakRows scratch + flush-before-times-sync partial persists).
+   */
+  function persistSingleShiftSlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff) {
+    var wi = scheduleCalendarWeekIndex;
+    var rid = currentRestaurantId;
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return false;
+    var dayInWeekN = Number(dayInWeek);
+    if (isNaN(dayInWeekN) || dayInWeekN < 0 || dayInWeekN > 6) return false;
+    var s = null;
+    var e = null;
+    if (!isDayOff) {
+      s = normalizeHHMM(start);
+      e = normalizeHHMM(end);
+      if (!s || !e) return false;
+    }
+    pushScheduleUndoSnapshot();
+    var rows = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+    ensureDraftRoleRow(rows, role, trIdx);
+    var store = loadScheduleAssignmentsStore();
+    if (!store[rid]) store[rid] = {};
+    var rs = store[rid];
+    var weekStart = resolveDraftWeekIndex(wi) * 7;
+    var shiftId = 'shift-' + (weekStart + dayInWeekN) + '-' + roleIdx + '-' + trIdx;
+    if (isDayOff) {
+      rows[role][trIdx][dayInWeekN] = null;
+      if (rs[shiftId] != null) {
+        var offEntry = cloneScheduleAssignment(rs[shiftId]);
+        delete offEntry.break;
+        delete offEntry.timeLabel;
+        delete offEntry.hours;
+        rs[shiftId] = offEntry;
+      }
+    } else {
+      rows[role][trIdx][dayInWeekN] = [s, e];
+      var entry =
+        rs[shiftId] != null
+          ? cloneScheduleAssignment(rs[shiftId])
+          : { workers: ['Unassigned'] };
+      if (!scheduleAssignmentHasStaffedWorkers(entry)) {
+        var rowPerson = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays());
+        entry.workers =
+          rowPerson && rowPerson !== 'Unassigned' ? [rowPerson] : ['Unassigned'];
+      } else {
+        entry.workers = canonicalizeScheduleWorkerList(entry.workers, rid);
+        entry.workers = clampScheduleWorkersToSingle(entry.workers);
+      }
+      entry.break = breakText || formatBreakAnnotation('3:00PM', 'BREAK TIME');
+      entry.timeLabel = redPokeShiftTimeLabel(s, e);
+      entry.hours = redPokeShiftHoursDecimal(s, e);
+      rs[shiftId] = entry;
+    }
+    saveDraftScheduleRowsForWeek(wi, rows, rid);
+    saveScheduleAssignmentsStore(store);
+    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    pruneScheduleAssignmentsInvalidSlots();
+    scheduleTeamStateDebouncedSync();
+    flushTeamStateSyncNow();
+    rebuildEmployeeDerivedData();
+    rebuildSchedule();
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    notifyTimecardsScheduleChanged();
+    return true;
+  }
+
+  function addScheduleSlotLine(role) {
+    var wi = scheduleCalendarWeekIndex;
+    var rid = currentRestaurantId;
+    var rows = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+    if (!rows[role]) rows[role] = [];
+    if (rows[role].length >= 25) {
+      showScheduleNotice('Maximum of 25 slots per role.', false);
+      return;
+    }
+    rows[role].push(makeNullDraftWeekRow());
+    var newTrIdx = rows[role].length - 1;
+    /* Persist first so undo snapshot captures pre-add draft + slot order. */
+    persistDraftScheduleRows(rows, wi, rid, null, []);
+    var weekMon = mondayIsoForScheduleWeekIndex(wi);
+    var existingOrder = getCustomSlotOrderForRole(rid, role, newTrIdx, weekMon);
+    if (existingOrder) {
+      existingOrder.push(newTrIdx);
+      setCustomSlotOrderForRole(rid, role, existingOrder, weekMon);
+      scheduleTeamStateDebouncedSync();
+    }
+    showScheduleNotice('Added slot ' + rows[role].length + ' for ' + (STAFF_TYPE_LABELS[role] || role) + '.', true);
+  }
+
+  function deleteScheduleSlotLine(role, trIdx) {
+    var wi = scheduleCalendarWeekIndex;
+    var rid = currentRestaurantId;
+    var rows = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+    if (!rows[role] || trIdx < 0 || trIdx >= rows[role].length) return;
+    if (rows[role].length <= 1) {
+      showScheduleNotice('Keep at least one slot row per role.', false);
+      return;
+    }
+    var slotLabel = 'Slot ' + (trIdx + 1);
+    draftModalScratch = rows;
+    var hasContent = draftSlotRowHasContent(role, trIdx, wi, rid);
+    draftModalScratch = null;
+    if (
+      hasContent &&
+      !confirm(
+        'Delete slot "' +
+          slotLabel +
+          '"? Shift times and assignments for this row will be removed.'
+      )
+    ) {
+      return;
+    }
+    rows[role].splice(trIdx, 1);
+    /* Slot-order remap runs inside persistDraftScheduleRows after the undo snapshot. */
+    persistDraftScheduleRows(rows, wi, rid, null, [{ role: role, originalTrIdx: trIdx }]);
   }
 
   var SCHEDULE_UNDO_MAX = 40;
@@ -5427,6 +5880,12 @@
     return {
       assignments: JSON.parse(JSON.stringify(loadScheduleAssignmentsStore())),
       draftByWeek: cloneDraftSchedule(draftScheduleByWeekStore),
+      slotOrderByWeek: sanitizeSlotOrderByWeek(
+        JSON.parse(JSON.stringify(slotOrderByWeekStore || {}))
+      ),
+      slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(
+        JSON.parse(JSON.stringify(legacySlotOrderByRestaurantStore || {}))
+      ),
     };
   }
 
@@ -5476,6 +5935,13 @@
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(legacyUndo));
         if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
       }
+      slotOrderByWeekStore = sanitizeSlotOrderByWeek(
+        snap.slotOrderByWeek != null ? snap.slotOrderByWeek : {}
+      );
+      if (snap.slotOrderByRestaurant != null) {
+        legacySlotOrderByRestaurantStore = sanitizeSlotOrderByRestaurant(snap.slotOrderByRestaurant);
+      }
+      persistSlotOrderStores();
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
       syncAllAssignmentTimesFromDraft();
       pruneScheduleAssignmentsInvalidSlots();
@@ -6124,6 +6590,7 @@
 
   function setScheduleCalendarWeekIndex(w) {
     if (isNaN(w) || w < 0 || w >= SCHEDULE_VIEW_WEEK_COUNT) return;
+    if (w !== scheduleCalendarWeekIndex) clearScheduleUndoStack();
     scheduleCalendarWeekIndex = w;
     updateScheduleWeekNav();
     updateEmpScheduleWeekNav();
@@ -6456,6 +6923,10 @@
     } catch (_e) {
       /* ignore */
     }
+    copySlotOrderBetweenWeeks(
+      mondayIsoForScheduleWeekIndex(fromWi),
+      mondayIsoForScheduleWeekIndex(toWi)
+    );
     return true;
   }
 
@@ -6693,9 +7164,10 @@
     return entry;
   }
 
-  function saveScheduleAssignments() {
+  function saveScheduleAssignments(opts) {
+    opts = opts || {};
     /* Trust in-memory SCHEDULE rows; do not sync from currentShift (stale Edit Staffing object). */
-    pushScheduleUndoSnapshot();
+    if (!opts.skipUndo) pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var rs = store[currentRestaurantId];
@@ -6791,7 +7263,8 @@
   function switchRestaurant(restaurantId) {
     if (!restaurantsList.some(function (r) { return r.id === restaurantId; })) return;
     if (restaurantId === currentRestaurantId) return;
-    if (gmCalloutSessionIsManager) saveScheduleAssignments();
+    if (gmCalloutSessionIsManager) saveScheduleAssignments({ skipUndo: true });
+    clearScheduleUndoStack();
     currentRestaurantId = restaurantId;
     slotStaffFilter = restaurantId;
     try {
@@ -7460,7 +7933,9 @@
   function buildEligibleByRole(role) {
     const displayRole = STAFF_TYPE_LABELS[role] || role;
     return employees
-      .filter(function (e) { return e.staffType === role; })
+      .filter(function (e) {
+        return (normalizeEmployeeStaffType(e.staffType) || e.staffType) === role;
+      })
       .map(function (emp) {
         return {
           id: emp.id,
@@ -7540,7 +8015,8 @@
     var rid = restaurantId != null ? restaurantId : currentRestaurantId;
     return employees
       .filter(function (e) {
-        if (e.staffType !== role) return false;
+        var st = normalizeEmployeeStaffType(e.staffType) || e.staffType;
+        if (st !== role) return false;
         return employeeMatchesScheduleRestaurant(e, rid);
       })
       .sort(sortEmployeesInGroup)[trIdx] || null;
@@ -7655,7 +8131,7 @@
 
   const titles = {
     1: 'Schedule Overview',
-    2: 'Shift Edit / Coverage',
+    2: 'Edit Shift',
     3: 'Shift Accepted',
     4: 'Shift Filled / History',
     5: 'Team',
@@ -7916,7 +8392,7 @@
   let calendarInlineEditCleanup = null;
   /** Pending document click listener for inline edit; must be cleared before renderCalendar. */
   let calendarInlineOutsideListenerTimer = null;
-  /** Remote team_state refresh deferred while a calendar cell editor is open. */
+  /** Remote roster/team_state refresh deferred while a calendar editor or Person select is open. */
   let calendarInlineEditDeferredRemoteRefresh = false;
 
   function clearCalendarInlineOutsideListenerTimer() {
@@ -7930,8 +8406,26 @@
     return !!(calendarInlineEditCleanup || calendarInlineOutsideListenerTimer);
   }
 
+  /** True when the schedule Person column native <select> has focus (menulist open). */
+  function calendarPersonSelectIsOpen() {
+    var ae = document.activeElement;
+    return !!(
+      ae &&
+      ae.classList &&
+      ae.classList.contains('calendar-row-person-select') &&
+      calendarGrid &&
+      calendarGrid.contains(ae)
+    );
+  }
+
+  /** Block DOM rebuilds that would dismiss an open Person select or cell name editor. */
+  function calendarScheduleUiBlocksRender() {
+    return calendarInlineWorkerEditIsOpen() || calendarPersonSelectIsOpen();
+  }
+
   function flushDeferredCalendarRemoteRefresh() {
     if (!calendarInlineEditDeferredRemoteRefresh) return;
+    if (calendarScheduleUiBlocksRender()) return;
     calendarInlineEditDeferredRemoteRefresh = false;
     rebuildSchedule();
     renderCalendar();
@@ -8252,6 +8746,16 @@
   const draftScheduleTableMount = document.getElementById('draftScheduleTableMount');
   const openDraftScheduleModalBtn = document.getElementById('openDraftScheduleModal');
   const scheduleUndoBtn = document.getElementById('scheduleUndoBtn');
+  const shiftDetailDayOff = document.getElementById('shiftDetailDayOff');
+  const shiftDetailStart = document.getElementById('shiftDetailStart');
+  const shiftDetailEnd = document.getElementById('shiftDetailEnd');
+  const shiftDetailHours = document.getElementById('shiftDetailHours');
+  const shiftDetailBreakType = document.getElementById('shiftDetailBreakType');
+  const shiftDetailBreakTime = document.getElementById('shiftDetailBreakTime');
+  const shiftDetailTimesWrap = document.getElementById('shiftDetailTimesWrap');
+  const shiftDetailBreakWrap = document.getElementById('shiftDetailBreakWrap');
+  /** Target for in-shift time/break editor when cell has no SCHEDULE row (day-off). */
+  var shiftDetailSlotTarget = null;
   const undoDraftScheduleBtn = document.getElementById('undoDraftScheduleBtn');
   const addDraftSlotLineBtn = document.getElementById('addDraftSlotLineBtn');
   const resetDraftScheduleBtn = document.getElementById('resetDraftScheduleBtn');
@@ -8896,6 +9400,7 @@
         rebuildSchedule();
         renderCalendar();
         if (scheduleBody) renderSchedule();
+        restoreCalendarScrollAfterShiftEdit();
       });
     }
     if (num === 5) {
@@ -8973,8 +9478,12 @@
       calloutTabBtn.classList.toggle('active', !isEdit);
       calloutTabBtn.setAttribute('aria-current', !isEdit ? 'page' : null);
     }
-    if (editPanel) editPanel.classList.toggle('hidden', !isEdit);
-    if (calloutPanel) calloutPanel.classList.toggle('hidden', isEdit);
+    /* Coverage/robocall UI is retained in DOM but kept hidden; in-shift editor is always the active panel. */
+    if (editPanel) editPanel.classList.remove('hidden');
+    if (calloutPanel) {
+      calloutPanel.classList.add('hidden');
+      calloutPanel.hidden = true;
+    }
   }
 
   function setScheduleView(view) {
@@ -9061,7 +9570,8 @@
     var out = [];
     employees
       .filter(function (e) {
-        if (e.staffType !== role) return false;
+        var st = normalizeEmployeeStaffType(e.staffType) || e.staffType;
+        if (st !== role) return false;
         return employeeMatchesScheduleRestaurant(e, rid);
       })
       .sort(sortEmployeesInGroup)
@@ -9111,7 +9621,40 @@
     return bestCount > 0 ? best : 'Unassigned';
   }
 
-  function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly) {
+  /**
+   * Within a role section:
+   * - Custom slotOrderByWeek[mondayIso][rid][role] → SoT (legacy global as fallback).
+   * - Else stable draft trIdx order (`0..slotN-1`).
+   * Display order only — does not mutate slot indices (add/delete stay stable).
+   */
+  function orderedScheduleSlotIndicesForRole(role, slotN, visibleDays) {
+    var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+    var custom = getCustomSlotOrderForRole(currentRestaurantId, role, slotN, weekMon);
+    if (custom) return custom;
+    var idxs = [];
+    var i;
+    for (i = 0; i < slotN; i += 1) idxs.push(i);
+    return idxs;
+  }
+
+  function moveScheduleSlotRow(role, trIdx, direction) {
+    var slotN = slotCountForRole(role, scheduleCalendarWeekIndex, currentRestaurantId);
+    if (slotN <= 1) return;
+    var visibleDays = getVisibleWeekDays();
+    var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+    var existing = getCustomSlotOrderForRole(currentRestaurantId, role, slotN, weekMon);
+    /* First move materializes current display order (trIdx / custom) as SoT for this week. */
+    var baseOrder = existing || orderedScheduleSlotIndicesForRole(role, slotN, visibleDays);
+    var nextOrder = moveTrIdxInSlotOrder(baseOrder, trIdx, direction);
+    if (!nextOrder) return;
+    pushScheduleUndoSnapshot();
+    setCustomSlotOrderForRole(currentRestaurantId, role, nextOrder, weekMon);
+    renderCalendar();
+    if (scheduleBody) renderSchedule();
+    scheduleTeamStateDebouncedSync();
+  }
+
+  function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly, moveFlags) {
     var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
     if (readOnly) {
       return (
@@ -9150,9 +9693,12 @@
           );
         })
         .join('');
+    var canUp = moveFlags && moveFlags.up;
+    var canDown = moveFlags && moveFlags.down;
     return (
       '<td class="time-col calendar-row-person-col">' +
-      '<div class="calendar-row-person">' +
+      '<div class="calendar-row-person calendar-row-person-with-delete">' +
+      '<div class="calendar-row-person-top">' +
       '<label class="calendar-row-person-label visually-hidden" for="cal-row-person-' +
       escapeHtml(role) +
       '-' +
@@ -9162,6 +9708,10 @@
       ' row ' +
       (trIdx + 1) +
       '</label>' +
+      /* Overlay label keeps a fixed font-size; native <select> menulists shrink long names. */
+      '<div class="calendar-row-person-select-wrap" data-label="' +
+      escapeHtml(selected) +
+      '">' +
       '<select class="calendar-row-person-select" id="cal-row-person-' +
       escapeHtml(role) +
       '-' +
@@ -9170,9 +9720,34 @@
       escapeHtml(role) +
       '" data-tr-idx="' +
       trIdx +
-      '" title="Assign this person to all shifts in this row">' +
+      '" title="' +
+      escapeHtml(selected) +
+      '">' +
       opts +
       '</select>' +
+      '</div>' +
+      '<div class="calendar-row-reorder" role="group" aria-label="Reorder row">' +
+      '<button type="button" class="calendar-reorder-btn"' +
+      (canUp ? '' : ' disabled') +
+      ' data-reorder-role="' +
+      escapeHtml(role) +
+      '" data-reorder-tr="' +
+      trIdx +
+      '" data-reorder-dir="-1" title="Move row up" aria-label="Move row up">↑</button>' +
+      '<button type="button" class="calendar-reorder-btn"' +
+      (canDown ? '' : ' disabled') +
+      ' data-reorder-role="' +
+      escapeHtml(role) +
+      '" data-reorder-tr="' +
+      trIdx +
+      '" data-reorder-dir="1" title="Move row down" aria-label="Move row down">↓</button>' +
+      '</div>' +
+      '</div>' +
+      '<button type="button" class="calendar-delete-slot-btn" data-delete-slot-role="' +
+      escapeHtml(role) +
+      '" data-delete-slot-tr="' +
+      trIdx +
+      '" title="Delete this slot row">Delete slot</button>' +
       '</div>' +
       '</td>'
     );
@@ -9196,9 +9771,20 @@
       shift.worker = shift.workers[0];
     });
     if (!any) return;
+    /* Blur before force-render so the open menulist does not block the rebuild. */
+    var ae = document.activeElement;
+    if (ae && ae.classList && ae.classList.contains('calendar-row-person-select') && ae.blur) {
+      try {
+        ae.blur();
+      } catch (_blurPerson) {
+        /* ignore */
+      }
+    }
+    /* Assignment rebuild paints current SoT — drop any deferred remote refresh. */
+    calendarInlineEditDeferredRemoteRefresh = false;
     saveScheduleAssignments();
     rebuildSchedule();
-    renderCalendar();
+    renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
   }
 
@@ -9251,7 +9837,6 @@
       redPokeBreakAnnotation(start, end, source.role, source.dayStr);
     var wi = scheduleCalendarWeekIndex;
     var rid = currentRestaurantId;
-    pushScheduleUndoSnapshot();
     var draft = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
     var store = loadScheduleAssignmentsStore();
     if (!store[rid]) store[rid] = {};
@@ -9295,6 +9880,7 @@
       changed = true;
     });
     if (!changed) return;
+    pushScheduleUndoSnapshot();
     saveDraftScheduleRowsForWeek(wi, draft, rid);
     saveScheduleAssignmentsStore(store);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
@@ -9326,14 +9912,21 @@
   function renderCalendarInto(targetEl, opts) {
     opts = opts || {};
     var readOnly = !!opts.readOnly;
+    var force = !!opts.force;
+    /* Rebuilding the calendar DOM closes an open native Person <select> menulist.
+       Defer remote/periodic refreshes until blur/change unless caller forces (e.g. assign). */
+    if (!readOnly && !force && calendarPersonSelectIsOpen()) {
+      calendarInlineEditDeferredRemoteRefresh = true;
+      return;
+    }
     closeCalendarInlineWorkerEdit();
     if (!targetEl) {
-      if (!readOnly && !calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+      if (!readOnly && !calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
       return;
     }
     if (!SCHEDULE.length) {
       targetEl.innerHTML = '<p class="calendar-hint">No shifts to show.</p>';
-      if (!readOnly && !calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+      if (!readOnly && !calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
       return;
     }
 
@@ -9381,7 +9974,11 @@
       if (rd.role === 'Bartender') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-foh">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">FRONT OF THE HOUSE</td>' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">FRONT OF THE HOUSE' +
+            (readOnly
+              ? ''
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Bartender">Add slot</button></span>') +
+            '</td>' +
             '<td colspan="' +
             (colCount - 1) +
             '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
@@ -9390,7 +9987,11 @@
       if (rd.role === 'Server') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-delivery">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">DELIVERY/DISHWASHER</td>' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">DELIVERY/DISHWASHER' +
+            (readOnly
+              ? ''
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Server">Add slot</button></span>') +
+            '</td>' +
             '<td colspan="' +
             (colCount - 1) +
             '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
@@ -9399,7 +10000,11 @@
       if (rd.role === 'Kitchen') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-boh">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">BACK OF THE HOUSE</td>' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">BACK OF THE HOUSE' +
+            (readOnly
+              ? ''
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Kitchen">Add slot</button></span>') +
+            '</td>' +
             '<td colspan="' +
             (colCount - 1) +
             '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td></tr>'
@@ -9407,8 +10012,13 @@
       }
 
       var slotN = slotCountForRole(rd.role, scheduleCalendarWeekIndex, currentRestaurantId);
-      for (var trIdx = 0; trIdx < slotN; trIdx += 1) {
-        const personTd = buildCalendarRowPersonSelectHtml(rd.role, trIdx, rd, visibleDays, readOnly);
+      var slotOrder = orderedScheduleSlotIndicesForRole(rd.role, slotN, visibleDays);
+      for (var oi = 0; oi < slotOrder.length; oi += 1) {
+        var trIdx = slotOrder[oi];
+        const personTd = buildCalendarRowPersonSelectHtml(rd.role, trIdx, rd, visibleDays, readOnly, {
+          up: oi > 0,
+          down: oi < slotOrder.length - 1,
+        });
         const tds = visibleDays
           .map(function (dayStr) {
             const shift = SCHEDULE.find(function (s) {
@@ -9439,9 +10049,12 @@
                 return (
                   '<td><div class="calendar-slot-wrap calendar-slot-empty calendar-slot-empty--timed ' +
                   escapeHtml(rd.roleClass) +
-                  '" tabindex="-1" role="group" aria-label="' +
+                  '"' +
+                  (readOnly ? '' : ' tabindex="0"') +
+                  ' role="group" aria-label="' +
                   escapeHtml(offLabel) +
                   '"' +
+                  (readOnly ? '' : ' title="Click to edit shift times"') +
                   slotMetaAttrs +
                   '>' +
                   '<div class="calendar-slot-rp calendar-slot-rp--dayoff">' +
@@ -9456,7 +10069,8 @@
               return (
                 '<td><div class="calendar-slot-wrap calendar-slot-empty ' +
                 escapeHtml(rd.roleClass) +
-                '" aria-hidden="true"' +
+                '"' +
+                (readOnly ? ' aria-hidden="true"' : ' tabindex="0" role="button" aria-label="Day off — click to edit" title="Click to edit shift times"') +
                 slotMetaAttrs +
                 '>DAY-OFF</div></td>'
               );
@@ -9471,7 +10085,7 @@
               'Shift: ' + rd.groupLabel + ' on ' + dayStr + ', ' + rpTime + '.';
             const slotTitle = readOnly
               ? ''
-              : ' title="Click to edit staffing · Option/Alt-drag to copy times &amp; break"';
+              : ' title="Click to edit times &amp; break · Option/Alt-drag to copy times &amp; break"';
 
             return (
               '<td>' +
@@ -9554,12 +10168,13 @@
 
     if (!readOnly) {
       ensureCalendarInteraction();
-      if (!calendarInlineWorkerEditIsOpen()) flushDeferredCalendarRemoteRefresh();
+      if (!calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
     }
   }
 
-  function renderCalendar() {
-    renderCalendarInto(calendarGrid, { readOnly: false });
+  function renderCalendar(opts) {
+    opts = opts || {};
+    renderCalendarInto(calendarGrid, { readOnly: false, force: !!opts.force });
   }
 
   function renderEmployeeMasterSchedule() {
@@ -9650,7 +10265,7 @@
 
   /**
    * Replace a calendar name pill with an inline field + dropdown (Excel-style).
-   * Clicking elsewhere on the slot still opens Edit Staffing via openShiftEdit.
+   * Clicking elsewhere on the slot still opens the shift time/break editor via openShiftEdit.
    */
   function openCalendarInlineWorkerEditor(wrap, shift, workerIndex, pillEl) {
     closeCalendarInlineWorkerEdit();
@@ -9823,8 +10438,46 @@
       assignPersonToScheduleRow(role, trIdx, sel.value);
     });
 
+    /* After Person select closes without change (or after assign blur), apply deferred roster/SoT refresh. */
+    calendarGrid.addEventListener('focusout', function (e) {
+      var sel = e.target && e.target.closest ? e.target.closest('.calendar-row-person-select') : null;
+      if (!sel) return;
+      setTimeout(function () {
+        if (calendarPersonSelectIsOpen()) return;
+        flushDeferredCalendarRemoteRefresh();
+      }, 0);
+    });
+
     calendarGrid.addEventListener('click', function (e) {
-      if (e.target.closest('.calendar-row-person-select, .calendar-row-person')) return;
+      var addBtn = e.target.closest('[data-add-slot-role]');
+      if (addBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        addScheduleSlotLine(addBtn.getAttribute('data-add-slot-role'));
+        return;
+      }
+      var delBtn = e.target.closest('[data-delete-slot-role]');
+      if (delBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        var delRole = delBtn.getAttribute('data-delete-slot-role');
+        var delTr = parseInt(delBtn.getAttribute('data-delete-slot-tr'), 10);
+        if (delRole && !isNaN(delTr)) deleteScheduleSlotLine(delRole, delTr);
+        return;
+      }
+      var reorderBtn = e.target.closest('[data-reorder-role][data-reorder-dir]');
+      if (reorderBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        var reRole = reorderBtn.getAttribute('data-reorder-role');
+        var reTr = parseInt(reorderBtn.getAttribute('data-reorder-tr'), 10);
+        var reDir = parseInt(reorderBtn.getAttribute('data-reorder-dir'), 10);
+        if (reRole && !isNaN(reTr) && (reDir === 1 || reDir === -1)) {
+          moveScheduleSlotRow(reRole, reTr, reDir);
+        }
+        return;
+      }
+      if (e.target.closest('.calendar-row-person-select')) return;
       if (scheduleAltDragSuppressClick) {
         scheduleAltDragSuppressClick = false;
         e.preventDefault();
@@ -9836,14 +10489,21 @@
         e.stopPropagation();
         return;
       }
-      const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid]');
-      if (!wrap) return;
       if (e.target.closest('.calendar-cell-edit-host')) return;
+      const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid], .calendar-slot-wrap.calendar-slot-empty');
+      if (!wrap) return;
       const id = wrap.dataset.shiftid;
-      currentShift = SCHEDULE.find(function (s) {
-        return s.id === id;
-      });
-      if (currentShift) openShiftEdit();
+      if (id) {
+        currentShift = SCHEDULE.find(function (s) {
+          return s.id === id;
+        });
+        if (currentShift) openShiftEdit();
+        return;
+      }
+      var role = wrap.getAttribute('data-role');
+      var trIdx = parseInt(wrap.getAttribute('data-tr-idx'), 10);
+      var dayStr = wrap.getAttribute('data-day');
+      if (role && dayStr && !isNaN(trIdx)) openShiftEditForSlot(role, trIdx, dayStr);
     });
 
     calendarGrid.addEventListener('keydown', function (e) {
@@ -9854,14 +10514,21 @@
         return;
       }
       if (e.key !== 'Enter' && e.key !== ' ') return;
-      const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid]');
+      const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid], .calendar-slot-wrap.calendar-slot-empty');
       if (!wrap) return;
       e.preventDefault();
       const id = wrap.dataset.shiftid;
-      currentShift = SCHEDULE.find(function (s) {
-        return s.id === id;
-      });
-      if (currentShift) openShiftEdit();
+      if (id) {
+        currentShift = SCHEDULE.find(function (s) {
+          return s.id === id;
+        });
+        if (currentShift) openShiftEdit();
+        return;
+      }
+      var role = wrap.getAttribute('data-role');
+      var trIdx = parseInt(wrap.getAttribute('data-tr-idx'), 10);
+      var dayStr = wrap.getAttribute('data-day');
+      if (role && dayStr && !isNaN(trIdx)) openShiftEditForSlot(role, trIdx, dayStr);
     });
 
     calendarGrid.addEventListener('mousedown', function (e) {
@@ -9934,55 +10601,15 @@
     });
   }
 
-  function parseEmployeeHiringDateMs(emp) {
-    var raw =
-      emp && emp.meta && emp.meta.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
-    if (!raw) return null;
-    var mdy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if (mdy) {
-      var month = Number(mdy[1]) - 1;
-      var day = Number(mdy[2]);
-      var year = Number(mdy[3]);
-      var d = new Date(year, month, day);
-      if (d.getFullYear() === year && d.getMonth() === month && d.getDate() === day) {
-        return d.getTime();
-      }
-      return null;
-    }
-    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      var iso = new Date(raw.slice(0, 10) + 'T12:00:00');
-      if (!Number.isNaN(iso.getTime())) return iso.getTime();
-    }
-    var parsed = Date.parse(raw);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-
-  function employeeFirstNameSortKey(emp) {
-    var f = ((emp && emp.firstName) || '').trim();
-    if (f) return f;
-    var dn = employeeDisplayName(emp) || '';
-    var parts = dn.split(/\s+/).filter(Boolean);
-    return parts[0] || dn;
-  }
-
-  /**
-   * Within a role group: hire date ascending (most senior first);
-   * missing hire date → after dated; ties / no-date → alphabetical by first name.
-   */
-  function compareEmployeesBySeniority(a, b) {
-    var ta = parseEmployeeHiringDateMs(a);
-    var tb = parseEmployeeHiringDateMs(b);
-    var aHas = ta != null;
-    var bHas = tb != null;
-    if (aHas && bHas && ta !== tb) return ta - tb;
-    if (aHas !== bHas) return aHas ? -1 : 1;
-    return employeeFirstNameSortKey(a).localeCompare(employeeFirstNameSortKey(b), undefined, {
-      sensitivity: 'base',
-    });
+  /** Alphabetical by display name (Team page + leftover schedule/timecard rows). */
+  function compareEmployeesByDisplayName(a, b) {
+    var na = employeeDisplayName(a) || '';
+    var nb = employeeDisplayName(b) || '';
+    return na.localeCompare(nb, undefined, { sensitivity: 'base' });
   }
 
   function sortEmployeesInGroup(a, b) {
-    return compareEmployeesBySeniority(a, b);
+    return compareEmployeesByDisplayName(a, b);
   }
 
   function employeeSearchHaystack(emp) {
@@ -11086,15 +11713,12 @@
       return;
     }
     const parts = [];
-    STAFF_TYPE_ORDER.forEach(function (typeKey) {
-      const group = filtered
-        .filter(function (e) { return e.staffType === typeKey; })
-        .sort(sortEmployeesInGroup);
+    function appendEmployeeGroup(groupLabel, group) {
       if (!group.length) return;
       parts.push(
         '<section class="employee-section">' +
         '<h2 class="employee-section-title">' +
-        escapeHtml(STAFF_TYPE_LABELS[typeKey] || typeKey) +
+        escapeHtml(groupLabel) +
         '</h2>' +
         '<ul class="employee-card-list">'
       );
@@ -11146,7 +11770,32 @@
         );
       });
       parts.push('</ul></section>');
+    }
+    STAFF_TYPE_ORDER.forEach(function (typeKey) {
+      appendEmployeeGroup(
+        STAFF_TYPE_LABELS[typeKey] || typeKey,
+        filtered
+          .filter(function (e) {
+            return e.staffType === typeKey;
+          })
+          .sort(sortEmployeesInGroup)
+      );
     });
+    /* Soft fix: missing/invalid staff_type used to disappear from Team grouping. */
+    if (employeeRoleFilter === 'all') {
+      appendEmployeeGroup(
+        'Unassigned',
+        filtered
+          .filter(function (e) {
+            return (
+              e.staffType !== 'Kitchen' &&
+              e.staffType !== 'Bartender' &&
+              e.staffType !== 'Server'
+            );
+          })
+          .sort(sortEmployeesInGroup)
+      );
+    }
     employeeListEl.innerHTML = parts.join('');
     refreshEmployeePhotosOnScreen(5);
     employeeListEl.querySelectorAll('.employee-card[data-employee-id]').forEach(function (btn) {
@@ -11755,7 +12404,7 @@
     if (empPhotoInputEl) empPhotoInputEl.value = '';
     if (empFirstName) empFirstName.value = emp ? emp.firstName || '' : '';
     if (empLastName) empLastName.value = emp ? emp.lastName || '' : '';
-    if (empStaffType) empStaffType.value = emp ? emp.staffType : 'Kitchen';
+    if (empStaffType) empStaffType.value = emp && emp.staffType ? emp.staffType : '';
     if (empPhone) empPhone.value = emp ? emp.phone || '' : '';
     if (empEmail) empEmail.value = emp ? emp.email || '' : '';
     if (empClockPinBlock) {
@@ -11881,7 +12530,7 @@
     });
   }
 
-  /** Names assignable on Edit Staffing for this shift (same rules as the checklist). */
+  /** Names assignable on Edit Staffing for this shift (legacy; staffing UI removed from screen 2). */
   function buildEditStaffingNamePoolForShift(shift, searchQueryOpt) {
     if (!shift) return [];
     var poolRaw = EMPLOYEE_POOLS[shift.role] || [];
@@ -11910,86 +12559,152 @@
     return pool;
   }
 
+  function populateShiftDetailBreakTimeOptions(parsed) {
+    if (!shiftDetailBreakTime) return;
+    var cur =
+      parsed && parsed.type !== 'NO BREAK'
+        ? breakAnnotationTimeToHHMM(parsed.time || '3:00PM')
+        : breakAnnotationTimeToHHMM('3:00PM');
+    shiftDetailBreakTime.value = cur || '15:00';
+  }
+
+  function syncShiftDetailEditorVisibility() {
+    var off = !!(shiftDetailDayOff && shiftDetailDayOff.checked);
+    if (shiftDetailTimesWrap) shiftDetailTimesWrap.hidden = off;
+    if (shiftDetailBreakWrap) shiftDetailBreakWrap.hidden = off;
+    if (!off && shiftDetailBreakType && shiftDetailBreakWrap) {
+      var noBreak = shiftDetailBreakType.value === 'NO BREAK';
+      if (shiftDetailBreakTime) shiftDetailBreakTime.disabled = noBreak;
+      shiftDetailBreakWrap.classList.toggle('shift-detail-break--no-time', noBreak);
+    }
+    updateShiftDetailHoursReadout();
+  }
+
+  function updateShiftDetailHoursReadout() {
+    if (!shiftDetailHours) return;
+    if (shiftDetailDayOff && shiftDetailDayOff.checked) {
+      shiftDetailHours.textContent = '';
+      return;
+    }
+    var s = normalizeHHMM(shiftDetailStart && shiftDetailStart.value);
+    var e = normalizeHHMM(shiftDetailEnd && shiftDetailEnd.value);
+    shiftDetailHours.textContent = s && e ? redPokeShiftHoursDecimal(s, e) + ' h' : '';
+  }
+
+  function fillShiftDetailEditor(opts) {
+    opts = opts || {};
+    var isDayOff = !!opts.isDayOff;
+    var start = opts.start || '10:00';
+    var end = opts.end || '18:00';
+    var breakText = opts.breakText || formatBreakAnnotation('3:00PM', 'BREAK TIME');
+    if (shiftDetailDayOff) shiftDetailDayOff.checked = isDayOff;
+    if (shiftDetailStart) shiftDetailStart.value = isDayOff ? '' : start;
+    if (shiftDetailEnd) shiftDetailEnd.value = isDayOff ? '' : end;
+    var parsed = parseBreakAnnotation(isDayOff ? '' : breakText);
+    if (shiftDetailBreakType) shiftDetailBreakType.value = parsed.type;
+    populateShiftDetailBreakTimeOptions(parsed);
+    syncShiftDetailEditorVisibility();
+  }
+
+  var calendarScrollRestorePending = null;
+
+  function captureCalendarScrollForShiftEdit() {
+    if (!calendarGrid) return;
+    calendarScrollRestorePending = {
+      top: calendarGrid.scrollTop || 0,
+      left: calendarGrid.scrollLeft || 0,
+    };
+  }
+
+  function restoreCalendarScrollAfterShiftEdit() {
+    var saved = calendarScrollRestorePending;
+    if (!saved || !calendarGrid) return;
+    calendarScrollRestorePending = null;
+    var top = saved.top;
+    var left = saved.left;
+    requestAnimationFrame(function () {
+      if (!calendarGrid) return;
+      calendarGrid.scrollTop = top;
+      calendarGrid.scrollLeft = left;
+    });
+  }
+
+  function openShiftEditForSlot(role, trIdx, dayStr) {
+    captureCalendarScrollForShiftEdit();
+    var shift = SCHEDULE.find(function (s) {
+      return s.day === dayStr && s.role === role && s.trIdx === trIdx;
+    });
+    if (shift) {
+      currentShift = shift;
+      openShiftEdit();
+      return;
+    }
+    currentShift = null;
+    shiftDetailSlotTarget = { role: role, trIdx: trIdx, day: dayStr };
+    setShiftMode('edit');
+    var displayRole = STAFF_TYPE_LABELS[role] || role;
+    var wk = weekdayKeyFromScheduleDay(dayStr);
+    var di = WEEKDAY_KEYS.indexOf(wk);
+    var defs = defaultTimesForDraftCell(role, trIdx, di < 0 ? 0 : di, scheduleCalendarWeekIndex, currentRestaurantId);
+    if (eligibleShiftContext) {
+      eligibleShiftContext.textContent =
+        'Edit shift — ' +
+        restaurantLabel(currentRestaurantId) +
+        ' — ' +
+        displayRole +
+        ' — ' +
+        dayStr +
+        ' · Slot ' +
+        (trIdx + 1) +
+        ' (day off)';
+    }
+    fillShiftDetailEditor({
+      isDayOff: true,
+      start: defs[0],
+      end: defs[1],
+      breakText: formatBreakAnnotation('3:00PM', 'BREAK TIME'),
+    });
+    if (shiftDetailStart) shiftDetailStart.value = defs[0];
+    if (shiftDetailEnd) shiftDetailEnd.value = defs[1];
+    showScreen(2);
+  }
+
   function openShiftEdit() {
     if (!currentShift) return;
+    captureCalendarScrollForShiftEdit();
+    shiftDetailSlotTarget = {
+      role: currentShift.role,
+      trIdx: currentShift.trIdx,
+      day: currentShift.day,
+    };
     setShiftMode('edit');
-    syncSlotLocationFilterChips();
-    if (shiftEditSearchInput && shiftEditSearchInput.value !== shiftEditSearchQuery) {
-      shiftEditSearchInput.value = shiftEditSearchQuery;
+    var displayRole = STAFF_TYPE_LABELS[currentShift.role] || currentShift.role;
+    if (eligibleShiftContext) {
+      eligibleShiftContext.textContent =
+        'Edit shift — ' +
+        restaurantLabel(currentRestaurantId) +
+        ' — ' +
+        (currentShift.groupLabel || displayRole) +
+        ' — ' +
+        currentShift.day +
+        ', ' +
+        (currentShift.timeLabel || currentShift.start + ' – ' + currentShift.end) +
+        ' · Slot ' +
+        (currentShift.trIdx + 1);
     }
-
-    var pool = buildEditStaffingNamePoolForShift(currentShift, shiftEditSearchQuery);
-    var currentNames = (currentShift.workers || []).filter(function (n) {
-      return n && n !== 'Unassigned';
+    fillShiftDetailEditor({
+      isDayOff: false,
+      start: currentShift.start,
+      end: currentShift.end,
+      breakText:
+        currentShift.redPokeBreak ||
+        redPokeBreakAnnotation(
+          currentShift.start,
+          currentShift.end,
+          currentShift.role,
+          currentShift.day
+        ),
     });
-    const displayRole = STAFF_TYPE_LABELS[currentShift.role] || currentShift.role;
-
-    eligibleShiftContext.textContent =
-      'Edit Staffing — ' +
-      restaurantLabel(currentRestaurantId) +
-      ' — ' +
-      (currentShift.groupLabel || displayRole) +
-      ' — ' +
-      currentShift.day +
-      ', ' +
-      (currentShift.timeLabel || (currentShift.start + ' – ' + currentShift.end)) +
-      ' · Choose one person for this shift.';
-
-    if (editWorkerList) {
-      var selectedName = currentNames.length ? currentNames[0] : 'Unassigned';
-      editWorkerList.innerHTML =
-        '<li class="worker-item">' +
-        '<input type="radio" class="edit-shift-worker-cb" name="edit-shift-worker" id="edit-unassigned" value="Unassigned"' +
-        (selectedName === 'Unassigned' ? ' checked' : '') +
-        ' />' +
-        '<div class="worker-item-info">' +
-        '<p class="worker-item-name">Unassigned</p>' +
-        '<p class="worker-item-meta">' +
-        escapeHtml(displayRole) +
-        '</p>' +
-        '</div></li>' +
-        pool
-          .map(function (name, i) {
-            const emp = employeeByDisplayName(name);
-            const availability = emp
-              ? availabilityForShiftSlot(emp, currentShift.day, currentShift.start, currentShift.end)
-              : '—';
-            const locPart = emp ? ' · ' + employeeLocationLine(emp) : '';
-            const seed = hashString(currentShift.role + '|' + name + '|' + i);
-            const checked = workerNamesMatch(selectedName, name) ? ' checked' : '';
-            return (
-              '<li class="worker-item">' +
-              '<input type="radio" class="edit-shift-worker-cb" name="edit-shift-worker" id="edit-' +
-              seed +
-              '" value="' +
-              escapeHtml(name) +
-              '"' +
-              checked +
-              ' />' +
-              '<div class="worker-item-info">' +
-              '<p class="worker-item-name">' +
-              escapeHtml(name) +
-              '</p>' +
-              '<p class="worker-item-meta">' +
-              escapeHtml(displayRole) +
-              ' · ' +
-              escapeHtml(availability) +
-              escapeHtml(locPart) +
-              '</p>' +
-              '</div></li>'
-            );
-          })
-          .join('');
-      var q = String(shiftEditSearchQuery || '').trim();
-      if (!pool.length && !q) {
-        editWorkerList.innerHTML =
-          '<li class="history-item"><p class="history-item-meta">No employees in this role for this location.</p></li>';
-      } else if (!pool.length && q) {
-        editWorkerList.innerHTML =
-          '<li class="history-item"><p class="history-item-meta">No employees match this search.</p></li>';
-      }
-    }
-
     showScreen(2);
   }
 
@@ -12065,8 +12780,15 @@
 
   if (editTabBtn) {
     editTabBtn.addEventListener('click', function () {
-      if (!currentShift) return;
-      openShiftEdit();
+      if (!currentShift && !shiftDetailSlotTarget) return;
+      if (currentShift) openShiftEdit();
+      else if (shiftDetailSlotTarget) {
+        openShiftEditForSlot(
+          shiftDetailSlotTarget.role,
+          shiftDetailSlotTarget.trIdx,
+          shiftDetailSlotTarget.day
+        );
+      }
     });
   }
 
@@ -12080,7 +12802,6 @@
   if (shiftEditSearchInput) {
     shiftEditSearchInput.addEventListener('input', function () {
       shiftEditSearchQuery = this.value || '';
-      if (currentShift && currentScreen === 2 && shiftMode === 'edit') openShiftEdit();
     });
   }
 
@@ -12091,22 +12812,82 @@
     });
   }
 
+  function bindShiftDetailEditorOnce() {
+    if (bindShiftDetailEditorOnce._done) return;
+    bindShiftDetailEditorOnce._done = true;
+    if (shiftDetailDayOff) {
+      shiftDetailDayOff.addEventListener('change', function () {
+        if (!shiftDetailDayOff.checked) {
+          var s = normalizeHHMM(shiftDetailStart && shiftDetailStart.value);
+          var e = normalizeHHMM(shiftDetailEnd && shiftDetailEnd.value);
+          if ((!s || !e) && shiftDetailSlotTarget) {
+            var wk = weekdayKeyFromScheduleDay(shiftDetailSlotTarget.day);
+            var di = WEEKDAY_KEYS.indexOf(wk);
+            var defs = defaultTimesForDraftCell(
+              shiftDetailSlotTarget.role,
+              shiftDetailSlotTarget.trIdx,
+              di < 0 ? 0 : di,
+              scheduleCalendarWeekIndex,
+              currentRestaurantId
+            );
+            if (shiftDetailStart) shiftDetailStart.value = defs[0];
+            if (shiftDetailEnd) shiftDetailEnd.value = defs[1];
+          }
+        }
+        syncShiftDetailEditorVisibility();
+      });
+    }
+    if (shiftDetailBreakType) {
+      shiftDetailBreakType.addEventListener('change', function () {
+        syncShiftDetailEditorVisibility();
+      });
+    }
+    ['change', 'input'].forEach(function (ev) {
+      if (shiftDetailStart) shiftDetailStart.addEventListener(ev, updateShiftDetailHoursReadout);
+      if (shiftDetailEnd) shiftDetailEnd.addEventListener(ev, updateShiftDetailHoursReadout);
+    });
+  }
+  bindShiftDetailEditorOnce();
+
   if (saveScheduleBtn) {
     saveScheduleBtn.addEventListener('click', function () {
-      if (!currentShift) return;
-      if (!editWorkerList) return;
-
-      var selectedEl = editWorkerList.querySelector('input.edit-shift-worker-cb:checked');
-      var selected = selectedEl && selectedEl.value ? [selectedEl.value] : ['Unassigned'];
-      selected = clampScheduleWorkersToSingle(selected);
-
-      currentShift.workers = selected;
-      currentShift.worker = selected[0];
-      syncShiftWorkersOnSchedule(currentShift);
-      rebindCurrentShiftFromSchedule();
-
-      saveScheduleAssignments();
-      renderCalendar();
+      var target = shiftDetailSlotTarget;
+      if (!target && currentShift) {
+        target = {
+          role: currentShift.role,
+          trIdx: currentShift.trIdx,
+          day: currentShift.day,
+        };
+      }
+      if (!target) return;
+      var wk = weekdayKeyFromScheduleDay(target.day);
+      var di = WEEKDAY_KEYS.indexOf(wk);
+      if (di < 0) return;
+      var isDayOff = !!(shiftDetailDayOff && shiftDetailDayOff.checked);
+      var start = shiftDetailStart && shiftDetailStart.value;
+      var end = shiftDetailEnd && shiftDetailEnd.value;
+      var breakType = (shiftDetailBreakType && shiftDetailBreakType.value) || 'BREAK TIME';
+      var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '15:00';
+      var breakTime = normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM';
+      var breakText = formatBreakAnnotation(breakTime, breakType);
+      if (!isDayOff) {
+        var s = normalizeHHMM(start);
+        var e = normalizeHHMM(end);
+        if (!s || !e) {
+          showScheduleNotice('Enter a valid start and end time, or mark the day off.', false);
+          return;
+        }
+        if (breakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
+          showScheduleNotice('Enter a valid break / office time.', false);
+          return;
+        }
+      }
+      if (!persistSingleShiftSlotEdit(target.role, target.trIdx, di, start, end, breakText, isDayOff)) {
+        showScheduleNotice('Could not save shift times.', false);
+        return;
+      }
+      currentShift = null;
+      shiftDetailSlotTarget = null;
       showScreen(1);
     });
   }
@@ -12269,7 +13050,11 @@
     ) {
       return;
     }
-    if (currentScreen === 2) { currentShift = null; showScreen(1); }
+    if (currentScreen === 2) {
+      currentShift = null;
+      shiftDetailSlotTarget = null;
+      showScreen(1);
+    }
     else if (currentScreen === 3) showScreen(2);
     else if (currentScreen === 4) showScreen(1);
     else if (currentScreen === 7) showScreen(2);
@@ -12985,7 +13770,12 @@
         window.alert('First and last name are required.');
         return;
       }
-      const stSave = empStaffType.value;
+      const stSave = String(empStaffType.value || '').trim();
+      if (stSave !== 'Kitchen' && stSave !== 'Bartender' && stSave !== 'Server') {
+        window.alert('Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.');
+        if (typeof empStaffType.focus === 'function') empStaffType.focus();
+        return;
+      }
       var existingEmp = editingEmployeeId
         ? employees.find(function (e) {
             return e.id === editingEmployeeId;
@@ -14218,7 +15008,8 @@
       escapeHtml: escapeHtml,
       employees: employees,
       employeeDisplayName: employeeDisplayName,
-      compareEmployeesBySeniority: compareEmployeesBySeniority,
+      compareEmployeesByDisplayName: compareEmployeesByDisplayName,
+      getCustomSlotOrderForRole: getCustomSlotOrderForRole,
       employeePhotoUrlCandidates: employeePhotoUrlCandidates,
       normNameKey: normNameKey,
       nameFirstToken: nameFirstToken,

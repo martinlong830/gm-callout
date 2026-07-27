@@ -127,7 +127,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [staffType, setStaffType] = useState('Kitchen');
+  const [staffType, setStaffType] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [usualRestaurant, setUsualRestaurant] = useState('rp-9');
@@ -156,7 +156,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setPhotoVersion((v) => v + 1);
     setFirstName('');
     setLastName('');
-    setStaffType('Kitchen');
+    setStaffType('');
     setPhone('');
     setEmail('');
     setUsualRestaurant('rp-9');
@@ -164,7 +164,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setHourlyRate('');
     setTipPoint('');
     setBreakPolicy('unpaid');
-    setWeeklyGrid(normalizeWeeklyGrid({}, 'Kitchen', draftRows));
+    setWeeklyGrid(normalizeWeeklyGrid({}, '', draftRows));
     setClockPin('');
     setPinDraft('');
     setVacAllowanceDays('0');
@@ -312,6 +312,13 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     const last = lastName.trim();
     if (!first || !last) {
       Alert.alert('Profile', 'First and last name are required.');
+      return;
+    }
+    if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+      Alert.alert(
+        'Profile',
+        'Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.'
+      );
       return;
     }
     const phoneTrim = phone.trim();
@@ -595,8 +602,11 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     />
                   </View>
                 </View>
-                <FieldLabel>Staff type</FieldLabel>
+                <FieldLabel>Staff type / role type</FieldLabel>
                 <ChipRow options={STAFF_TYPES} value={staffType} onChange={onStaffTypeChange} />
+                {!staffType ? (
+                  <Text style={styles.photoHint}>Required — select a role before saving.</Text>
+                ) : null}
                 <FieldLabel>Phone</FieldLabel>
                 <TextInput
                   style={styles.input}

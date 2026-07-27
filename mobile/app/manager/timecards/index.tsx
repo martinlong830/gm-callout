@@ -31,10 +31,26 @@ import {
   TIMECARDS_LOCATION_OPTIONS,
   type SelectedRestaurant,
 } from '../../../lib/timecards/locationFilter';
-import { rosterRowHasLocationActivity, rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
+import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
 import type { EmployeeLite } from '../../../lib/schedule/types';
-import { compareEmployeesByScheduleOrder } from '../../../lib/schedule/rosterOrder';
-import { weekBoundsStorageKey } from '../../../lib/timecards/payWeek';
+import {
+  compareEmployeesByLocationScheduleOrder,
+} from '../../../lib/schedule/rosterOrder';
+import {
+  buildAllWeekDayLabels,
+  buildSchedule,
+  buildWeeksFromMonday,
+  defaultRestaurants,
+  employeeScheduleVisualRankMap,
+  getScheduleAnchorMondayDate,
+  getVisibleWeekDays,
+  hydrateScheduleAssignmentsFromTeamState,
+  loadDraftFromTeamState,
+  SCHEDULE_VIEW_WEEK_COUNT,
+  weekIndexForPayWeekStartIso,
+} from '../../../lib/schedule/engine';
+import { readSlotOrderByRestaurantForWeek } from '../../../lib/schedule/slotOrder';
+import { weekBoundsStorageKey, isoFromDate } from '../../../lib/timecards/payWeek';
 import { getSohRate, loadSohRate, saveSohRate } from '../../../lib/timecards/sohRate';
 import {
   getTipTakehomePctMap,
@@ -288,18 +304,51 @@ export default function TimecardsRosterScreen() {
       bounds,
       locationFilter
     );
+
+    const restaurants = defaultRestaurants();
+    const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
+    const allWeekDays = buildAllWeekDayLabels(weekMeta);
+    const startIso = isoFromDate(bounds.start);
+    const weekIdx = weekIndexForPayWeekStartIso(weekMeta, startIso);
+    const hydrated = hydrateScheduleAssignmentsFromTeamState(
+      teamState?.schedule_assignments,
+      restaurants,
+      teamState?.draft_schedule
+    );
+    const draftRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
+    const draftRows = loadDraftFromTeamState(draftRaw, weekIdx, locationFilter);
+    const schedule = buildSchedule({
+      allWeekDays,
+      draftScheduleRaw: draftRaw,
+      employees: lites,
+      restaurants,
+      currentRestaurantId: locationFilter,
+      assignmentStore: hydrated.store,
+    });
+    const visibleDays = getVisibleWeekDays(allWeekDays, weekIdx);
+    const rankMap = employeeScheduleVisualRankMap(
+      schedule,
+      draftRows,
+      visibleDays,
+      lites,
+      locationFilter,
+      readSlotOrderByRestaurantForWeek(draftRaw, startIso)
+    );
+
     built.sort((a, b) => {
       const empA = employeeById[a.empId];
       const empB = employeeById[b.empId];
-      if (empA && empB) return compareEmployeesByScheduleOrder(empA, empB);
+      if (empA && empB) {
+        return compareEmployeesByLocationScheduleOrder(empA, empB, locationFilter, (storeId) =>
+          storeId === locationFilter ? rankMap : null
+        );
+      }
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
     return built.filter((row) => {
       const emp = employeeById[row.empId];
       if (!emp) return true;
-      return (
-        rosterRowVisibleAtLocation(emp, locationFilter) || rosterRowHasLocationActivity(row)
-      );
+      return rosterRowVisibleAtLocation(emp, locationFilter);
     });
   }, [
     dataReady,

@@ -39,7 +39,10 @@ type AppDataState = HydrationResult & {
   error: string | null;
   refetch: (opts?: { silent?: boolean }) => Promise<void>;
   /** Optimistic schedule assignment patch for timecards before cloud refetch completes. */
-  applyLocalScheduleAssignments: (assignments: AssignmentStore) => void;
+  applyLocalScheduleAssignments: (
+    assignments: AssignmentStore,
+    draftSchedule?: unknown
+  ) => void;
   /** Logged-in employee roster row (by auth link or display name). */
   myEmployee: EmployeeRow | null;
 };
@@ -128,16 +131,23 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     await runRefetch({ showLoading: !opts?.silent });
   }, [runRefetch]);
 
-  const applyLocalScheduleAssignments = useCallback((assignments: AssignmentStore) => {
-    setTeamState((prev: HydrationResult['teamState']) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        schedule_assignments: JSON.parse(JSON.stringify(assignments)),
-        updated_at: new Date().toISOString(),
-      };
-    });
-  }, []);
+  const applyLocalScheduleAssignments = useCallback(
+    (assignments: AssignmentStore, draftSchedule?: unknown) => {
+      setTeamState((prev: HydrationResult['teamState']) => {
+        if (!prev) return prev;
+        const next: HydrationResult['teamState'] = {
+          ...prev,
+          schedule_assignments: JSON.parse(JSON.stringify(assignments)),
+          updated_at: new Date().toISOString(),
+        };
+        if (draftSchedule !== undefined) {
+          next.draft_schedule = JSON.parse(JSON.stringify(draftSchedule));
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   const refreshTeamStateSelective = useCallback(
     async (fields?: string[]) => {

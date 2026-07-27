@@ -11,10 +11,9 @@ import {
   buildAllWeekDayLabels,
   buildWeeksFromMonday,
   defaultRestaurants,
-  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getWorkerScheduleBuckets,
-  mergeRemoteAssignments,
+  hydrateScheduleAssignmentsFromTeamState,
   SCHEDULE_VIEW_WEEK_COUNT,
 } from '../../lib/schedule/engine';
 import type { EmployeeLite, RoleKey } from '../../lib/schedule/types';
@@ -58,17 +57,24 @@ export default function EmployeeHome() {
   );
   const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
 
-  const assignmentStore = useMemo(() => {
+  const hydrated = useMemo(() => {
     try {
-      const ids = restaurants.map((r) => r.id);
-      const shell = assignmentShell(restaurants);
-      const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
-      return ensureRollingFutureAssignments(merged, restaurants).store;
+      return hydrateScheduleAssignmentsFromTeamState(
+        teamState?.schedule_assignments,
+        restaurants,
+        teamState?.draft_schedule
+      );
     } catch (err) {
       console.warn('employee home assignmentStore', err);
-      return assignmentShell(restaurants);
+      return {
+        store: assignmentShell(restaurants),
+        draftSchedule: teamState?.draft_schedule,
+        changed: false,
+      };
     }
-  }, [teamState?.schedule_assignments, restaurants]);
+  }, [teamState?.schedule_assignments, teamState?.draft_schedule, restaurants]);
+  const assignmentStore = hydrated.store;
+  const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -101,7 +107,7 @@ export default function EmployeeHome() {
         workerName,
         weekMeta,
         allWeekDays,
-        draftScheduleRaw: teamState?.draft_schedule,
+        draftScheduleRaw,
         employees: lites,
         restaurants,
         assignmentStore,
@@ -115,7 +121,7 @@ export default function EmployeeHome() {
     workerName,
     weekMeta,
     allWeekDays,
-    teamState?.draft_schedule,
+    draftScheduleRaw,
     teamState?.schedule_published,
     lites,
     restaurants,

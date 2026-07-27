@@ -25,6 +25,14 @@ function normalizeLoginName(name) {
     .replace(/\s+/g, " ");
 }
 
+const VALID_STAFF_TYPES = ["Kitchen", "Bartender", "Server"];
+
+/** @returns {string|null} canonical staff type, or null if missing/invalid */
+function parseRequiredStaffType(raw) {
+  const st = String(raw || "").trim();
+  return VALID_STAFF_TYPES.includes(st) ? st : null;
+}
+
 function isPendingAccessCode(code) {
   return /^pending-/i.test(String(code || "").trim());
 }
@@ -1166,6 +1174,15 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return res.status(400).json({ ok: false, message: "Recovery email is required." });
       }
 
+      const staffTypeParsed = parseRequiredStaffType(body.staffType);
+      if (role === "employee" && !staffTypeParsed) {
+        return res.status(400).json({
+          ok: false,
+          message:
+            "Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.",
+        });
+      }
+
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email: internalEmail,
         password,
@@ -1176,7 +1193,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           login_name: loginName,
           login_name_norm: loginNameNorm,
           phone: body.phone ? String(body.phone).trim() : "",
-          staff_type: body.staffType ? String(body.staffType).trim() : "",
+          staff_type: staffTypeParsed || "",
           company_id: companyId || null,
         },
       });
@@ -1196,10 +1213,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         display_name: displayName,
         role,
         phone: body.phone ? String(body.phone).trim() : null,
-        staff_type:
-          body.staffType && ["Kitchen", "Bartender", "Server"].includes(body.staffType)
-            ? body.staffType
-            : null,
+        staff_type: staffTypeParsed,
       };
       if (companyId) profilePatch.company_id = companyId;
       const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
@@ -1272,6 +1286,15 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return res.status(400).json({ ok: false, message: "Password must be at least 4 characters." });
       }
 
+      const staffTypeParsed = parseRequiredStaffType(body.staffType);
+      if (accountRole === "employee" && !staffTypeParsed) {
+        return res.status(400).json({
+          ok: false,
+          message:
+            "Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.",
+        });
+      }
+
       const managerCompanyId = mgr.profile.company_id || null;
       let isCreator = false;
       if (managerCompanyId) {
@@ -1308,7 +1331,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         login_name: loginName,
         login_name_norm: loginNameNorm,
         phone: body.phone ? String(body.phone).trim() : "",
-        staff_type: body.staffType ? String(body.staffType).trim() : "",
+        staff_type: staffTypeParsed || "",
       };
       if (managerCompanyId) userMetadata.company_id = managerCompanyId;
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -1333,12 +1356,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         display_name: displayName,
         role: accountRole,
         phone: body.phone ? String(body.phone).trim() : null,
-        staff_type:
-          accountRole === "employee" &&
-          body.staffType &&
-          ["Kitchen", "Bartender", "Server"].includes(body.staffType)
-            ? body.staffType
-            : null,
+        staff_type: staffTypeParsed,
       };
       if (managerCompanyId) profilePatch.company_id = managerCompanyId;
       if (recoveryEmailRaw) {

@@ -31,7 +31,14 @@ export async function createEmployeeRosterRow(
   }
 
   const displayName = `${fn} ${ln}`.trim();
-  const staffType = input.staffType;
+  const staffType = String(input.staffType || '').trim();
+  if (staffType !== 'Kitchen' && staffType !== 'Bartender' && staffType !== 'Server') {
+    return {
+      ok: false,
+      message:
+        'Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.',
+    };
+  }
   const email = String(input.email || '').trim();
   const emp: EmployeeRow = {
     id:
@@ -42,7 +49,7 @@ export async function createEmployeeRosterRow(
     firstName: fn,
     lastName: ln,
     displayName,
-    staffType,
+    staffType: staffType as EmployeeRow['staffType'],
     phone,
     email: email || undefined,
     usualRestaurant: 'rp-9',

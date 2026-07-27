@@ -1911,6 +1911,160 @@ html.authed .header-signout-btn {
   opacity: 0.45;
 }
 
+/* In-shift details editor (replaces Edit Staffing on screen 2) */
+.shift-details-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 12px;
+}
+
+.shift-detail-dayoff-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.shift-detail-times,
+.shift-detail-break {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.shift-detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shift-detail-field-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.shift-detail-field input[type="time"],
+.shift-detail-field select {
+  min-width: 7rem;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.shift-detail-field #shiftDetailBreakTime {
+  min-width: 7rem;
+}
+
+.shift-detail-hours {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  padding-bottom: 10px;
+}
+
+.shift-detail-break--no-time #shiftDetailBreakTime {
+  opacity: 0.45;
+}
+
+.calendar-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.calendar-add-slot-btn,
+.calendar-delete-slot-btn {
+  padding: 2px 8px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.calendar-add-slot-btn:hover,
+.calendar-delete-slot-btn:hover {
+  border-color: #d1d5db;
+  color: var(--text);
+  background: var(--hover-fill);
+}
+
+.calendar-delete-slot-btn {
+  margin-top: 6px;
+  width: 100%;
+}
+
+.calendar-row-person-with-delete {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.calendar-row-person-top {
+  display: flex;
+  flex-direction: row;
+  /* Center — do not stretch the select wrap taller than the <select>.
+     Stretch made ::after (inset on the wrap) cover the select's bottom border. */
+  align-items: center;
+  gap: 4px;
+}
+
+.calendar-row-person-top .calendar-row-person-select-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+}
+
+.calendar-row-reorder {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.calendar-reorder-btn {
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.calendar-reorder-btn:hover:not(:disabled) {
+  border-color: #d1d5db;
+  color: var(--text);
+  background: var(--hover-fill);
+}
+
+.calendar-reorder-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .draft-schedule-empty {
   margin: 0;
   padding: var(--space-block);
@@ -2616,27 +2770,87 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   width: 100%;
 }
 
+/* Fixed-size name label over the native select (browsers shrink long <select> values).
+   Wrap must hug the <select> height — ::after is inset on the wrap; if the wrap is
+   taller (e.g. stretched to reorder buttons), the overlay covers the bottom border. */
+.calendar-row-person-select-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  line-height: 0; /* avoid strut growing wrap past the select */
+}
+
+.calendar-row-person-select-wrap::before {
+  content: '';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #64748b;
+  pointer-events: none;
+}
+
+.calendar-row-person-select-wrap::after {
+  content: attr(data-label);
+  position: absolute;
+  /* Leave the full 1.5px border ring visible (avoid subpixel cover of bottom edge). */
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
+  left: 2px;
+  z-index: 1;
+  display: block;
+  box-sizing: border-box;
+  padding: 0 1.75rem 0 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  /* Match select content box: min-height 2.625rem − 4px overlay inset. */
+  line-height: calc(2.625rem - 4px);
+  color: var(--text);
+  background: #fff;
+  border-radius: calc(var(--radius-sm) - 1px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .calendar-row-person-select {
   display: block;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  appearance: auto;
-  -webkit-appearance: menulist;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   font: inherit;
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.3;
-  min-height: 2.25rem;
-  padding: 7px 8px;
+  /* Match reorder column (~20+2+20px) so the control isn't shorter than siblings. */
+  min-height: 2.625rem;
+  height: 2.625rem;
+  padding: 0 1.75rem 0 8px;
   border: 1.5px solid color-mix(in srgb, var(--primary) 35%, var(--border));
   border-radius: var(--radius-sm);
   background: #fff;
-  color: var(--text);
+  /* Hide native value text (may auto-shrink); overlay ::after shows fixed-size label. */
+  color: transparent;
   cursor: pointer;
-  /* Prevent long option labels from expanding the sticky person column. */
   min-width: 0;
-  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+.calendar-row-person-select option {
+  color: var(--text);
 }
 
 .calendar-row-person-select:focus {
@@ -4020,10 +4234,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .employee-card-name {
   display: block;
   margin: 0 0 8px;
-  font-size: inherit;
+  font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.35;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .employee-card-meta {
@@ -4415,7 +4630,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 600;
   line-height: 1.25;
   color: var(--text);
-  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly {

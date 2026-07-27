@@ -78,7 +78,31 @@ const mockEmployees = [
     hourlyRate: 20,
     tipPoint: 4,
     weeklyGrid: {},
-    meta: { position: 'SERVICE REP' },
+    meta: { position: 'SERVICE REP', primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9' },
+  },
+  {
+    id: 'eboth8',
+    firstName: 'BOTH',
+    lastName: 'EIGHTH',
+    staffType: 'Kitchen',
+    phone: '',
+    usualRestaurant: 'both',
+    hourlyRate: 19,
+    tipPoint: 3,
+    weeklyGrid: {},
+    meta: { position: 'COOK', primaryLocationId: 'rp-8', primaryRestaurantId: 'rp-8' },
+  },
+  {
+    id: 'eboth-noprim',
+    firstName: 'BOTH',
+    lastName: 'NOPRIMARY',
+    staffType: 'Server',
+    phone: '',
+    usualRestaurant: 'both',
+    hourlyRate: 15,
+    tipPoint: 2,
+    weeklyGrid: {},
+    meta: { position: 'RUNNER' },
   },
   {
     id: 'e-paid-off',
@@ -581,8 +605,20 @@ if (ninth.visible.indexOf('EIGHTH ONLY') >= 0) {
 if (eighth.visible.indexOf('MARK ONG') >= 0) {
   throw new Error('8th Ave roster should not include 9th-only employee');
 }
-if (ninth.visible.indexOf('BOTH STORES') < 0 || eighth.visible.indexOf('BOTH STORES') < 0) {
-  throw new Error('both-location employee should appear on 9th and 8th exports');
+if (ninth.visible.indexOf('BOTH STORES') < 0) {
+  throw new Error('both-location employee with primary rp-9 should appear on 9th export');
+}
+if (eighth.visible.indexOf('BOTH STORES') >= 0) {
+  throw new Error('both-location employee with primary rp-9 should not appear on 8th export');
+}
+if (eighth.visible.indexOf('BOTH EIGHTH') < 0) {
+  throw new Error('both-location employee with primary rp-8 should appear on 8th export');
+}
+if (ninth.visible.indexOf('BOTH EIGHTH') >= 0) {
+  throw new Error('both-location employee with primary rp-8 should not appear on 9th export');
+}
+if (ninth.visible.indexOf('BOTH NOPRIMARY') >= 0 || eighth.visible.indexOf('BOTH NOPRIMARY') >= 0) {
+  throw new Error('both-location employee with missing primary should be excluded from single-store filters');
 }
 if (ninth.infoText.indexOf('EIGHTH ONLY') >= 0) {
   throw new Error('Employee Information sheet leaked 8th-only staff into 9th Ave export');

@@ -19,18 +19,16 @@ import {
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
 import type { EmployeeLite, RoleKey, ScheduleRow } from '../../lib/schedule/types';
 import {
-  assignmentShell,
   buildAllWeekDayLabels,
   buildCalendarBody,
   buildSchedule,
   buildWeeksFromMonday,
   defaultRestaurants,
-  ensureRollingFutureAssignments,
   getScheduleAnchorMondayDate,
   getVisibleWeekDays,
+  hydrateScheduleAssignmentsFromTeamState,
   isScheduleWeekIndexPublished,
   loadDraftFromTeamState,
-  mergeRemoteAssignments,
   normalizeSchedulePublishedMap,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
@@ -39,6 +37,7 @@ import {
   type CalendarBodyRow,
   type CalendarCell,
 } from '../../lib/schedule/engine';
+import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
@@ -124,7 +123,18 @@ export default function EmployeeScheduleScreen() {
 
   const weekPublished = isScheduleWeekIndexPublished(publishedMap, weekMeta, weekIndex);
 
-  const draftScheduleRaw = teamState?.draft_schedule;
+  /** Derive store + rolled draft — avoid useEffect + setState layout thrash on every teamState tick. */
+  const hydrated = useMemo(
+    () =>
+      hydrateScheduleAssignmentsFromTeamState(
+        teamState?.schedule_assignments,
+        allRestaurants,
+        teamState?.draft_schedule
+      ),
+    [teamState?.schedule_assignments, teamState?.draft_schedule, allRestaurants]
+  );
+  const assignmentStore = hydrated.store;
+  const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
   const draftRows = useMemo(
     () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
     [draftScheduleRaw, weekIndex, currentRestaurantId]
@@ -133,14 +143,6 @@ export default function EmployeeScheduleScreen() {
   useEffect(() => {
     dayScrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [weekIndex, currentRestaurantId]);
-
-  /** Derive store — avoid useEffect + setState layout thrash on every teamState tick. */
-  const assignmentStore = useMemo(() => {
-    const ids = allRestaurants.map((r) => r.id);
-    const shell = assignmentShell(allRestaurants);
-    const merged = mergeRemoteAssignments(shell, teamState?.schedule_assignments, ids);
-    return ensureRollingFutureAssignments(merged, allRestaurants).store;
-  }, [teamState?.schedule_assignments, allRestaurants]);
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
@@ -158,8 +160,19 @@ export default function EmployeeScheduleScreen() {
   );
 
   const calendarBody = useMemo(
-    () => buildCalendarBody(schedule, visibleDays, draftRows),
-    [schedule, visibleDays, draftRows]
+    () =>
+      buildCalendarBody(
+        schedule,
+        visibleDays,
+        draftRows,
+        lites,
+        currentRestaurantId,
+        readSlotOrderByRestaurantForWeek(
+          draftScheduleRaw,
+          weekMeta[weekIndex * 7]?.iso || ''
+        )
+      ),
+    [schedule, visibleDays, draftRows, lites, currentRestaurantId, draftScheduleRaw, weekMeta, weekIndex]
   );
 
   const daysWidth = useMemo(
@@ -356,7 +369,7 @@ const PersonColRow = memo(function PersonColRow({
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
       <View style={styles.personReadonly}>
-        <Text style={styles.personSelectText} numberOfLines={2}>
+        <Text style={styles.personSelectText} numberOfLines={2} ellipsizeMode="tail">
           {label}
         </Text>
       </View>

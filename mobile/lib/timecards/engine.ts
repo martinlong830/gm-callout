@@ -7,10 +7,9 @@ import {
   buildWeeksFromMonday,
   defaultRestaurants,
   getScheduleAnchorMondayDate,
+  hydrateScheduleAssignmentsFromTeamState,
   indexPayWeekScheduleRows,
   loadDraftFromTeamState,
-  mergeRemoteAssignments,
-  assignmentShell,
   redPokeShiftHoursDecimal,
   redPokeShiftTimeLabel,
   scheduleWorkerNameKey,
@@ -791,14 +790,15 @@ export function buildScheduleContext(
 ) {
   const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
   const allWeekDays = weekMeta.map((m) => m.label);
-  const draftScheduleRaw = teamState?.draft_schedule;
-  const draftRows = loadDraftFromTeamState(draftScheduleRaw, SCHEDULE_TEMPLATE_WEEK_INDEX);
   const restaurants = defaultRestaurants();
-  const assignmentStore = mergeRemoteAssignments(
-    assignmentShell(restaurants),
-    teamState?.schedule_assignments as Parameters<typeof mergeRemoteAssignments>[1],
-    restaurants.map((r) => r.id)
+  const hydrated = hydrateScheduleAssignmentsFromTeamState(
+    teamState?.schedule_assignments,
+    restaurants,
+    teamState?.draft_schedule
   );
+  const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
+  const draftRows = loadDraftFromTeamState(draftScheduleRaw, SCHEDULE_TEMPLATE_WEEK_INDEX);
+  const assignmentStore = hydrated.store;
   const employees = opts?.employees ?? [];
   const bounds = opts?.bounds;
   let payWeekStartIso: string | null = null;

@@ -240,8 +240,9 @@
           </label>
           <p class="login-hint login-hint--tight">Used to reset your password if you forget it.</p>
           <label class="login-field">
-            <span class="login-label">Staff type</span>
+            <span class="login-label">Staff type / role type</span>
             <select id="regStaffType" class="login-input" required enterkeyhint="next">
+              <option value="">Select…</option>
               <option value="Kitchen">Back of the House</option>
               <option value="Bartender">Front of the House</option>
               <option value="Server">Delivery/Dishwasher</option>
@@ -589,9 +590,6 @@
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal">
                 Templates
               </button>
-              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openDraftScheduleModal">
-                Shift Times
-              </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal">
                 Manage Locations
               </button>
@@ -610,15 +608,15 @@
         </div>
       </section>
 
-      <!-- Screen 2: Shift Edit / Coverage -->
+      <!-- Screen 2: Shift details (time / break). Coverage/robocall markup kept but hidden for later. -->
       <section class="screen" id="screen-eligible" data-screen="2">
-        <div class="slot-location-filter" id="slotLocationFilterWrap">
+        <div class="slot-location-filter hidden" id="slotLocationFilterWrap" hidden aria-hidden="true">
           <span class="employee-filter-label" id="slotLocationFilterLabel">Staff filter</span>
           <div class="employee-filter-chips" id="slotLocationFilterChips" role="group" aria-labelledby="slotLocationFilterLabel"></div>
         </div>
         <div class="shift-context" id="eligibleShiftContext"></div>
 
-        <nav class="mode-tabs" aria-label="Shift actions">
+        <nav class="mode-tabs hidden" aria-label="Shift actions" hidden aria-hidden="true">
           <button type="button" class="mode-tab active" id="editTabBtn" aria-current="page">
             Edit Staffing
           </button>
@@ -628,8 +626,8 @@
         </nav>
 
         <div class="mode-panel" id="editPanel">
-          <p class="panel-subtitle">Select one or more people for this shift (auto-filled schedules start with one per slot)</p>
-          <label class="employee-search-wrap shift-worker-search-wrap">
+          <p class="panel-subtitle">Edit shift time range and break for this slot</p>
+          <label class="employee-search-wrap shift-worker-search-wrap hidden" hidden aria-hidden="true">
             <span class="visually-hidden">Search employees in edit staffing</span>
             <input
               type="search"
@@ -640,15 +638,48 @@
               enterkeyhint="search"
             />
           </label>
-          <div class="worker-list-scroll">
+          <div class="worker-list-scroll hidden" hidden aria-hidden="true">
             <ul class="worker-list" id="editWorkerList"></ul>
           </div>
+          <div class="shift-details-editor" id="shiftDetailsEditor">
+            <label class="shift-detail-dayoff-label">
+              <input type="checkbox" id="shiftDetailDayOff" />
+              Day off
+            </label>
+            <div class="shift-detail-times" id="shiftDetailTimesWrap">
+              <label class="shift-detail-field">
+                <span class="shift-detail-field-label">Start</span>
+                <input type="time" id="shiftDetailStart" step="60" />
+              </label>
+              <span class="draft-time-sep" aria-hidden="true">–</span>
+              <label class="shift-detail-field">
+                <span class="shift-detail-field-label">End</span>
+                <input type="time" id="shiftDetailEnd" step="60" />
+              </label>
+              <span class="shift-detail-hours" id="shiftDetailHours"></span>
+            </div>
+            <div class="shift-detail-break" id="shiftDetailBreakWrap">
+              <label class="shift-detail-field">
+                <span class="shift-detail-field-label">Break / office</span>
+                <select id="shiftDetailBreakType" aria-label="Break label">
+                  <option value="BREAK TIME">BREAK TIME</option>
+                  <option value="OFFICE">OFFICE</option>
+                  <option value="NO BREAK">NO BREAK</option>
+                </select>
+              </label>
+              <label class="shift-detail-field">
+                <span class="shift-detail-field-label">Assigned time</span>
+                <input type="time" id="shiftDetailBreakTime" step="60" aria-label="Break time" />
+              </label>
+            </div>
+          </div>
           <div class="screen-actions screen-actions-footer">
-            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn">Save Schedule</button>
+            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn">Save shift</button>
           </div>
         </div>
 
-        <div class="mode-panel hidden" id="calloutPanel">
+        <!-- Robocall / Coverage UI retained (unreachable) — do not delete triggerCoverage / Twilio paths -->
+        <div class="mode-panel hidden" id="calloutPanel" hidden aria-hidden="true">
           <p class="panel-subtitle">Notify eligible workers to cover this shift</p>
           <label class="employee-search-wrap shift-worker-search-wrap">
             <span class="visually-hidden">Search employees for coverage calls</span>
@@ -834,8 +865,9 @@
             </label>
           </div>
           <label class="form-field form-field-block">
-            <span class="form-label">Staff type</span>
+            <span class="form-label">Staff type / role type</span>
             <select name="staffType" id="empStaffType" required>
+              <option value="">Select…</option>
               <option value="Bartender">Front of the House</option>
               <option value="Kitchen">Back of the House</option>
               <option value="Server">Delivery/Dishwasher</option>
@@ -3044,6 +3076,18 @@
           }
           if (p1.length < 4) {
             showRegisterError('Password must be at least 4 characters.');
+            return;
+          }
+          var regStaffType = st && st.value ? String(st.value).trim() : '';
+          if (
+            regStaffType !== 'Kitchen' &&
+            regStaffType !== 'Bartender' &&
+            regStaffType !== 'Server'
+          ) {
+            showRegisterError(
+              'Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.'
+            );
+            if (st && typeof st.focus === 'function') st.focus();
             return;
           }
 

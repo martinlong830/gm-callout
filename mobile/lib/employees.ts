@@ -74,9 +74,26 @@ function knownRosterDisplayRename(label: string): {
   return null;
 }
 
+export function normalizeEmployeeStaffType(raw: unknown): 'Kitchen' | 'Bartender' | 'Server' | null {
+  const s = String(raw ?? '').trim();
+  if (s === 'Kitchen' || s === 'Bartender' || s === 'Server') return s;
+  const lower = s.toLowerCase();
+  if (lower === 'kitchen' || lower === 'boh' || lower === 'back of the house' || lower === 'back of house') {
+    return 'Kitchen';
+  }
+  if (lower === 'bartender' || lower === 'foh' || lower === 'front of the house' || lower === 'front of house') {
+    return 'Bartender';
+  }
+  if (lower === 'server' || lower === 'delivery' || lower === 'dishwasher' || lower === 'delivery/dishwasher') {
+    return 'Server';
+  }
+  return null;
+}
+
 export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | null {
   if (!row?.id) return null;
-  const ur = (row.usual_restaurant as string) || 'rp-9';
+  const urRaw = String(row.usual_restaurant ?? '').trim();
+  const ur = urRaw || 'rp-9';
   let hourlyRate: number | undefined;
   if (row.hourly_rate != null && !Number.isNaN(Number(row.hourly_rate))) {
     hourlyRate = Math.round(Number(row.hourly_rate) * 100) / 100;
@@ -112,13 +129,15 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     meta.scheduleAliases = aliases;
   }
 
+  const staffType = normalizeEmployeeStaffType(row.staff_type) || String(row.staff_type ?? 'Kitchen');
+
   return {
     id: String(row.id),
     authUserId: row.auth_user_id ? String(row.auth_user_id) : undefined,
     firstName,
     lastName,
     displayName,
-    staffType: String(row.staff_type ?? 'Kitchen'),
+    staffType,
     phone: String(row.phone ?? ''),
     email: emailFromCol || emailFromMeta || undefined,
     usualRestaurant: ur === 'both' ? 'both' : ur,
@@ -163,7 +182,8 @@ const STAFF_LABELS: Record<string, string> = {
 };
 
 export function staffTypeLabel(code: string): string {
-  return STAFF_LABELS[code] || code || 'Staff';
+  if (!code) return 'Unassigned';
+  return STAFF_LABELS[code] || code || 'Unassigned';
 }
 
 const LOCATION_NAMES: Record<string, string> = {

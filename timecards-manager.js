@@ -219,6 +219,17 @@
     return emp.usualRestaurant;
   }
 
+  /** Canonical primary store for multi-location staff (`meta.primaryLocationId`). */
+  function employeePrimaryLocationId(emp) {
+    if (!emp) return null;
+    if (employeeHomeRestaurant(emp) !== 'both') return null;
+    var meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    var raw = meta.primaryLocationId || meta.primaryRestaurantId || '';
+    var id = String(raw).trim();
+    if (id === 'rp-8' || id === 'rp-9') return id;
+    return null;
+  }
+
   function effectiveLocationFilter(locationFilter) {
     return locationFilter != null ? locationFilter : timecardsLocationFilter;
   }
@@ -297,12 +308,20 @@
     return shiftRestaurantId(shiftRow.shift) === timecardsLocationFilter;
   }
 
-  /** Home store determines roster membership; also include staff scheduled at the filtered location. */
+  /**
+   * Roster / full-report membership for the active store filter.
+   * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
+   * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
+   * Filter 'all' (if used): keep existing show-everyone behavior.
+   */
   function employeeVisibleAtCurrentLocation(emp) {
     if (timecardsLocationFilter === 'all') return true;
     var home = employeeHomeRestaurant(emp);
-    if (home === 'both' || home === timecardsLocationFilter) return true;
-    return employeeScheduledAtLocation(emp, timecardsLocationFilter);
+    if (home === timecardsLocationFilter) return true;
+    if (home === 'both') {
+      return employeePrimaryLocationId(emp) === timecardsLocationFilter;
+    }
+    return false;
   }
 
   function employeeScheduledAtLocation(emp, locationFilter) {
@@ -616,7 +635,193 @@
         ? Number(shift.trIdx)
         : scheduleTrIdxForEmp(emp);
     if (Number.isNaN(trIdx)) trIdx = 0;
-    return roleRank * 1000 + trIdx;
+    var displayPos = displaySlotPositionForTrIdx(
+      shift.role,
+      trIdx,
+      shiftRestaurantId(shift)
+    );
+    var slotPos = displayPos != null ? displayPos : trIdx;
+    return roleRank * 1000 + slotPos;
+  }
+
+  /**
+   * Position of trIdx within the restaurant's display order for that role
+   * (custom slot order for the selected pay week when set; otherwise raw trIdx).
+   */
+  function displaySlotPositionForTrIdx(role, trIdx, restaurantId) {
+    if (!d().getCustomSlotOrderForRole) return null;
+    var slotN = Math.max(trIdx + 1, 1);
+    var weekMon = isoFromDate(payWeekBounds().start);
+    /* Probe with a generous slotN; normalize fills gaps. */
+    var order = d().getCustomSlotOrderForRole(
+      restaurantId,
+      role,
+      Math.max(slotN, 25),
+      weekMon
+    );
+    if (!order || !order.length) return null;
+    var pos = order.indexOf(trIdx);
+    return pos >= 0 ? pos : null;
+  }
+
+  var scheduleVisualRankCache = { key: null, maps: null };
+
+  function employeeSortStoreId(emp) {
+    var home = employeeHomeRestaurant(emp);
+    if (home === 'rp-8' || home === 'rp-9') return home;
+    if (home === 'both') {
+      var primary = employeePrimaryLocationId(emp);
+      return primary || 'rp-9';
+    }
+    return 'rp-9';
+  }
+
+  function locationSortRank(storeId) {
+    if (storeId === 'rp-9') return 0;
+    if (storeId === 'rp-8') return 1;
+    return 99;
+  }
+
+  function compareEmployeesByDisplayName(a, b) {
+    if (d().compareEmployeesByDisplayName) return d().compareEmployeesByDisplayName(a, b);
+    var na = d().employeeDisplayName(a) || '';
+    var nb = d().employeeDisplayName(b) || '';
+    return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+  }
+
+  /** Build name→rank map for one restaurant from pay-week schedule + custom slot order. */
+  function buildScheduleVisualRankMapForRestaurant(restaurantId) {
+    ensurePayWeekScheduleRows();
+    var rows = payWeekScheduleCache.rows || [];
+    var byRole = {};
+    rows.forEach(function (s) {
+      if (!s || !s.role) return;
+      if (shiftRestaurantId(s) !== restaurantId) return;
+      if (!byRole[s.role]) byRole[s.role] = {};
+      var tr = s.trIdx != null ? Number(s.trIdx) : 0;
+      if (!byRole[s.role][tr]) byRole[s.role][tr] = { counts: {}, order: [] };
+      var bucket = byRole[s.role][tr];
+      (s.workers || []).forEach(function (w) {
+        if (!w || w === 'Unassigned') return;
+        if (!bucket.counts[w]) {
+          bucket.counts[w] = 0;
+          bucket.order.push(w);
+        }
+        bucket.counts[w] += 1;
+      });
+    });
+
+    function primaryPerson(bucket) {
+      if (!bucket || !bucket.order.length) return 'Unassigned';
+      var best = 'Unassigned';
+      var bestCount = -1;
+      bucket.order.forEach(function (n) {
+        if (bucket.counts[n] > bestCount) {
+          best = n;
+          bestCount = bucket.counts[n];
+        }
+      });
+      return bestCount > 0 ? best : 'Unassigned';
+    }
+
+    var map = Object.create(null);
+    var rank = 0;
+    SCHEDULE_GRID_ROLE_ORDER.forEach(function (role) {
+      var slots = byRole[role] || {};
+      var trKeys = Object.keys(slots)
+        .map(Number)
+        .filter(function (n) {
+          return Number.isFinite(n);
+        })
+        .sort(function (a, b) {
+          return a - b;
+        });
+      var slotN = trKeys.length ? Math.max.apply(null, trKeys) + 1 : 0;
+      if (!slotN) return;
+      var order = null;
+      var weekMon = isoFromDate(payWeekBounds().start);
+      if (d().getCustomSlotOrderForRole) {
+        order = d().getCustomSlotOrderForRole(restaurantId, role, slotN, weekMon);
+      }
+      if (!order) {
+        /* Stable draft trIdx order when no manager custom order. */
+        order = [];
+        for (var i = 0; i < slotN; i += 1) order.push(i);
+      }
+      order.forEach(function (trIdx) {
+        var person = primaryPerson(slots[trIdx]);
+        if (person && person !== 'Unassigned') {
+          var nk = d().normNameKey(person);
+          if (nk && map[nk] == null) map[nk] = rank;
+        }
+        rank += 1;
+      });
+    });
+    return map;
+  }
+
+  function scheduleVisualRankMapsByRestaurant() {
+    var startIso = isoFromDate(payWeekBounds().start);
+    var orderSig = '';
+    if (d().getCustomSlotOrderForRole) {
+      try {
+        orderSig = JSON.stringify({
+          '9B': d().getCustomSlotOrderForRole('rp-9', 'Bartender', 25, startIso),
+          '9K': d().getCustomSlotOrderForRole('rp-9', 'Kitchen', 25, startIso),
+          '9S': d().getCustomSlotOrderForRole('rp-9', 'Server', 25, startIso),
+          '8B': d().getCustomSlotOrderForRole('rp-8', 'Bartender', 25, startIso),
+          '8K': d().getCustomSlotOrderForRole('rp-8', 'Kitchen', 25, startIso),
+          '8S': d().getCustomSlotOrderForRole('rp-8', 'Server', 25, startIso),
+        });
+      } catch (_e) {
+        orderSig = '';
+      }
+    }
+    var key = startIso + '|' + orderSig;
+    if (scheduleVisualRankCache.key === key && scheduleVisualRankCache.maps) {
+      return scheduleVisualRankCache.maps;
+    }
+    var maps = {
+      'rp-9': buildScheduleVisualRankMapForRestaurant('rp-9'),
+      'rp-8': buildScheduleVisualRankMapForRestaurant('rp-8'),
+    };
+    scheduleVisualRankCache.key = key;
+    scheduleVisualRankCache.maps = maps;
+    return maps;
+  }
+
+  function scheduleVisualRankMapForStore(storeId) {
+    var maps = scheduleVisualRankMapsByRestaurant();
+    return maps[storeId] || Object.create(null);
+  }
+
+  /**
+   * Schedule / timecards / full-report order:
+   * single restaurant → that store's slot order; leftovers alphabetical.
+   * `all` → primary store order, then that store's slot order, then alpha leftovers.
+   */
+  function compareScheduleOrderRows(a, b) {
+    var dept = (a.deptRank || 0) - (b.deptRank || 0);
+    if (dept !== 0) return dept;
+    var loc = effectiveLocationFilter();
+    var storeId = loc === 'all' ? employeeSortStoreId(a.emp) : loc;
+    var storeIdB = loc === 'all' ? employeeSortStoreId(b.emp) : loc;
+    if (loc === 'all') {
+      var storeCmp = locationSortRank(storeId) - locationSortRank(storeIdB);
+      if (storeCmp !== 0) return storeCmp;
+    }
+    var rankMap = scheduleVisualRankMapForStore(storeId);
+    var ka = d().normNameKey(d().employeeDisplayName(a.emp));
+    var kb = d().normNameKey(d().employeeDisplayName(b.emp));
+    /* When comparing across the same primary store under `all`, use that store's map for both. */
+    var rankMapB = loc === 'all' ? scheduleVisualRankMapForStore(storeIdB) : rankMap;
+    var ra = ka != null ? rankMap[ka] : null;
+    var rb = kb != null ? rankMapB[kb] : null;
+    var aOn = ra != null;
+    var bOn = rb != null;
+    if (aOn && bOn && ra !== rb) return ra - rb;
+    if (aOn !== bOn) return aOn ? -1 : 1;
+    return compareEmployeesByDisplayName(a.emp, b.emp);
   }
 
   function scheduleIndexFromRosterSheets(emp) {
@@ -652,12 +857,6 @@
     return scheduleIndexFromRosterSheets(emp);
   }
 
-  function compareScheduleOrderRows(a, b) {
-    var dept = (a.deptRank || 0) - (b.deptRank || 0);
-    if (dept !== 0) return dept;
-    return compareEmployeesBySeniority(a.emp, b.emp);
-  }
-
   /**
    * Payable activity this pay week: recorded hours, leave, SOH, tips, coverage, etc.
    * Used to include off-schedule workers who still got paid (without pulling zero-work roster).
@@ -688,50 +887,6 @@
       }
     }
     return rosterRowHasPayableActivity(buildRosterRowData(emp));
-  }
-
-  function compareEmployeesBySeniority(a, b) {
-    if (d().compareEmployeesBySeniority) return d().compareEmployeesBySeniority(a, b);
-    var ta = parseHiringDateMsLocal(a);
-    var tb = parseHiringDateMsLocal(b);
-    var aHas = ta != null;
-    var bHas = tb != null;
-    if (aHas && bHas && ta !== tb) return ta - tb;
-    if (aHas !== bHas) return aHas ? -1 : 1;
-    var fa = firstNameSortKeyLocal(a);
-    var fb = firstNameSortKeyLocal(b);
-    return fa.localeCompare(fb, undefined, { sensitivity: 'base' });
-  }
-
-  function parseHiringDateMsLocal(emp) {
-    var raw =
-      emp && emp.meta && emp.meta.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
-    if (!raw) return null;
-    var mdy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if (mdy) {
-      var month = Number(mdy[1]) - 1;
-      var day = Number(mdy[2]);
-      var year = Number(mdy[3]);
-      var dt = new Date(year, month, day);
-      if (dt.getFullYear() === year && dt.getMonth() === month && dt.getDate() === day) {
-        return dt.getTime();
-      }
-      return null;
-    }
-    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      var iso = new Date(raw.slice(0, 10) + 'T12:00:00');
-      if (!Number.isNaN(iso.getTime())) return iso.getTime();
-    }
-    var parsed = Date.parse(raw);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-
-  function firstNameSortKeyLocal(emp) {
-    var f = ((emp && emp.firstName) || '').trim();
-    if (f) return f;
-    var dn = d().employeeDisplayName(emp) || '';
-    var parts = dn.split(/\s+/).filter(Boolean);
-    return parts[0] || dn;
   }
 
   function d() {
@@ -4784,6 +4939,8 @@
     payWeekScheduleCache.weekMetaByLabel = null;
     payWeekScheduleCache.shiftsByWorkerKey = null;
     payWeekScheduleCache.shiftById = null;
+    scheduleVisualRankCache.key = null;
+    scheduleVisualRankCache.maps = null;
     weekMetaByLabelMap();
     buildPayWeekScheduleIndexes(payWeekScheduleCache.rows, payWeekBounds());
     return payWeekScheduleCache.rows;
@@ -6377,7 +6534,10 @@
         );
       })
       .sort(function (a, b) {
-        return compareEmployeesBySeniority(a, b);
+        return compareScheduleOrderRows(
+          { emp: a, deptRank: rosterDeptRank(a), name: d().employeeDisplayName(a) },
+          { emp: b, deptRank: rosterDeptRank(b), name: d().employeeDisplayName(b) }
+        );
       });
   }
 
@@ -7781,7 +7941,10 @@
         })
         .slice()
         .sort(function (a, b) {
-          return compareEmployeesBySeniority(a, b);
+          return compareScheduleOrderRows(
+            { emp: a, deptRank: rosterDeptRank(a), name: d().employeeDisplayName(a) },
+            { emp: b, deptRank: rosterDeptRank(b), name: d().employeeDisplayName(b) }
+          );
         });
       xlSet(ws, r, 0, section.title + ' — ' + emps.length, S.section);
       xlMerge(merges, r, 0, r, headers.length - 1);
@@ -10913,6 +11076,7 @@
       },
       timecardsExportFileBase: timecardsExportFileBase,
       employeeVisibleAtCurrentLocation: employeeVisibleAtCurrentLocation,
+      employeePrimaryLocationId: employeePrimaryLocationId,
       employeeOnMainScheduleThisWeek: employeeOnMainScheduleThisWeek,
       employeeOnFullReportThisWeek: employeeOnFullReportThisWeek,
       rosterRowHasPayableActivity: rosterRowHasPayableActivity,

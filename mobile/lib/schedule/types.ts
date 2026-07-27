@@ -39,10 +39,24 @@ export type EmployeeLite = {
   displayName?: string;
   staffType: RoleKey;
   usualRestaurant: string;
-  meta?: { scheduleAliases?: string[]; hiringDate?: string };
+  meta?: { scheduleAliases?: string[]; hiringDate?: string; position?: string };
 };
 
 export type DraftGrid = Record<RoleKey, (Array<string | null> | null)[][]>;
+
+/**
+ * Per-restaurant custom schedule row order within each role section.
+ * Values are draft `trIdx` indices in display order.
+ * Absent / empty role → stable trIdx order (`0..slotN-1`).
+ */
+export type SlotOrderByRole = Partial<Record<RoleKey, number[]>>;
+export type SlotOrderByRestaurant = Record<string, SlotOrderByRole>;
+
+/**
+ * Per-week slot order SoT: monday ISO → restaurant → role → trIdx[].
+ * Legacy global `slotOrderByRestaurant` is read as fallback when a week has no entry.
+ */
+export type SlotOrderByWeek = Record<string, SlotOrderByRestaurant>;
 
 /** Legacy `['Name']` or FOH sheet `{ workers, break?, hours?, timeLabel? }`. */
 export type ScheduleAssignmentEntry =
