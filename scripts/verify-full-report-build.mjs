@@ -829,7 +829,7 @@ await verifyPayslipPatchedExport();
   console.log('OK: person week view shows leaveBalance + VL-only + cross-location punch days');
 }
 
-/* Collapse same-day duplicate schedule clones (e.g. both stores, same times). */
+/* Collapse same-day duplicate schedule clones (e.g. both stores, overlapping times). */
 {
   const T = sandbox.__gmTimecardsTest;
   const emp = {
@@ -861,10 +861,19 @@ await verifyPayslipPatchedExport();
       iso: '2026-07-16',
       shift: { id: 's4', start: '16:00', end: '21:00', restaurantId: 'rp-9' },
     },
+    {
+      iso: '2026-07-17',
+      shift: { id: 's5', start: '11:00', end: '21:00', restaurantId: 'rp-9' },
+    },
+    {
+      iso: '2026-07-17',
+      shift: { id: 's6', start: '10:00', end: '20:30', restaurantId: 'rp-8' },
+    },
   ];
   const collapsed = T.collapseDuplicateShiftDayRows(rows, emp);
   const jul15 = collapsed.filter((r) => r.iso === '2026-07-15');
   const jul16 = collapsed.filter((r) => r.iso === '2026-07-16');
+  const jul17 = collapsed.filter((r) => r.iso === '2026-07-17');
   if (jul15.length !== 1) {
     throw new Error('Same-time multi-store + off-schedule must collapse to 1 Jul 15 row, got ' + jul15.length);
   }
@@ -872,7 +881,15 @@ await verifyPayslipPatchedExport();
     throw new Error('Prefer scheduled row over off-schedule duplicate');
   }
   if (jul16.length !== 2) {
-    throw new Error('Distinct start/end same day must keep 2 rows, got ' + jul16.length);
+    throw new Error('Distinct non-overlapping start/end same day must keep 2 rows, got ' + jul16.length);
+  }
+  if (jul17.length !== 1) {
+    throw new Error(
+      'Overlapping different-time multi-store clones must collapse to 1 Jul 17 row, got ' + jul17.length
+    );
+  }
+  if (jul17[0].shift.restaurantId !== 'rp-9') {
+    throw new Error('Prefer home-store row when collapsing overlapping multi-store clones');
   }
   console.log('OK: collapseDuplicateShiftDayRows keeps distinct slots, drops clones');
 }

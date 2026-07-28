@@ -8767,10 +8767,42 @@
     });
   }
 
+  function normalizeShiftDayHHMM(val) {
+    if (val == null || val === '') return null;
+    var s = String(val).trim();
+    var m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!m) return null;
+    var h = Math.min(23, parseInt(m[1], 10));
+    var mi = Math.min(59, parseInt(m[2], 10));
+    return (h < 10 ? '0' : '') + h + ':' + (mi < 10 ? '0' : '') + mi;
+  }
+
   function shiftDayRowTimeKey(row) {
     if (!row || !row.shift) return '';
     if (isOffScheduleShiftDayRow(row)) return '__off__';
-    return String(row.shift.start || '') + '\0' + String(row.shift.end || '');
+    var start = normalizeShiftDayHHMM(row.shift.start) || String(row.shift.start || '');
+    var end = normalizeShiftDayHHMM(row.shift.end) || String(row.shift.end || '');
+    return start + '\0' + end;
+  }
+
+  function shiftDayRowMinutesRange(row) {
+    if (!row || !row.shift || isOffScheduleShiftDayRow(row)) return null;
+    var start = normalizeShiftDayHHMM(row.shift.start);
+    var end = normalizeShiftDayHHMM(row.shift.end);
+    if (!start || !end) return null;
+    var sp = start.split(':');
+    var ep = end.split(':');
+    var startMins = parseInt(sp[0], 10) * 60 + parseInt(sp[1], 10);
+    var endMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1], 10);
+    if (endMins <= startMins) endMins += 24 * 60;
+    return { start: startMins, end: endMins };
+  }
+
+  function shiftDayRowsOverlap(a, b) {
+    var ra = shiftDayRowMinutesRange(a);
+    var rb = shiftDayRowMinutesRange(b);
+    if (!ra || !rb) return shiftDayRowTimeKey(a) === shiftDayRowTimeKey(b);
+    return ra.start < rb.end && rb.start < ra.end;
   }
 
   function scoreShiftDayRowForCollapse(row, emp) {
@@ -8787,9 +8819,9 @@
   }
 
   /**
-   * Person / week shift lists: at most one row per calendar day unless the employee truly has
-   * two scheduled slots with different start/end. Drops off-schedule duplicates when a
-   * scheduled row already covers the day, and same-time multi-store schedule clones.
+   * Person / week shift lists: drop same-day duplicates that are schedule clones
+   * (multi-store overlapping slots, same-time copies, scheduled+off-schedule).
+   * Keeps non-overlapping slots on the same day (e.g. morning + evening).
    */
   function collapseDuplicateShiftDayRows(rows, emp) {
     if (!rows || rows.length < 2) return rows || [];
@@ -8810,22 +8842,21 @@
         return !isOffScheduleShiftDayRow(g.row);
       });
       var pool = scheduled.length ? scheduled : group;
-      var bestByTime = Object.create(null);
-      pool.forEach(function (g) {
-        var tk = shiftDayRowTimeKey(g.row);
-        var prev = bestByTime[tk];
-        if (!prev) {
-          bestByTime[tk] = g;
-          return;
-        }
-        var score = scoreShiftDayRowForCollapse(g.row, emp);
-        var prevScore = scoreShiftDayRowForCollapse(prev.row, emp);
-        if (score > prevScore || (score === prevScore && g.idx < prev.idx)) {
-          bestByTime[tk] = g;
-        }
+      pool.sort(function (a, b) {
+        var scoreA = scoreShiftDayRowForCollapse(a.row, emp);
+        var scoreB = scoreShiftDayRowForCollapse(b.row, emp);
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        return a.idx - b.idx;
       });
-      Object.keys(bestByTime).forEach(function (tk) {
-        keep.push(bestByTime[tk]);
+      var keptForDay = [];
+      pool.forEach(function (g) {
+        var overlaps = keptForDay.some(function (prev) {
+          return shiftDayRowsOverlap(g.row, prev.row);
+        });
+        if (!overlaps) keptForDay.push(g);
+      });
+      keptForDay.forEach(function (g) {
+        keep.push(g);
       });
     });
     keep.sort(function (a, b) {

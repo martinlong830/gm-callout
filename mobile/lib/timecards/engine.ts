@@ -859,7 +859,8 @@ export function getWorkerScheduleShiftsForContext(
       for (const s of list || []) {
         if (!shiftRowIncludesWorker(s, name)) continue;
         if (s.iso < startIso || s.iso > endIso) continue;
-        const id = `${s.id}\0${s.iso}\0${s.restaurantId}`;
+        /* Match web getWorkerScheduleShifts: same shift id is shared across stores. */
+        const id = `${s.id}\0${s.iso}`;
         if (seen.has(id)) continue;
         seen.add(id);
         out.push(s);
@@ -1057,9 +1058,41 @@ export function buildShiftsForEmployeeInWeek(
   });
 }
 
+function normalizeShiftDayHHMM(val: unknown): string | null {
+  if (val == null || val === '') return null;
+  const s = String(val).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const h = Math.min(23, parseInt(m[1], 10));
+  const mi = Math.min(59, parseInt(m[2], 10));
+  return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+}
+
 function shiftDayRowTimeKey(row: ShiftDayRow): string {
   if (isOffScheduleShiftDayRow(row)) return '__off__';
-  return `${row.shift.start || ''}\0${row.shift.end || ''}`;
+  const start = normalizeShiftDayHHMM(row.shift.start) || String(row.shift.start || '');
+  const end = normalizeShiftDayHHMM(row.shift.end) || String(row.shift.end || '');
+  return `${start}\0${end}`;
+}
+
+function shiftDayRowMinutesRange(row: ShiftDayRow): { start: number; end: number } | null {
+  if (isOffScheduleShiftDayRow(row)) return null;
+  const start = normalizeShiftDayHHMM(row.shift.start);
+  const end = normalizeShiftDayHHMM(row.shift.end);
+  if (!start || !end) return null;
+  const [sh, sm] = start.split(':').map((n) => parseInt(n, 10));
+  const [eh, em] = end.split(':').map((n) => parseInt(n, 10));
+  let startMins = sh * 60 + sm;
+  let endMins = eh * 60 + em;
+  if (endMins <= startMins) endMins += 24 * 60;
+  return { start: startMins, end: endMins };
+}
+
+function shiftDayRowsOverlap(a: ShiftDayRow, b: ShiftDayRow): boolean {
+  const ra = shiftDayRowMinutesRange(a);
+  const rb = shiftDayRowMinutesRange(b);
+  if (!ra || !rb) return shiftDayRowTimeKey(a) === shiftDayRowTimeKey(b);
+  return ra.start < rb.end && rb.start < ra.end;
 }
 
 function scoreShiftDayRowForCollapse(
@@ -1081,9 +1114,8 @@ function scoreShiftDayRowForCollapse(
 }
 
 /**
- * At most one row per calendar day unless the employee has two scheduled slots with
- * different start/end. Drops off-schedule duplicates when a scheduled row covers the day,
- * and same-time multi-store schedule clones.
+ * Drop same-day duplicates that are schedule clones (multi-store overlapping slots,
+ * same-time copies, scheduled+off-schedule). Keeps non-overlapping slots (morning + evening).
  */
 export function collapseDuplicateShiftDayRows(
   rows: ShiftDayRow[],
@@ -1106,22 +1138,18 @@ export function collapseDuplicateShiftDayRows(
       continue;
     }
     const scheduled = group.filter((g) => !isOffScheduleShiftDayRow(g.row));
-    const pool = scheduled.length ? scheduled : group;
-    const bestByTime = new Map<string, { row: ShiftDayRow; idx: number }>();
+    const pool = (scheduled.length ? scheduled : group).slice().sort((a, b) => {
+      const scoreA = scoreShiftDayRowForCollapse(a.row, emp, entries, scheduleCtx);
+      const scoreB = scoreShiftDayRowForCollapse(b.row, emp, entries, scheduleCtx);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return a.idx - b.idx;
+    });
+    const keptForDay: { row: ShiftDayRow; idx: number }[] = [];
     for (const g of pool) {
-      const tk = shiftDayRowTimeKey(g.row);
-      const prev = bestByTime.get(tk);
-      if (!prev) {
-        bestByTime.set(tk, g);
-        continue;
-      }
-      const score = scoreShiftDayRowForCollapse(g.row, emp, entries, scheduleCtx);
-      const prevScore = scoreShiftDayRowForCollapse(prev.row, emp, entries, scheduleCtx);
-      if (score > prevScore || (score === prevScore && g.idx < prev.idx)) {
-        bestByTime.set(tk, g);
-      }
+      const overlaps = keptForDay.some((prev) => shiftDayRowsOverlap(g.row, prev.row));
+      if (!overlaps) keptForDay.push(g);
     }
-    for (const g of bestByTime.values()) keep.push(g);
+    for (const g of keptForDay) keep.push(g);
   }
   keep.sort((a, b) => a.idx - b.idx);
   return keep.map((g) => g.row);
