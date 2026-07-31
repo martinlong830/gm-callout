@@ -15,7 +15,9 @@ import {
 import { PayWeekPicker } from '../../../components/PayWeekPicker';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
 import { useAppData } from '../../../contexts/AppDataContext';
+import { useAuth } from '../../../contexts/AuthContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
+import { useI18n } from '../../../contexts/LocaleContext';
 import {
   buildAllRosterRows,
   computeRosterTotals,
@@ -58,7 +60,10 @@ import {
   saveTipTakehomePctForRestaurant,
   DEFAULT_TIP_TAKEHOME_PCT,
 } from '../../../lib/timecards/tipTakehome';
-import { type EmployeeRow } from '../../../lib/employees';
+import {
+  managerManagedRestaurantId,
+  type EmployeeRow,
+} from '../../../lib/employees';
 
 function toLite(e: EmployeeRow): EmployeeLite {
   return {
@@ -98,9 +103,11 @@ function clockBadgeStyle(status: RosterRow['clockStatus']) {
 const RosterRowCard = memo(function RosterRowCard({
   row,
   onPress,
+  t,
 }: {
   row: RosterRow;
   onPress: (empId: string) => void;
+  t: (key: string) => string;
 }) {
   return (
     <Pressable style={styles.card} onPress={() => onPress(row.empId)}>
@@ -113,19 +120,19 @@ const RosterRowCard = memo(function RosterRowCard({
       <Text style={styles.role}>{row.role}</Text>
       <View style={styles.statsGrid}>
         <View style={styles.statRow}>
-          <Text style={styles.statLabel}>Scheduled</Text>
+          <Text style={styles.statLabel}>{t('timecards.scheduled')}</Text>
           <Text style={styles.statHours}>{decimalHoursFromMinutes(row.schedMins)}h</Text>
         </View>
-        <HoursPayStat label="Regular" mins={row.regMins} pay={row.regPay} />
-        <HoursPayStat label="OT" mins={row.otMins} pay={row.otPay} />
+        <HoursPayStat label={t('timecards.regular')} mins={row.regMins} pay={row.regPay} />
+        <HoursPayStat label={t('timecards.ot')} mins={row.otMins} pay={row.otPay} />
         <View style={styles.statRow}>
-          <Text style={styles.statLabel}>VL / SL</Text>
+          <Text style={styles.statLabel}>{t('timecards.vlSl')}</Text>
           <Text style={styles.statHours}>
             {row.vlHours.toFixed(1)}h / {row.slHours.toFixed(1)}h
           </Text>
         </View>
         <View style={styles.statRow}>
-          <Text style={styles.statLabel}>SoH</Text>
+          <Text style={styles.statLabel}>{t('timecards.soh')}</Text>
           <Text style={styles.statHours}>
             {row.sohCount} · {row.sohDatesLabel}
           </Text>
@@ -135,18 +142,18 @@ const RosterRowCard = memo(function RosterRowCard({
         </View>
         {row.dishwasherTipsPay > 0 ? (
           <View style={styles.statRow}>
-            <Text style={styles.statLabel}>Net dishwasher tips</Text>
+            <Text style={styles.statLabel}>{t('timecards.netDishwasherTips')}</Text>
             <Text style={styles.statPay}>{formatPayAmount(row.dishwasherTipsPay)}</Text>
           </View>
         ) : null}
         {row.additionalCashTip > 0 ? (
           <View style={styles.statRow}>
-            <Text style={styles.statLabel}>Coverage</Text>
+            <Text style={styles.statLabel}>{t('timecards.coverageCompensation')}</Text>
             <Text style={styles.statPay}>{formatPayAmount(row.additionalCashTip)}</Text>
           </View>
         ) : null}
         <View style={[styles.statRow, styles.totalRow]}>
-          <Text style={styles.totalLabel}>Total</Text>
+          <Text style={styles.totalLabel}>{t('timecards.total')}</Text>
           <Text style={styles.totalHours}>
             {decimalHoursFromMinutes(row.regMins + row.otMins)}h
           </Text>
@@ -190,7 +197,9 @@ function RosterSkeleton() {
 
 export default function TimecardsRosterScreen() {
   const router = useRouter();
-  const { employees, staffRequests, teamState } = useAppData();
+  const { t } = useI18n();
+  const { employees, staffRequests, teamState, myEmployee } = useAppData();
+  const { role } = useAuth();
   const {
     entries,
     loading,
@@ -206,6 +215,18 @@ export default function TimecardsRosterScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [locationFilter, setLocationFilter] = useState<SelectedRestaurant>('rp-9');
   const [locationReady, setLocationReady] = useState(false);
+  const managerStoreScope = useMemo(
+    () => managerManagedRestaurantId(myEmployee, role),
+    [myEmployee, role]
+  );
+  const locationLocked = managerStoreScope === 'rp-8' || managerStoreScope === 'rp-9';
+  const locationOptions = useMemo(
+    () =>
+      locationLocked
+        ? TIMECARDS_LOCATION_OPTIONS.filter((o) => o.id === managerStoreScope)
+        : TIMECARDS_LOCATION_OPTIONS,
+    [locationLocked, managerStoreScope]
+  );
   const [showGrandTotals, setShowGrandTotals] = useState(false);
   const [sohRateText, setSohRateText] = useState(String(getSohRate()));
   const [sohRateVersion, setSohRateVersion] = useState(0);
@@ -227,10 +248,23 @@ export default function TimecardsRosterScreen() {
 
   useEffect(() => {
     void loadTimecardsLocationFilter().then((loc) => {
-      setLocationFilter(loc);
+      if (managerStoreScope === 'rp-8' || managerStoreScope === 'rp-9') {
+        setLocationFilter(managerStoreScope);
+        void saveTimecardsLocationFilter(managerStoreScope);
+      } else {
+        setLocationFilter(loc);
+      }
       setLocationReady(true);
     });
-  }, []);
+  }, [managerStoreScope]);
+
+  useEffect(() => {
+    if (!locationReady) return;
+    if (managerStoreScope !== 'rp-8' && managerStoreScope !== 'rp-9') return;
+    if (locationFilter === managerStoreScope) return;
+    setLocationFilter(managerStoreScope);
+    void saveTimecardsLocationFilter(managerStoreScope);
+  }, [managerStoreScope, locationFilter, locationReady]);
 
   useEffect(() => {
     void loadSohRate().then((rate) => {
@@ -381,10 +415,14 @@ export default function TimecardsRosterScreen() {
     };
   }, [dataReady, rows]);
 
-  const onLocationChange = useCallback(async (next: SelectedRestaurant) => {
-    setLocationFilter(next);
-    await saveTimecardsLocationFilter(next);
-  }, []);
+  const onLocationChange = useCallback(
+    async (next: SelectedRestaurant) => {
+      if (locationLocked && next !== managerStoreScope) return;
+      setLocationFilter(next);
+      await saveTimecardsLocationFilter(next);
+    },
+    [locationLocked, managerStoreScope]
+  );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -419,14 +457,14 @@ export default function TimecardsRosterScreen() {
         />
 
         <View style={styles.locationSection}>
-          <Text style={styles.locationLabel}>Location</Text>
+          <Text style={styles.locationLabel}>{t('common.location')}</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             nestedScrollEnabled
             contentContainerStyle={styles.locationPicker}
           >
-            {TIMECARDS_LOCATION_OPTIONS.map((opt) => {
+            {locationOptions.map((opt) => {
               const on = opt.id === locationFilter;
               return (
                 <Pressable
@@ -444,7 +482,7 @@ export default function TimecardsRosterScreen() {
         </View>
 
         <View style={styles.sohRateSection}>
-          <Text style={styles.locationLabel}>SoH rate</Text>
+          <Text style={styles.locationLabel}>{t('timecards.sohRate')}</Text>
           <View style={styles.sohRateRow}>
             <Text style={styles.sohRatePrefix}>$</Text>
             <TextInput
@@ -460,7 +498,7 @@ export default function TimecardsRosterScreen() {
         </View>
 
         <View style={styles.sohRateSection}>
-          <Text style={styles.locationLabel}>Tip take-home %</Text>
+          <Text style={styles.locationLabel}>{t('timecards.tipTakehome')}</Text>
           {locationFilter === 'rp-9' || locationFilter === 'rp-8' ? (
             <View style={styles.sohRateRow}>
               <TextInput
@@ -478,9 +516,7 @@ export default function TimecardsRosterScreen() {
               <Text style={styles.sohRateSuffix}>%</Text>
             </View>
           ) : (
-            <Text style={styles.tipTakehomeHint}>
-              Select 8th or 9th Ave to edit tip take-home %
-            </Text>
+            <Text style={styles.tipTakehomeHint}>{t('timecards.selectLocationTip')}</Text>
           )}
         </View>
 
@@ -504,6 +540,7 @@ export default function TimecardsRosterScreen() {
       setPayWeekStartIso,
       locationFilter,
       onLocationChange,
+      locationOptions,
       sohRateText,
       persistSohRate,
       tipTakehomeText,
@@ -520,17 +557,17 @@ export default function TimecardsRosterScreen() {
   const listEmpty = useMemo(() => {
     if (initialBusy) return null;
     if (!employees.length) {
-      return <Text style={styles.muted}>No employees on the roster.</Text>;
+      return <Text style={styles.muted}>{t('timecards.noEmployeesRoster')}</Text>;
     }
     if (!rows.length) {
-      return <Text style={styles.muted}>No employees at this location for this pay week.</Text>;
+      return <Text style={styles.muted}>{t('timecards.noEmployeesLocation')}</Text>;
     }
     return null;
   }, [initialBusy, employees.length, rows.length]);
 
   const renderItem = useCallback(
-    ({ item }: { item: RosterRow }) => <RosterRowCard row={item} onPress={onPressRow} />,
-    [onPressRow]
+    ({ item }: { item: RosterRow }) => <RosterRowCard row={item} onPress={onPressRow} t={t} />,
+    [onPressRow, t]
   );
 
   const keyExtractor = useCallback((item: RosterRow) => item.empId, []);

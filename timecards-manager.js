@@ -312,7 +312,7 @@
    * Roster / full-report membership for the active store filter.
    * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
    * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
-   * Filter 'all' (if used): keep existing show-everyone behavior.
+   * UI is per-store only (rp-8 | rp-9); filter 'all' (if used) keeps show-everyone behavior.
    */
   function employeeVisibleAtCurrentLocation(emp) {
     if (timecardsLocationFilter === 'all') return true;
@@ -431,7 +431,16 @@
         '<span class="employee-filter-label">Location</span>' +
         '<div class="employee-filter-chips">',
     ];
-    getRestaurantsList().forEach(function (r) {
+    var scope =
+      typeof d().managerManagedRestaurantId === 'function' ? d().managerManagedRestaurantId() : null;
+    var list = getRestaurantsList().filter(function (r) {
+      if (scope === 'rp-8' || scope === 'rp-9') return r.id === scope;
+      return true;
+    });
+    if ((scope === 'rp-8' || scope === 'rp-9') && timecardsLocationFilter !== scope) {
+      saveTimecardsLocationFilter(scope);
+    }
+    list.forEach(function (r) {
       parts.push(
         '<button type="button" class="filter-chip' +
           (timecardsLocationFilter === r.id ? ' active' : '') +
@@ -451,6 +460,11 @@
     root.querySelectorAll('[data-timecards-location]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var next = btn.getAttribute('data-timecards-location') || 'rp-9';
+        var scope =
+          typeof d().managerManagedRestaurantId === 'function'
+            ? d().managerManagedRestaurantId()
+            : null;
+        if ((scope === 'rp-8' || scope === 'rp-9') && next !== scope) return;
         if (next === timecardsLocationFilter) return;
         saveTimecardsLocationFilter(next);
         invalidateWeekTipPoolCache();
@@ -1182,10 +1196,9 @@
     var thresholdTs = sohWallClockThresholdTs(entry);
     if (thresholdTs == null) return false;
     var outTs = new Date(entry.clock_out_at).getTime();
+    // Use full punch end (not local-midnight cap) so evening shifts and true overnight
+    // spreads still count when clock_out falls on the next UTC calendar day.
     if (Number.isNaN(outTs) || outTs <= thresholdTs) return false;
-    var dayEnd = endOfLocalDayFromIso(punchDayIso(entry));
-    if (dayEnd && outTs > dayEnd.getTime()) outTs = dayEnd.getTime();
-    if (outTs <= thresholdTs) return false;
     var postWallMins = Math.floor((outTs - thresholdTs) / 60000);
     if (postWallMins <= 0) return false;
     var breakMins = breakMinutesOverlappingWallTsRange(entry, thresholdTs, outTs);
@@ -1215,56 +1228,18 @@
     return isEntryOpen(entry) && punchDayIso(entry) !== isoFromDate(new Date());
   }
 
-  function endOfLocalDayFromIso(iso) {
-    var p = String(iso || '').split('-');
-    if (p.length !== 3) return null;
-    var d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10) + 1);
-    d.setMilliseconds(d.getMilliseconds() - 1);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  /** Paid minutes attributed to the clock-in calendar day (for SoH — never span into the next day). */
+  /** Paid minutes for SoH (full closed punch — do not clip at local midnight). */
   function recordedPaidMinutesOnClockInDay(entry, shiftRowOpt, emp) {
-    if (!entry || !entry.clock_in_at) return 0;
-    if (isStaleOpenPunch(entry)) return 0;
-    var dayIso = punchDayIso(entry);
-    var dayEnd = endOfLocalDayFromIso(dayIso);
-    var outIso = entry.clock_out_at;
-    if (dayEnd) {
-      if (outIso) {
-        var outD = new Date(outIso);
-        if (outD.getTime() > dayEnd.getTime()) outIso = dayEnd.toISOString();
-      } else {
-        var now = new Date();
-        outIso = (now.getTime() > dayEnd.getTime() ? dayEnd : now).toISOString();
-      }
-    }
-    var gross = d().punchShiftRoundedMinutes(
-      entry.clock_in_at,
-      outIso,
-      shiftRowOpt ? shiftStartForRow(shiftRowOpt) : null
-    );
-    var br = effectiveBreakMinutes(entry);
-    var isPaid = bp()
-      ? bp().resolveBreakPaid({
-          entry: entry,
-          shift: shiftRowOpt && shiftRowOpt.shift,
-          emp: emp,
-        })
-      : false;
-    var deduct = bp() ? bp().unpaidBreakMinutes(br, isPaid) : br;
-    return Math.max(0, gross - deduct);
+    return recordedPaidMinutes(entry, shiftRowOpt, emp);
   }
 
-  /** Wall-clock span (clock-in to clock-out, breaks included) attributed to the clock-in day. */
+  /** Wall-clock span (clock-in to clock-out, breaks included) for SoH qualification. */
   function recordedSpanMinutesOnClockInDay(entry) {
     if (!entry || !entry.clock_in_at || !entry.clock_out_at) return 0;
     if (isStaleOpenPunch(entry)) return 0;
     var inTs = new Date(entry.clock_in_at).getTime();
     var outTs = new Date(entry.clock_out_at).getTime();
     if (Number.isNaN(inTs) || Number.isNaN(outTs)) return 0;
-    var dayEnd = endOfLocalDayFromIso(punchDayIso(entry));
-    if (dayEnd && outTs > dayEnd.getTime()) outTs = dayEnd.getTime();
     return Math.max(0, Math.floor((outTs - inTs) / 60000));
   }
 
@@ -1302,7 +1277,7 @@
 
   var OT_RATE_MULTIPLIER = 1.5;
   var PAY_ROUND_MINUTES = 15;
-  /** First 40h of recorded work per restaurant in the pay week are regular; remainder is overtime. */
+  /** First 40h of recorded work across all restaurants in the pay week are regular; remainder is overtime. */
   var WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 
   function roundToNearest5Minutes(mins) {
@@ -1419,21 +1394,20 @@
       });
   }
 
-  /** Allocate reg/OT with a separate 40h regular cap per restaurant (not company-wide). */
+  /**
+   * Allocate reg/OT with one company-wide 40h regular cap across all restaurants
+   * (chronological by day, then restaurant id for same-day ties).
+   */
   function weeklyRegOtByRestaurantDay(buckets) {
     var sorted = buckets.slice().sort(function (a, b) {
       if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
       return String(a.restaurantId).localeCompare(String(b.restaurantId));
     });
-    var remainingByRestaurant = Object.create(null);
+    var regularRemaining = WEEKLY_REGULAR_CAP_MINUTES;
     var out = Object.create(null);
     sorted.forEach(function (b) {
-      var remaining =
-        remainingByRestaurant[b.restaurantId] != null
-          ? remainingByRestaurant[b.restaurantId]
-          : WEEKLY_REGULAR_CAP_MINUTES;
-      var split = allocateRecordedRegOtMinutes(b.recordedMins, remaining);
-      remainingByRestaurant[b.restaurantId] = split.regularRemaining;
+      var split = allocateRecordedRegOtMinutes(b.recordedMins, regularRemaining);
+      regularRemaining = split.regularRemaining;
       out[b.iso + '\0' + b.restaurantId] = {
         regMins: split.regMins,
         otMins: split.otMins,
@@ -1454,8 +1428,31 @@
     return { regMins: regMins, otMins: otMins, totalMins: regMins + otMins };
   }
 
+  /** Keep only iso\\0restaurantId keys for the active store filter (after company-wide OT split). */
+  function filterRegOtByLocation(byKey, locationFilter) {
+    var loc = effectiveLocationFilter(locationFilter);
+    if (loc === 'all') return byKey;
+    var out = Object.create(null);
+    Object.keys(byKey).forEach(function (k) {
+      var sep = k.indexOf('\0');
+      if (sep >= 0 && k.slice(sep + 1) === loc) out[k] = byKey[k];
+    });
+    return out;
+  }
+
+  /**
+   * Multi-store staff only appear on their primary store's list/report — include all restaurants'
+   * hours there. Single-store staff stay scoped to the active location filter.
+   */
+  function rosterAggregationLocationFilter(emp, locationFilter) {
+    var loc = effectiveLocationFilter(locationFilter);
+    if (loc !== 'all' && employeeHomeRestaurant(emp) === 'both') return 'all';
+    return loc;
+  }
+
   function weekRegOtForShiftRow(emp, row) {
-    var buckets = weekDayRecordedByRestaurantForEmployee(emp);
+    // Always allocate from combined hours across stores, then read this row's restaurant bucket.
+    var buckets = weekDayRecordedByRestaurantForEmployee(emp, 'all');
     var rest = shiftRowAttributionRestaurant(emp, row);
     var key = row.iso + '\0' + rest;
     var byRest = weeklyRegOtByRestaurantDay(buckets);
@@ -1496,9 +1493,10 @@
   }
 
   function weekRegOtForEmployee(emp, locationFilter) {
-    return weeklyRegOtByRestaurantDay(
-      weekDayRecordedByRestaurantForEmployee(emp, locationFilter)
+    var byKey = weeklyRegOtByRestaurantDay(
+      weekDayRecordedByRestaurantForEmployee(emp, 'all')
     );
+    return filterRegOtByLocation(byKey, locationFilter);
   }
 
   /** @deprecated schedMins ignored — use weekly allocation helpers. */
@@ -1623,10 +1621,24 @@
     return tipTakehomePctForRestaurant(restaurantId) / 100;
   }
 
+  /** Net tip from gross using integer cents (round half up) — avoids float penny drift. */
   function netTipAmount(gross, restaurantId) {
     var g = normalizeDishwasherTipAmount(gross);
     if (g <= 0) return 0;
-    return Math.round(g * tipTakehomeFactor(restaurantId) * 100) / 100;
+    var grossCents = Math.round(g * 100);
+    if (grossCents <= 0) return 0;
+    var pctHundredths = Math.round(tipTakehomePctForRestaurant(restaurantId) * 100);
+    var netCents = Math.floor((grossCents * pctHundredths + 5000) / 10000);
+    return netCents / 100;
+  }
+
+  /** Apply take-home % once per restaurant on summed gross (avoids penny drift from daily nets). */
+  function netFromGrossByRestaurant(grossByRestaurant) {
+    var sumNet = 0;
+    Object.keys(grossByRestaurant || {}).forEach(function (rid) {
+      sumNet += netTipAmount(Math.round(grossByRestaurant[rid] * 100) / 100, rid);
+    });
+    return Math.round(sumNet * 100) / 100;
   }
 
   function loadDishwasherTipsMap(bounds) {
@@ -1706,13 +1718,14 @@
       return netTipAmount(getEmployeeDayDishwasherTip(emp, iso, bounds, restaurantId), restaurantId);
     }
     var slice = getDishwasherTipsSlice(bounds);
-    var sumNet = 0;
+    var grossByRestaurant = Object.create(null);
     Object.keys(slice).forEach(function (k) {
       var parsed = parseDishwasherTipStorageKey(k);
       if (!parsed || parsed.empId !== emp.id || parsed.iso !== iso) return;
-      sumNet += netTipAmount(normalizeDishwasherTipAmount(slice[k]), parsed.restaurantId);
+      grossByRestaurant[parsed.restaurantId] =
+        (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
-    return Math.round(sumNet * 100) / 100;
+    return netFromGrossByRestaurant(grossByRestaurant);
   }
 
   function setEmployeeDayDishwasherTip(empId, iso, amount, bounds, restaurantId) {
@@ -1761,16 +1774,17 @@
     var weekStart = isoFromDate(bounds.start);
     var weekEnd = isoFromDate(bounds.end);
     var loc = locationFilter != null ? locationFilter : timecardsLocationFilter;
-    var sum = 0;
+    var grossByRestaurant = Object.create(null);
     Object.keys(slice).forEach(function (k) {
       var parsed = parseDishwasherTipStorageKey(k);
       if (!parsed || parsed.empId !== emp.id) return;
       if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
       if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
       if (!dayHasBackingShiftForDishwasherTips(emp.id, parsed.iso)) return;
-      sum += netTipAmount(normalizeDishwasherTipAmount(slice[k]), parsed.restaurantId);
+      grossByRestaurant[parsed.restaurantId] =
+        (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
-    return Math.round(sum * 100) / 100;
+    return netFromGrossByRestaurant(grossByRestaurant);
   }
 
   /** One pass over dishwasher-tip keys → per-employee week net tip pay for the active location filter. */
@@ -1780,19 +1794,21 @@
     var weekStart = isoFromDate(bounds.start);
     var weekEnd = isoFromDate(bounds.end);
     var loc = locationFilter != null ? locationFilter : timecardsLocationFilter;
-    var byEmp = Object.create(null);
+    var grossByEmpRid = Object.create(null);
     Object.keys(slice).forEach(function (k) {
       var parsed = parseDishwasherTipStorageKey(k);
       if (!parsed) return;
       if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
       if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
       if (!dayHasBackingShiftForDishwasherTips(parsed.empId, parsed.iso)) return;
-      byEmp[parsed.empId] =
-        (byEmp[parsed.empId] || 0) +
-        netTipAmount(normalizeDishwasherTipAmount(slice[k]), parsed.restaurantId);
+      if (!grossByEmpRid[parsed.empId]) grossByEmpRid[parsed.empId] = Object.create(null);
+      grossByEmpRid[parsed.empId][parsed.restaurantId] =
+        (grossByEmpRid[parsed.empId][parsed.restaurantId] || 0) +
+        normalizeDishwasherTipAmount(slice[k]);
     });
-    Object.keys(byEmp).forEach(function (empId) {
-      byEmp[empId] = Math.round(byEmp[empId] * 100) / 100;
+    var byEmp = Object.create(null);
+    Object.keys(grossByEmpRid).forEach(function (empId) {
+      byEmp[empId] = netFromGrossByRestaurant(grossByEmpRid[empId]);
     });
     return byEmp;
   }
@@ -1803,16 +1819,17 @@
     var weekStart = isoFromDate(bounds.start);
     var weekEnd = isoFromDate(bounds.end);
     var loc = locationFilter != null ? locationFilter : timecardsLocationFilter;
-    var sum = 0;
+    var grossByRestaurant = Object.create(null);
     Object.keys(slice).forEach(function (k) {
       var parsed = parseDishwasherTipStorageKey(k);
       if (!parsed) return;
       if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
       if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
       if (!dayHasBackingShiftForDishwasherTips(parsed.empId, parsed.iso)) return;
-      sum += netTipAmount(normalizeDishwasherTipAmount(slice[k]), parsed.restaurantId);
+      grossByRestaurant[parsed.restaurantId] =
+        (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
-    return Math.round(sum * 100) / 100;
+    return netFromGrossByRestaurant(grossByRestaurant);
   }
 
   function rosterGrandTotalMinutes(row) {
@@ -2743,12 +2760,14 @@
   /**
    * One SoH premium per calendar day (max 1 hr pay). Qualifies when span > 10h and either
    * worked (5-min rounded, break-deducted) > 10h or paid work extends past clock-in + 10h.
+   * Multi-store staff (usual === 'both') use the same all-store aggregation as roster hours
+   * so a long day at the non-primary store still earns SoH on the primary roster.
    */
   function computeSpreadOfHours(emp, locationFilter) {
     var bounds = payWeekBounds();
     var weekStart = isoFromDate(bounds.start);
     var weekEnd = isoFromDate(bounds.end);
-    var loc = effectiveLocationFilter(locationFilter);
+    var loc = rosterAggregationLocationFilter(emp, locationFilter);
     var byDay = {};
     var spanByDay = {};
     var extendsPastByDay = {};
@@ -2790,7 +2809,7 @@
 
   function isSoHDateForEmployee(emp, iso) {
     if (!iso) return false;
-    var soh = computeSpreadOfHours(emp);
+    var soh = computeSpreadOfHours(emp, rosterAggregationLocationFilter(emp));
     return soh.dates.indexOf(iso) !== -1;
   }
 
@@ -2927,11 +2946,14 @@
     tipSums = tipSums || {};
     opts = opts || {};
     var locationFilter = opts.locationFilter;
+    var aggLoc = rosterAggregationLocationFilter(emp, locationFilter);
     var agg = aggregateEmployeeWeek(emp, locationFilter);
     var extras = getEmployeeWeekExtras(emp);
-    var soh = computeSpreadOfHours(emp, locationFilter);
+    var soh = computeSpreadOfHours(emp, aggLoc);
     var clockStatus =
-      locationFilter === 'all' ? employeeClockStatusAllLocations(emp) : employeeClockStatus(emp);
+      aggLoc === 'all' ? employeeClockStatusAllLocations(emp) : employeeClockStatus(emp);
+    var tipPre =
+      aggLoc === 'all' && employeeHomeRestaurant(emp) === 'both' ? null : tipSums.dishwasher;
     var row = {
       emp: emp,
       name: d().employeeDisplayName(emp),
@@ -2953,12 +2975,7 @@
       sohDates: soh.dates,
       sohDatesLabel: formatSoHDatesList(soh.dates),
       sohPay: soh.hasRate ? soh.pay : null,
-      dishwasherTipsPay: sumEmployeeWeekDishwasherTips(
-        emp,
-        undefined,
-        undefined,
-        tipSums.dishwasher
-      ),
+      dishwasherTipsPay: sumEmployeeWeekDishwasherTips(emp, undefined, aggLoc, tipPre),
       additionalCashTip: sumEmployeeWeekAdditionalCashTips(emp, undefined, tipSums.additionalCash),
       status: agg.status,
       statusRank: statusSortRank(agg.status),
@@ -3197,6 +3214,7 @@
     else if (col === 'sl') cmp = a.slHours - b.slHours;
     else if (col === 'soh') cmp = a.sohCount - b.sohCount;
     else if (col === 'sohPay') cmp = (a.sohPay || 0) - (b.sohPay || 0);
+    else if (col === 'coverage') cmp = (a.additionalCashTip || 0) - (b.additionalCashTip || 0);
     else cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     if (cmp === 0) cmp = compareScheduleOrderRows(a, b);
     return cmp * mul;
@@ -3284,6 +3302,11 @@
       '</td>' +
       '<td class="timecards-num">' +
       d().escapeHtml(row.sohPay != null ? formatPayAmount(row.sohPay) : '—') +
+      '</td>' +
+      '<td class="timecards-num">' +
+      d().escapeHtml(
+        row.additionalCashTip > 0 ? formatPayAmount(row.additionalCashTip) : '—'
+      ) +
       '</td>' +
       rosterHoursCell(rosterGrandTotalMinutes(row), row.grandTotalPay) +
       '</tr>'
@@ -5737,7 +5760,8 @@
   }
 
   function weekShiftRegOtForStub(emp) {
-    var shifts = buildShiftsForEmployeeInWeek(emp).slice().sort(function (a, b) {
+    // Payslip lines: company-wide OT across all restaurants (same rule as roster / person week).
+    var shifts = buildShiftsForEmployeeInWeek(emp, { personWeekView: true }).slice().sort(function (a, b) {
       if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
       return String(a.shift.start || '').localeCompare(String(b.shift.start || ''));
     });
@@ -6085,7 +6109,7 @@
     var tableCols = PAY_STUB_TABLE_HEADERS.length;
     var blockTop = startRow;
     var rate = employeeHourlyRate(emp);
-    var shifts = buildShiftsForEmployeeInWeek(emp).filter(function (sr) {
+    var shifts = buildShiftsForEmployeeInWeek(emp, { personWeekView: true }).filter(function (sr) {
       return payslipShiftRowHasPayableActivity(emp, sr);
     });
     var breakHeader = payStubBreakColumnHeader(emp);
@@ -8350,6 +8374,7 @@
       rosterSortHeader('soh', 'SoH') +
       '<th scope="col">SoH dates</th>' +
       rosterSortHeader('sohPay', 'SoH pay') +
+      rosterSortHeader('coverage', 'Coverage compensation') +
       rosterSortHeader('total', 'Total') +
       '</tr></thead><tbody>' +
       body +
@@ -9449,7 +9474,8 @@
   }
 
   function aggregateEmployeeWeek(emp, locationFilter) {
-    var personWeek = locationFilter === 'all';
+    var aggLoc = rosterAggregationLocationFilter(emp, locationFilter);
+    var personWeek = aggLoc === 'all';
     var shifts = buildShiftsForEmployeeInWeek(emp, personWeek ? { personWeekView: true } : undefined);
     var schedMins = 0;
     var byDay = {};
@@ -9467,7 +9493,7 @@
 
     var regMins = 0;
     var otMins = 0;
-    var dayRecorded = weekDayRecordedForEmployee(emp, null, locationFilter);
+    var dayRecorded = weekDayRecordedForEmployee(emp, null, aggLoc);
     dayRecorded.forEach(function (day) {
       if (!byDay[day.iso]) byDay[day.iso] = { sched: 0 };
     });
@@ -9490,9 +9516,8 @@
           needsReview = true;
         }
       });
-    var otTotals = sumRegOtFromByKey(
-      weeklyRegOtByRestaurantDay(weekDayRecordedByRestaurantForEmployee(emp, locationFilter))
-    );
+    // Company-wide OT from all stores, then keep buckets for the aggregation scope.
+    var otTotals = sumRegOtFromByKey(weekRegOtForEmployee(emp, aggLoc));
     regMins = otTotals.regMins;
     otMins = otTotals.otMins;
 
@@ -9600,11 +9625,13 @@
     var summaryMount = document.getElementById('timecardsEmployeeSummary');
     if (!tbody) return;
     var showDishwasherTips = isDeliveryDishwasherStaff(emp);
-    var colCount = showDishwasherTips ? 14 : 13;
+    var showLocationCol = employeeHomeRestaurant(emp) === 'both';
+    var colCount = (showDishwasherTips ? 14 : 13) + (showLocationCol ? 1 : 0);
     var theadRow = document.querySelector('#timecardsEmployeeTable thead tr');
     if (theadRow) {
       theadRow.innerHTML =
         '<th scope="col">Date</th>' +
+        (showLocationCol ? '<th scope="col">Location</th>' : '') +
         '<th scope="col">Shift</th>' +
         '<th scope="col">In / Out</th>' +
         '<th scope="col">Scheduled</th>' +
@@ -9710,6 +9737,9 @@
         var inOutLabel = formatDayClockInOutLabel(emp, row.iso);
         var when =
           formatShiftListWhenPrefix(row) + formatShiftListTimeLabel(s, offSchedule);
+        var locLabel = showLocationCol
+          ? restaurantShortLabelForId(shiftRowAttributionRestaurant(emp, row))
+          : '';
         return (
           '<tr class="timecards-row-clickable" data-timecard-shift-id="' +
           d().escapeHtml(s.id) +
@@ -9717,6 +9747,9 @@
           '<td>' +
           d().escapeHtml(formatPayWeekDateLabel(row.iso)) +
           '</td>' +
+          (showLocationCol
+            ? '<td>' + d().escapeHtml(locLabel) + '</td>'
+            : '') +
           '<td>' +
           d().escapeHtml(when) +
           '</td>' +
@@ -9972,7 +10005,7 @@
     // Match Pay (this shift): recorded minutes for this shift's store, not other-location punches.
     var dayMins = dailyRecordedMinutesForShiftRow(emp, shiftRow);
     var dayRounded = roundToNearest5Minutes(dayMins);
-    var soh = computeSpreadOfHours(emp);
+    var soh = computeSpreadOfHours(emp, rosterAggregationLocationFilter(emp));
     var sohDay = isSoHDateForEmployee(emp, shiftRow.iso);
     var dayEntries = findEntriesForDay(emp.id, shiftRow.iso);
     var editingEntry = entryById(timecardState.entryId);
@@ -10134,11 +10167,7 @@
       '" /></dd></div>' +
       (sohDay
         ? '<div><dt>SoH premium</dt><dd>' +
-          d().escapeHtml(
-            soh.hasRate && employeeHourlyRate(emp) != null
-              ? formatPayAmount(SOH_PAY_HOURS * employeeHourlyRate(emp))
-              : '—'
-          ) +
+          d().escapeHtml(soh.hasRate ? formatPayAmount(SOH_PAY_HOURS * getSohRate()) : '—') +
           '</dd></div>'
         : '') +
       '</dl></section>' +

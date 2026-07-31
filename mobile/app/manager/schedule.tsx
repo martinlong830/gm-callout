@@ -18,9 +18,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { employeeDisplayName, normalizeEmployeeStaffType, type EmployeeRow } from '../../lib/employees';
+import {
+  employeeDisplayName,
+  normalizeEmployeeStaffType,
+  managerCanEditRestaurant,
+  managerManagedRestaurantId,
+  type EmployeeRow,
+} from '../../lib/employees';
 import { readStoredTeamStateId } from '../../lib/companySession';
+import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
+import { isManagerLikeRole } from '../../lib/roles';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
@@ -76,6 +84,7 @@ import {
 } from '../../lib/schedule/engine';
 import {
   getCustomSlotOrderForRole,
+  mergePendingDraftWithHydrated,
   moveTrIdxInSlotOrder,
   patchSlotOrderAfterAdd,
   patchSlotOrderAfterDelete,
@@ -145,10 +154,19 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
 export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role, session } = useAuth();
-  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments } = useAppData();
+  const { t, staffTypeLabel } = useI18n();
+  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
+  const scheduleEditable = managerCanEditRestaurant(myEmployee, currentRestaurantId, role);
+
+  useEffect(() => {
+    const scope = managerManagedRestaurantId(myEmployee, role);
+    if (scope === 'rp-8' || scope === 'rp-9') {
+      setCurrentRestaurantId(scope);
+    }
+  }, [myEmployee, role]);
   const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
     assignmentShell(restaurants)
   );
@@ -205,68 +223,83 @@ export default function ManagerScheduleScreen() {
   const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
 
   const publishSelectedWeek = useCallback(() => {
-    if (!selectedWeekMonday || role !== 'manager' || selectedWeekIsPast) return;
+    if (!selectedWeekMonday || !isManagerLikeRole(role) || selectedWeekIsPast) return;
+    if (!managerCanEditRestaurant(myEmployee, currentRestaurantId, role)) {
+      Alert.alert(t('schedule.viewOnlyOtherStore'), t('schedule.viewOnlyOtherStoreHint'));
+      return;
+    }
+    const runPublish = (audience: 'admins' | 'employees') => {
+      void (async () => {
+        if (!supabase) return;
+        setPublishing(true);
+        try {
+          const map = { ...publishedMap, [selectedWeekMonday]: true as const };
+          const payload = schedulePublishedPayload(map);
+          const teamStateId = await readStoredTeamStateId();
+          const up = await supabase.from('team_state').upsert(
+            { id: teamStateId, schedule_published: payload },
+            { onConflict: 'id' }
+          );
+          if (up.error) {
+            Alert.alert(t('schedule.publishFailed'), up.error.message || t('schedule.couldNotSavePublish'));
+            return;
+          }
+          await broadcastTeamStateChanged(
+            supabase,
+            teamStateId,
+            ['schedule_published'],
+            session?.user?.id
+          );
+          const notify = await portalNotifySchedulePublished({
+            weekMondayIso: selectedWeekMonday,
+            weekRangeLabel: selectedWeekRange,
+            teamStateId,
+            audience,
+            restaurantId: currentRestaurantId,
+          });
+          await refetch({ silent: true });
+          if (!notify.ok) {
+            Alert.alert(
+              t('schedule.published'),
+              t('schedule.publishedNotifyFailed', { range: selectedWeekRange, message: notify.message })
+            );
+          } else if (notify.sent > 0) {
+            const failNote =
+              notify.failed && notify.failed > 0
+                ? ` ${notify.failed} failed${notify.message ? ` (${notify.message})` : ''}.`
+                : '';
+            Alert.alert(
+              t('schedule.published'),
+              t('schedule.publishedNotified', {
+                count: notify.sent,
+                s: notify.sent === 1 ? '' : 's',
+              }) + failNote
+            );
+          } else {
+            Alert.alert(
+              t('schedule.published'),
+              notify.message ||
+                t('schedule.publishedNoPush', { range: selectedWeekRange })
+            );
+          }
+        } finally {
+          setPublishing(false);
+        }
+      })();
+    };
+
     const msg = selectedWeekPublished
-      ? `Send another notification that the schedule for ${selectedWeekRange} is ready?`
-      : `Publish the schedule for ${selectedWeekRange} for employees and send a push notification?`;
-    Alert.alert('Publish / Notify', msg, [
-      { text: 'Cancel', style: 'cancel' },
+      ? t('schedule.publishConfirmNotify', { range: selectedWeekRange })
+      : t('schedule.publishConfirmPublish', { range: selectedWeekRange });
+    Alert.alert(t('schedule.publishNotify'), msg, [
+      { text: t('common.cancel'), style: 'cancel' },
       {
-        text: selectedWeekPublished ? 'Notify again' : 'Publish',
-        onPress: () => {
-          void (async () => {
-            if (!supabase) return;
-            setPublishing(true);
-            try {
-              const map = { ...publishedMap, [selectedWeekMonday]: true as const };
-              const payload = schedulePublishedPayload(map);
-              const teamStateId = await readStoredTeamStateId();
-              const up = await supabase.from('team_state').upsert(
-                { id: teamStateId, schedule_published: payload },
-                { onConflict: 'id' }
-              );
-              if (up.error) {
-                Alert.alert('Publish failed', up.error.message || 'Could not save publish state.');
-                return;
-              }
-              await broadcastTeamStateChanged(
-                supabase,
-                teamStateId,
-                ['schedule_published'],
-                session?.user?.id
-              );
-              const notify = await portalNotifySchedulePublished({
-                weekMondayIso: selectedWeekMonday,
-                weekRangeLabel: selectedWeekRange,
-                teamStateId,
-              });
-              await refetch({ silent: true });
-              if (!notify.ok) {
-                Alert.alert(
-                  'Published',
-                  `Week (${selectedWeekRange}) is visible to employees, but push notify failed: ${notify.message}`
-                );
-              } else if (notify.sent > 0) {
-                const failNote =
-                  notify.failed && notify.failed > 0
-                    ? ` ${notify.failed} failed${notify.message ? ` (${notify.message})` : ''}.`
-                    : '';
-                Alert.alert(
-                  'Published',
-                  `Notified ${notify.sent} device${notify.sent === 1 ? '' : 's'}.${failNote}`
-                );
-              } else {
-                Alert.alert(
-                  'Published',
-                  notify.message ||
-                    `Employees can view ${selectedWeekRange} now (no push tokens registered yet — open the app on a phone and allow notifications).`
-                );
-              }
-            } finally {
-              setPublishing(false);
-            }
-          })();
-        },
+        text: t('schedule.publishNotifyAdmins'),
+        onPress: () => runPublish('admins'),
+      },
+      {
+        text: t('schedule.publishNotifyEmployees'),
+        onPress: () => runPublish('employees'),
       },
     ]);
   }, [
@@ -278,6 +311,9 @@ export default function ManagerScheduleScreen() {
     selectedWeekPublished,
     selectedWeekRange,
     session?.user?.id,
+    myEmployee,
+    currentRestaurantId,
+    t,
   ]);
 
   const draftScheduleRaw = rolledDraftRaw ?? teamState?.draft_schedule;
@@ -309,7 +345,7 @@ export default function ManagerScheduleScreen() {
   }, []);
 
   const pushUndoSnapshot = useCallback(() => {
-    if (role !== 'manager') return;
+    if (!isManagerLikeRole(role)) return;
     const snap: ScheduleUndoSnap = {
       assignmentStore: JSON.parse(JSON.stringify(assignmentStoreRef.current)) as AssignmentStore,
       draftScheduleRaw:
@@ -327,7 +363,7 @@ export default function ManagerScheduleScreen() {
 
   const persistCloud = useCallback(
     async (store: AssignmentStore, draftSchedule?: unknown) => {
-      if (!supabase || role !== 'manager') return;
+      if (!supabase || !isManagerLikeRole(role)) return;
       setSaving(true);
       try {
         const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
@@ -392,18 +428,28 @@ export default function ManagerScheduleScreen() {
   }, [applyLocalScheduleAssignments, queuePersist]);
 
   useEffect(() => {
+    const pendingDraft = pendingDraftRef.current;
     const rolled = hydrateScheduleAssignmentsFromTeamState(
       teamState?.schedule_assignments,
       restaurants,
       teamState?.draft_schedule
     );
+    let draftOut: unknown = rolled.draftSchedule ?? teamState?.draft_schedule ?? null;
+    /*
+     * Debounced saves leave a window where remote/echo hydrate can arrive with a stale
+     * draft_schedule (missing the reorder). Keep pending slotOrderByWeek as SoT until flush.
+     */
+    if (pendingDraft !== undefined) {
+      draftOut = mergePendingDraftWithHydrated(pendingDraft, draftOut);
+      pendingDraftRef.current = draftOut;
+    }
     setAssignmentStore(rolled.store);
-    setRolledDraftRaw(rolled.draftSchedule ?? teamState?.draft_schedule ?? null);
-    if (rolled.changed && role === 'manager') {
+    setRolledDraftRaw(draftOut);
+    if (rolled.changed && isManagerLikeRole(role)) {
       /* Local commits (incl. delete-slot) update teamState and re-enter here — do not wipe Undo. */
       if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-      applyLocalScheduleAssignments(rolled.store, rolled.draftSchedule);
-      queuePersist(rolled.store, rolled.draftSchedule);
+      applyLocalScheduleAssignments(rolled.store, draftOut);
+      queuePersist(rolled.store, draftOut);
     }
     suppressHydrateUndoClearRef.current = false;
   }, [teamState, restaurants, role, queuePersist, applyLocalScheduleAssignments, clearUndoStack]);
@@ -490,6 +536,7 @@ export default function ManagerScheduleScreen() {
   }
 
   function openShiftEditor(target: ShiftEditTarget) {
+    if (!scheduleEditable) return;
     captureScheduleScroll();
     const wk = weekdayKeyFromScheduleDay(target.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
@@ -515,17 +562,17 @@ export default function ManagerScheduleScreen() {
   }
 
   function applyShiftDetailsSave() {
-    if (!shiftEditor || role !== 'manager') return;
+    if (!shiftEditor || !isManagerLikeRole(role) || !scheduleEditable) return;
     const wk = weekdayKeyFromScheduleDay(shiftEditor.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
     if (di < 0) return;
     if (!editDayOff) {
       if (!/^\d{1,2}:\d{2}$/.test(editStart.trim()) || !/^\d{1,2}:\d{2}$/.test(editEnd.trim())) {
-        Alert.alert('Invalid time', 'Use HH:MM for start and end (e.g. 10:00).');
+        Alert.alert(t('schedule.invalidTime'), t('schedule.invalidTimeHint'));
         return;
       }
       if (editBreakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(editBreakTime)) {
-        Alert.alert('Invalid break time', 'Use HH:MM for break / office time (e.g. 15:00).');
+        Alert.alert(t('schedule.invalidBreakTime'), t('schedule.invalidBreakHint'));
         return;
       }
     }
@@ -550,7 +597,7 @@ export default function ManagerScheduleScreen() {
       workers: editDayOff ? null : list,
     });
     if (!applied) {
-      Alert.alert('Could not save', 'Check start/end times and try again.');
+      Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
       return;
     }
     pushUndoSnapshot();
@@ -570,10 +617,10 @@ export default function ManagerScheduleScreen() {
   }
 
   function addSlotForRole(roleKey: RoleKey) {
-    if (role !== 'manager') return;
+    if (!isManagerLikeRole(role) || !scheduleEditable) return;
     const nextRows = addDraftSlotRow(draftRows, roleKey);
     if (!nextRows) {
-      Alert.alert('Limit reached', 'Maximum of 25 slots per role.');
+      Alert.alert(t('schedule.limitReached'), t('schedule.maxSlots'));
       return;
     }
     pushUndoSnapshot();
@@ -598,7 +645,7 @@ export default function ManagerScheduleScreen() {
   }
 
   function deleteSlotForRole(roleKey: RoleKey, trIdx: number) {
-    if (role !== 'manager') return;
+    if (!isManagerLikeRole(role) || !scheduleEditable) return;
     const runDelete = () => {
       const liveDraft = loadDraftFromTeamState(
         draftScheduleRawRef.current,
@@ -609,7 +656,7 @@ export default function ManagerScheduleScreen() {
       pushUndoSnapshot();
       const nextRows = deleteDraftSlotRow(liveDraft, roleKey, trIdx);
       if (!nextRows) {
-        Alert.alert('Cannot delete', 'Keep at least one slot row per role.');
+        Alert.alert(t('schedule.cannotDelete'), t('schedule.keepOneSlot'));
         return;
       }
       suppressHydrateUndoClearRef.current = true;
@@ -653,11 +700,11 @@ export default function ManagerScheduleScreen() {
       )
     ) {
       Alert.alert(
-        'Delete slot',
-        `Delete slot ${trIdx + 1}? Shift times and assignments for this row will be removed.`,
+        t('schedule.deleteSlot'),
+        t('schedule.deleteSlotConfirm', { n: trIdx + 1 }),
         [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: runDelete },
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('common.delete'), style: 'destructive', onPress: runDelete },
         ]
       );
       return;
@@ -666,7 +713,7 @@ export default function ManagerScheduleScreen() {
   }
 
   function moveScheduleRow(roleKey: RoleKey, trIdx: number, direction: -1 | 1) {
-    if (role !== 'manager') return;
+    if (!isManagerLikeRole(role) || !scheduleEditable) return;
     const slotN = slotCountForRole(draftRows, roleKey);
     if (slotN <= 1) return;
     const existing = getCustomSlotOrderForRole(
@@ -691,18 +738,19 @@ export default function ManagerScheduleScreen() {
     pushUndoSnapshot();
     suppressHydrateUndoClearRef.current = true;
     const draftPayload = patchSlotOrderInDraftSchedule(
-      draftScheduleRaw,
+      draftScheduleRawRef.current ?? draftScheduleRaw,
       selectedWeekMonday,
       currentRestaurantId,
       roleKey,
       nextOrder
     );
     setRolledDraftRaw(draftPayload);
-    applyLocalScheduleAssignments(assignmentStore, draftPayload);
-    queuePersist(assignmentStore, draftPayload);
+    applyLocalScheduleAssignments(assignmentStoreRef.current, draftPayload);
+    queuePersist(assignmentStoreRef.current, draftPayload);
   }
 
   function applyRowPersonChoice(target: RowPersonTarget, workerName: string) {
+    if (!scheduleEditable) return;
     const next = assignPersonToScheduleRow(
       assignmentStore,
       schedule,
@@ -790,7 +838,7 @@ export default function ManagerScheduleScreen() {
         </View>
 
         <View style={styles.toolbar}>
-          <Text style={styles.toolbarLabel}>Week</Text>
+          <Text style={styles.toolbarLabel}>{t('common.week')}</Text>
           <ScheduleWeekPicker
             mode="managerNav"
             weekMeta={weekMeta}
@@ -803,23 +851,25 @@ export default function ManagerScheduleScreen() {
           <View style={styles.toolbarActions}>
             <Pressable
               onPress={publishSelectedWeek}
-              disabled={publishing || selectedWeekIsPast}
+              disabled={publishing || selectedWeekIsPast || !scheduleEditable}
               style={[
                 styles.publishBtn,
-                (publishing || selectedWeekIsPast) && styles.publishBtnDisabled,
+                (publishing || selectedWeekIsPast || !scheduleEditable) && styles.publishBtnDisabled,
               ]}
             >
               <Text style={styles.publishBtnText}>
                 {publishing
-                  ? 'Publishing…'
-                  : selectedWeekIsPast
-                    ? 'Past week'
-                    : selectedWeekPublished
-                      ? 'Notify again'
-                      : 'Publish / Notify'}
+                  ? t('common.publishing')
+                  : !scheduleEditable
+                    ? t('schedule.viewOnly')
+                    : selectedWeekIsPast
+                      ? t('schedule.pastWeek')
+                      : selectedWeekPublished
+                        ? t('common.notifyAgain')
+                        : t('schedule.publishNotify')}
               </Text>
             </Pressable>
-            {role === 'manager' ? (
+            {isManagerLikeRole(role) && scheduleEditable ? (
               <Pressable
                 onPress={undoLastChange}
                 disabled={undoDepth === 0}
@@ -828,7 +878,7 @@ export default function ManagerScheduleScreen() {
                 accessibilityLabel="Undo last schedule change"
               >
                 <Text style={[styles.undoBtnText, undoDepth === 0 && styles.undoBtnTextDisabled]}>
-                  Undo
+                  {t('schedule.undo')}
                 </Text>
               </Pressable>
             ) : null}
@@ -836,7 +886,7 @@ export default function ManagerScheduleScreen() {
         </View>
 
         <View style={styles.locRow}>
-          <Text style={styles.toolbarLabel}>Location</Text>
+          <Text style={styles.toolbarLabel}>{t('common.location')}</Text>
           <View style={styles.locRowContent}>
             <ScrollView
               horizontal
@@ -858,7 +908,7 @@ export default function ManagerScheduleScreen() {
             </ScrollView>
             <View style={styles.locActions}>
               {loading ? <ActivityIndicator /> : null}
-              {saving ? <Text style={styles.syncHint}>Saving…</Text> : null}
+              {saving ? <Text style={styles.syncHint}>{t('common.saving')}</Text> : null}
               <Pressable
                 onPress={() => {
                   clearUndoStack();
@@ -866,21 +916,30 @@ export default function ManagerScheduleScreen() {
                 }}
                 style={styles.refreshBtn}
               >
-                <Text style={styles.refreshTxt}>Refresh</Text>
+                <Text style={styles.refreshTxt}>{t('common.refresh')}</Text>
               </Pressable>
             </View>
           </View>
         </View>
+        {!scheduleEditable ? (
+          <Text style={styles.viewOnlyHint}>{t('schedule.viewOnlyOtherStoreHint')}</Text>
+        ) : null}
 
         <View style={styles.legend}>
           <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
-            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>Front of the House</Text>
+            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>
+              {staffTypeLabel('Bartender')}
+            </Text>
           </View>
           <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-kitchen'].border }]}>
-            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-kitchen'].fg }]}>Back of the House</Text>
+            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-kitchen'].fg }]}>
+              {staffTypeLabel('Kitchen')}
+            </Text>
           </View>
           <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-server'].border }]}>
-            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>Delivery/Dishwasher</Text>
+            <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>
+              {staffTypeLabel('Server')}
+            </Text>
           </View>
         </View>
 
@@ -893,8 +952,8 @@ export default function ManagerScheduleScreen() {
           <View style={styles.matrixInner}>
             <View style={[styles.personCol, { width: PERSON_COL }]}>
               <View style={styles.personTh}>
-                <Text style={styles.thFull}>PERSON</Text>
-                <Text style={styles.thSub}>Row assignee</Text>
+                <Text style={styles.thFull}>{t('schedule.personHeader')}</Text>
+                <Text style={styles.thSub}>{t('schedule.rowAssignee')}</Text>
               </View>
               {calendarBody.map((row, ri) => {
                 const move =
@@ -909,6 +968,7 @@ export default function ManagerScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
+                    editable={scheduleEditable}
                     onOpenRowPerson={setRowPersonPicker}
                     onAddSlot={addSlotForRole}
                     onDeleteSlot={deleteSlotForRole}
@@ -953,6 +1013,7 @@ export default function ManagerScheduleScreen() {
                     key={`d-${ri}`}
                     row={row}
                     daysWidth={daysWidth}
+                    editable={scheduleEditable}
                     onOpenShift={openShiftEditor}
                   />
                 ))}
@@ -974,10 +1035,12 @@ export default function ManagerScheduleScreen() {
           <Pressable style={[styles.modalPanel, shiftEditor && styles.modalPanelTall]} onPress={(e) => e.stopPropagation()}>
             {rowPersonPicker ? (
               <>
-                <Text style={styles.modalTitle}>Assign Row Person</Text>
+                <Text style={styles.modalTitle}>{t('schedule.assignRowPerson')}</Text>
                 <Text style={styles.modalSub} numberOfLines={3}>
-                  {STAFF_TYPE_LABELS[rowPersonPicker.role]} · row {rowPersonPicker.trIdx + 1} · all
-                  staffed days this week
+                  {t('schedule.assignRowSub', {
+                    role: staffTypeLabel(rowPersonPicker.role),
+                    n: rowPersonPicker.trIdx + 1,
+                  })}
                 </Text>
                 <FlatList
                   data={rowPickerNames}
@@ -995,20 +1058,23 @@ export default function ManagerScheduleScreen() {
               </>
             ) : shiftEditor ? (
               <ScrollView keyboardShouldPersistTaps="handled">
-                <Text style={styles.modalTitle}>Edit Shift</Text>
+                <Text style={styles.modalTitle}>{t('title.editShift')}</Text>
                 <Text style={styles.modalSub} numberOfLines={3}>
-                  {STAFF_TYPE_LABELS[shiftEditor.role]} · {shiftEditor.dayStr} · slot{' '}
-                  {shiftEditor.trIdx + 1}
+                  {t('schedule.editShiftSub', {
+                    role: staffTypeLabel(shiftEditor.role),
+                    day: shiftEditor.dayStr,
+                    n: shiftEditor.trIdx + 1,
+                  })}
                 </Text>
                 <View style={styles.editRow}>
-                  <Text style={styles.editLabel}>Day off</Text>
+                  <Text style={styles.editLabel}>{t('schedule.dayOffToggle')}</Text>
                   <Switch value={editDayOff} onValueChange={setEditDayOff} />
                 </View>
                 {!editDayOff ? (
                   <>
                     <View style={styles.editTimesRow}>
                       <View style={styles.editField}>
-                        <Text style={styles.editFieldLabel}>Start</Text>
+                        <Text style={styles.editFieldLabel}>{t('common.start')}</Text>
                         <TextInput
                           style={styles.editInput}
                           value={editStart}
@@ -1020,7 +1086,7 @@ export default function ManagerScheduleScreen() {
                       </View>
                       <Text style={styles.editSep}>–</Text>
                       <View style={styles.editField}>
-                        <Text style={styles.editFieldLabel}>End</Text>
+                        <Text style={styles.editFieldLabel}>{t('common.end')}</Text>
                         <TextInput
                           style={styles.editInput}
                           value={editEnd}
@@ -1032,7 +1098,7 @@ export default function ManagerScheduleScreen() {
                       </View>
                       {editHoursLabel ? <Text style={styles.editHours}>{editHoursLabel}</Text> : null}
                     </View>
-                    <Text style={styles.editFieldLabel}>Break / office</Text>
+                    <Text style={styles.editFieldLabel}>{t('schedule.breakOffice')}</Text>
                     <View style={styles.chipWrap}>
                       {BREAK_ANNOTATION_TYPE_PRESETS.map((t) => (
                         <Pressable
@@ -1053,7 +1119,7 @@ export default function ManagerScheduleScreen() {
                     </View>
                     {editBreakType !== 'NO BREAK' ? (
                       <View style={[styles.editField, { marginTop: 10 }]}>
-                        <Text style={styles.editFieldLabel}>Assigned time</Text>
+                        <Text style={styles.editFieldLabel}>{t('schedule.assignedTime')}</Text>
                         <TextInput
                           style={styles.editInput}
                           value={editBreakTime}
@@ -1064,7 +1130,7 @@ export default function ManagerScheduleScreen() {
                         />
                       </View>
                     ) : null}
-                    <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>Person</Text>
+                    <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>{t('common.person')}</Text>
                     <View style={styles.chipWrap}>
                       {shiftPickerNames.slice(0, 12).map((name) => (
                         <Pressable
@@ -1086,7 +1152,7 @@ export default function ManagerScheduleScreen() {
                   </>
                 ) : null}
                 <Pressable style={styles.saveBtn} onPress={applyShiftDetailsSave}>
-                  <Text style={styles.saveBtnText}>Save shift</Text>
+                  <Text style={styles.saveBtnText}>{t('schedule.saveShift')}</Text>
                 </Pressable>
               </ScrollView>
             ) : null}
@@ -1098,7 +1164,7 @@ export default function ManagerScheduleScreen() {
                 restoreScheduleScroll();
               }}
             >
-              <Text style={styles.modalCancelText}>Cancel</Text>
+              <Text style={styles.modalCancelText}>{t('common.cancel')}</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -1113,6 +1179,7 @@ type PersonColRowProps = {
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
+  editable: boolean;
   onOpenRowPerson: (t: RowPersonTarget) => void;
   onAddSlot: (role: RoleKey) => void;
   onDeleteSlot: (role: RoleKey, trIdx: number) => void;
@@ -1127,6 +1194,7 @@ const PersonColRow = memo(function PersonColRow({
   visibleDays,
   employees,
   restaurantId,
+  editable,
   onOpenRowPerson,
   onAddSlot,
   onDeleteSlot,
@@ -1153,14 +1221,16 @@ const PersonColRow = memo(function PersonColRow({
         <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
           {row.title}
         </Text>
-        <Pressable
-          onPress={() => onAddSlot(addRole)}
-          style={styles.addSlotBtn}
-          accessibilityRole="button"
-          accessibilityLabel={`Add slot for ${row.title}`}
-        >
-          <Text style={styles.addSlotBtnText}>Add slot</Text>
-        </Pressable>
+        {editable ? (
+          <Pressable
+            onPress={() => onAddSlot(addRole)}
+            style={styles.addSlotBtn}
+            accessibilityRole="button"
+            accessibilityLabel={`Add slot for ${row.title}`}
+          >
+            <Text style={styles.addSlotBtnText}>Add slot</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }
@@ -1180,45 +1250,57 @@ const PersonColRow = memo(function PersonColRow({
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
       <View style={styles.personRowTop}>
-        <Pressable
-          style={styles.personSelect}
-          onPress={() => onOpenRowPerson({ role: row.role, trIdx: row.trIdx })}
-          accessibilityRole="button"
-          accessibilityLabel={`Person for ${STAFF_TYPE_LABELS[row.role]} row ${row.trIdx + 1}`}
-        >
-          <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
-            {label}
-          </Text>
-        </Pressable>
-        <View style={styles.reorderCol}>
+        {editable ? (
           <Pressable
-            onPress={() => onMoveRow(row.role, row.trIdx, -1)}
-            disabled={!canMoveUp}
-            style={[styles.reorderBtn, !canMoveUp && styles.reorderBtnDisabled]}
+            style={styles.personSelect}
+            onPress={() => onOpenRowPerson({ role: row.role, trIdx: row.trIdx })}
             accessibilityRole="button"
-            accessibilityLabel={`Move ${label} up`}
+            accessibilityLabel={`Person for ${STAFF_TYPE_LABELS[row.role]} row ${row.trIdx + 1}`}
           >
-            <Text style={styles.reorderBtnText}>↑</Text>
+            <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
+              {label}
+            </Text>
           </Pressable>
-          <Pressable
-            onPress={() => onMoveRow(row.role, row.trIdx, 1)}
-            disabled={!canMoveDown}
-            style={[styles.reorderBtn, !canMoveDown && styles.reorderBtnDisabled]}
-            accessibilityRole="button"
-            accessibilityLabel={`Move ${label} down`}
-          >
-            <Text style={styles.reorderBtnText}>↓</Text>
-          </Pressable>
-        </View>
+        ) : (
+          <View style={styles.personSelect}>
+            <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
+              {label}
+            </Text>
+          </View>
+        )}
+        {editable ? (
+          <View style={styles.reorderCol}>
+            <Pressable
+              onPress={() => onMoveRow(row.role, row.trIdx, -1)}
+              disabled={!canMoveUp}
+              style={[styles.reorderBtn, !canMoveUp && styles.reorderBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel={`Move ${label} up`}
+            >
+              <Text style={styles.reorderBtnText}>↑</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => onMoveRow(row.role, row.trIdx, 1)}
+              disabled={!canMoveDown}
+              style={[styles.reorderBtn, !canMoveDown && styles.reorderBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel={`Move ${label} down`}
+            >
+              <Text style={styles.reorderBtnText}>↓</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
-      <Pressable
-        onPress={() => onDeleteSlot(row.role, row.trIdx)}
-        style={styles.deleteSlotBtn}
-        accessibilityRole="button"
-        accessibilityLabel={`Delete slot ${row.trIdx + 1}`}
-      >
-        <Text style={styles.deleteSlotBtnText}>Delete slot</Text>
-      </Pressable>
+      {editable ? (
+        <Pressable
+          onPress={() => onDeleteSlot(row.role, row.trIdx)}
+          style={styles.deleteSlotBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete slot ${row.trIdx + 1}`}
+        >
+          <Text style={styles.deleteSlotBtnText}>Delete slot</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
@@ -1226,10 +1308,12 @@ const PersonColRow = memo(function PersonColRow({
 const DayColRow = memo(function DayColRow({
   row,
   daysWidth,
+  editable,
   onOpenShift,
 }: {
   row: CalendarBodyRow;
   daysWidth: number;
+  editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
 }) {
   if (row.kind === 'section') {
@@ -1251,7 +1335,7 @@ const DayColRow = memo(function DayColRow({
     <View style={[styles.dataDays, styles.dataMatrixRow, { width: daysWidth }]}>
       {row.cells.map((cell, ci) => (
         <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
-          <CalendarCellView cell={cell} onOpenShift={onOpenShift} />
+          <CalendarCellView cell={cell} editable={editable} onOpenShift={onOpenShift} />
         </View>
       ))}
     </View>
@@ -1260,12 +1344,16 @@ const DayColRow = memo(function DayColRow({
 
 const CalendarCellView = memo(function CalendarCellView({
   cell,
+  editable,
   onOpenShift,
 }: {
   cell: CalendarCell;
+  editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
 }) {
   if (cell.kind === 'empty') {
+    const body = <Text style={styles.dayoffSmall}>DAY-OFF</Text>;
+    if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
     return (
       <Pressable
         style={styles.cellInnerMuted}
@@ -1273,11 +1361,18 @@ const CalendarCellView = memo(function CalendarCellView({
           onOpenShift({ role: cell.role, trIdx: cell.trIdx, dayStr: cell.dayStr })
         }
       >
-        <Text style={styles.dayoffSmall}>DAY-OFF</Text>
+        {body}
       </Pressable>
     );
   }
   if (cell.kind === 'dayoff') {
+    const body = (
+      <>
+        <Text style={styles.slotTime}>{cell.timeLabel}</Text>
+        <Text style={styles.dayoffLabel}>DAY-OFF</Text>
+      </>
+    );
+    if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
     return (
       <Pressable
         style={styles.cellInnerMuted}
@@ -1285,22 +1380,30 @@ const CalendarCellView = memo(function CalendarCellView({
           onOpenShift({ role: cell.role, trIdx: cell.trIdx, dayStr: cell.dayStr })
         }
       >
-        <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-        <Text style={styles.dayoffLabel}>DAY-OFF</Text>
+        {body}
       </Pressable>
     );
   }
   const rd = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-kitchen'];
+  const filledStyle = [
+    styles.cellInner,
+    {
+      backgroundColor: rd.bg,
+      borderColor: rd.border,
+      borderLeftColor: rd.fg,
+    },
+  ];
+  const filledBody = (
+    <>
+      <Text style={styles.slotTime}>{cell.timeLabel}</Text>
+      {cell.breakText ? <Text style={styles.slotBreak}>{cell.breakText}</Text> : null}
+      <Text style={styles.slotHours}>{cell.hours}h</Text>
+    </>
+  );
+  if (!editable) return <View style={filledStyle}>{filledBody}</View>;
   return (
     <Pressable
-      style={[
-        styles.cellInner,
-        {
-          backgroundColor: rd.bg,
-          borderColor: rd.border,
-          borderLeftColor: rd.fg,
-        },
-      ]}
+      style={filledStyle}
       onPress={() =>
         onOpenShift({
           role: cell.shift.role,
@@ -1310,9 +1413,7 @@ const CalendarCellView = memo(function CalendarCellView({
         })
       }
     >
-      <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-      {cell.breakText ? <Text style={styles.slotBreak}>{cell.breakText}</Text> : null}
-      <Text style={styles.slotHours}>{cell.hours}h</Text>
+      {filledBody}
     </Pressable>
   );
 });
@@ -1350,6 +1451,17 @@ const styles = StyleSheet.create({
   locRowContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   locChipsScroll: { flex: 1 },
   locActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
+  viewOnlyHint: {
+    marginHorizontal: 12,
+    marginTop: 6,
+    fontSize: 13,
+    color: '#92400e',
+    backgroundColor: '#fffbeb',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    overflow: 'hidden',
+  },
   toolbarLabel: { fontSize: 11, fontWeight: '700', color: '#64748b', marginBottom: 6, textTransform: 'uppercase' },
   chipsRow: { flexDirection: 'row', gap: 8, paddingBottom: 4 },
   chip: {

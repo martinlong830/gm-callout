@@ -15,7 +15,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { LanguageToggle } from '../components/LanguageToggle';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/LocaleContext';
 import { storeCompanySession } from '../lib/companySession';
 import {
   portalDeleteAccount,
@@ -24,11 +26,13 @@ import {
   portalUpdateLoginName,
   portalUpdateRecoveryEmail,
 } from '../lib/portalAuth';
+import { isAdminRole, isManagerLikeRole } from '../lib/roles';
 
 const SUPPORT_URL = 'https://shiflow.app/support.html';
 
 export default function AccountScreen() {
   const router = useRouter();
+  const { t } = useI18n();
   const { session, role, loading: authLoading, signOut } = useAuth();
   const [loginName, setLoginName] = useState('');
   const [companyName, setCompanyName] = useState('');
@@ -55,7 +59,7 @@ export default function AccountScreen() {
     setRecoveryEmail(acct.recoveryEmail);
     setHasRecovery(acct.hasRecoveryEmail);
     setCompanyName(acct.companyName || '');
-    setIsManager(acct.role === 'manager' || role === 'manager');
+    setIsManager(isManagerLikeRole(acct.role) || isManagerLikeRole(role));
   }, [role]);
 
   useEffect(() => {
@@ -82,7 +86,7 @@ export default function AccountScreen() {
       const name = companyName.trim();
       if (!name) {
         setBusy(false);
-        setMessage('Company name is required.');
+        setMessage(t('account.companyRequired'));
         return;
       }
       const co = await portalUpdateCompany({ name });
@@ -101,7 +105,7 @@ export default function AccountScreen() {
     const loginNext = loginName.trim();
     if (!loginNext) {
       setBusy(false);
-      setMessage('Enter a sign-in username.');
+      setMessage(t('account.enterUsername'));
       return;
     }
     const loginRes = await portalUpdateLoginName(loginNext);
@@ -119,7 +123,7 @@ export default function AccountScreen() {
     }
     setRecoveryEmail(res.recoveryEmail);
     setHasRecovery(true);
-    Alert.alert('Saved', loginRes.message || res.message);
+    Alert.alert(t('common.saved'), loginRes.message || res.message);
   }
 
   function onStartDelete() {
@@ -131,7 +135,7 @@ export default function AccountScreen() {
   async function onConfirmDelete() {
     const typed = deleteConfirm.trim().toUpperCase();
     if (typed !== 'DELETE') {
-      setMessage('Type DELETE (all caps) to permanently delete your account.');
+      setMessage(t('account.typeDeleteError'));
       return;
     }
     setDeleting(true);
@@ -144,8 +148,8 @@ export default function AccountScreen() {
     }
     await signOut();
     setDeleting(false);
-    Alert.alert('Account deleted', res.message, [
-      { text: 'OK', onPress: () => router.replace('/login') },
+    Alert.alert(t('account.deleted'), res.message, [
+      { text: t('common.ok'), onPress: () => router.replace('/login') },
     ]);
   }
 
@@ -155,21 +159,21 @@ export default function AccountScreen() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.headerRow}>
             <Pressable onPress={() => router.back()} hitSlop={8}>
-              <Text style={styles.back}>← Back</Text>
+              <Text style={styles.back}>← {t('common.back')}</Text>
             </Pressable>
           </View>
-          <Text style={styles.title}>Account</Text>
+          <LanguageToggle variant="full" />
+          <Text style={styles.title}>{t('title.account')}</Text>
           <Text style={styles.subtitle}>
-            Change your sign-in username and recovery email. Changing username does not change your display name on
-            the roster.
-            {isManager ? ' Managers can also edit the company name.' : ''}
+            {t('account.intro')}
+            {isManager ? t('account.introManager') : ''}
           </Text>
 
           {loading ? (
             <ActivityIndicator style={{ marginTop: 20 }} />
           ) : (
             <View style={styles.card}>
-              <Text style={styles.label}>Sign-in username</Text>
+              <Text style={styles.label}>{t('account.signInUsername')}</Text>
               <TextInput
                 style={styles.input}
                 value={loginName}
@@ -178,29 +182,35 @@ export default function AccountScreen() {
                 autoCorrect={false}
                 autoComplete="username"
                 maxLength={80}
-                placeholder="Sign-in username"
+                placeholder={t('account.signInUsername')}
                 placeholderTextColor="#888"
               />
-              <Text style={styles.hint}>Used when you sign in — separate from your roster display name.</Text>
-              <Text style={styles.label}>Role</Text>
-              <Text style={styles.readonly}>{role === 'manager' ? 'Manager' : 'Employee'}</Text>
+              <Text style={styles.hint}>{t('account.usernameHint')}</Text>
+              <Text style={styles.label}>{t('account.role')}</Text>
+              <Text style={styles.readonly}>
+                {isAdminRole(role)
+                  ? t('common.admin')
+                  : isManagerLikeRole(role)
+                    ? t('common.manager')
+                    : t('common.employee')}
+              </Text>
 
               {isManager ? (
                 <>
-                  <Text style={styles.label}>Company name</Text>
+                  <Text style={styles.label}>{t('account.companyName')}</Text>
                   <TextInput
                     style={styles.input}
                     value={companyName}
                     onChangeText={setCompanyName}
                     autoCapitalize="words"
                     maxLength={120}
-                    placeholder="Company name"
+                    placeholder={t('account.companyName')}
                     placeholderTextColor="#888"
                   />
                 </>
               ) : null}
 
-              <Text style={styles.label}>Recovery email</Text>
+              <Text style={styles.label}>{t('account.recoveryEmail')}</Text>
               <TextInput
                 style={styles.input}
                 value={recoveryEmail}
@@ -212,14 +222,14 @@ export default function AccountScreen() {
                 placeholderTextColor="#888"
               />
               {!hasRecovery ? (
-                <Text style={styles.hint}>Required for password reset if you forget your password.</Text>
+                <Text style={styles.hint}>{t('account.recoveryHint')}</Text>
               ) : null}
               {message ? <Text style={styles.error}>{message}</Text> : null}
               <Pressable style={styles.buttonPrimary} onPress={() => void onSave()} disabled={busy || deleting}>
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.buttonText}>Save account settings</Text>
+                  <Text style={styles.buttonText}>{t('account.save')}</Text>
                 )}
               </Pressable>
 
@@ -230,30 +240,27 @@ export default function AccountScreen() {
                   }}
                   hitSlop={8}
                   accessibilityRole="link"
-                  accessibilityLabel="Contact support"
+                  accessibilityLabel={t('account.contactSupport')}
                 >
-                  <Text style={styles.supportLink}>Contact support</Text>
+                  <Text style={styles.supportLink}>{t('account.contactSupport')}</Text>
                 </Pressable>
-                <Text style={styles.supportHint}>Help with login, the app, or your account</Text>
+                <Text style={styles.supportHint}>{t('account.supportHint')}</Text>
               </View>
 
               <View style={styles.deleteBlock}>
-                <Text style={styles.deleteTitle}>Delete account</Text>
-                <Text style={styles.deleteHint}>
-                  Permanently delete your Shiflow login and personal account data. This cannot be undone. Company
-                  schedules and timecards for the restaurant are not erased.
-                </Text>
+                <Text style={styles.deleteTitle}>{t('account.deleteTitle')}</Text>
+                <Text style={styles.deleteHint}>{t('account.deleteHint')}</Text>
                 {!showDeleteConfirm ? (
                   <Pressable
                     style={styles.buttonDanger}
                     onPress={onStartDelete}
                     disabled={busy || deleting}
                   >
-                    <Text style={styles.buttonText}>Delete account</Text>
+                    <Text style={styles.buttonText}>{t('account.deleteButton')}</Text>
                   </Pressable>
                 ) : (
                   <>
-                    <Text style={styles.label}>Type DELETE to confirm</Text>
+                    <Text style={styles.label}>{t('account.typeDelete')}</Text>
                     <TextInput
                       style={styles.input}
                       value={deleteConfirm}
@@ -271,7 +278,7 @@ export default function AccountScreen() {
                       {deleting ? (
                         <ActivityIndicator color="#fff" />
                       ) : (
-                        <Text style={styles.buttonText}>Permanently delete account</Text>
+                        <Text style={styles.buttonText}>{t('account.deletePermanent')}</Text>
                       )}
                     </Pressable>
                     <Pressable
@@ -283,7 +290,7 @@ export default function AccountScreen() {
                       }}
                       disabled={deleting}
                     >
-                      <Text style={styles.buttonGhostText}>Cancel</Text>
+                      <Text style={styles.buttonGhostText}>{t('common.cancel')}</Text>
                     </Pressable>
                   </>
                 )}

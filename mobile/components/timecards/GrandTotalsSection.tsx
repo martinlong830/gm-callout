@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppData } from '../../contexts/AppDataContext';
+import { useI18n } from '../../contexts/LocaleContext';
 import {
   decimalHoursFromMinutes,
   formatPayAmount,
@@ -62,11 +63,25 @@ export function GrandTotalsSection({
   metaLabel,
   hourlyRateLabel,
 }: Props) {
+  const { t } = useI18n();
   const { teamState } = useAppData();
   const [cash, setCash] = useState('0');
   const [sqGhDd, setSqGhDd] = useState('0');
   const [square, setSquare] = useState('0');
   const [tipSummary, setTipSummary] = useState('');
+
+  const updateSummary = useCallback(
+    (pool: TipPoolInputs) => {
+      const totals = payrollTipPoolTotals(pool);
+      setTipSummary(
+        t('timecards.tipPoolSummary', {
+          squareInhouse: formatPayAmount(totals.squareInhouse),
+          totalTips: formatPayAmount(totals.totalTips),
+        })
+      );
+    },
+    [t]
+  );
 
   const loadTips = useCallback(async () => {
     const pool = await getPayrollTipPoolInputs(bounds, locationFilter);
@@ -74,14 +89,7 @@ export function GrandTotalsSection({
     setSqGhDd(String(pool.sqGhDd));
     setSquare(String(pool.squareTips));
     updateSummary(pool);
-  }, [bounds, locationFilter]);
-
-  const updateSummary = (pool: TipPoolInputs) => {
-    const t = payrollTipPoolTotals(pool);
-    setTipSummary(
-      `Square In House (Net): ${formatPayAmount(t.squareInhouse)} · Total tips: ${formatPayAmount(t.totalTips)}`
-    );
-  };
+  }, [bounds, locationFilter, updateSummary]);
 
   const persistTips = useCallback(
     async (next: { cashTip: string; sqGhDd: string; squareTips: string }) => {
@@ -95,7 +103,7 @@ export function GrandTotalsSection({
       await saveWeekTipPoolSlice(bounds, pool, locationFilter);
       updateSummary(pool);
     },
-    [bounds, locationFilter]
+    [bounds, locationFilter, updateSummary]
   );
 
   useEffect(() => {
@@ -120,47 +128,49 @@ export function GrandTotalsSection({
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>Grand totals</Text>
-      <Text style={styles.meta}>{metaLabel ?? `${totals.headcount} employees`}</Text>
+      <Text style={styles.title}>{t('timecards.grandTotals')}</Text>
+      <Text style={styles.meta}>
+        {metaLabel ?? t('timecards.employeesCount', { n: totals.headcount })}
+      </Text>
       <View style={styles.grid}>
         <TotalCard
-          label="Scheduled"
+          label={t('timecards.scheduled')}
           hours={`${decimalHoursFromMinutes(totals.schedMins)}h`}
         />
         <TotalCard
-          label="Regular"
+          label={t('timecards.regular')}
           hours={`${decimalHoursFromMinutes(totals.regMins)}h`}
           pay={payReg}
         />
         <TotalCard
-          label="Overtime"
+          label={t('timecards.overtime')}
           hours={`${decimalHoursFromMinutes(totals.otMins)}h`}
           pay={payOt}
         />
         <TotalCard
-          label="VL / SL"
+          label={t('timecards.vlSl')}
           hours={`${decimalHoursFromMinutes(totals.vlHours * 60)}h / ${decimalHoursFromMinutes(totals.slHours * 60)}h`}
           pay={payVlSl}
         />
-        <TotalCard label="SoH" hours={String(totals.sohCount)} pay={paySoh} />
-        <TotalCard label="Net dishwasher tips" hours={payDishwasherTips} />
-        <TotalCard label="Coverage compensation" hours={payCoverage} />
+        <TotalCard label={t('timecards.soh')} hours={String(totals.sohCount)} pay={paySoh} />
+        <TotalCard label={t('timecards.netDishwasherTips')} hours={payDishwasherTips} />
+        <TotalCard label={t('timecards.coverageCompensation')} hours={payCoverage} />
         {hourlyRateLabel != null ? (
-          <TotalCard label="Pay/hr" hours={hourlyRateLabel} />
+          <TotalCard label={t('timecards.payHr')} hours={hourlyRateLabel} />
         ) : null}
         <TotalCard
-          label="Total hours"
+          label={t('timecards.totalHours')}
           hours={`${decimalHoursFromMinutes(allPaidMins)}h`}
           emphasis="hours"
         />
-        <TotalCard label="Total pay" hours={payTotal} emphasis="pay" />
+        <TotalCard label={t('timecards.totalPay')} hours={payTotal} emphasis="pay" />
       </View>
 
       {showTipPool ? (
         <View style={styles.tips}>
-          <Text style={styles.tipsTitle}>Tip pool</Text>
-          <Text style={styles.tipsHint}>Used for payroll calculations (saved per pay week).</Text>
-          <Text style={styles.label}>Square In House Tips</Text>
+          <Text style={styles.tipsTitle}>{t('timecards.tipPool')}</Text>
+          <Text style={styles.tipsHint}>{t('timecards.tipPoolHint')}</Text>
+          <Text style={styles.label}>{t('timecards.squareInHouseTips')}</Text>
           <TextInput
             style={styles.input}
             value={square}
@@ -168,7 +178,7 @@ export function GrandTotalsSection({
             onEndEditing={() => void persistTips({ cashTip: cash, sqGhDd, squareTips: square })}
             keyboardType="decimal-pad"
           />
-          <Text style={styles.label}>Cash Tips</Text>
+          <Text style={styles.label}>{t('timecards.cashTips')}</Text>
           <TextInput
             style={styles.input}
             value={cash}
@@ -176,7 +186,7 @@ export function GrandTotalsSection({
             onEndEditing={() => void persistTips({ cashTip: cash, sqGhDd, squareTips: square })}
             keyboardType="decimal-pad"
           />
-          <Text style={styles.label}>SQ/GH/DD</Text>
+          <Text style={styles.label}>{t('timecards.sqGhDd')}</Text>
           <TextInput
             style={styles.input}
             value={sqGhDd}

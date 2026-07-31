@@ -1,9 +1,20 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { useT } from '../contexts/LocaleContext';
 
 type Props = { children: React.ReactNode };
 
 type State = { hasError: boolean };
+
+function ErrorFallback() {
+  const t = useT();
+  return (
+    <View style={styles.wrap}>
+      <Text style={styles.title}>{t('errors.boundaryTitle')}</Text>
+      <Text style={styles.body}>{t('errors.boundaryBody')}</Text>
+    </View>
+  );
+}
 
 /**
  * Prevents a provider/render failure from taking down the entire native process
@@ -22,12 +33,7 @@ export class RootErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
-      return (
-        <View style={styles.wrap}>
-          <Text style={styles.title}>Something went wrong</Text>
-          <Text style={styles.body}>Force-quit and reopen Shiflow. If this keeps happening, reinstall the app.</Text>
-        </View>
-      );
+      return <ErrorFallback />;
     }
     return this.props.children;
   }

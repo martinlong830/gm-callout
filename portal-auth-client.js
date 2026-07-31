@@ -4,6 +4,35 @@
 (function () {
   "use strict";
 
+  function pt(key, fallback) {
+    if (typeof window !== "undefined" && window.gmI18n && window.gmI18n.t) {
+      var v = window.gmI18n.t(key);
+      if (v && v !== key) return v;
+    }
+    return fallback;
+  }
+
+  function mapPortalMessage(msg, fallbackKey) {
+    var m = String(msg || "").trim();
+    if (!m && fallbackKey) return pt(fallbackKey, m);
+    var lower = m.toLowerCase();
+    if (lower === "sign in required." || lower === "sign in required") return pt("common.signInRequired", m);
+    if (/^network error/i.test(m)) return pt("common.networkError", m);
+    if (/^request failed/i.test(m)) return pt("common.requestFailed", m);
+    if (/^passwords do not match/i.test(m)) return pt("auth.passwordsMismatch", m);
+    if (/^enter a username/i.test(m)) return pt("auth.enterUsername", m);
+    if (/^enter a password/i.test(m)) return pt("auth.enterPassword", m);
+    if (/^enter your recovery email/i.test(m)) return pt("auth.enterRecoveryEmail", m);
+    if (/^enter your email/i.test(m)) return pt("auth.enterEmail", m);
+    if (/^could not sign in/i.test(m)) return pt("auth.couldNotSignIn", m);
+    if (/^could not create account/i.test(m)) return pt("auth.couldNotCreate", m);
+    if (/reset link is invalid/i.test(m)) return pt("auth.resetLinkInvalid", m);
+    if (/could not verify reset/i.test(m)) return pt("auth.couldNotVerifyReset", m);
+    if (/email confirmation failed/i.test(m)) return pt("auth.emailConfirmFailed", m);
+    if (/^enter your company access code/i.test(m)) return pt("auth.enterAccessCodeError", m);
+    return m;
+  }
+
   async function portalSession() {
     if (!window.gmSupabase || !window.gmSupabase.auth) return null;
     var sessRes = await window.gmSupabase.auth.getSession();
@@ -26,7 +55,7 @@
   async function portalAuthedFetch(method, path, body) {
     var session = await portalSession();
     if (!session || !session.access_token) {
-      return { ok: false, message: "Sign in required." };
+      return { ok: false, message: mapPortalMessage("Sign in required.", "common.signInRequired") };
     }
     var opts = {
       method: method,
@@ -42,14 +71,14 @@
     } catch (netErr) {
       return {
         ok: false,
-        message: (netErr && netErr.message) || "Network error. Check your connection and try again.",
+        message: mapPortalMessage((netErr && netErr.message) || "Network error. Check your connection and try again.", "common.networkError"),
       };
     }
     var data = await readPortalResponse(res);
     if (!res.ok || !data.ok) {
       return {
         ok: false,
-        message: portalErrorMessage(res, data, "Request failed."),
+        message: mapPortalMessage(portalErrorMessage(res, data, "Request failed."), "common.requestFailed"),
         status: res.status,
         data: data,
         needsSignIn: !!(data && data.needsSignIn),
@@ -111,14 +140,14 @@
     } catch (netErr) {
       return {
         ok: false,
-        message: (netErr && netErr.message) || "Network error. Check your connection and try again.",
+        message: mapPortalMessage((netErr && netErr.message) || "Network error. Check your connection and try again.", "common.networkError"),
       };
     }
     const data = await readPortalResponse(res);
     if (!res.ok || !data.ok) {
       return {
         ok: false,
-        message: portalErrorMessage(res, data, null),
+        message: mapPortalMessage(portalErrorMessage(res, data, null)),
         needsSignIn: !!(data && data.needsSignIn),
         status: res.status,
       };
@@ -352,6 +381,8 @@
   }
 
   window.gmPortalAuth = {
+    mapPortalMessage: mapPortalMessage,
+
     enabled: function () {
       return !!(window.gmSupabaseEnabled && window.gmSupabase);
     },
@@ -520,7 +551,7 @@
       }
       var session = await portalSession();
       if (!session) {
-        return { ok: false, message: "Sign in required." };
+        return { ok: false, message: mapPortalMessage("Sign in required.", "common.signInRequired") };
       }
       var result = await window.gmSupabase
         .from("profiles")
@@ -571,7 +602,7 @@
       }
       var session = await portalSession();
       if (!session) {
-        return { ok: false, message: "Sign in required." };
+        return { ok: false, message: mapPortalMessage("Sign in required.", "common.signInRequired") };
       }
       var dup = await window.gmSupabase
         .from("profiles")
@@ -662,7 +693,7 @@
       };
     },
 
-    /** Manager: notify employees that a week was published. */
+    /** Manager/admin: notify selected audience that a week was published. */
     notifySchedulePublished: async function (payload) {
       var viaApi = await portalAuthedFetch(
         "POST",
@@ -675,6 +706,10 @@
           sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
           failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : 0,
           tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : 0,
+          recipients: viaApi.data && viaApi.data.recipients != null ? viaApi.data.recipients : 0,
+          inAppCreated:
+            viaApi.data && viaApi.data.inAppCreated != null ? viaApi.data.inAppCreated : 0,
+          audience: viaApi.data && viaApi.data.audience,
           weekMondayIso: viaApi.data && viaApi.data.weekMondayIso,
           message: viaApi.data && viaApi.data.message,
           errors: viaApi.data && viaApi.data.errors,
@@ -685,6 +720,9 @@
         sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
         failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : undefined,
         tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : undefined,
+        recipients: viaApi.data && viaApi.data.recipients,
+        inAppCreated: viaApi.data && viaApi.data.inAppCreated,
+        audience: viaApi.data && viaApi.data.audience,
         message: (viaApi && viaApi.message) || "Could not send notifications.",
         errors: viaApi.data && viaApi.data.errors,
         needsSignIn: !!(viaApi && viaApi.needsSignIn),

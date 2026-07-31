@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
+import { useI18n } from '../../contexts/LocaleContext';
 import {
   employeePrimaryLocationId,
   filterRestaurantsForUsualLocation,
@@ -83,6 +84,7 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
+  const { t, staffTypeLabel } = useI18n();
   const { myEmployee, employees, teamState, loading } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const allRestaurants = useMemo(() => defaultRestaurants(), []);
@@ -192,10 +194,10 @@ export default function EmployeeScheduleScreen() {
           />
         </View>
 
-        <Text style={styles.hint}>Full team schedule — view only.</Text>
+        <Text style={styles.hint}>{t('schedule.viewOnlyHint')}</Text>
 
         <View style={styles.toolbar}>
-          <Text style={styles.toolbarLabel}>Week</Text>
+          <Text style={styles.toolbarLabel}>{t('common.week')}</Text>
           <ScheduleWeekPicker
             mode="managerNav"
             weekMeta={weekMeta}
@@ -208,7 +210,7 @@ export default function EmployeeScheduleScreen() {
         </View>
 
         <View style={styles.locRow}>
-          <Text style={styles.toolbarLabel}>Location</Text>
+          <Text style={styles.toolbarLabel}>{t('common.location')}</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
             {restaurants.map((r) => (
               <Pressable
@@ -228,17 +230,17 @@ export default function EmployeeScheduleScreen() {
           <View style={styles.legend}>
             <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
               <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>
-                Front of the House
+                {staffTypeLabel('Bartender')}
               </Text>
             </View>
             <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-kitchen'].border }]}>
               <Text style={[styles.legendTxt, { color: ROLE_PILL['role-kitchen'].fg }]}>
-                Back of the House
+                {staffTypeLabel('Kitchen')}
               </Text>
             </View>
             <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-server'].border }]}>
               <Text style={[styles.legendTxt, { color: ROLE_PILL['role-server'].fg }]}>
-                Delivery/Dishwasher
+                {staffTypeLabel('Server')}
               </Text>
             </View>
           </View>
@@ -247,10 +249,11 @@ export default function EmployeeScheduleScreen() {
 
       {!weekPublished ? (
         <View style={styles.unpublished}>
-          <Text style={styles.unpublishedTitle}>Not published yet</Text>
+          <Text style={styles.unpublishedTitle}>{t('schedule.notPublishedYet')}</Text>
           <Text style={styles.unpublishedBody}>
-            Week {formatScheduleWeekRangeLabel(weekMeta, weekIndex)} has not been published. Your
-            manager will notify you when it is ready.
+            {t('schedule.notPublishedBody', {
+              range: formatScheduleWeekRangeLabel(weekMeta, weekIndex),
+            })}
           </Text>
         </View>
       ) : (
@@ -266,14 +269,14 @@ export default function EmployeeScheduleScreen() {
           showsVerticalScrollIndicator
           keyboardShouldPersistTaps="handled"
         >
-          {loading && !teamState ? <Text style={styles.muted}>Loading schedule…</Text> : null}
+          {loading && !teamState ? <Text style={styles.muted}>{t('schedule.loadingSchedule')}</Text> : null}
 
           <View style={styles.matrix}>
             <View style={styles.matrixInner}>
               <View style={[styles.personCol, { width: PERSON_COL }]}>
                 <View style={styles.personTh}>
-                  <Text style={styles.thFull}>PERSON</Text>
-                  <Text style={styles.thSub}>Row assignee</Text>
+                  <Text style={styles.thFull}>{t('schedule.personHeader')}</Text>
+                  <Text style={styles.thSub}>{t('schedule.rowAssignee')}</Text>
                 </View>
                 {calendarBody.map((row, ri) => (
                   <PersonColRow
@@ -283,6 +286,8 @@ export default function EmployeeScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
+                    unassignedLabel={t('common.unassigned')}
+                    dayOffLabel={t('schedule.dayOffLabel')}
                   />
                 ))}
               </View>
@@ -312,7 +317,7 @@ export default function EmployeeScheduleScreen() {
                     })}
                   </View>
                   {calendarBody.map((row, ri) => (
-                    <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} />
+                    <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} dayOffLabel={t('schedule.dayOffLabel')} />
                   ))}
                 </View>
               </ScrollView>
@@ -330,6 +335,8 @@ type PersonColRowProps = {
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
+  unassignedLabel: string;
+  dayOffLabel: string;
 };
 
 const PersonColRow = memo(function PersonColRow({
@@ -338,6 +345,7 @@ const PersonColRow = memo(function PersonColRow({
   visibleDays,
   employees,
   restaurantId,
+  unassignedLabel,
 }: PersonColRowProps) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
@@ -365,7 +373,7 @@ const PersonColRow = memo(function PersonColRow({
     employees,
     restaurantId
   );
-  const label = selected && selected !== 'Unassigned' ? selected : 'Unassigned';
+  const label = selected && selected !== 'Unassigned' ? selected : unassignedLabel;
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
       <View style={styles.personReadonly}>
@@ -380,9 +388,11 @@ const PersonColRow = memo(function PersonColRow({
 const DayColRow = memo(function DayColRow({
   row,
   daysWidth,
+  dayOffLabel,
 }: {
   row: CalendarBodyRow;
   daysWidth: number;
+  dayOffLabel: string;
 }) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
@@ -401,14 +411,20 @@ const DayColRow = memo(function DayColRow({
     <View style={[styles.dataDays, styles.dataMatrixRow, { width: daysWidth }]}>
       {row.cells.map((cell, ci) => (
         <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
-          <CalendarCellView cell={cell} />
+          <CalendarCellView cell={cell} dayOffLabel={dayOffLabel} />
         </View>
       ))}
     </View>
   );
 });
 
-const CalendarCellView = memo(function CalendarCellView({ cell }: { cell: CalendarCell }) {
+const CalendarCellView = memo(function CalendarCellView({
+  cell,
+  dayOffLabel,
+}: {
+  cell: CalendarCell;
+  dayOffLabel: string;
+}) {
   if (cell.kind === 'empty') {
     return <View style={styles.cellInnerMuted} />;
   }
@@ -418,7 +434,7 @@ const CalendarCellView = memo(function CalendarCellView({ cell }: { cell: Calend
         <Text style={styles.cellTime} numberOfLines={1}>
           {cell.timeLabel}
         </Text>
-        <Text style={styles.cellDayoffLabel}>DAY-OFF</Text>
+        <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
       </View>
     );
   }

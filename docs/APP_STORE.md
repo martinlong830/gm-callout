@@ -125,7 +125,7 @@ npm run submit:ios
 
 ## Push notifications (required)
 
-Schedule **Publish / Notify** uses Expo Push → APNs (iOS) / FCM (Android). Device tokens are stored in Supabase `device_push_tokens` after a physical-device production/TestFlight build signs in and allows notifications.
+Schedule **Publish / Notify** uses Expo Push → APNs (iOS) / FCM (Android). Device tokens are stored in Supabase `device_push_tokens` after a physical-device production/TestFlight build signs in and allows notifications. Audience is selectable: **admin accounts** or **employees** (employees + store managers at the restaurant being published only).
 
 **One-time credential setup** (Apple Developer + Google Cloud access required):
 
@@ -140,7 +140,9 @@ npx eas credentials -p android
 # Production → Google Service Account / FCM → follow prompts
 ```
 
-Without these, Expo returns `InvalidCredentials` / “Could not find APNs credentials for com.shiflow.app” and notify reports `sent: 0` even when tokens exist.
+Without these, Expo returns `InvalidCredentials` / “Could not find APNs credentials for com.shiflow.app” and notify reports push `sent: 0` even when tokens exist.
+
+**In-app notifications still work** when push credentials are missing: Publish/Notify writes rows to `app_notifications` for the selected audience (admins or employees at the published store). The bell in the web/mobile header shows those events even if Expo push fails.
 
 After credentials are set, **no app rebuild is required** for delivery to already-registered tokens. New installs still need notification permission + one successful sign-in so the token is registered.
 

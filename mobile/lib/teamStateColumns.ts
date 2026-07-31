@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { readStoredTeamStateId } from './companySession';
+import { mergeDraftScheduleSlotOrderFromRemote } from './schedule/slotOrder';
 
 /** Schedule JSON only — largest egress columns. */
 export const TEAM_STATE_SCHEDULE_COLUMNS =
@@ -37,10 +38,10 @@ const EMPLOYEE_ALLOWED = [
 ] as const;
 
 export function teamStateColumnsForRole(
-  role: 'manager' | 'employee' | null | undefined,
+  role: 'manager' | 'admin' | 'employee' | null | undefined,
   fields?: string[] | null
 ): string {
-  const isManager = role === 'manager';
+  const isManager = role === 'manager' || role === 'admin';
   if (Array.isArray(fields) && fields.length) {
     const set = new Set(fields.map((f) => String(f)));
     const cols = ['updated_at'];
@@ -71,7 +72,7 @@ export async function fetchTeamStateUpdatedAt(
 export async function fetchTeamStateColumns(
   sb: SupabaseClient,
   opts: {
-    role?: 'manager' | 'employee' | null;
+    role?: 'manager' | 'admin' | 'employee' | null;
     fields?: string[] | null;
     teamStateId?: string;
   }
@@ -95,5 +96,27 @@ export function mergeTeamStatePartial(
 ): Record<string, unknown> | null {
   if (!partial) return prev;
   if (!prev) return { ...partial };
-  return { ...prev, ...partial };
+  const next: Record<string, unknown> = { ...prev, ...partial };
+  if (
+    Object.prototype.hasOwnProperty.call(partial, 'draft_schedule') &&
+    partial.draft_schedule != null &&
+    prev.draft_schedule != null
+  ) {
+    const prevAt = Date.parse(String(prev.updated_at || '')) || 0;
+    const remAt = Date.parse(String(partial.updated_at || '')) || 0;
+    /* Optimistic local writes bump updated_at — don't let an older REST snapshot wipe them. */
+    if (prevAt > remAt) {
+      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+        partial.draft_schedule,
+        prev.draft_schedule
+      );
+      next.updated_at = prev.updated_at;
+    } else {
+      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+        prev.draft_schedule,
+        partial.draft_schedule
+      );
+    }
+  }
+  return next;
 }

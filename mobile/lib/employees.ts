@@ -234,3 +234,47 @@ export function employeePrimaryLocationId(emp: EmployeeRow | null | undefined): 
   if (id === 'rp-8' || id === 'rp-9') return id;
   return null;
 }
+
+/**
+ * Store a manager may manage (`rp-8` / `rp-9`), or `null` for company-wide (both editable).
+ * Admins are always company-wide. Single-store usualRestaurant → that store; multi-store →
+ * primaryLocationId when set; both without primary / no linked roster → unrestricted.
+ */
+export function managerManagedRestaurantId(
+  emp: EmployeeRow | null | undefined,
+  role?: string | null
+): string | null {
+  if (role === 'admin') return null;
+  if (!emp) return null;
+  const home = emp.usualRestaurant || 'both';
+  if (home === 'rp-8' || home === 'rp-9') return home;
+  if (home === 'both') return employeePrimaryLocationId(emp);
+  return null;
+}
+
+/**
+ * Roster visibility for a store-scoped manager (mirrors timecards single-store membership).
+ * Unrestricted managers (`scopeRid` null) see everyone.
+ */
+export function employeeVisibleInManagerStoreScope(
+  emp: EmployeeRow | null | undefined,
+  scopeRid: string | null | undefined
+): boolean {
+  if (!scopeRid) return true;
+  if (!emp) return false;
+  const home = emp.usualRestaurant || 'rp-9';
+  if (home === scopeRid) return true;
+  if (home === 'both') return employeePrimaryLocationId(emp) === scopeRid;
+  return false;
+}
+
+/** True when the manager may edit the given restaurant's schedule (view always allowed). */
+export function managerCanEditRestaurant(
+  emp: EmployeeRow | null | undefined,
+  restaurantId: string,
+  role?: string | null
+): boolean {
+  const scope = managerManagedRestaurantId(emp, role);
+  if (!scope) return true;
+  return scope === restaurantId;
+}

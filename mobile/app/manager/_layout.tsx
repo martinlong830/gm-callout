@@ -3,17 +3,24 @@ import { Redirect, Tabs } from 'expo-router';
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
+import { LanguageToggle } from '../../components/LanguageToggle';
+import { NotificationBellButton } from '../../components/NotificationBellButton';
 import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../contexts/LocaleContext';
+import { isAdminRole, isManagerLikeRole } from '../../lib/roles';
 
 function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
   const router = useRouter();
+  const { t } = useI18n();
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginRight: 16 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 12 }}>
+      <NotificationBellButton />
+      <LanguageToggle variant="compact" />
       <Pressable onPress={() => router.push('/account')} hitSlop={8}>
-        <Text style={{ color: '#c41230', fontWeight: '600' }}>Account</Text>
+        <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.account')}</Text>
       </Pressable>
       <Pressable onPress={onSignOut} hitSlop={8}>
-        <Text style={{ color: '#c41230', fontWeight: '600' }}>Sign Out</Text>
+        <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.signOut')}</Text>
       </Pressable>
     </View>
   );
@@ -21,11 +28,10 @@ function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
 
 export default function ManagerLayout() {
   const { session, role, signOut } = useAuth();
+  const { t } = useI18n();
 
-  // Register push for managers too so Publish/Notify self-tests reach this device.
-  // Dynamic import only — never statically load expo-notifications at cold start.
   useEffect(() => {
-    if (!session || role !== 'manager') return;
+    if (!session || !isManagerLikeRole(role)) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       void import('../../lib/pushNotifications')
@@ -40,7 +46,7 @@ export default function ManagerLayout() {
     };
   }, [session, role]);
 
-  if (!session || role !== 'manager') {
+  if (!session || !isManagerLikeRole(role)) {
     return <Redirect href="/login" />;
   }
 
@@ -55,27 +61,29 @@ export default function ManagerLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          href: null,
+          title: t('nav.home'),
+          href: isAdminRole(role) ? null : undefined,
+          tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="schedule"
         options={{
-          title: 'Schedule',
+          title: t('nav.schedule'),
           tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="team"
         options={{
-          title: 'Team',
+          title: t('nav.team'),
           tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="availability"
         options={{
-          title: 'Availability',
+          title: t('nav.availability'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="grid-outline" size={size} color={color} />
           ),
@@ -84,14 +92,14 @@ export default function ManagerLayout() {
       <Tabs.Screen
         name="requests"
         options={{
-          title: 'Actions',
+          title: t('nav.actions'),
           tabBarIcon: ({ color, size }) => <Ionicons name="file-tray-full-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="messages"
         options={{
-          title: 'Messages',
+          title: t('nav.messages'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubbles-outline" size={size} color={color} />
           ),
@@ -100,7 +108,7 @@ export default function ManagerLayout() {
       <Tabs.Screen
         name="timecards"
         options={{
-          title: 'Timecards',
+          title: t('nav.timecards'),
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="time-outline" size={size} color={color} />

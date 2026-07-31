@@ -11,7 +11,13 @@ import {
   View,
 } from 'react-native';
 import { useAppData } from '../../contexts/AppDataContext';
-import { staffTypeLabel } from '../../lib/employees';
+import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../contexts/LocaleContext';
+import {
+  employeeDisplayName,
+  employeeVisibleInManagerStoreScope,
+  managerManagedRestaurantId,
+} from '../../lib/employees';
 import { supabase } from '../../lib/supabase';
 import {
   formatStaffRequestSubmittedDate,
@@ -32,6 +38,7 @@ type CalloutHistoryEntry = {
     roleClass?: string;
     start?: string;
     end?: string;
+    restaurantId?: string;
   };
   status?: string;
   acceptedBy?: { name?: string; role?: string } | null;
@@ -40,6 +47,7 @@ type CalloutHistoryEntry = {
   contactMethod?: string | null;
   originalWorkers?: string[];
   restaurantName?: string | null;
+  restaurantId?: string | null;
   voiceConfirmed?: boolean;
 };
 
@@ -51,17 +59,20 @@ function parseCalloutHistory(raw: unknown): CalloutHistoryEntry[] {
   );
 }
 
-function calloutContactLabel(method: string | null | undefined): string {
-  if (method === 'call') return 'Phone call';
-  if (method === 'text') return 'Text';
+function calloutContactLabel(method: string | null | undefined, t: (k: string) => string): string {
+  if (method === 'call') return t('requests.phoneCall');
+  if (method === 'text') return t('requests.textMsg');
   return method ? String(method) : '—';
 }
 
-function coverageStatusLine(item: CalloutHistoryEntry): { word: string; tone: 'pending' | 'ok' | 'muted' } {
-  if (item.status === 'pending') return { word: 'Awaiting response', tone: 'pending' };
-  if (item.status === 'accepted') return { word: 'Covered', tone: 'ok' };
-  if (item.voiceConfirmed) return { word: 'Covered (phone)', tone: 'ok' };
-  return { word: 'Covered', tone: 'ok' };
+function coverageStatusLine(
+  item: CalloutHistoryEntry,
+  t: (k: string) => string
+): { word: string; tone: 'pending' | 'ok' | 'muted' } {
+  if (item.status === 'pending') return { word: t('requests.awaitingResponse'), tone: 'pending' };
+  if (item.status === 'accepted') return { word: t('requests.covered'), tone: 'ok' };
+  if (item.voiceConfirmed) return { word: t('requests.coveredPhone'), tone: 'ok' };
+  return { word: t('requests.covered'), tone: 'ok' };
 }
 
 function matchesSearch(r: { employeeName?: string; summary?: string }, q: string): boolean {
@@ -70,7 +81,7 @@ function matchesSearch(r: { employeeName?: string; summary?: string }, q: string
   return blob.includes(q);
 }
 
-function matchesCoverageSearch(item: CalloutHistoryEntry, q: string): boolean {
+function matchesCoverageSearch(item: CalloutHistoryEntry, q: string, contactLabel: string): boolean {
   if (!q) return true;
   const sh = item.shift || {};
   const parts = [
@@ -80,7 +91,7 @@ function matchesCoverageSearch(item: CalloutHistoryEntry, q: string): boolean {
     ...(item.notified || []),
     item.acceptedBy?.name,
     item.restaurantName,
-    calloutContactLabel(item.contactMethod),
+    contactLabel,
   ];
   return parts.join(' ').toLowerCase().includes(q);
 }
@@ -107,14 +118,16 @@ type Row =
   | { key: string; kind: 'staff'; request: StaffRequestUi }
   | { key: string; kind: 'coverage'; item: CalloutHistoryEntry; index: number };
 
-const TYPE_CHIPS: { id: ActionTypeFilter; label: string }[] = [
-  { id: 'timeoff', label: 'Time Off' },
-  { id: 'swap', label: 'Shift Swaps' },
-  { id: 'callout', label: 'Callouts' },
+const TYPE_CHIPS: { id: ActionTypeFilter; labelKey: string }[] = [
+  { id: 'timeoff', labelKey: 'actions.timeOff' },
+  { id: 'swap', labelKey: 'actions.shiftSwaps' },
+  { id: 'callout', labelKey: 'actions.callouts' },
 ];
 
 export default function ManagerRequests() {
-  const { staffRequests, teamState, loading, error, refetch } = useAppData();
+  const { staffRequests, teamState, loading, error, refetch, employees, myEmployee } = useAppData();
+  const { role } = useAuth();
+  const { t, staffTypeLabel, statusLabel } = useI18n();
   const [typeFilter, setTypeFilter] = useState<ActionTypeFilter>('timeoff');
   const [statusByType, setStatusByType] = useState<Record<ActionTypeFilter, StatusFilter>>({
     timeoff: 'all',
@@ -133,6 +146,29 @@ export default function ManagerRequests() {
   const statusFilter = statusByType[typeFilter];
   const q = search.trim().toLowerCase();
 
+  const storeScope = useMemo(() => managerManagedRestaurantId(myEmployee, role), [myEmployee, role]);
+
+  const scopedNameSet = useMemo(() => {
+    if (!storeScope) return null;
+    const set = new Set<string>();
+    for (const e of employees) {
+      if (!employeeVisibleInManagerStoreScope(e, storeScope)) continue;
+      set.add(employeeDisplayName(e).trim().toLowerCase());
+    }
+    return set;
+  }, [employees, storeScope]);
+
+  const requestInScope = useCallback(
+    (r: StaffRequestUi) => {
+      if (!scopedNameSet) return true;
+      const name = String(r.employeeName || '')
+        .trim()
+        .toLowerCase();
+      return !!name && scopedNameSet.has(name);
+    },
+    [scopedNameSet]
+  );
+
   const calloutHistory = useMemo(() => parseCalloutHistory(teamState?.callout_history), [teamState]);
 
   const rows = useMemo((): Row[] => {
@@ -140,20 +176,31 @@ export default function ManagerRequests() {
     if (typeFilter === 'callout') {
       const empRows = staffRequests
         .filter((r) => requestMatchesType(r, 'callout'))
+        .filter((r) => requestInScope(r))
         .filter((r) => requestMatchesStatus(r, statusFilter))
         .filter((r) => matchesSearch(r, q))
         .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
 
       const cov = calloutHistory
         .filter((item) => coverageMatchesStatus(item, statusFilter))
-        .filter((item) => matchesCoverageSearch(item, q));
+        .filter((item) => {
+          if (!storeScope) return true;
+          const rid = String(item.shift?.restaurantId || item.restaurantId || '');
+          if (rid === 'rp-8' || rid === 'rp-9') return rid === storeScope;
+          const name = String(item.restaurantName || '').toLowerCase();
+          if (!name) return true;
+          if (storeScope === 'rp-8') return name.includes('8th');
+          if (storeScope === 'rp-9') return name.includes('9th');
+          return true;
+        })
+        .filter((item) => matchesCoverageSearch(item, q, calloutContactLabel(item.contactMethod, t)));
 
       if (empRows.length) {
-        out.push({ key: 'sec-emp', kind: 'section', title: 'Employee call-outs' });
+        out.push({ key: 'sec-emp', kind: 'section', title: t('requests.employeeCallouts') });
         empRows.forEach((r) => out.push({ key: `s-${r.id}`, kind: 'staff', request: r }));
       }
       if (cov.length) {
-        out.push({ key: 'sec-cov', kind: 'section', title: 'Coverage outreach' });
+        out.push({ key: 'sec-cov', kind: 'section', title: t('requests.coverageOutreach') });
         cov.forEach((item, index) => out.push({ key: `c-${index}`, kind: 'coverage', item, index }));
       }
       return out;
@@ -162,13 +209,14 @@ export default function ManagerRequests() {
     const list = staffRequests
       .filter((r) => r.type !== 'availability')
       .filter((r) => requestMatchesType(r, typeFilter))
+      .filter((r) => requestInScope(r))
       .filter((r) => requestMatchesStatus(r, statusFilter))
       .filter((r) => matchesSearch(r, q))
       .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
 
     list.forEach((r) => out.push({ key: `s-${r.id}`, kind: 'staff', request: r }));
     return out;
-  }, [staffRequests, typeFilter, statusFilter, q, calloutHistory]);
+  }, [staffRequests, typeFilter, statusFilter, q, calloutHistory, t, requestInScope, storeScope]);
 
   const setStatusForType = useCallback((s: StatusFilter) => {
     setStatusByType((prev) => ({ ...prev, [typeFilter]: s }));
@@ -176,32 +224,32 @@ export default function ManagerRequests() {
 
   const onApprove = async (req: StaffRequestUi) => {
     if (!supabase || !isCloudStaffRequestId(req.id)) {
-      Alert.alert('Cannot update', 'This request is not stored in Supabase yet.');
+      Alert.alert(t('requests.cannotUpdate'), t('requests.notInSupabase'));
       return;
     }
     setBusyId(req.id);
     const res = await updateStaffRequestStatus(supabase, req.id, 'approved');
     setBusyId(null);
-    if (!res.ok) Alert.alert('Update failed', res.message);
+    if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
     else void refetch({ silent: true });
   };
 
   const onDecline = async (id: string) => {
     if (!supabase || !isCloudStaffRequestId(id)) {
-      Alert.alert('Cannot update', 'This request is not stored in Supabase yet.');
+      Alert.alert(t('requests.cannotUpdate'), t('requests.notInSupabase'));
       return;
     }
     setBusyId(id);
     const res = await updateStaffRequestStatus(supabase, id, 'declined');
     setBusyId(null);
-    if (!res.ok) Alert.alert('Update failed', res.message);
+    if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
     else void refetch({ silent: true });
   };
 
   const typeLabel = (r: StaffRequestUi) => {
-    if (r.type === 'swap') return 'Shift Swap';
-    if (r.type === 'timeoff') return 'Time Off';
-    if (r.type === 'callout_request' || r.type === 'callout') return 'Employee call-out';
+    if (r.type === 'swap') return t('requests.shiftSwap');
+    if (r.type === 'timeoff') return t('actions.timeOff');
+    if (r.type === 'callout_request' || r.type === 'callout') return t('requests.employeeCallout');
     return r.type;
   };
 
@@ -217,7 +265,7 @@ export default function ManagerRequests() {
       const { item: c } = item;
       const sh = c.shift || {};
       const roleLabel = sh.groupLabel || sh.role || '';
-      const pres = coverageStatusLine(c);
+      const pres = coverageStatusLine(c, t);
       const reached = (c.notified || []).filter(Boolean);
       const covStatusStyle =
         pres.tone === 'pending' ? styles.status_pending : pres.tone === 'muted' ? styles.status_muted : styles.status_ok;
@@ -230,18 +278,22 @@ export default function ManagerRequests() {
           <Text style={styles.meta}>
             {sh.day} · {sh.timeLabel || (sh.start && sh.end ? `${sh.start} – ${sh.end}` : '')}
           </Text>
-          {c.restaurantName ? <Text style={styles.meta}>Location: {c.restaurantName}</Text> : null}
-          <Text style={styles.meta}>Outreach: {calloutContactLabel(c.contactMethod)}</Text>
+          {c.restaurantName ? (
+            <Text style={styles.meta}>{t('requests.locationLabel')}: {c.restaurantName}</Text>
+          ) : null}
+          <Text style={styles.meta}>{t('requests.outreach')}: {calloutContactLabel(c.contactMethod, t)}</Text>
           {c.originalWorkers?.length ? (
-            <Text style={styles.meta}>Originally scheduled: {c.originalWorkers.filter(Boolean).join(', ')}</Text>
+            <Text style={styles.meta}>
+              {t('requests.originallyScheduled')}: {c.originalWorkers.filter(Boolean).join(', ')}
+            </Text>
           ) : null}
           <Text style={styles.notes}>
-            Reached out to: {reached.length ? reached.join(', ') : '—'}
+            {t('requests.reachedOut')}: {reached.length ? reached.join(', ') : '—'}
           </Text>
           {c.acceptedBy?.name ? (
-            <Text style={styles.highlight}>Took the shift: {c.acceptedBy.name}</Text>
+            <Text style={styles.highlight}>{t('requests.tookShift')}: {c.acceptedBy.name}</Text>
           ) : (
-            <Text style={styles.mutedLine}>Took the shift: No one yet</Text>
+            <Text style={styles.mutedLine}>{t('requests.tookShift')}: {t('requests.noOneYet')}</Text>
           )}
         </View>
       );
@@ -249,8 +301,7 @@ export default function ManagerRequests() {
 
     const r = item.request;
     const roleLabel = staffTypeLabel(r.role);
-    const statusWord =
-      r.status === 'approved' ? 'Approved' : r.status === 'declined' ? 'Declined' : 'Pending';
+    const statusWord = statusLabel(r.status);
     const staffStatusStyle =
       r.status === 'approved' ? styles.status_ok : r.status === 'declined' ? styles.status_bad : styles.status_pending;
 
@@ -261,18 +312,19 @@ export default function ManagerRequests() {
           <Text style={[styles.statusPill, staffStatusStyle]}>{statusWord}</Text>
         </View>
         <Text style={styles.meta}>
-          {roleLabel} · {typeLabel(r)} · Submitted {formatStaffRequestSubmittedDate(r.submittedAt)}
+          {roleLabel} · {typeLabel(r)} · {t('requests.submitted')}{' '}
+          {formatStaffRequestSubmittedDate(r.submittedAt)}
         </Text>
         {r.type === 'swap' && r.offeredShiftLabel ? (
-          <Text style={styles.highlight}>Offered shift: {r.offeredShiftLabel}</Text>
+          <Text style={styles.highlight}>{t('requests.offeredShift')}: {r.offeredShiftLabel}</Text>
         ) : null}
         {r.type === 'swap' && r.swapOfferId ? (
           <Text style={styles.meta}>
             {(() => {
               const offer = staffRequests.find((o) => o.id === r.swapOfferId);
               return offer?.offeredShiftLabel
-                ? `Accepting offer: ${offer.offeredShiftLabel}`
-                : `Accepting offer #${r.swapOfferId.slice(0, 8)}…`;
+                ? `${t('requests.acceptingOffer')}: ${offer.offeredShiftLabel}`
+                : `${t('requests.acceptingOffer')} #${r.swapOfferId.slice(0, 8)}…`;
             })()}
           </Text>
         ) : null}
@@ -284,14 +336,14 @@ export default function ManagerRequests() {
               disabled={busyId === r.id}
               onPress={() => void onApprove(r)}
             >
-              <Text style={styles.btnPrimaryText}>Approve</Text>
+              <Text style={styles.btnPrimaryText}>{t('common.approve')}</Text>
             </Pressable>
             <Pressable
               style={[styles.btnGhost, busyId === r.id && styles.btnDisabled]}
               disabled={busyId === r.id}
               onPress={() => void onDecline(r.id)}
             >
-              <Text style={styles.btnGhostText}>Decline</Text>
+              <Text style={styles.btnGhostText}>{t('common.decline')}</Text>
             </Pressable>
           </View>
         ) : null}
@@ -300,9 +352,7 @@ export default function ManagerRequests() {
   };
 
   const empty =
-    typeFilter === 'callout'
-      ? 'No employee call-outs or coverage campaigns match this filter.'
-      : 'No actions match this type, status, or search.';
+    typeFilter === 'callout' ? t('requests.emptyCallout') : t('requests.emptyFilter');
 
   return (
     <View style={styles.screen}>
@@ -325,7 +375,7 @@ export default function ManagerRequests() {
                 numberOfLines={1}
                 ellipsizeMode="tail"
               >
-                {c.label}
+                {t(c.labelKey)}
               </Text>
             </Pressable>
           ))}
@@ -340,7 +390,7 @@ export default function ManagerRequests() {
               style={[styles.filterChip, statusFilter === s && styles.chipActive]}
             >
               <Text style={[styles.filterChipText, statusFilter === s && styles.chipTextActive]}>
-                {s === 'all' ? 'All' : s === 'pending' ? 'Pending' : 'Closed'}
+                {s === 'all' ? t('common.all') : s === 'pending' ? t('status.pending') : t('common.closed')}
               </Text>
             </Pressable>
           ))}
@@ -350,7 +400,7 @@ export default function ManagerRequests() {
         style={styles.search}
         value={search}
         onChangeText={setSearch}
-        placeholder="Search employee name"
+        placeholder={t('requests.searchEmployee')}
         placeholderTextColor="#888"
         autoCapitalize="none"
         autoCorrect={false}

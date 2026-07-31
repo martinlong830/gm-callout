@@ -3,8 +3,9 @@ import { useFocusEffect, useLocalSearchParams, useRouter, useNavigation } from '
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAppData } from '../../../contexts/AppDataContext';
+import { useI18n } from '../../../contexts/LocaleContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
-import { employeeDisplayName, type EmployeeRow } from '../../../lib/employees';
+import { employeeDisplayName, employeeIsMultiLocation, type EmployeeRow } from '../../../lib/employees';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
 import { PayWeekPicker } from '../../../components/PayWeekPicker';
 import {
@@ -22,9 +23,11 @@ import {
   formatShiftPayLabel,
   scheduledPaidMinutes,
   shiftPayForShiftRow,
+  shiftRowAttributionRestaurant,
   type RosterTotals,
   type ShiftDayRow,
 } from '../../../lib/timecards/engine';
+import { restaurantShortLabelForId } from '../../../lib/timecards/restaurantAttribution';
 import {
   availableOffScheduleDayOptions,
   addOffScheduleDay,
@@ -85,6 +88,7 @@ function formatDayClockInOutLabel(entries: TimeClockEntry[], empId: string, iso:
 }
 
 export default function TimecardsEmployeeScreen() {
+  const { t } = useI18n();
   const { employeeId } = useLocalSearchParams<{ employeeId: string }>();
   const router = useRouter();
   const navigation = useNavigation();
@@ -215,7 +219,7 @@ export default function TimecardsEmployeeScreen() {
   if (!emp) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.muted}>Employee not found.</Text>
+        <Text style={styles.muted}>{t('timecards.employeeNotFound')}</Text>
       </View>
     );
   }
@@ -240,7 +244,7 @@ export default function TimecardsEmployeeScreen() {
       ) : null}
 
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Shifts this pay week</Text>
+        <Text style={styles.sectionTitle}>{t('timecards.shiftsThisWeek')}</Text>
         {availableDays.length ? (
           <View style={styles.addDayWrap}>
             <Pressable
@@ -268,7 +272,7 @@ export default function TimecardsEmployeeScreen() {
         ) : null}
       </View>
       {!shifts.length ? (
-        <Text style={styles.muted}>No shifts this pay week yet. Use + to add an off-schedule day.</Text>
+        <Text style={styles.muted}>{t('timecards.noShiftsAdd')}</Text>
       ) : (
         shifts.map((row) => (
           <ShiftRowCard
@@ -334,6 +338,7 @@ function ShiftRowCard({
   onRemoved: () => Promise<void>;
   onPress: () => void;
 }) {
+  const { t } = useI18n();
   const s = row.shift;
   const dayEntries = findEntriesForDay(entries, empId, row.iso);
   const recMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
@@ -343,10 +348,14 @@ function ShiftRowCard({
   const payLabel = formatShiftPayLabel(shiftPay);
   const rateLabel = formatHourlyRateLabel(emp);
   const dateLabel = formatPayWeekDateLabel(row.iso);
-  const shiftTime = offSchedule ? 'Off schedule' : compactShiftTimeLabel(s);
+  const shiftTime = offSchedule ? t('timecards.offSchedule') : compactShiftTimeLabel(s);
   const when =
     (row.isToday ? 'Today · ' : row.isUpcoming ? 'Upcoming · ' : '') + shiftTime;
   const inOutLabel = formatDayClockInOutLabel(entries, empId, row.iso);
+  const showLocation = employeeIsMultiLocation(emp.usualRestaurant);
+  const locationLabel = showLocation
+    ? restaurantShortLabelForId(shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx))
+    : '';
   const dayLeave = getEffectiveDayLeaveSync(
     emp,
     employeeDisplayName(emp),
@@ -365,24 +374,24 @@ function ShiftRowCard({
 
   const confirmRemove = () => {
     const message = offSchedule
-      ? 'Remove this off-schedule day and clear all punches, leave, and tips?'
-      : 'Clear all punches, leave, and tips for this shift day? The scheduled shift will stay with 0h recorded.';
-    Alert.alert('Remove shift day', message, [
-      { text: 'Cancel', style: 'cancel' },
+      ? t('timecards.removeOffSchedule')
+      : t('timecards.clearShiftDay');
+    Alert.alert(t('timecards.removeShiftDay'), message, [
+      { text: t('common.cancel'), style: 'cancel' },
       {
-        text: 'Remove',
+        text: t('common.remove'),
         style: 'destructive',
         onPress: () => {
           void (async () => {
             if (!supabase) {
-              Alert.alert('Remove failed', 'Cloud sign-in is required.');
+              Alert.alert(t('timecards.removeFailed'), t('timecards.cloudRequired'));
               return;
             }
             const res = await removeShiftDay(supabase, emp, row, entries, bounds, {
               clearDishwasherTip: isDeliveryDishwasherStaff(emp),
             });
             if (!res.ok) {
-              Alert.alert('Remove failed', res.message);
+              Alert.alert(t('timecards.removeFailed'), res.message);
               return;
             }
             await onRemoved();
@@ -401,7 +410,7 @@ function ShiftRowCard({
         </View>
         <Pressable
           style={styles.removeDayBtn}
-          accessibilityLabel="Remove shift day"
+          accessibilityLabel={t('timecards.removeShiftDay')}
           accessibilityRole="button"
           hitSlop={8}
           onPress={(e) => {
@@ -412,27 +421,38 @@ function ShiftRowCard({
           <Ionicons name="trash-outline" size={18} color="#94a3b8" />
         </Pressable>
       </View>
-      <Text style={styles.shiftMeta}>In / Out {inOutLabel}</Text>
+      {showLocation ? (
+        <Text style={styles.shiftMeta}>
+          {t('common.location')} {locationLabel}
+        </Text>
+      ) : null}
       <Text style={styles.shiftMeta}>
-        Sched {offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)) + 'h'} · Rec{' '}
-        {formatRecordedHoursLabel(recMins)}
-        {dayEntries.length > 1 ? ` · ${dayEntries.length} punches` : ''}
+        {t('timecards.inOut')} {inOutLabel}
       </Text>
-      <Text style={styles.shiftMeta}>Break {breakLabel}</Text>
+      <Text style={styles.shiftMeta}>
+        {t('timecards.scheduled')} {offSchedule ? '—' : decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)) + 'h'} ·{' '}
+        {t('timecards.rec')} {formatRecordedHoursLabel(recMins)}
+        {dayEntries.length > 1 ? ` · ${dayEntries.length} ${t('timecards.punches')}` : ''}
+      </Text>
+      <Text style={styles.shiftMeta}>
+        {t('timecards.break')} {breakLabel}
+      </Text>
       <Text style={styles.shiftMeta}>
         VL {formatDayLeaveHoursLabel(dayLeave.vl)} · SL {formatDayLeaveHoursLabel(dayLeave.sl)}
       </Text>
       {showDishwasherTips ? (
         <Text style={styles.shiftMeta}>
-          Net delivery tip{' '}
+          {t('timecards.netDeliveryTip')}{' '}
           {dayDishwasherTipNet > 0 ? formatPayAmount(dayDishwasherTipNet) : '—'}
         </Text>
       ) : null}
       {dayCoverage > 0 ? (
-        <Text style={styles.shiftMeta}>Coverage {formatPayAmount(dayCoverage)}</Text>
+        <Text style={styles.shiftMeta}>
+          {t('timecards.coverage')} {formatPayAmount(dayCoverage)}
+        </Text>
       ) : null}
       <Text style={styles.shiftPay}>
-        Pay {payLabel} · Pay/hr {rateLabel}
+        {t('timecards.pay')} {payLabel} · {t('timecards.payHr')} {rateLabel}
       </Text>
     </Pressable>
   );

@@ -55,11 +55,11 @@ async function selectEmployees(
 
 export async function hydrateFromSupabase(
   sb: SupabaseClient,
-  opts?: { role?: 'manager' | 'employee' | null; userId?: string | null }
+  opts?: { role?: 'manager' | 'admin' | 'employee' | null; userId?: string | null }
 ): Promise<HydrationResult> {
   const teamStateId = await readStoredTeamStateId();
   const companyId = await resolveCompanyIdForEmployees();
-  const isManager = opts?.role === 'manager';
+  const isManager = opts?.role === 'manager' || opts?.role === 'admin';
   const teamCols = isManager ? TEAM_STATE_MANAGER_COLUMNS : TEAM_STATE_EMPLOYEE_COLUMNS;
   const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
   const empFallback = isManager ? EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL : EMPLOYEE_LIST_COLUMNS_NO_EMAIL;
@@ -121,10 +121,10 @@ export async function hydrateFromSupabase(
 
 export async function fetchEmployeesOnly(
   sb: SupabaseClient,
-  opts?: { role?: 'manager' | 'employee' | null; userId?: string | null }
+  opts?: { role?: 'manager' | 'admin' | 'employee' | null; userId?: string | null }
 ): Promise<EmployeeRow[]> {
   const companyId = await resolveCompanyIdForEmployees();
-  const isManager = opts?.role === 'manager';
+  const isManager = opts?.role === 'manager' || opts?.role === 'admin';
   const empCols = isManager ? EMPLOYEE_MANAGER_COLUMNS : EMPLOYEE_LIST_COLUMNS;
   const empFallback = isManager ? EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL : EMPLOYEE_LIST_COLUMNS_NO_EMAIL;
   const empRes = await selectEmployees(sb, empCols, empFallback, companyId);

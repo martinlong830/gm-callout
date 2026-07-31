@@ -50,12 +50,21 @@
   var scheduleContextReady = null;
   var locationLabelEl = document.getElementById('timeclockLocationLabel');
 
-  var MODE_LABELS = {
-    in: 'Clock in',
-    out: 'Clock out',
-    break_start: 'Start break',
-    break_end: 'End break',
-  };
+  function t(key, vars) {
+    if (typeof window !== 'undefined' && window.gmI18n && window.gmI18n.t) {
+      return window.gmI18n.t(key, vars);
+    }
+    return key;
+  }
+
+  function modeLabels() {
+    return {
+      in: t('timeclock.clockIn'),
+      out: t('timeclock.clockOut'),
+      break_start: t('timeclock.breakStart'),
+      break_end: t('timeclock.breakEnd'),
+    };
+  }
 
   function sb() {
     return window.gmSupabase;
@@ -85,7 +94,7 @@
       client.rpc(fn, args),
       new Promise(function (_resolve, reject) {
         setTimeout(function () {
-          reject(new Error('Request timed out. Tap Clear and try again.'));
+          reject(new Error(t('timeclock.requestTimeout')));
         }, RPC_TIMEOUT_MS);
       }),
     ]);
@@ -209,7 +218,7 @@
     watchdogTimer = setInterval(function () {
       var app = document.getElementById('appTimeclock');
       if (!app || app.hidden) return;
-      unlockIfStuck('Connection timed out. Tap Clear and try again.');
+      unlockIfStuck(t('timeclock.connectionTimeout'));
     }, 5000);
   }
 
@@ -236,7 +245,7 @@
 
   function syncIntro() {
     if (!introEl) return;
-    introEl.textContent = 'Enter your 4-digit PIN.';
+    introEl.textContent = t('timeclock.enterPin');
   }
 
   function setEnterUiVisible(show) {
@@ -275,16 +284,17 @@
 
   function hintForActions(actions) {
     if (actions.length === 1 && actions[0] === 'in') {
-      return 'Confirm clock in to start your shift.';
+      return t('timeclock.confirmClockIn');
     }
     if (actions.indexOf('break_end') !== -1) {
-      return 'Choose clock out or end break.';
+      return t('timeclock.chooseOutOrBreakEnd');
     }
-    return 'Choose clock out or start break.';
+    return t('timeclock.chooseOutOrBreakStart');
   }
 
   function renderConfirmActions(actions) {
     if (!actionBtnsEl) return;
+    var labels = modeLabels();
     actionBtnsEl.innerHTML = actions
       .map(function (action) {
         var cls =
@@ -297,7 +307,7 @@
           '" data-tc-action="' +
           action +
           '">' +
-          (MODE_LABELS[action] || action) +
+          (labels[action] || action) +
           '</button>'
         );
       })
@@ -329,17 +339,17 @@
   async function lookupPin() {
     var client = sb();
     if (!client) {
-      setStatus('Supabase is not configured.', 'err');
+      setStatus(t('timeclock.supabaseMissing'), 'err');
       clearPinSoon(4000);
       return;
     }
     setBusy(true);
-    setStatus('Checking PIN…', null);
+    setStatus(t('timeclock.checkingPin'), null);
     try {
       await ensureScheduleContext();
       var res = await rpcWithTimeout(client, 'timeclock_lookup_pin', { pin_input: pinBuffer });
       if (res.error) {
-        setStatus(res.error.message || 'Could not verify PIN.', 'err');
+        setStatus(res.error.message || t('timeclock.couldNotVerify'), 'err');
         clearPinSoon(4000);
         return;
       }
@@ -347,10 +357,10 @@
       if (!data || data.ok !== true) {
         var err =
           data && data.error === 'unknown_pin'
-            ? 'PIN not recognized. Ask your manager.'
+            ? t('timeclock.pinNotRecognized')
             : data && data.error === 'invalid_pin'
-              ? 'Enter a 4-digit PIN.'
-              : 'Could not verify PIN.';
+              ? t('timeclock.enterFourDigit')
+              : t('timeclock.couldNotVerify');
         setStatus(err, 'err');
         clearPinSoon(4000);
         return;
@@ -378,7 +388,7 @@
     punchMode = action;
     var client = sb();
     if (!client) {
-      setStatus('Supabase is not configured.', 'err');
+      setStatus(t('timeclock.supabaseMissing'), 'err');
       return;
     }
     setBusy(true);
@@ -387,7 +397,7 @@
         btn.disabled = true;
       });
     }
-    setStatus('Saving…', null);
+    setStatus(t('timeclock.saving'), null);
     try {
       await ensureScheduleContext();
       var punchCtx = resolvePunchContext(
@@ -426,19 +436,20 @@
       }
       var data = res.data;
       if (!data || data.ok !== true) {
-        var errMsg = 'Could not record punch.';
+        var errMsg = t('timeclock.punchFailed');
+        var empFallback = t('common.employee');
         if (data && data.error === 'already_in') {
-          errMsg = (data.display_name || 'Employee') + ' is already clocked in.';
+          errMsg = t('timeclock.alreadyIn', { name: data.display_name || empFallback });
         } else if (data && data.error === 'not_in') {
-          errMsg = (data.display_name || 'Employee') + ' is not clocked in.';
+          errMsg = t('timeclock.notIn', { name: data.display_name || empFallback });
         } else if (data && data.error === 'already_on_break') {
-          errMsg = (data.display_name || 'Employee') + ' is already on break.';
+          errMsg = t('timeclock.alreadyOnBreak', { name: data.display_name || empFallback });
         } else if (data && data.error === 'not_on_break') {
-          errMsg = (data.display_name || 'Employee') + ' is not on break.';
+          errMsg = t('timeclock.notOnBreak', { name: data.display_name || empFallback });
         } else if (data && data.error === 'unknown_pin') {
-          errMsg = 'PIN not recognized.';
+          errMsg = t('timeclock.pinNotRecognized');
         } else if (data && data.error === 'invalid_pin') {
-          errMsg = 'Enter a 4-digit PIN.';
+          errMsg = t('timeclock.enterFourDigit');
         }
         setStatus(errMsg, 'err');
         return;
@@ -446,12 +457,12 @@
       var name = String(data.display_name || 'Employee').trim();
       var verb =
         data.action === 'out'
-          ? 'Clocked out'
+          ? t('timeclock.successOut')
           : data.action === 'break_start'
-            ? 'Break started'
+            ? t('timeclock.breakStarted')
             : data.action === 'break_end'
-              ? 'Break ended'
-              : 'Clocked in';
+              ? t('timeclock.breakEnded')
+              : t('timeclock.successIn');
       setStatus(verb + ' — ' + name, 'ok');
       if (
         data.action === 'in' &&
@@ -597,7 +608,7 @@
         var app = document.getElementById('appTimeclock');
         if (!app || app.hidden) return;
         if (document.visibilityState === 'visible') {
-          unlockIfStuck('Screen was idle. Tap Clear if the keypad does not respond.');
+          unlockIfStuck(t('timeclock.idleScreen'));
           if (phase === 'enter') armHiddenInputForEntry();
         } else {
           disarmHiddenInput();
@@ -627,6 +638,18 @@
       /* ignore */
     }
   }
+
+  window.gmCalloutTimeclockOnLocaleChange = function () {
+    syncIntro();
+    if (phase === 'confirm' && pendingLookup && actionBtnsEl) {
+      var actions = availableActionsForLookup(pendingLookup);
+      renderConfirmActions(actions);
+      if (confirmHintEl) confirmHintEl.textContent = hintForActions(actions);
+    }
+    if (typeof window.gmI18n !== 'undefined' && window.gmI18n.applyDomI18n) {
+      window.gmI18n.applyDomI18n(document.getElementById('appTimeclock') || document);
+    }
+  };
 
   window.gmCalloutTimeclockBootstrap = function () {
     refreshDeviceRestaurantId();

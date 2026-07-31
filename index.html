@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=account-support-link-1" />
+  <link rel="stylesheet" href="styles.css?v=notif-panel-z-1" />
   <script>
     /* Login shell is interactive before deferred app bundles finish loading. */
   </script>
@@ -28,18 +28,18 @@
       </div>
       <h1 class="login-title" id="loginTitle">Shiflow</h1>
       <div id="landingPanel">
-        <p class="login-subtitle">Staff scheduling for restaurants</p>
+        <p class="login-subtitle" data-i18n="auth.tagline">Staff scheduling for restaurants</p>
         <div class="landing-actions">
-          <button type="button" class="btn btn-primary btn-block login-submit" id="showAccessCodePanelBtn">Log in</button>
-          <button type="button" class="btn btn-secondary btn-block landing-secondary-btn" id="showCreateCompanyPanelBtn">Create company</button>
+          <button type="button" class="btn btn-primary btn-block login-submit" id="showAccessCodePanelBtn" data-i18n="auth.logIn">Log in</button>
+          <button type="button" class="btn btn-secondary btn-block landing-secondary-btn" id="showCreateCompanyPanelBtn" data-i18n="auth.createCompany">Create company</button>
         </div>
       </div>
       <div id="accessCodePanel" hidden>
-        <p class="login-subtitle">Enter your company access code</p>
-        <p class="login-hint">Your manager can share this code with you.</p>
+        <p class="login-subtitle" data-i18n="auth.enterAccessCode">Enter your company access code</p>
+        <p class="login-hint" data-i18n="auth.accessCodeHint">Your manager can share this code with you.</p>
         <form id="accessCodeForm" class="login-form" autocomplete="off" novalidate>
           <label class="login-field">
-            <span class="login-label">Access code</span>
+            <span class="login-label"><span data-i18n="auth.accessCode">Access code</span></span>
             <input
               type="text"
               id="accessCodeInput"
@@ -51,60 +51,60 @@
             />
           </label>
           <p class="login-error" id="accessCodeError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Continue</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="common.continue">Continue</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLandingFromAccessCodeBtn">Back</button>
+          <button type="button" class="login-link-btn" id="showLandingFromAccessCodeBtn" data-i18n="common.back">Back</button>
         </p>
       </div>
       <div id="createCompanyPanel" hidden>
-        <p class="login-subtitle">Create your company</p>
-        <p class="login-hint">Set up Shiflow for your team. We will email you to confirm before you can sign in.</p>
+        <p class="login-subtitle" data-i18n="auth.createCompanyTitle">Create your company</p>
+        <p class="login-hint" data-i18n="auth.createCompanyHint">Set up Shiflow for your team. We will email you to confirm before you can sign in.</p>
         <form id="createCompanyForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Company name</span>
+            <span class="login-label"><span data-i18n="auth.companyName">Company name</span></span>
             <input type="text" id="createCompanyName" class="login-input" required maxlength="120" enterkeyhint="next" />
           </label>
           <label class="login-field">
-            <span class="login-label">Your username</span>
+            <span class="login-label"><span data-i18n="auth.yourUsername">Your username</span></span>
             <input type="text" id="createCompanyUsername" class="login-input" required autocomplete="username" maxlength="80" enterkeyhint="next" />
           </label>
           <label class="login-field">
-            <span class="login-label">Your email</span>
+            <span class="login-label"><span data-i18n="auth.yourEmail">Your email</span></span>
             <input type="email" id="createCompanyEmail" class="login-input" required autocomplete="email" inputmode="email" maxlength="120" enterkeyhint="next" />
           </label>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input type="password" id="createCompanyPassword" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="next" />
           </label>
           <label class="login-field">
-            <span class="login-label">Confirm password</span>
+            <span class="login-label"><span data-i18n="auth.confirmPassword">Confirm password</span></span>
             <input type="password" id="createCompanyPasswordConfirm" class="login-input" required autocomplete="new-password" minlength="4" enterkeyhint="done" />
           </label>
           <p class="login-error" id="createCompanyError" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary btn-block login-submit">Create company</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLandingFromCreateCompanyBtn">Back</button>
+          <button type="button" class="login-link-btn" id="showLandingFromCreateCompanyBtn" data-i18n="common.back">Back</button>
         </p>
       </div>
       <div id="companyPendingPanel" hidden>
-        <p class="login-subtitle">Confirm your email</p>
-        <p class="login-hint" id="companyPendingMessage">
+        <p class="login-subtitle" data-i18n="auth.confirmEmail">Confirm your email</p>
+        <p class="login-hint" id="companyPendingMessage" data-i18n-html="auth.pendingMessageHtml">
           We sent a confirmation link to your email. After you confirm, you will set your company access code, then use <strong>Log in</strong> with that code, your username, and password.
         </p>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLandingFromPendingBtn">Back to home</button>
+          <button type="button" class="login-link-btn" id="showLandingFromPendingBtn" data-i18n="auth.backToHome">Back to home</button>
         </p>
       </div>
       <div id="setupAccessCodePanel" hidden>
-        <p class="login-subtitle">Set your company access code</p>
-        <p class="login-hint">
+        <p class="login-subtitle" data-i18n="auth.setupAccessCode">Set your company access code</p>
+        <p class="login-hint" data-i18n="auth.setupAccessCodeHint">
           Choose a unique access code. Your team will enter it before signing in with their name and password.
         </p>
         <form id="setupAccessCodeForm" class="login-form" autocomplete="off" novalidate>
           <label class="login-field">
-            <span class="login-label">Company access code</span>
+            <span class="login-label"><span data-i18n="auth.companyAccessCode">Company access code</span></span>
             <input
               type="text"
               id="setupAccessCodeInput"
@@ -120,17 +120,17 @@
             />
           </label>
           <p class="login-error" id="setupAccessCodeError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Save access code</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.saveAccessCode">Save access code</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLandingFromSetupAccessCodeBtn">Back to home</button>
+          <button type="button" class="login-link-btn" id="showLandingFromSetupAccessCodeBtn" data-i18n="auth.backToHome">Back to home</button>
         </p>
       </div>
       <div id="loginPanel" hidden>
-        <p class="login-subtitle">Sign in to continue</p>
+        <p class="login-subtitle" data-i18n="auth.signInContinue">Sign in to continue</p>
         <form id="loginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Name</span>
+            <span class="login-label"><span data-i18n="common.name">Name</span></span>
             <input
               type="text"
               id="loginEmail"
@@ -142,7 +142,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input
               type="password"
               id="loginPassword"
@@ -154,35 +154,35 @@
             />
           </label>
           <p class="login-error" id="loginError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Sign in</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.signIn">Sign in</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLandingFromLoginBtn">Back to home</button>
+          <button type="button" class="login-link-btn" id="showLandingFromLoginBtn" data-i18n="auth.backToHome">Back to home</button>
         </p>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showForgotPasswordPanelBtn">Forgot password?</button>
+          <button type="button" class="login-link-btn" id="showForgotPasswordPanelBtn" data-i18n="auth.forgotPassword">Forgot password?</button>
         </p>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showRegisterPanelBtn">Create employee account</button>
+          <button type="button" class="login-link-btn" id="showRegisterPanelBtn" data-i18n="auth.createEmployeeAccount">Create employee account</button>
         </p>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showManagerRegisterPanelBtn">Create manager account</button>
+          <button type="button" class="login-link-btn" id="showManagerRegisterPanelBtn" data-i18n="auth.createManagerAccount">Create manager account</button>
         </p>
         <p class="login-device-signin">
-          <button type="button" class="login-device-link" id="showTimeclockLoginPanelBtn">
+          <button type="button" class="login-device-link" id="showTimeclockLoginPanelBtn" data-i18n="auth.timeclockTabletSignIn">
             Time clock tablet sign in
           </button>
         </p>
       </div>
       <div id="registerPanel" hidden>
-        <p class="login-subtitle">Create your employee account</p>
-        <p class="login-hint">
+        <p class="login-subtitle" data-i18n="auth.registerEmployeeTitle">Create your employee account</p>
+        <p class="login-hint" data-i18n-html="auth.registerEmployeeHint">
           Choose a <strong>name</strong> and password for sign-in. Your manager will see you on the roster.
         </p>
         <form id="registerForm" class="login-form" autocomplete="on" novalidate>
           <div class="login-form-row">
             <label class="login-field">
-              <span class="login-label">First name</span>
+              <span class="login-label"><span data-i18n="auth.firstName">First name</span></span>
               <input
                 type="text"
                 id="regFirstName"
@@ -197,7 +197,7 @@
               />
             </label>
             <label class="login-field">
-              <span class="login-label">Last name</span>
+              <span class="login-label"><span data-i18n="auth.lastName">Last name</span></span>
               <input
                 type="text"
                 id="regLastName"
@@ -213,7 +213,7 @@
             </label>
           </div>
           <label class="login-field">
-            <span class="login-label">Phone number</span>
+            <span class="login-label"><span data-i18n="auth.phoneNumber">Phone number</span></span>
             <input
               type="tel"
               id="regPhone"
@@ -226,7 +226,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Recovery email</span>
+            <span class="login-label"><span data-i18n="auth.recoveryEmail">Recovery email</span></span>
             <input
               type="email"
               id="regRecoveryEmail"
@@ -238,18 +238,18 @@
               enterkeyhint="next"
             />
           </label>
-          <p class="login-hint login-hint--tight">Used to reset your password if you forget it.</p>
+          <p class="login-hint login-hint--tight" data-i18n="auth.recoveryEmailHint">Used to reset your password if you forget it.</p>
           <label class="login-field">
-            <span class="login-label">Staff type / role type</span>
+            <span class="login-label"><span data-i18n="auth.staffTypeRole">Staff type / role type</span></span>
             <select id="regStaffType" class="login-input" required enterkeyhint="next">
-              <option value="">Select…</option>
-              <option value="Kitchen">Back of the House</option>
-              <option value="Bartender">Front of the House</option>
-              <option value="Server">Delivery/Dishwasher</option>
+              <option value="" data-i18n="common.select">Select…</option>
+              <option value="Kitchen" data-i18n="staff.kitchen">Back of the House</option>
+              <option value="Bartender" data-i18n="staff.bartender">Front of the House</option>
+              <option value="Server" data-i18n="staff.server">Delivery/Dishwasher</option>
             </select>
           </label>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input
               type="password"
               id="regPassword"
@@ -261,7 +261,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Confirm password</span>
+            <span class="login-label"><span data-i18n="auth.confirmPassword">Confirm password</span></span>
             <input
               type="password"
               id="regPasswordConfirm"
@@ -273,20 +273,20 @@
             />
           </label>
           <p class="login-error" id="registerError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Create account</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.createAccount">Create account</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginPanelBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginPanelBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
       <div id="managerRegisterPanel" hidden>
-        <p class="login-subtitle">Create manager account</p>
-        <p class="login-hint">
+        <p class="login-subtitle" data-i18n="auth.registerManagerTitle">Create manager account</p>
+        <p class="login-hint" data-i18n="auth.registerManagerHint">
           Enter the access code, your name, and password.
         </p>
         <form id="managerRegisterForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Access code</span>
+            <span class="login-label"><span data-i18n="auth.accessCode">Access code</span></span>
             <input
               type="password"
               id="mgrRegCode"
@@ -299,7 +299,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Name</span>
+            <span class="login-label"><span data-i18n="common.name">Name</span></span>
             <input
               type="text"
               id="mgrRegName"
@@ -310,7 +310,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Recovery email</span>
+            <span class="login-label"><span data-i18n="auth.recoveryEmail">Recovery email</span></span>
             <input
               type="email"
               id="mgrRegRecoveryEmail"
@@ -322,9 +322,9 @@
               enterkeyhint="next"
             />
           </label>
-          <p class="login-hint login-hint--tight">Used to reset your password if you forget it.</p>
+          <p class="login-hint login-hint--tight" data-i18n="auth.recoveryEmailHint">Used to reset your password if you forget it.</p>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input
               type="password"
               id="mgrRegPassword"
@@ -336,7 +336,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Confirm password</span>
+            <span class="login-label"><span data-i18n="auth.confirmPassword">Confirm password</span></span>
             <input
               type="password"
               id="mgrRegPasswordConfirm"
@@ -348,21 +348,21 @@
             />
           </label>
           <p class="login-error" id="managerRegisterError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Create manager account</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.createManagerAccount">Create manager account</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginFromManagerRegisterBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginFromManagerRegisterBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
       <div id="forgotPasswordPanel" hidden>
-        <p class="login-subtitle">Reset password</p>
-        <p class="login-hint">
+        <p class="login-subtitle" data-i18n="auth.forgotTitle">Reset password</p>
+        <p class="login-hint" data-i18n-html="auth.forgotHintHtml">
           Enter your <strong>sign-in name</strong> (same as on the login screen). We will email a reset link to the
           recovery email saved on that account. Add or change it after sign-in under <strong>Account</strong>.
         </p>
         <form id="forgotPasswordForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Name</span>
+            <span class="login-label"><span data-i18n="common.name">Name</span></span>
             <input
               type="text"
               id="forgotPasswordLoginName"
@@ -375,18 +375,18 @@
             />
           </label>
           <p class="login-error" id="forgotPasswordError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Send reset link</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.sendResetLink">Send reset link</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginFromForgotPasswordBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginFromForgotPasswordBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
       <div id="resetPasswordPanel" hidden>
-        <p class="login-subtitle">Choose a new password</p>
+        <p class="login-subtitle" data-i18n="auth.resetTitle">Choose a new password</p>
         <p class="login-hint" id="resetPasswordHint">Set a new password for your account.</p>
         <form id="resetPasswordForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">New password</span>
+            <span class="login-label"><span data-i18n="auth.newPassword">New password</span></span>
             <input
               type="password"
               id="resetPasswordNew"
@@ -398,7 +398,7 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Confirm new password</span>
+            <span class="login-label"><span data-i18n="auth.confirmNewPassword">Confirm new password</span></span>
             <input
               type="password"
               id="resetPasswordConfirm"
@@ -410,58 +410,58 @@
             />
           </label>
           <p class="login-error" id="resetPasswordError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Update password</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.updatePassword">Update password</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginFromResetPasswordBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginFromResetPasswordBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
       <div id="timeclockLoginPanel" hidden>
-        <p class="login-subtitle" id="timeclockLoginSubtitle">Time clock device</p>
+        <p class="login-subtitle" id="timeclockLoginSubtitle" data-i18n="auth.timeclockDevice">Time clock device</p>
         <div class="login-field timeclock-login-location">
-          <span class="login-label">Location</span>
-          <div class="timeclock-location-toggle" id="timeclockLoginLocationToggle" role="group" aria-label="Store location">
+          <span class="login-label"><span data-i18n="common.location">Location</span></span>
+          <div class="timeclock-location-toggle" id="timeclockLoginLocationToggle" role="group" data-i18n-aria="auth.storeLocation" aria-label="Store location">
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
           </div>
         </div>
-        <p class="login-hint">
+        <p class="login-hint" data-i18n-html="auth.timeclockHint">
           Sign in with your <strong>device name</strong> and password (no email needed). Staff use their <strong>4-digit PIN</strong> on the next screen.
         </p>
         <form id="timeclockLoginForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Device name</span>
-            <input type="text" id="timeclockLoginName" class="login-input" required autocomplete="username" placeholder="e.g. Front counter iPad" />
+            <span class="login-label"><span data-i18n="auth.deviceName">Device name</span></span>
+            <input type="text" id="timeclockLoginName" class="login-input" required autocomplete="username" data-i18n-placeholder="auth.deviceNamePlaceholder" placeholder="e.g. Front counter iPad" />
           </label>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input type="password" id="timeclockLoginPassword" class="login-input" required autocomplete="current-password" />
           </label>
           <p class="login-error" id="timeclockLoginError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Open time clock</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.openTimeClock">Open time clock</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showTimeclockRegisterPanelBtn">Register time clock device</button>
+          <button type="button" class="login-link-btn" id="showTimeclockRegisterPanelBtn" data-i18n="auth.timeclockRegister">Register time clock device</button>
         </p>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginFromTimeclockPanelBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginFromTimeclockPanelBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
       <div id="timeclockRegisterPanel" hidden>
-        <p class="login-subtitle" id="timeclockRegisterSubtitle">Register time clock device</p>
+        <p class="login-subtitle" id="timeclockRegisterSubtitle" data-i18n="auth.timeclockRegister">Register time clock device</p>
         <div class="login-field timeclock-login-location">
-          <span class="login-label">Location</span>
-          <div class="timeclock-location-toggle" id="timeclockRegisterLocationToggle" role="group" aria-label="Store location">
+          <span class="login-label"><span data-i18n="common.location">Location</span></span>
+          <div class="timeclock-location-toggle" id="timeclockRegisterLocationToggle" role="group" data-i18n-aria="auth.storeLocation" aria-label="Store location">
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
           </div>
         </div>
-        <p class="login-hint">
+        <p class="login-hint" data-i18n="auth.timeclockRegisterHint">
           Enter the access code from your manager, then a device name and password. No email required.
         </p>
         <form id="timeclockRegisterForm" class="login-form" autocomplete="on" novalidate>
           <label class="login-field">
-            <span class="login-label">Access code</span>
+            <span class="login-label"><span data-i18n="auth.accessCode">Access code</span></span>
             <input
               type="password"
               id="tcRegAccessCode"
@@ -473,22 +473,22 @@
             />
           </label>
           <label class="login-field">
-            <span class="login-label">Device name</span>
-            <input type="text" id="tcRegDeviceName" class="login-input" required placeholder="e.g. Front counter iPad" autocomplete="nickname" />
+            <span class="login-label"><span data-i18n="auth.deviceName">Device name</span></span>
+            <input type="text" id="tcRegDeviceName" class="login-input" required data-i18n-placeholder="auth.deviceNamePlaceholder" placeholder="e.g. Front counter iPad" autocomplete="nickname" />
           </label>
           <label class="login-field">
-            <span class="login-label">Password</span>
+            <span class="login-label"><span data-i18n="auth.password">Password</span></span>
             <input type="password" id="tcRegPassword" class="login-input" required minlength="4" autocomplete="new-password" />
           </label>
           <label class="login-field">
-            <span class="login-label">Confirm password</span>
+            <span class="login-label"><span data-i18n="auth.confirmPassword">Confirm password</span></span>
             <input type="password" id="tcRegPasswordConfirm" class="login-input" required minlength="4" autocomplete="new-password" />
           </label>
           <p class="login-error" id="timeclockRegisterError" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary btn-block login-submit">Create device account</button>
+          <button type="submit" class="btn btn-primary btn-block login-submit" data-i18n="auth.createDeviceAccount">Create device account</button>
         </form>
         <p class="login-footer-actions">
-          <button type="button" class="login-link-btn" id="showLoginFromTimeclockRegisterBtn">Back to sign in</button>
+          <button type="button" class="login-link-btn" id="showLoginFromTimeclockRegisterBtn" data-i18n="auth.backToSignIn">Back to sign in</button>
         </p>
       </div>
     </div>
@@ -497,7 +497,7 @@
   <div class="app">
     <div class="app-top">
       <header class="header">
-        <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden>←</button>
+        <button type="button" class="back-btn" id="backBtn" aria-label="Back" hidden data-i18n-aria="common.back">←</button>
         <img
           class="header-logo"
           src="assets/red-poke-logo.png"
@@ -506,33 +506,81 @@
           height="64"
           decoding="async"
         />
-        <h1 class="title" id="screenTitle">Schedule Overview</h1>
+        <h1 class="title" id="screenTitle" data-i18n="title.scheduleOverview">Schedule Overview</h1>
         <div class="header-actions">
-          <button type="button" class="header-account-btn" data-open-account-settings aria-label="Account settings">
+          <div class="header-notifications-wrap">
+            <button
+              type="button"
+              class="header-notifications-btn"
+              aria-label="Notifications"
+              aria-expanded="false"
+              aria-haspopup="true"
+              data-i18n-aria="notifications.title"
+            >
+              <span class="header-notifications-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" focusable="false">
+                  <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
+                </svg>
+              </span>
+              <span class="header-notifications-badge" hidden>0</span>
+            </button>
+            <div class="notifications-panel" hidden role="dialog" aria-label="Notifications" data-i18n-aria="notifications.title">
+              <div class="notifications-panel-head">
+                <h2 class="notifications-panel-title" data-i18n="notifications.title">Notifications</h2>
+                <button type="button" class="notifications-mark-all" data-i18n="notifications.markAllRead">
+                  Mark all read
+                </button>
+              </div>
+              <p class="notifications-panel-empty" data-i18n="notifications.empty">No notifications yet.</p>
+              <ul class="notifications-panel-list"></ul>
+            </div>
+          </div>
+          <button type="button" class="header-account-btn" data-open-account-settings data-i18n="common.account" data-i18n-aria="common.accountSettings" aria-label="Account settings">
             Account
           </button>
-          <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign Out">
+          <button type="button" class="header-signout-btn" id="logoutBtn" data-session-signout aria-label="Sign Out" data-i18n="common.signOut" data-i18n-aria="common.signOut">
             Sign Out
           </button>
         </div>
       </header>
-      <nav class="top-nav" aria-label="Main navigation">
-        <button type="button" class="nav-item active" data-goto="1" aria-current="page">Schedule</button>
-        <button type="button" class="nav-item" data-goto="5">Team</button>
-        <button type="button" class="nav-item" data-goto="13">Availability</button>
-        <button type="button" class="nav-item" data-goto="8">Actions</button>
-        <button type="button" class="nav-item" data-goto="9">Messages</button>
-        <button type="button" class="nav-item" data-goto="10">Timecards</button>
+      <nav class="top-nav" data-i18n-aria="nav.main" aria-label="Main navigation">
+        <button type="button" class="nav-item" data-goto="14"><span data-i18n="nav.home">Home</span></button>
+        <button type="button" class="nav-item active" data-goto="1" aria-current="page"><span data-i18n="nav.schedule">Schedule</span></button>
+        <button type="button" class="nav-item" data-goto="5"><span data-i18n="nav.team">Team</span></button>
+        <button type="button" class="nav-item" data-goto="13"><span data-i18n="nav.availability">Availability</span></button>
+        <button type="button" class="nav-item" data-goto="8"><span data-i18n="nav.actions">Actions</span></button>
+        <button type="button" class="nav-item" data-goto="9"><span data-i18n="nav.messages">Messages</span></button>
+        <button type="button" class="nav-item" data-goto="10"><span data-i18n="nav.timecards">Timecards</span></button>
       </nav>
     </div>
 
     <main class="main">
+      <!-- Screen 14: Manager home (own upcoming shifts) -->
+      <section class="screen" id="screen-manager-home" data-screen="14">
+        <div class="emp-card" id="mgrHomeWelcomeCard"></div>
+        <div class="emp-section">
+          <h2 class="emp-section-title" data-i18n="common.today">Today’s shifts</h2>
+          <ul class="emp-shift-list" id="mgrShiftsToday"></ul>
+        </div>
+        <div class="emp-section">
+          <div class="emp-section-head">
+            <h2 class="emp-section-title" data-i18n="employee.upcomingShifts">Upcoming shifts</h2>
+            <div class="emp-week-nav" data-i18n-aria="employee.upcomingWeekNav" aria-label="Upcoming week navigation">
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="mgrUpcomingPrevWeek" data-i18n="common.prevWeek">Prev week</button>
+              <span class="emp-week-nav-label" id="mgrUpcomingWeekLabel">Week of —</span>
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="mgrUpcomingNextWeek" data-i18n="common.nextWeek">Next week</button>
+            </div>
+          </div>
+          <ul class="emp-shift-list" id="mgrShiftsUpcoming"></ul>
+        </div>
+      </section>
+
       <!-- Screen 1: Schedule Overview -->
       <section class="screen active" id="screen-schedule" data-screen="1">
         <div class="calendar-table-wrap">
           <div class="schedule-toolbar-compact">
             <div class="schedule-toolbar-left">
-              <span class="employee-filter-label" id="scheduleWeekChipsLabel">Week</span>
+              <span class="employee-filter-label" id="scheduleWeekChipsLabel" data-i18n="common.week">Week</span>
               <div
                 class="schedule-week-nav"
                 id="scheduleWeekNav"
@@ -544,7 +592,7 @@
                   class="btn btn-secondary schedule-week-nav-btn"
                   id="scheduleWeekNavPrev"
                   data-schedule-week-step="-1"
-                  aria-label="Previous week"
+                  data-i18n-aria="schedule.prevWeekAria" aria-label="Previous week"
                 >
                   ‹
                 </button>
@@ -555,7 +603,7 @@
                   class="btn btn-secondary schedule-week-nav-btn"
                   id="scheduleWeekNavNext"
                   data-schedule-week-step="1"
-                  aria-label="Next week"
+                  data-i18n-aria="schedule.nextWeekAria" aria-label="Next week"
                 >
                   ›
                 </button>
@@ -564,7 +612,7 @@
                   class="btn btn-secondary schedule-week-nav-today"
                   id="scheduleWeekNavToday"
                   hidden
-                >
+                 data-i18n="common.thisWeek">
                   This week
                 </button>
               </div>
@@ -575,7 +623,7 @@
                 class="btn btn-primary schedule-toolbar-btn"
                 id="schedulePublishNotifyBtn"
                 title="Publish this week’s schedule and notify employees"
-              >
+               data-i18n="schedule.publishNotify" data-i18n-title="schedule.publishNotifyTitle">
                 Publish / Notify
               </button>
               <button
@@ -584,22 +632,25 @@
                 id="scheduleUndoBtn"
                 disabled
                 title="Undo last schedule or shift time change"
-              >
+               data-i18n="schedule.undo" data-i18n-title="schedule.undoTitle">
                 Undo
               </button>
-              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal">
+              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal" data-i18n="schedule.templates">
                 Templates
               </button>
-              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal">
+              <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleAddLocationModal" data-i18n="schedule.manageLocations">
                 Manage Locations
               </button>
             </div>
           </div>
-          <div class="restaurant-switcher" id="restaurantSwitcher" role="group" aria-label="Restaurant location"></div>
-          <div class="calendar-legend" aria-label="Role colors">
-            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of the House</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-kitchen">Back of the House</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
+          <div class="restaurant-switcher" id="restaurantSwitcher" role="group" data-i18n-aria="schedule.restaurantLocation" aria-label="Restaurant location"></div>
+          <p class="calendar-hint emp-schedule-readonly-hint" id="mgrScheduleViewOnlyHint" hidden data-i18n="schedule.viewOnlyOtherStoreHint">
+            You can view this store’s schedule but only edit your own store.
+          </p>
+          <div class="calendar-legend" data-i18n-aria="schedule.roleColors" aria-label="Role colors">
+            <span class="legend-item"><span class="role-pill-mini role-bartender" data-i18n="staff.bartender">Front of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-kitchen" data-i18n="staff.kitchen">Back of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-server" data-i18n="staff.server">Delivery/Dishwasher</span></span>
           </div>
           <div class="schedule-notice hidden" id="scheduleNotice">
             <p class="schedule-notice-text" id="scheduleNoticeText">Schedule updates appear here.</p>
@@ -617,7 +668,7 @@
         <div class="shift-context" id="eligibleShiftContext"></div>
 
         <nav class="mode-tabs hidden" aria-label="Shift actions" hidden aria-hidden="true">
-          <button type="button" class="mode-tab active" id="editTabBtn" aria-current="page">
+          <button type="button" class="mode-tab active" id="editTabBtn" aria-current="page" data-i18n="schedule.editStaffing">
             Edit Staffing
           </button>
           <button type="button" class="mode-tab" id="calloutTabBtn">
@@ -626,14 +677,14 @@
         </nav>
 
         <div class="mode-panel" id="editPanel">
-          <p class="panel-subtitle">Edit shift time range and break for this slot</p>
+          <p class="panel-subtitle" data-i18n="schedule.editShiftSubtitle">Edit shift time range and break for this slot</p>
           <label class="employee-search-wrap shift-worker-search-wrap hidden" hidden aria-hidden="true">
             <span class="visually-hidden">Search employees in edit staffing</span>
             <input
               type="search"
               id="shiftEditSearch"
               class="employee-search-input"
-              placeholder="Search names"
+              data-i18n-placeholder="schedule.searchNames" placeholder="Search names"
               autocomplete="off"
               enterkeyhint="search"
             />
@@ -643,38 +694,37 @@
           </div>
           <div class="shift-details-editor" id="shiftDetailsEditor">
             <label class="shift-detail-dayoff-label">
-              <input type="checkbox" id="shiftDetailDayOff" />
-              Day off
+              <input type="checkbox" id="shiftDetailDayOff" /> <span data-i18n="common.dayOff">Day off</span>
             </label>
             <div class="shift-detail-times" id="shiftDetailTimesWrap">
               <label class="shift-detail-field">
-                <span class="shift-detail-field-label">Start</span>
+                <span class="shift-detail-field-label"><span data-i18n="common.start">Start</span></span>
                 <input type="time" id="shiftDetailStart" step="60" />
               </label>
               <span class="draft-time-sep" aria-hidden="true">–</span>
               <label class="shift-detail-field">
-                <span class="shift-detail-field-label">End</span>
+                <span class="shift-detail-field-label"><span data-i18n="common.end">End</span></span>
                 <input type="time" id="shiftDetailEnd" step="60" />
               </label>
               <span class="shift-detail-hours" id="shiftDetailHours"></span>
             </div>
             <div class="shift-detail-break" id="shiftDetailBreakWrap">
               <label class="shift-detail-field">
-                <span class="shift-detail-field-label">Break / office</span>
+                <span class="shift-detail-field-label"><span data-i18n="schedule.breakOffice">Break / office</span></span>
                 <select id="shiftDetailBreakType" aria-label="Break label">
-                  <option value="BREAK TIME">BREAK TIME</option>
-                  <option value="OFFICE">OFFICE</option>
-                  <option value="NO BREAK">NO BREAK</option>
+                  <option value="BREAK TIME" data-i18n="schedule.breakTime">BREAK TIME</option>
+                  <option value="OFFICE" data-i18n="schedule.office">OFFICE</option>
+                  <option value="NO BREAK" data-i18n="schedule.noBreak">NO BREAK</option>
                 </select>
               </label>
               <label class="shift-detail-field">
-                <span class="shift-detail-field-label">Assigned time</span>
+                <span class="shift-detail-field-label"><span data-i18n="schedule.assignedTime">Assigned time</span></span>
                 <input type="time" id="shiftDetailBreakTime" step="60" aria-label="Break time" />
               </label>
             </div>
           </div>
           <div class="screen-actions screen-actions-footer">
-            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn">Save shift</button>
+            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn" data-i18n="schedule.saveShift">Save shift</button>
           </div>
         </div>
 
@@ -687,7 +737,7 @@
               type="search"
               id="shiftCalloutSearch"
               class="employee-search-input"
-              placeholder="Search names"
+              data-i18n-placeholder="schedule.searchNames" placeholder="Search names"
               autocomplete="off"
               enterkeyhint="search"
             />
@@ -709,16 +759,16 @@
       <!-- Screen 3: Shift Accepted -->
       <section class="screen" id="screen-accepted" data-screen="3">
         <div class="card accepted-card">
-          <p class="accepted-badge">Shift accepted</p>
+          <p class="accepted-badge" data-i18n="schedule.shiftAcceptedBadge">Shift accepted</p>
           <dl class="accepted-details">
-            <dt>Worker</dt>
+            <dt data-i18n="common.worker">Worker</dt>
             <dd id="acceptedWorkerName">—</dd>
-            <dt>Role</dt>
+            <dt data-i18n="common.role">Role</dt>
             <dd id="acceptedRole">—</dd>
-            <dt>Shift</dt>
+            <dt data-i18n="common.shift">Shift</dt>
             <dd id="acceptedShiftTime">—</dd>
           </dl>
-          <button type="button" class="btn btn-primary btn-block" id="confirmReplacementBtn">Confirm Replacement</button>
+          <button type="button" class="btn btn-primary btn-block" id="confirmReplacementBtn" data-i18n="schedule.confirmReplacement">Confirm Replacement</button>
         </div>
       </section>
 
@@ -731,29 +781,29 @@
               type="search"
               id="employeeSearch"
               class="employee-search-input"
-              placeholder="Search name or phone"
+              data-i18n-placeholder="team.searchPlaceholder" placeholder="Search name or phone"
               autocomplete="off"
               enterkeyhint="search"
             />
           </label>
           <div class="employee-filter-block">
-            <span class="employee-filter-label" id="employeeRestaurantFiltersLabel">Restaurant</span>
+            <span class="employee-filter-label" id="employeeRestaurantFiltersLabel" data-i18n="team.restaurantFilter">Restaurant</span>
             <div class="employee-filter-chips" id="employeeRestaurantFilters" role="group" aria-labelledby="employeeRestaurantFiltersLabel"></div>
           </div>
           <div class="employee-filter-block">
-            <span class="employee-filter-label" id="employeeRoleFiltersLabel">Role</span>
+            <span class="employee-filter-label" id="employeeRoleFiltersLabel" data-i18n="team.roleFilter">Role</span>
             <div class="employee-filter-chips" id="employeeRoleFilters" role="group" aria-labelledby="employeeRoleFiltersLabel">
-              <button type="button" class="filter-chip active" data-role-filter="all">All</button>
-              <button type="button" class="filter-chip" data-role-filter="Bartender">Front of the House</button>
-              <button type="button" class="filter-chip" data-role-filter="Kitchen">Back of the House</button>
-              <button type="button" class="filter-chip" data-role-filter="Server">Delivery/Dishwasher</button>
+              <button type="button" class="filter-chip active" data-role-filter="all"><span data-i18n="common.all">All</span></button>
+              <button type="button" class="filter-chip" data-role-filter="Bartender"><span data-i18n="staff.bartender">Front of the House</span></button>
+              <button type="button" class="filter-chip" data-role-filter="Kitchen"><span data-i18n="staff.kitchen">Back of the House</span></button>
+              <button type="button" class="filter-chip" data-role-filter="Server"><span data-i18n="staff.server">Delivery/Dishwasher</span></button>
             </div>
           </div>
           <div class="employees-toolbar">
-            <button type="button" class="btn btn-secondary" id="generateAllPinsBtn" hidden>
+            <button type="button" class="btn btn-secondary" id="generateAllPinsBtn" hidden data-i18n="team.generatePins">
               Generate all PINs
             </button>
-            <button type="button" class="btn btn-primary" id="addEmployeeBtn">Add employee</button>
+            <button type="button" class="btn btn-primary" id="addEmployeeBtn" data-i18n="team.addEmployee">Add employee</button>
           </div>
         </div>
         <div id="employeeList" class="employee-list" aria-label="Team roster"></div>
@@ -769,7 +819,7 @@
                 type="search"
                 id="mgrMessageSearch"
                 class="employee-search-input emp-messages-search"
-                placeholder="Search conversations or team…"
+                data-i18n-placeholder="messages.searchPlaceholder" placeholder="Search conversations or team…"
                 autocomplete="off"
                 enterkeyhint="search"
               />
@@ -780,7 +830,7 @@
           </div>
           <div class="emp-chat-panel" id="mgrChatPanel" hidden>
             <div class="emp-chat-top">
-              <button type="button" class="emp-chat-back" id="mgrChatBack" aria-label="Back to conversation list">
+              <button type="button" class="emp-chat-back" id="mgrChatBack" aria-label="Back to conversation list" data-i18n="common.back" data-i18n-aria="messages.backToList">
                 Back
               </button>
               <span class="emp-chat-title" id="mgrChatTitle"></span>
@@ -791,10 +841,10 @@
                 type="text"
                 class="emp-chat-input"
                 id="mgrChatInput"
-                placeholder="Write a message…"
+                data-i18n-placeholder="messages.write" placeholder="Write a message…"
                 autocomplete="off"
               />
-              <button type="submit" class="btn btn-primary emp-chat-send">Send</button>
+              <button type="submit" class="btn btn-primary emp-chat-send" data-i18n="common.send">Send</button>
             </form>
           </div>
         </div>
@@ -809,25 +859,25 @@
               type="search"
               id="requestsEmployeeSearch"
               class="employee-search-input"
-              placeholder="Search employee name"
+              data-i18n-placeholder="actions.searchPlaceholder" placeholder="Search employee name"
               autocomplete="off"
               enterkeyhint="search"
             />
           </label>
           <div class="employee-filter-block">
-            <span class="employee-filter-label" id="requestsTypeFiltersLabel">Action type</span>
+            <span class="employee-filter-label" id="requestsTypeFiltersLabel" data-i18n="actions.actionType">Action type</span>
             <div class="employee-filter-chips" id="requestsTypeChips" role="group" aria-labelledby="requestsTypeFiltersLabel">
-              <button type="button" class="filter-chip active" data-request-type="timeoff">Time Off</button>
-              <button type="button" class="filter-chip" data-request-type="swap">Shift Swaps</button>
-              <button type="button" class="filter-chip" data-request-type="callout">Callouts</button>
+              <button type="button" class="filter-chip active" data-request-type="timeoff"><span data-i18n="actions.timeOff">Time Off</span></button>
+              <button type="button" class="filter-chip" data-request-type="swap"><span data-i18n="actions.shiftSwaps">Shift Swaps</span></button>
+              <button type="button" class="filter-chip" data-request-type="callout"><span data-i18n="actions.callouts">Callouts</span></button>
             </div>
           </div>
           <div class="employee-filter-block">
-            <span class="employee-filter-label" id="requestsStatusFiltersLabel">Status</span>
+            <span class="employee-filter-label" id="requestsStatusFiltersLabel" data-i18n="actions.statusFilter">Status</span>
             <div class="employee-filter-chips" id="requestsStatusChips" role="group" aria-labelledby="requestsStatusFiltersLabel">
-              <button type="button" class="filter-chip active" data-request-status="all">All</button>
-              <button type="button" class="filter-chip" data-request-status="pending">Pending</button>
-              <button type="button" class="filter-chip" data-request-status="closed">Closed</button>
+              <button type="button" class="filter-chip active" data-request-status="all"><span data-i18n="common.all">All</span></button>
+              <button type="button" class="filter-chip" data-request-status="pending"><span data-i18n="status.pending">Pending</span></button>
+              <button type="button" class="filter-chip" data-request-status="closed"><span data-i18n="common.closed">Closed</span></button>
             </div>
           </div>
         </div>
@@ -840,7 +890,7 @@
           <header class="emp-profile-header" id="empProfileHeader">
             <div id="empProfileHeaderPhoto" class="emp-profile-header-photo"></div>
             <div class="emp-profile-header-body">
-              <h2 class="emp-profile-header-name" id="empProfileHeaderName">Employee</h2>
+              <h2 class="emp-profile-header-name" id="empProfileHeaderName" data-i18n="team.employeeForm">Employee</h2>
               <p class="emp-profile-header-role" id="empProfileHeaderRole"></p>
               <div class="emp-photo-actions">
                 <label class="btn btn-secondary emp-photo-upload-label">
@@ -852,25 +902,25 @@
             </div>
           </header>
           <section class="emp-form-section emp-form-section--profile" aria-labelledby="empProfileSectionTitle">
-            <h2 class="emp-form-section-title" id="empProfileSectionTitle">Profile</h2>
+            <h2 class="emp-form-section-title" id="empProfileSectionTitle" data-i18n="empForm.profile">Profile</h2>
             <div class="emp-form-section-body">
           <div class="form-row">
             <label class="form-field">
-              <span class="form-label">First name</span>
+              <span class="form-label"><span data-i18n="auth.firstName">First name</span></span>
               <input type="text" name="firstName" id="empFirstName" required autocomplete="given-name" />
             </label>
             <label class="form-field">
-              <span class="form-label">Last name</span>
+              <span class="form-label"><span data-i18n="auth.lastName">Last name</span></span>
               <input type="text" name="lastName" id="empLastName" required autocomplete="family-name" />
             </label>
           </div>
           <label class="form-field form-field-block">
-            <span class="form-label">Staff type / role type</span>
+            <span class="form-label"><span data-i18n="auth.staffTypeRole">Staff type / role type</span></span>
             <select name="staffType" id="empStaffType" required>
-              <option value="">Select…</option>
-              <option value="Bartender">Front of the House</option>
-              <option value="Kitchen">Back of the House</option>
-              <option value="Server">Delivery/Dishwasher</option>
+              <option value="" data-i18n="common.select">Select…</option>
+              <option value="Bartender" data-i18n="staff.bartender">Front of the House</option>
+              <option value="Kitchen" data-i18n="staff.kitchen">Back of the House</option>
+              <option value="Server" data-i18n="staff.server">Delivery/Dishwasher</option>
             </select>
           </label>
           <label class="form-field form-field-block">
@@ -889,7 +939,7 @@
             <span class="calendar-hint">Account / profile email (not the sign-in username).</span>
           </label>
           <label class="form-field form-field-block">
-            <span class="form-label">Location</span>
+            <span class="form-label"><span data-i18n="common.location">Location</span></span>
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
           <label class="form-field form-field-block" id="empPrimaryLocationWrap" hidden>
@@ -1008,10 +1058,10 @@
           </section>
 
           <section class="emp-form-section emp-form-section--schedule" aria-labelledby="empScheduleSectionTitle">
-            <h2 class="emp-form-section-title" id="empScheduleSectionTitle">Schedule</h2>
+            <h2 class="emp-form-section-title" id="empScheduleSectionTitle" data-i18n="empForm.schedule">Schedule</h2>
             <div class="emp-form-section-body">
               <div class="emp-schedule-block">
-                <h3 class="emp-form-subtitle">Assigned shifts</h3>
+                <h3 class="emp-form-subtitle" data-i18n="empForm.assignedShifts">Assigned shifts</h3>
                 <p class="calendar-hint" id="empScheduleNewHint">Save this employee to see assigned shifts from the published schedule.</p>
                 <div id="empScheduleAssigned" class="emp-schedule-assigned" hidden>
                   <div id="empDetailShiftsMount" class="emp-profile-dropdown-mount" aria-live="polite"></div>
@@ -1022,7 +1072,7 @@
           </section>
 
           <section class="emp-form-section emp-form-section--timeclock" id="empTimeclockSection" aria-labelledby="empTimeclockSectionTitle">
-            <h2 class="emp-form-section-title" id="empTimeclockSectionTitle">Time clock</h2>
+            <h2 class="emp-form-section-title" id="empTimeclockSectionTitle" data-i18n="empForm.timeclock">Time clock</h2>
             <div class="emp-form-section-body">
               <label class="form-field form-field-block">
                 <span class="form-label">Default break policy</span>
@@ -1062,7 +1112,7 @@
           </section>
 
           <section class="emp-form-section emp-form-section--leave" id="empLeaveSection" aria-labelledby="empLeaveSectionTitle">
-            <h2 class="emp-form-section-title" id="empLeaveSectionTitle">Vacation &amp; sick leave</h2>
+            <h2 class="emp-form-section-title" id="empLeaveSectionTitle" data-i18n="empForm.vacationSick">Vacation &amp; sick leave</h2>
             <div class="emp-form-section-body">
               <p class="calendar-hint emp-leave-hint">
                 Set allowance in days and hours, then record each day used. Save the employee to keep changes.
@@ -1072,8 +1122,8 @@
           </section>
 
           <div class="screen-actions screen-actions-split">
-            <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn">Cancel</button>
-            <button type="submit" class="btn btn-primary" id="saveEmployeeBtn">Save</button>
+            <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn" data-i18n="common.cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="saveEmployeeBtn" data-i18n="common.save">Save</button>
           </div>
         </form>
       </section>
@@ -1123,9 +1173,9 @@
       <section class="screen" id="screen-timecards" data-screen="10">
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
         <section class="timecards-timeclock-settings" id="timecardsTimeclockSettings" aria-labelledby="timecardsTimeclockSettingsTitle">
-          <h2 class="timecards-timeclock-settings-title" id="timecardsTimeclockSettingsTitle">Time clock settings</h2>
+          <h2 class="timecards-timeclock-settings-title" id="timecardsTimeclockSettingsTitle" data-i18n="timecards.timeClockSettings">Time clock settings</h2>
           <label class="form-field form-field-inline">
-            <span class="form-label">Auto clock-out time</span>
+            <span class="form-label"><span data-i18n="timecards.autoClockOut">Auto clock-out time</span></span>
             <input type="time" id="tcAutoClockOutTime" class="timecards-time-input" value="00:00" step="60" />
           </label>
           <p class="calendar-hint">Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.</p>
@@ -1135,7 +1185,7 @@
       <!-- Screen 11: Employee timecard shifts -->
       <section class="screen" id="screen-timecards-employee" data-screen="11">
         <div class="timecards-screen-nav">
-          <button type="button" class="timecards-back-btn" id="timecardsBackToRoster" aria-label="Back to timecards roster">
+          <button type="button" class="timecards-back-btn" id="timecardsBackToRoster" aria-label="Back to timecards roster" data-i18n="timecards.backToRoster">
             ← Back to timecards
           </button>
         </div>
@@ -1168,7 +1218,7 @@
       <!-- Screen 12: Shift timecard detail -->
       <section class="screen" id="screen-timecards-shift" data-screen="12">
         <div class="timecards-screen-nav">
-          <button type="button" class="timecards-back-btn" id="timecardsBackToShifts" aria-label="Back to employee shifts">
+          <button type="button" class="timecards-back-btn" id="timecardsBackToShifts" aria-label="Back to employee shifts" data-i18n="timecards.backToShifts">
             ← Back to shifts
           </button>
         </div>
@@ -1179,48 +1229,48 @@
       <section class="screen" id="screen-availability" data-screen="13">
         <div class="avail-tab-toolbar">
           <label class="avail-tab-employee-field form-field">
-            <span class="form-label" id="mgrAvailEmployeeLabel">Employee</span>
+            <span class="form-label" id="mgrAvailEmployeeLabel" data-i18n="timecards.employee">Employee</span>
             <select id="mgrAvailEmployeeSelect" aria-labelledby="mgrAvailEmployeeLabel"></select>
           </label>
           <div
             class="schedule-week-nav"
             id="mgrAvailWeekNav"
             role="group"
-            aria-label="Availability week"
+            data-i18n-aria="availability.weekNav" aria-label="Availability week"
           >
             <button
               type="button"
               class="btn btn-secondary schedule-week-nav-btn"
               id="mgrAvailWeekPrev"
               data-mgr-avail-week-step="-1"
-              aria-label="Previous week"
+              data-i18n-aria="schedule.prevWeekAria" aria-label="Previous week"
             >
               ‹
             </button>
             <span class="schedule-week-nav-label" id="mgrAvailWeekLabel">—</span>
-            <span class="schedule-week-nav-badge" id="mgrAvailWeekBadge" hidden>This week</span>
+            <span class="schedule-week-nav-badge" id="mgrAvailWeekBadge" hidden data-i18n="common.thisWeek">This week</span>
             <button
               type="button"
               class="btn btn-secondary schedule-week-nav-btn"
               id="mgrAvailWeekNext"
               data-mgr-avail-week-step="1"
-              aria-label="Next week"
+              data-i18n-aria="schedule.nextWeekAria" aria-label="Next week"
             >
               ›
             </button>
           </div>
-          <span class="avail-status-badge" id="mgrAvailStatus" aria-live="polite">Draft</span>
+          <span class="avail-status-badge" id="mgrAvailStatus" aria-live="polite" data-i18n="status.draft">Draft</span>
         </div>
         <div id="mgrAvailPendingList" class="avail-pending-list" hidden aria-live="polite"></div>
-        <p class="calendar-hint avail-tab-hint">
-          View or edit each employee’s week. Drag a time block onto another day to copy it (hold Shift while dropping to move). Approve pending submissions when ready.
+        <p class="calendar-hint avail-tab-hint" data-i18n="availability.managerHint">
+          View or edit each employee's week. Drag a time block onto another day to copy it (hold Shift while dropping to move). Approve pending submissions when ready.
         </p>
         <div id="mgrAvailGrid" class="availability-grid-wrap avail-tab-grid" aria-label="Employee availability"></div>
         <div class="avail-tab-actions">
-          <button type="button" class="btn btn-secondary" id="mgrAvailCheckAllBtn">Check all</button>
-          <button type="button" class="btn btn-primary" id="mgrAvailSaveBtn">Save availability</button>
-          <button type="button" class="btn btn-primary" id="mgrAvailApproveBtn" hidden>Approve</button>
-          <button type="button" class="btn btn-secondary" id="mgrAvailDeclineBtn" hidden>Decline</button>
+          <button type="button" class="btn btn-secondary" id="mgrAvailCheckAllBtn" data-i18n="availability.checkAll">Check all</button>
+          <button type="button" class="btn btn-primary" id="mgrAvailSaveBtn" data-i18n="availability.save">Save availability</button>
+          <button type="button" class="btn btn-primary" id="mgrAvailApproveBtn" hidden data-i18n="common.approve">Approve</button>
+          <button type="button" class="btn btn-secondary" id="mgrAvailDeclineBtn" hidden data-i18n="common.decline">Decline</button>
         </div>
         <p class="calendar-hint avail-tab-feedback" id="mgrAvailFeedback" hidden></p>
       </section>
@@ -1231,8 +1281,8 @@
     <div class="availability-modal-backdrop" data-timecards-download-dismiss tabindex="-1"></div>
     <div class="availability-modal-panel timecards-download-panel" role="dialog" aria-modal="true" aria-labelledby="timecardsDownloadTitle">
       <div class="availability-modal-head">
-        <h2 class="availability-modal-title" id="timecardsDownloadTitle">Download timecards</h2>
-        <button type="button" class="availability-modal-close" data-timecards-download-dismiss aria-label="Close">×</button>
+        <h2 class="availability-modal-title" id="timecardsDownloadTitle" data-i18n="timecards.downloadTitle">Download timecards</h2>
+        <button type="button" class="availability-modal-close" data-timecards-download-dismiss data-i18n-aria="common.close" aria-label="Close">×</button>
       </div>
       <div class="timecards-download-step" id="timecardsDownloadStepType">
         <p class="calendar-hint timecards-download-hint">Choose a report type.</p>
@@ -1271,14 +1321,14 @@
     <div class="app-top">
       <header class="header">
         <img class="header-logo" src="assets/red-poke-logo.png" alt="red poke" width="64" height="64" decoding="async" />
-        <h1 class="title">Time Clock</h1>
+        <h1 class="title" data-i18n="title.timeClock">Time Clock</h1>
         <p class="timeclock-location-label" id="timeclockLocationLabel" hidden></p>
-        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
+        <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out" data-i18n="common.signOut" data-i18n-aria="common.signOut">Sign Out</button>
       </header>
     </div>
     <main class="main timeclock-main">
       <span class="timeclock-device-label" id="timeclockDeviceLabel"></span>
-      <p class="timeclock-intro" id="timeclockIntro">Enter your 4-digit PIN.</p>
+      <p class="timeclock-intro" id="timeclockIntro" data-i18n="timeclock.enterPin">Enter your 4-digit PIN.</p>
       <input
         type="tel"
         id="timeclockPinInput"
@@ -1287,7 +1337,7 @@
         pattern="[0-9]*"
         maxlength="4"
         autocomplete="off"
-        aria-label="PIN entry"
+        data-i18n-aria="timeclock.pinAria" aria-label="PIN entry"
         readonly
         tabindex="-1"
       />
@@ -1297,7 +1347,7 @@
         <p class="timeclock-confirm-name" id="timeclockConfirmName"></p>
         <p class="timeclock-confirm-hint" id="timeclockConfirmHint"></p>
         <div class="timeclock-action-btns" id="timeclockActionBtns"></div>
-        <button type="button" class="btn btn-secondary btn-block" id="timeclockCancelBtn">Cancel</button>
+        <button type="button" class="btn btn-secondary btn-block" id="timeclockCancelBtn" data-i18n="common.cancel">Cancel</button>
       </div>
       <div class="timeclock-pad" id="timeclockPinPad">
         <button type="button" class="timeclock-pad-btn" data-tc-digit="1">1</button>
@@ -1312,10 +1362,10 @@
         <button type="button" class="timeclock-pad-btn" data-tc-digit="0">0</button>
       </div>
       <div class="timeclock-pad-actions">
-        <button type="button" class="btn btn-secondary" id="timeclockClear">Clear</button>
-        <button type="button" class="btn btn-secondary" id="timeclockBackspace">Delete</button>
+        <button type="button" class="btn btn-secondary" id="timeclockClear" data-i18n="timeclock.clear">Clear</button>
+        <button type="button" class="btn btn-secondary" id="timeclockBackspace" data-i18n="timeclock.delete">Delete</button>
       </div>
-      <p class="timeclock-recent-title">Recent punches</p>
+      <p class="timeclock-recent-title" data-i18n="timeclock.recentPunches">Recent punches</p>
       <ul class="timeclock-recent-list" id="timeclockRecentList"></ul>
     </main>
   </div>
@@ -1331,20 +1381,47 @@
           height="64"
           decoding="async"
         />
-        <h1 class="title" id="empScreenTitle">Home</h1>
+        <h1 class="title" id="empScreenTitle" data-i18n="title.home">Home</h1>
         <div class="header-actions">
+          <div class="header-notifications-wrap">
+            <button
+              type="button"
+              class="header-notifications-btn"
+              aria-label="Notifications"
+              aria-expanded="false"
+              aria-haspopup="true"
+              data-i18n-aria="notifications.title"
+            >
+              <span class="header-notifications-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" focusable="false">
+                  <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
+                </svg>
+              </span>
+              <span class="header-notifications-badge" hidden>0</span>
+            </button>
+            <div class="notifications-panel" hidden role="dialog" aria-label="Notifications" data-i18n-aria="notifications.title">
+              <div class="notifications-panel-head">
+                <h2 class="notifications-panel-title" data-i18n="notifications.title">Notifications</h2>
+                <button type="button" class="notifications-mark-all" data-i18n="notifications.markAllRead">
+                  Mark all read
+                </button>
+              </div>
+              <p class="notifications-panel-empty" data-i18n="notifications.empty">No notifications yet.</p>
+              <ul class="notifications-panel-list"></ul>
+            </div>
+          </div>
           <button type="button" class="header-account-btn" data-open-account-settings aria-label="Account settings">
             Account
           </button>
           <button type="button" class="header-signout-btn" data-session-signout aria-label="Sign Out">Sign Out</button>
         </div>
       </header>
-      <nav class="top-nav" aria-label="Employee navigation">
-        <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page">Home</button>
-        <button type="button" class="nav-item" data-emp-nav="schedule">Schedule</button>
-        <button type="button" class="nav-item" data-emp-nav="availability">Availability</button>
-        <button type="button" class="nav-item" data-emp-nav="requests">Actions</button>
-        <button type="button" class="nav-item" data-emp-nav="messages">Messages</button>
+      <nav class="top-nav" data-i18n-aria="nav.employee" aria-label="Employee navigation">
+        <button type="button" class="nav-item active" data-emp-nav="home" aria-current="page"><span data-i18n="nav.home">Home</span></button>
+        <button type="button" class="nav-item" data-emp-nav="schedule"><span data-i18n="nav.schedule">Schedule</span></button>
+        <button type="button" class="nav-item" data-emp-nav="availability"><span data-i18n="nav.availability">Availability</span></button>
+        <button type="button" class="nav-item" data-emp-nav="requests"><span data-i18n="nav.actions">Actions</span></button>
+        <button type="button" class="nav-item" data-emp-nav="messages"><span data-i18n="nav.messages">Messages</span></button>
       </nav>
     </div>
     <main class="main emp-main">
@@ -1356,11 +1433,11 @@
         </div>
         <div class="emp-section">
           <div class="emp-section-head">
-            <h2 class="emp-section-title">Upcoming shifts</h2>
-            <div class="emp-week-nav" aria-label="Upcoming week navigation">
-              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingPrevWeek">Prev week</button>
+            <h2 class="emp-section-title" data-i18n="employee.upcomingShifts">Upcoming shifts</h2>
+            <div class="emp-week-nav" data-i18n-aria="employee.upcomingWeekNav" aria-label="Upcoming week navigation">
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingPrevWeek" data-i18n="common.prevWeek">Prev week</button>
               <span class="emp-week-nav-label" id="empUpcomingWeekLabel">Week of —</span>
-              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingNextWeek">Next week</button>
+              <button type="button" class="btn btn-secondary emp-week-nav-btn" id="empUpcomingNextWeek" data-i18n="common.nextWeek">Next week</button>
             </div>
           </div>
           <ul class="emp-shift-list" id="empShiftsUpcoming"></ul>
@@ -1370,7 +1447,7 @@
         <div class="calendar-table-wrap emp-schedule-wrap">
           <div class="schedule-toolbar-compact">
             <div class="schedule-toolbar-left">
-              <span class="employee-filter-label" id="empScheduleWeekChipsLabel">Week</span>
+              <span class="employee-filter-label" id="empScheduleWeekChipsLabel" data-i18n="common.week">Week</span>
               <div
                 class="schedule-week-nav"
                 id="empScheduleWeekNav"
@@ -1382,18 +1459,18 @@
                   class="btn btn-secondary schedule-week-nav-btn"
                   id="empScheduleWeekNavPrev"
                   data-emp-schedule-week-step="-1"
-                  aria-label="Previous week"
+                  data-i18n-aria="schedule.prevWeekAria" aria-label="Previous week"
                 >
                   ‹
                 </button>
                 <span class="schedule-week-nav-label" id="empScheduleWeekNavLabel">—</span>
-                <span class="schedule-week-nav-badge" id="empScheduleWeekNavBadge" hidden>This week</span>
+                <span class="schedule-week-nav-badge" id="empScheduleWeekNavBadge" hidden data-i18n="common.thisWeek">This week</span>
                 <button
                   type="button"
                   class="btn btn-secondary schedule-week-nav-btn"
                   id="empScheduleWeekNavNext"
                   data-emp-schedule-week-step="1"
-                  aria-label="Next week"
+                  data-i18n-aria="schedule.nextWeekAria" aria-label="Next week"
                 >
                   ›
                 </button>
@@ -1402,18 +1479,18 @@
                   class="btn btn-secondary schedule-week-nav-today"
                   id="empScheduleWeekNavToday"
                   hidden
-                >
+                 data-i18n="common.thisWeek">
                   This week
                 </button>
               </div>
             </div>
           </div>
-          <p class="emp-hint emp-schedule-readonly-hint">Full team schedule — view only.</p>
-          <div class="restaurant-switcher" id="empRestaurantSwitcher" role="group" aria-label="Restaurant location"></div>
-          <div class="calendar-legend" aria-label="Role colors">
-            <span class="legend-item"><span class="role-pill-mini role-bartender">Front of the House</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-kitchen">Back of the House</span></span>
-            <span class="legend-item"><span class="role-pill-mini role-server">Delivery/Dishwasher</span></span>
+          <p class="emp-hint emp-schedule-readonly-hint" data-i18n="employee.scheduleReadonly">Full team schedule — view only.</p>
+          <div class="restaurant-switcher" id="empRestaurantSwitcher" role="group" data-i18n-aria="schedule.restaurantLocation" aria-label="Restaurant location"></div>
+          <div class="calendar-legend" data-i18n-aria="schedule.roleColors" aria-label="Role colors">
+            <span class="legend-item"><span class="role-pill-mini role-bartender" data-i18n="staff.bartender">Front of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-kitchen" data-i18n="staff.kitchen">Back of the House</span></span>
+            <span class="legend-item"><span class="role-pill-mini role-server" data-i18n="staff.server">Delivery/Dishwasher</span></span>
           </div>
           <div id="empCalendarGrid" class="emp-calendar-grid" aria-label="Team schedule calendar"></div>
         </div>
@@ -1428,7 +1505,7 @@
                 type="search"
                 id="empMessageSearch"
                 class="employee-search-input emp-messages-search"
-                placeholder="Search conversations or team…"
+                data-i18n-placeholder="messages.searchPlaceholder" placeholder="Search conversations or team…"
                 autocomplete="off"
                 enterkeyhint="search"
               />
@@ -1450,10 +1527,10 @@
                 type="text"
                 class="emp-chat-input"
                 id="empChatInput"
-                placeholder="Write a message…"
+                data-i18n-placeholder="messages.write" placeholder="Write a message…"
                 autocomplete="off"
               />
-              <button type="submit" class="btn btn-primary emp-chat-send">Send</button>
+              <button type="submit" class="btn btn-primary emp-chat-send" data-i18n="common.send">Send</button>
             </form>
           </div>
         </div>
@@ -1464,14 +1541,14 @@
             class="schedule-week-nav"
             id="empAvailWeekNav"
             role="group"
-            aria-label="Availability week"
+            data-i18n-aria="availability.weekNav" aria-label="Availability week"
           >
             <button
               type="button"
               class="btn btn-secondary schedule-week-nav-btn"
               id="empAvailWeekPrev"
               data-emp-avail-week-step="-1"
-              aria-label="Previous week"
+              data-i18n-aria="schedule.prevWeekAria" aria-label="Previous week"
             >
               ‹
             </button>
@@ -1482,28 +1559,28 @@
               class="btn btn-secondary schedule-week-nav-btn"
               id="empAvailWeekNext"
               data-emp-avail-week-step="1"
-              aria-label="Next week"
+              data-i18n-aria="schedule.nextWeekAria" aria-label="Next week"
             >
               ›
             </button>
           </div>
           <span class="avail-status-badge" id="empAvailStatus" aria-live="polite">Draft</span>
         </div>
-        <p class="emp-hint">
+        <p class="emp-hint" data-i18n="availability.employeeHint">
           Mark when you can work for the selected week. Drag a time onto another day to copy it (Shift+drop to move), then submit for your manager.
         </p>
         <div class="availability-grid-wrap emp-avail-grid-wrap avail-tab-grid" id="empAvailGrid"></div>
         <div class="avail-tab-actions">
           <button type="button" class="btn btn-secondary" id="empAvailCheckAllBtn">Check all</button>
-          <button type="button" class="btn btn-primary" id="empAvailSubmitBtn">Submit availability</button>
+          <button type="button" class="btn btn-primary" id="empAvailSubmitBtn" data-i18n="availability.submit">Submit availability</button>
         </div>
         <p class="emp-request-feedback" id="empAvailFeedback" hidden></p>
       </section>
       <section class="emp-screen" data-emp-screen="requests" id="empScreenRequests" hidden>
         <div class="emp-request-type-chips" role="tablist" aria-label="Action type">
-          <button type="button" class="filter-chip active" data-req-form="timeoff">Time Off</button>
-          <button type="button" class="filter-chip" data-req-form="swap">Shift Swap</button>
-          <button type="button" class="filter-chip" data-req-form="callout_request">Callout</button>
+          <button type="button" class="filter-chip active" data-req-form="timeoff"><span data-i18n="actions.timeOff">Time Off</span></button>
+          <button type="button" class="filter-chip" data-req-form="swap"><span data-i18n="actions.shiftSwap">Shift Swap</span></button>
+          <button type="button" class="filter-chip" data-req-form="callout_request"><span data-i18n="actions.callout">Callout</span></button>
         </div>
         <form class="emp-request-form emp-form-swap" id="empFormSwap" hidden>
           <p class="emp-swap-intro">
@@ -1607,7 +1684,7 @@
     <div class="availability-modal-panel">
       <div class="availability-modal-head">
         <h2 class="availability-modal-title" id="availabilityModalTitle">Availability submission</h2>
-        <button type="button" class="availability-modal-close" id="availabilityModalClose" aria-label="Close">
+        <button type="button" class="availability-modal-close" id="availabilityModalClose" data-i18n-aria="common.close" aria-label="Close">
           ×
         </button>
       </div>
@@ -1629,7 +1706,7 @@
     <div class="availability-modal-panel schedule-sheet-panel">
       <div class="availability-modal-head">
         <h2 class="availability-modal-title" id="scheduleTemplateModalTitle">Schedule templates</h2>
-        <button type="button" class="availability-modal-close" id="scheduleTemplateModalClose" aria-label="Close">
+        <button type="button" class="availability-modal-close" id="scheduleTemplateModalClose" data-i18n-aria="common.close" aria-label="Close">
           ×
         </button>
       </div>
@@ -1674,7 +1751,7 @@
     <div class="availability-modal-panel schedule-sheet-panel draft-schedule-panel">
       <div class="availability-modal-head">
         <h2 class="availability-modal-title" id="draftScheduleModalTitle">Shift Times</h2>
-        <button type="button" class="availability-modal-close" id="draftScheduleModalClose" aria-label="Close">
+        <button type="button" class="availability-modal-close" id="draftScheduleModalClose" data-i18n-aria="common.close" aria-label="Close">
           ×
         </button>
       </div>
@@ -1710,7 +1787,7 @@
     <div class="availability-modal-panel schedule-sheet-panel">
       <div class="availability-modal-head">
         <h2 class="availability-modal-title" id="scheduleAddLocationModalTitle">Manage locations</h2>
-        <button type="button" class="availability-modal-close" id="scheduleAddLocationModalClose" aria-label="Close">
+        <button type="button" class="availability-modal-close" id="scheduleAddLocationModalClose" data-i18n-aria="common.close" aria-label="Close">
           ×
         </button>
       </div>
@@ -1751,6 +1828,49 @@
     </div>
   </div>
 
+  </div>
+
+  <div id="schedulePublishNotifyModal" class="availability-modal" hidden>
+    <div class="availability-modal-backdrop" id="schedulePublishNotifyModalBackdrop" tabindex="-1"></div>
+    <div
+      class="availability-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="schedulePublishNotifyModalTitle"
+    >
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="schedulePublishNotifyModalTitle" data-i18n="schedule.publishNotify">
+          Publish / Notify
+        </h2>
+        <button type="button" class="availability-modal-close" id="schedulePublishNotifyModalClose" data-i18n-aria="common.close" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="calendar-hint" id="schedulePublishNotifyModalMeta"></p>
+      <div class="schedule-publish-audience-actions">
+        <button
+          type="button"
+          class="btn btn-secondary btn-block"
+          data-publish-audience="admins"
+          data-i18n="schedule.publishNotifyAdmins"
+        >
+          Publish / notify admin accounts
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary btn-block"
+          data-publish-audience="employees"
+          data-i18n="schedule.publishNotifyEmployees"
+        >
+          Publish / notify employees
+        </button>
+        <button type="button" class="btn btn-ghost btn-block" id="schedulePublishNotifyCancel" data-i18n="common.cancel">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="accountSettingsModal" class="availability-modal account-settings-modal" hidden>
     <div class="availability-modal-backdrop" data-account-settings-dismiss tabindex="-1"></div>
     <div
@@ -1760,29 +1880,29 @@
       aria-labelledby="accountSettingsTitle"
     >
       <div class="availability-modal-head">
-        <h2 class="availability-modal-title" id="accountSettingsTitle">Account</h2>
-        <button type="button" class="availability-modal-close" data-account-settings-dismiss aria-label="Close">×</button>
+        <h2 class="availability-modal-title" id="accountSettingsTitle" data-i18n="title.account">Account</h2>
+        <button type="button" class="availability-modal-close" data-account-settings-dismiss data-i18n-aria="common.close" aria-label="Close">×</button>
       </div>
-      <p class="calendar-hint account-settings-intro">
+      <p class="calendar-hint account-settings-intro" data-i18n-html="account.introHtml">
         Change your <strong>sign-in username</strong> and set your
         <strong>recovery email</strong> for password reset (each person sets their own). Managers can edit the
         <strong>company name</strong>. Changing username does not change your display name on the team roster.
       </p>
       <form id="accountSettingsForm" class="account-settings-form" novalidate>
         <label class="form-field form-field-block">
-          <span class="form-label">Sign-in username</span>
+          <span class="form-label"><span data-i18n="account.signInUsername">Sign-in username</span></span>
           <input type="text" id="accountSettingsLoginName" class="login-input" maxlength="80" autocomplete="username" />
           <span class="calendar-hint account-settings-field-hint">Used when you sign in. Changing this does not change your display name on the roster.</span>
         </label>
         <div id="accountSettingsCompanyBlock" class="form-field form-field-block" hidden>
           <label class="form-field form-field-block">
-            <span class="form-label">Company name</span>
+            <span class="form-label"><span data-i18n="auth.companyName">Company name</span></span>
             <input type="text" id="accountSettingsCompanyName" class="login-input" maxlength="120" autocomplete="organization" />
             <span class="calendar-hint account-settings-field-hint">Shown for your team. Managers can update this.</span>
           </label>
         </div>
         <label class="form-field form-field-block">
-          <span class="form-label">Recovery email</span>
+          <span class="form-label"><span data-i18n="auth.recoveryEmail">Recovery email</span></span>
           <input
             type="email"
             id="accountSettingsRecoveryEmail"
@@ -1796,7 +1916,7 @@
         </label>
         <p class="login-error" id="accountSettingsError" role="alert" hidden></p>
         <p class="login-error is-success" id="accountSettingsSuccess" role="status" hidden></p>
-        <button type="submit" class="btn btn-primary btn-block">Save account settings</button>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="account.save">Save account settings</button>
       </form>
       <p class="account-support-row">
         <a
@@ -1804,11 +1924,11 @@
           href="/support.html"
           target="_blank"
           rel="noopener noreferrer"
-        >Contact support</a>
-        <span class="account-support-hint">Help with login, the app, or your account</span>
+        ><span data-i18n="account.contactSupport">Contact support</span></a>
+        <span class="account-support-hint" data-i18n="account.supportHint">Help with login, the app, or your account</span>
       </p>
       <div class="account-delete-section" id="accountDeleteSection">
-        <h3 class="account-delete-title">Delete account</h3>
+        <h3 class="account-delete-title" data-i18n="account.deleteTitle">Delete account</h3>
         <p class="calendar-hint account-settings-field-hint">
           Permanently delete your Shiflow login and personal account data. This cannot be undone.
           Company schedules and timecards for the restaurant are not erased.
@@ -1818,12 +1938,15 @@
           <input type="text" id="accountDeleteConfirm" class="login-input" autocomplete="off" maxlength="12" />
         </label>
         <p class="login-error" id="accountDeleteError" role="alert" hidden></p>
-        <button type="button" class="btn btn-danger btn-block" id="accountDeleteBtn">Delete account</button>
+        <button type="button" class="btn btn-danger btn-block" id="accountDeleteBtn" data-i18n="account.deleteButton">Delete account</button>
       </div>
     </div>
   </div>
 
   <script src="/gm-supabase-config.js?v=2"></script>
+  <script src="locales/en.js?v=admin-notif-1"></script>
+  <script src="locales/es.js?v=admin-notif-1"></script>
+  <script src="i18n.js?v=admin-notif-1"></script>
   <script>
     /* Login gate opens before heavy app bundles parse (app.js is deferred below). */
     window.gmCalloutSetLoginGateOpen = function (isOpen) {
@@ -2059,7 +2182,7 @@
 
       function showCreateCompanyError(msg) {
         if (!createCompanyError) return;
-        createCompanyError.textContent = msg || '';
+        createCompanyError.textContent = mapLoginUiMessage(msg) || '';
         createCompanyError.hidden = !msg;
       }
 
@@ -2200,9 +2323,37 @@
 
       window.gmCalloutUpdateLoginBranding = updateLoginBranding;
 
+      function loginT(key, fallback) {
+        if (window.gmI18n && window.gmI18n.t) {
+          var v = window.gmI18n.t(key);
+          if (v && v !== key) return v;
+        }
+        return fallback != null ? fallback : key;
+      }
+
+      function mapLoginUiMessage(msg) {
+        var m = String(msg || '').trim();
+        if (!m) return m;
+        var lower = m.toLowerCase();
+        if (/passwords do not match/i.test(m)) return loginT('auth.passwordsMismatch', m);
+        if (/^enter an access code/i.test(m)) return loginT('auth.enterAccessCodeError', m);
+        if (/^enter a username/i.test(m)) return loginT('auth.enterUsername', m);
+        if (/^enter a password/i.test(m)) return loginT('auth.enterPassword', m);
+        if (/^enter your email/i.test(m)) return loginT('auth.enterEmail', m);
+        if (/reset link is invalid/i.test(m)) return loginT('auth.resetLinkInvalid', m);
+        if (/could not sign in/i.test(m)) return loginT('auth.couldNotSignIn', m);
+        if (/could not create/i.test(m)) return loginT('auth.couldNotCreate', m);
+        if (/sign in failed/i.test(m)) return loginT('auth.couldNotSignIn', m);
+        if (/name or password is incorrect/i.test(m)) return loginT('auth.couldNotSignIn', m);
+        if (window.gmPortalAuth && typeof window.gmPortalAuth.mapPortalMessage === 'function') {
+          return window.gmPortalAuth.mapPortalMessage(m, null);
+        }
+        return m;
+      }
+
       function showLoginError(msg, variant) {
         if (!loginError) return;
-        loginError.textContent = msg || '';
+        loginError.textContent = mapLoginUiMessage(msg) || '';
         loginError.hidden = !msg;
         if (!msg) loginError.classList.remove('is-success');
         else loginError.classList.toggle('is-success', variant === 'success');
@@ -2214,7 +2365,7 @@
 
       function showRegisterError(msg) {
         if (!registerError) return;
-        registerError.textContent = msg || '';
+        registerError.textContent = mapLoginUiMessage(msg) || '';
         registerError.hidden = !msg;
       }
 
@@ -2257,14 +2408,14 @@
       async function finishPortalLogin(role, displayName, companyPayload) {
         await whenManagerAppReady();
         if (companyPayload) storeCompanySession(companyPayload);
-        if (role === 'manager') {
+        if (role === 'manager' || role === 'admin') {
           try {
             sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
           } catch (_e0) {
             /* ignore */
           }
-          setSession('manager');
-          applyAuthedShell('manager');
+          setSession(role);
+          applyAuthedShell(role);
           if (typeof window.gmCalloutSupabaseHydrateFromRemote === 'function') {
             try {
               await window.gmCalloutSupabaseHydrateFromRemote();
@@ -2277,6 +2428,12 @@
           }
           if (typeof window.gmCalloutManagerBootstrap === 'function') {
             window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
+          }
+          if (
+            window.gmCalloutNotificationsCenter &&
+            typeof window.gmCalloutNotificationsCenter.start === 'function'
+          ) {
+            void window.gmCalloutNotificationsCenter.start();
           }
           return;
         }
@@ -2298,12 +2455,18 @@
           if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
             window.gmCalloutEmployeeBootstrap();
           }
+          if (
+            window.gmCalloutNotificationsCenter &&
+            typeof window.gmCalloutNotificationsCenter.start === 'function'
+          ) {
+            void window.gmCalloutNotificationsCenter.start();
+          }
           return;
         }
         if (role === 'timeclock' && typeof window.gmCalloutApplySupabaseRole === 'function') {
           window.gmCalloutApplySupabaseRole(role, displayName);
         }
-        if (role === 'manager' || role === 'employee') {
+        if (role === 'manager' || role === 'admin' || role === 'employee') {
           await promptRecoveryEmailIfNeeded();
         }
       }
@@ -2374,7 +2537,7 @@
         if (accountSettingsRecoveryEmail) {
           accountSettingsRecoveryEmail.value = acct.recoveryEmail || '';
         }
-        accountSettingsIsManager = acct.role === 'manager';
+        accountSettingsIsManager = acct.role === 'manager' || acct.role === 'admin';
         if (accountSettingsCompanyBlock) {
           accountSettingsCompanyBlock.hidden = !accountSettingsIsManager;
         }
@@ -3465,12 +3628,13 @@
   <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=signout-hard-nav-2"></script>
-  <script defer src="employee-app.js?v=signout-hard-nav-2"></script>
-  <script defer src="manager-messaging.js?v=signout-hard-nav-2"></script>
-  <script defer src="timeclock-schedule-match.js?v=signout-hard-nav-2"></script>
-  <script defer src="timeclock-app.js?v=signout-hard-nav-2"></script>
-  <script defer src="portal-auth-client.js?v=signout-hard-nav-2"></script>
-  <script defer src="login-timeclock.js?v=signout-hard-nav-2"></script>
+  <script defer src="app.js?v=admin-notif-1"></script>
+  <script defer src="employee-app.js?v=admin-notif-1"></script>
+  <script defer src="manager-messaging.js?v=admin-notif-1"></script>
+  <script defer src="timeclock-schedule-match.js?v=admin-notif-1"></script>
+  <script defer src="timeclock-app.js?v=admin-notif-1"></script>
+  <script defer src="portal-auth-client.js?v=admin-notif-1"></script>
+  <script defer src="notifications-center.js?v=notif-panel-z-1"></script>
+  <script defer src="login-timeclock.js?v=admin-notif-1"></script>
 </body>
 </html>

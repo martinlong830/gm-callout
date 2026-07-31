@@ -17,9 +17,10 @@ import {
 } from '../lib/portalAuth';
 import { isInvalidAuthTokenError } from '../lib/authErrors';
 import { createEmployeeRosterRow, type RegisterEmployeeInput } from '../lib/registerEmployee';
+import { isAppRole, type AppRole } from '../lib/roles';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
-export type AppRole = 'manager' | 'employee';
+export type { AppRole };
 
 type AuthState = {
   session: Session | null;
@@ -44,10 +45,6 @@ type AuthState = {
 };
 
 const AuthContext = createContext<AuthState | null>(null);
-
-function isAppRole(r: string | undefined): r is AppRole {
-  return r === 'manager' || r === 'employee';
-}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);

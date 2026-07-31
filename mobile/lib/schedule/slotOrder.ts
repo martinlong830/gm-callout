@@ -164,6 +164,125 @@ function writeSlotOrderByWeekMap(base: Record<string, unknown>, map: SlotOrderBy
   else delete base.slotOrderByWeek;
 }
 
+function roleOrderList(
+  byRest: SlotOrderByRestaurant | undefined,
+  rid: string,
+  role: RoleKey
+): number[] | null {
+  const list = byRest?.[rid]?.[role];
+  return Array.isArray(list) && list.length ? list.slice() : null;
+}
+
+/**
+ * Merge per-week slot orders. Non-empty side wins when the other is missing/empty.
+ * When both have a role list, `preferWhenBoth` chooses the winner (never drop to empty).
+ */
+export function mergeSlotOrderByWeekMaps(
+  localRaw: unknown,
+  remoteRaw: unknown,
+  preferWhenBoth: 'local' | 'remote' = 'remote'
+): SlotOrderByWeek {
+  const local = sanitizeSlotOrderByWeek(localRaw);
+  const remote = sanitizeSlotOrderByWeek(remoteRaw);
+  const out: SlotOrderByWeek = {};
+  const weekKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+  weekKeys.forEach((mon) => {
+    const localRest = local[mon] || {};
+    const remoteRest = remote[mon] || {};
+    const restOut: SlotOrderByRestaurant = {};
+    const rids = new Set([...Object.keys(localRest), ...Object.keys(remoteRest)]);
+    rids.forEach((rid) => {
+      const roleOut: SlotOrderByRole = {};
+      ROLE_KEYS.forEach((role) => {
+        const locList = roleOrderList(localRest, rid, role);
+        const remList = roleOrderList(remoteRest, rid, role);
+        if (locList && remList) {
+          roleOut[role] = preferWhenBoth === 'local' ? locList : remList;
+        } else if (remList) {
+          roleOut[role] = remList;
+        } else if (locList) {
+          roleOut[role] = locList;
+        }
+      });
+      if (Object.keys(roleOut).length) restOut[rid] = roleOut;
+    });
+    if (Object.keys(restOut).length) out[mon] = restOut;
+  });
+  return out;
+}
+
+/** Embed merged slotOrderByWeek into a draft_schedule payload (preserves byWeek / window). */
+export function applyMergedSlotOrderToDraft(
+  draftRaw: unknown,
+  localSlotOrder: unknown,
+  remoteSlotOrder: unknown,
+  preferWhenBoth: 'local' | 'remote' = 'remote'
+): unknown {
+  const base: Record<string, unknown> =
+    draftRaw && typeof draftRaw === 'object'
+      ? (JSON.parse(JSON.stringify(draftRaw)) as Record<string, unknown>)
+      : { v: 2, byWeek: {} };
+  writeSlotOrderByWeekMap(
+    base,
+    mergeSlotOrderByWeekMaps(localSlotOrder, remoteSlotOrder, preferWhenBoth)
+  );
+  if (!base.v) base.v = 2;
+  return base;
+}
+
+/**
+ * While a local draft save is pending, keep pending slotOrderByWeek (and byWeek edits)
+ * and only absorb structural fields (e.g. windowMondayIso) from a hydrated remote draft.
+ */
+export function mergePendingDraftWithHydrated(pending: unknown, hydrated: unknown): unknown {
+  const p: Record<string, unknown> =
+    pending && typeof pending === 'object'
+      ? (JSON.parse(JSON.stringify(pending)) as Record<string, unknown>)
+      : { v: 2, byWeek: {} };
+  if (!hydrated || typeof hydrated !== 'object') return p;
+  const h = hydrated as Record<string, unknown>;
+  writeSlotOrderByWeekMap(
+    p,
+    mergeSlotOrderByWeekMaps(readSlotOrderByWeek(p), readSlotOrderByWeek(h), 'local')
+  );
+  const hWin = h.windowMondayIso != null ? String(h.windowMondayIso).slice(0, 10) : '';
+  if (hWin) p.windowMondayIso = hWin;
+  if (!p.v) p.v = 2;
+  return p;
+}
+
+/**
+ * Merge remote draft_schedule into local cache without letting a missing/empty
+ * remote slotOrderByWeek wipe a non-empty local map.
+ */
+export function mergeDraftScheduleSlotOrderFromRemote(
+  localDraft: unknown,
+  remoteDraft: unknown
+): unknown {
+  if (!remoteDraft || typeof remoteDraft !== 'object') return localDraft;
+  if (!localDraft || typeof localDraft !== 'object') {
+    return JSON.parse(JSON.stringify(remoteDraft));
+  }
+  const merged = JSON.parse(JSON.stringify(remoteDraft)) as Record<string, unknown>;
+  writeSlotOrderByWeekMap(
+    merged,
+    mergeSlotOrderByWeekMaps(
+      readSlotOrderByWeek(localDraft),
+      readSlotOrderByWeek(remoteDraft),
+      'remote'
+    )
+  );
+  /* Keep legacy global fallback if remote omitted it but local still has it. */
+  const localLegacy = readLegacySlotOrderByRestaurant(localDraft);
+  const remoteLegacy = readLegacySlotOrderByRestaurant(remoteDraft);
+  if (Object.keys(remoteLegacy).length) {
+    merged.slotOrderByRestaurant = remoteLegacy;
+  } else if (Object.keys(localLegacy).length) {
+    merged.slotOrderByRestaurant = localLegacy;
+  }
+  return merged;
+}
+
 /** Write/replace one role's order for a specific week (does not write legacy global). */
 export function patchSlotOrderInDraftSchedule(
   raw: unknown,

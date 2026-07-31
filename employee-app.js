@@ -15,6 +15,23 @@
     return document.getElementById(id);
   }
 
+  function t(key, vars) {
+    if (typeof window !== 'undefined' && window.gmI18n && window.gmI18n.t) {
+      return window.gmI18n.t(key, vars);
+    }
+    return key;
+  }
+
+  function getEmpTitles() {
+    return {
+      home: t('title.home'),
+      schedule: t('title.schedule'),
+      availability: t('title.availability'),
+      messages: t('title.messages'),
+      requests: t('title.actions'),
+    };
+  }
+
   /** Pre-May 2026 demo seed thread (id `jamie`, swap-offer message). */
   function isLegacyJamieDemoThread(t) {
     if (!t) return false;
@@ -110,13 +127,7 @@
         ? bridge.getEmployeeLoginName()
         : bridge.employeeLoginName || '';
     if (!WORKER) return;
-    var titles = {
-      home: 'Home',
-      schedule: 'Schedule',
-      availability: 'Availability',
-      messages: 'Messages',
-      requests: 'Actions',
-    };
+    var titles = getEmpTitles();
 
     var screenTitle = el('empScreenTitle');
     var welcomeCard = el('empWelcomeCard');
@@ -287,7 +298,7 @@
         var k = sec.getAttribute('data-emp-screen');
         sec.hidden = k !== key;
       });
-      if (screenTitle) screenTitle.textContent = titles[key] || 'Home';
+      if (screenTitle) screenTitle.textContent = titles[key] || t('title.home');
     }
 
     function mapRoleClass(role) {
@@ -404,7 +415,7 @@
       if (!ul) return;
       if (!upcomingWeekStarts.length) {
         ul.innerHTML = '<li class="emp-shift-empty">' + escapeHtml(emptyMsg) + '</li>';
-        if (upcomingWeekLabel) upcomingWeekLabel.textContent = 'No upcoming shifts';
+        if (upcomingWeekLabel) upcomingWeekLabel.textContent = t('employee.noUpcomingShort');
         if (upcomingPrevWeekBtn) upcomingPrevWeekBtn.disabled = true;
         if (upcomingNextWeekBtn) upcomingNextWeekBtn.disabled = true;
         return;
@@ -444,7 +455,7 @@
       renderShiftList(
         listToday,
         buckets.today,
-        'You have no shifts today in the current 3-week window.'
+        t('employee.noShiftsToday')
       );
       var grouped = partitionUpcomingByWeek(buckets.upcoming);
       upcomingWeekStarts = grouped.order;
@@ -452,13 +463,15 @@
       if (upcomingWeekStarts.length && upcomingWeekCursor >= upcomingWeekStarts.length) {
         upcomingWeekCursor = upcomingWeekStarts.length - 1;
       }
-      renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
+      renderUpcomingWeekPager(listUp, t('employee.noUpcoming'));
     }
 
     var mgr = bridge.getManagerContact();
     if (managerBanner) {
       managerBanner.innerHTML =
-        '<p class="emp-manager-line"><strong>Manager</strong> — ' +
+        '<p class="emp-manager-line"><strong>' +
+        escapeHtml(t('employee.managerLine')) +
+        '</strong> — ' +
         escapeHtml(mgr.name) +
         '</p>' +
         '<p class="emp-manager-line muted">' +
@@ -509,7 +522,7 @@
             '<span class="emp-thread-name">' +
             escapeHtml(p.name) +
             '</span>' +
-            '<span class="emp-thread-pick-hint">Start a conversation</span>' +
+            '<span class="emp-thread-pick-hint">' + escapeHtml(t('messages.startConversation')) + '</span>' +
             '<span class="emp-thread-sub">' +
             escapeHtml(p.subtitle || '') +
             '</span>' +
@@ -521,8 +534,8 @@
         threadList.innerHTML =
           '<li class="emp-thread-empty"><p class="emp-shift-empty">' +
           (q
-            ? 'No conversations or team members match your search.'
-            : 'Type in the search box to find someone and start a conversation.') +
+            ? t('messages.searchNoMatch')
+            : t('messages.searchHint')) +
           '</p></li>';
         return;
       }
@@ -574,7 +587,7 @@
       if (!chatLog || !thread) return;
       if (!thread.messages || !thread.messages.length) {
         chatLog.innerHTML =
-          '<p class="emp-chat-empty">No messages yet. Type below to send your first message.</p>';
+          '<p class="emp-chat-empty">' + escapeHtml(t('messages.noMessagesFirst')) + '</p>';
         return;
       }
       chatLog.innerHTML = (thread.messages || [])
@@ -627,7 +640,7 @@
       if (!sel) return;
       var rows = allShiftsForSelect();
       if (!rows.length) {
-        sel.innerHTML = '<option value="">No scheduled shifts in the current window</option>';
+        sel.innerHTML = '<option value="">' + escapeHtml(t('employee.noScheduledShifts')) + '</option>';
         sel.disabled = true;
         return;
       }
@@ -654,7 +667,7 @@
       if (!empSwapShiftOffer) return;
       var rows = allShiftsForSelect();
       if (!rows.length) {
-        empSwapShiftOffer.innerHTML = '<option value="">No upcoming shifts available</option>';
+        empSwapShiftOffer.innerHTML = '<option value="">' + escapeHtml(t('employee.noUpcomingShiftsOption')) + '</option>';
         empSwapShiftOffer.disabled = true;
         return;
       }
@@ -675,7 +688,7 @@
       if (!empSwapAvailableShift) return;
       var offers = bridge.getOpenSwapOffers ? bridge.getOpenSwapOffers(WORKER) : [];
       if (!offers.length) {
-        empSwapAvailableShift.innerHTML = '<option value="">No open shift swap offers</option>';
+        empSwapAvailableShift.innerHTML = '<option value="">' + escapeHtml(t('employee.noSwapOffers')) + '</option>';
         empSwapAvailableShift.disabled = true;
         return;
       }
@@ -732,12 +745,12 @@
       if (!empAvailStatus) return;
       var label =
         currentAvailStatus === 'approved'
-          ? 'Approved'
+          ? t('status.approved')
           : currentAvailStatus === 'declined'
-            ? 'Declined'
+            ? t('status.declined')
             : currentAvailStatus === 'submitted'
-              ? 'Pending'
-              : 'Draft';
+              ? t('status.pending')
+              : t('status.draft');
       empAvailStatus.textContent = label;
       empAvailStatus.classList.toggle('avail-status-badge--draft', currentAvailStatus === 'draft');
       empAvailStatus.classList.toggle(
@@ -1114,7 +1127,7 @@
         upcomingPrevWeekBtn.addEventListener('click', function () {
           if (upcomingWeekCursor <= 0) return;
           upcomingWeekCursor -= 1;
-          renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
+          renderUpcomingWeekPager(listUp, t('employee.noUpcoming'));
         });
       }
 
@@ -1122,7 +1135,7 @@
         upcomingNextWeekBtn.addEventListener('click', function () {
           if (upcomingWeekCursor >= upcomingWeekStarts.length - 1) return;
           upcomingWeekCursor += 1;
-          renderUpcomingWeekPager(listUp, 'No later shifts in the current 3-week window.');
+          renderUpcomingWeekPager(listUp, t('employee.noUpcoming'));
         });
       }
     }
@@ -1143,8 +1156,25 @@
       refreshEmployeeScheduleUi();
     };
 
+    window.gmCalloutEmployeeOnLocaleChange = function () {
+      titles = getEmpTitles();
+      var activeNav = document.querySelector('[data-emp-nav].active');
+      var navKey = activeNav ? activeNav.getAttribute('data-emp-nav') : 'home';
+      showEmpNav(navKey);
+      renderHome();
+      renderThreadsList();
+      if (navKey === 'schedule') renderMasterScheduleScreen();
+      if (navKey === 'availability') renderEmployeeAvailabilityTab();
+    };
+
     renderHome();
     showEmpNav('home');
+    if (
+      window.gmCalloutNotificationsCenter &&
+      typeof window.gmCalloutNotificationsCenter.start === 'function'
+    ) {
+      void window.gmCalloutNotificationsCenter.start();
+    }
   }
 
   window.gmCalloutEmployeeBootstrap = init;

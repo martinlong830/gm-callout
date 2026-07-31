@@ -32,13 +32,13 @@ import {
   employeeIsMultiLocation,
   employeePrimaryLocationId,
   isCloudEmployeeId,
-  staffTypeLabel,
   type EmployeeRow,
 } from '../lib/employees';
 import { isPortalAuthConfigured, portalCreateEmployeeAccount, portalGetAccount } from '../lib/portalAuth';
 import type { DraftGrid } from '../lib/schedule/types';
 import { employeePhotoUploadHint, clearEmployeePhoto, uploadEmployeePhotoFromUri } from '../lib/uploadEmployeePhoto';
 import { supabase } from '../lib/supabase';
+import { useI18n } from '../contexts/LocaleContext';
 import { normalizeWeeklyGrid, type WeeklyGridNormalized } from '../lib/weeklyAvailabilityMatrix';
 
 const STAFF_TYPES = [
@@ -118,6 +118,7 @@ type Props = {
 };
 
 export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, onClose, onSaved }: Props) {
+  const { t, staffTypeLabel: staffTypeLabelI18n } = useI18n();
   const { height: windowHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(windowHeight * 0.9);
 
@@ -520,7 +521,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
 
   const photoEmp = profileEmployee ?? employee;
   const hasCustomPhoto = !!(photoEmp?.meta?.photoUseCustom && photoEmp?.meta?.photoUrl);
-  const sheetTitle = isCreate ? 'Add employee' : employeeDisplayName(employee!);
+  const sheetTitle = isCreate ? t('editor.addEmployee') : employeeDisplayName(employee!);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -540,7 +541,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
               )}
               <View style={styles.sheetHeaderText}>
                 <Text style={styles.sheetTitle}>{sheetTitle}</Text>
-                <Text style={styles.sheetSubtitle}>{staffTypeLabel(staffType)}</Text>
+                <Text style={styles.sheetSubtitle}>{staffTypeLabelI18n(staffType)}</Text>
                 {!isCreate && photoEmp ? (
                   <View style={styles.photoActions}>
                     <Pressable
@@ -551,7 +552,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       {photoBusy ? (
                         <ActivityIndicator size="small" color="#c41230" />
                       ) : (
-                        <Text style={styles.photoBtnText}>Upload photo</Text>
+                        <Text style={styles.photoBtnText}>{t('editor.uploadPhoto')}</Text>
                       )}
                     </Pressable>
                     {hasCustomPhoto ? (
@@ -560,7 +561,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                         onPress={() => void removePhoto()}
                         disabled={photoBusy}
                       >
-                        <Text style={styles.photoBtnSecondaryText}>Remove</Text>
+                        <Text style={styles.photoBtnSecondaryText}>{t('editor.removePhoto')}</Text>
                       </Pressable>
                     ) : null}
                   </View>
@@ -852,11 +853,13 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.primaryBtnText}>{busy ? 'Saving…' : isCreate ? 'Add employee' : 'Save employee'}</Text>
+                  <Text style={styles.primaryBtnText}>
+                    {busy ? t('common.saving') : isCreate ? t('editor.addEmployee') : t('editor.saveEmployee')}
+                  </Text>
                 )}
               </Pressable>
               <Pressable style={styles.ghostBtn} onPress={onClose} disabled={busy}>
-                <Text style={styles.ghostBtnText}>Close without saving</Text>
+                <Text style={styles.ghostBtnText}>{t('editor.closeWithoutSaving')}</Text>
               </Pressable>
             </View>
           </View>

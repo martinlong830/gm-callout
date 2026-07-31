@@ -16,6 +16,9 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/LocaleContext';
+import { LanguageToggle } from '../components/LanguageToggle';
+import { isAdminRole, isManagerLikeRole } from '../lib/roles';
 import {
   clearCompanySession,
   isRedPokeAccessCode,
@@ -46,11 +49,7 @@ type Panel =
   | 'employee-reg'
   | 'manager-reg';
 
-const STAFF_TYPES = [
-  { value: 'Kitchen' as const, label: 'Back of the House' },
-  { value: 'Bartender' as const, label: 'Front of the House' },
-  { value: 'Server' as const, label: 'Delivery/Dishwasher' },
-];
+const STAFF_TYPE_VALUES = ['Kitchen', 'Bartender', 'Server'] as const;
 
 const PRIMARY = '#1e3a5f';
 /** Near-black so secureTextEntry bullets stay visible on light fields (Android OEM themes). */
@@ -90,6 +89,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ setup_access_code?: string }>();
   const { signIn, signUp, session, role, loading: authLoading } = useAuth();
+  const { t, locale, staffTypeLabel } = useI18n();
   const [panel, setPanel] = useState<Panel>('landing');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -194,7 +194,8 @@ export default function LoginScreen() {
   useEffect(() => {
     if (authLoading) return;
     if (panel === 'setup-access-code') return;
-    if (session && role === 'manager') router.replace('/manager');
+    if (session && isAdminRole(role)) router.replace('/manager/schedule');
+    else if (session && isManagerLikeRole(role)) router.replace('/manager');
     else if (session && role === 'employee') router.replace('/employee');
   }, [authLoading, session, role, router, panel]);
 
@@ -229,7 +230,7 @@ export default function LoginScreen() {
     clearMsg();
     const code = companyAccessCode.trim();
     if (!code) {
-      setMessage('Enter your company access code.');
+      setMessage(t('auth.enterAccessCodeError'));
       return;
     }
     setBusy(true);
@@ -251,7 +252,7 @@ export default function LoginScreen() {
         goSignIn();
         return;
       }
-      setMessage(res.message || 'Access code is incorrect.');
+      setMessage(res.message || t('auth.accessCodeIncorrect'));
       return;
     }
     const companyId = res.companyId || (isRedPokeAccessCode(code) ? RED_POKE_COMPANY_ID : '');
@@ -271,19 +272,19 @@ export default function LoginScreen() {
     const username = createUsername.trim();
     const email = createEmail.trim();
     if (!companyName || !username || !email || !createPassword || !createPasswordConfirm) {
-      setMessage('All fields are required.');
+      setMessage(t('auth.allFieldsRequired'));
       return;
     }
     if (createPassword !== createPasswordConfirm) {
-      setMessage('Passwords do not match.');
+      setMessage(t('auth.passwordsMismatch'));
       return;
     }
     if (createPassword.length < 4) {
-      setMessage('Password must be at least 4 characters.');
+      setMessage(t('auth.passwordMinLength'));
       return;
     }
     if (!isPortalAuthConfigured()) {
-      setMessage('Set EXPO_PUBLIC_GM_WEB_URL to your web server, then restart Expo.');
+      setMessage(t('auth.portalNotConfigured'));
       return;
     }
     setBusy(true);
@@ -296,10 +297,9 @@ export default function LoginScreen() {
     });
     setBusy(false);
     if (!res.ok) {
-      let errMsg = res.message || 'Could not create company.';
+      let errMsg = res.message || t('auth.couldNotCreateCompany');
       if (res.status === 503) {
-        errMsg =
-          'Server auth is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to the web server .env.';
+        errMsg = t('auth.serverAuthNotConfigured');
       }
       setMessage(errMsg);
       return;
@@ -311,9 +311,9 @@ export default function LoginScreen() {
     setCreatePasswordConfirm('');
     let pending =
       res.message ||
-      'Check your email to confirm. After confirming, you will set your company access code, then sign in with Log in.';
+      t('auth.checkEmailConfirm');
     if (res.dev) {
-      pending += ' (Dev: confirmation link was logged on the server.)';
+      pending += t('auth.devConfirmLogged');
     }
     setPendingMessage(pending);
     clearMsg();
@@ -324,18 +324,18 @@ export default function LoginScreen() {
     clearMsg();
     const code = setupAccessCodeValue.trim();
     if (!code) {
-      setMessage('Enter an access code.');
+      setMessage(t('auth.enterAccessCodeField'));
       return;
     }
     if (!isPortalAuthConfigured()) {
-      setMessage('Set EXPO_PUBLIC_GM_WEB_URL to your web server, then restart Expo.');
+      setMessage(t('auth.portalNotConfigured'));
       return;
     }
     setBusy(true);
     const res = await portalSetupAccessCode(code);
     setBusy(false);
     if (!res.ok) {
-      setMessage(res.message || 'Could not save access code.');
+      setMessage(res.message || t('auth.couldNotSaveAccessCode'));
       return;
     }
     const savedAccessCode = res.accessCode || code;
@@ -353,7 +353,7 @@ export default function LoginScreen() {
     }
     setSuccess(true);
     setMessage(
-      res.message || 'Access code saved. Enter it below, then sign in with your username and password.'
+      res.message || t('auth.accessCodeSavedHint')
     );
     setPanel('access-code');
   }
@@ -362,7 +362,7 @@ export default function LoginScreen() {
     clearMsg();
     const name = loginName.trim();
     if (!name || !password) {
-      setMessage('Enter your name and password.');
+      setMessage(t('auth.enterNamePassword'));
       return;
     }
     setBusy(true);
@@ -378,16 +378,15 @@ export default function LoginScreen() {
     );
     setBusy(false);
     if (!res.ok) {
-      let msg = res.message || 'Sign in failed.';
+      let msg = res.message || t('auth.signInFailed');
       if (/PGRST116|multiple \(or no\) rows returned/i.test(msg)) {
-        msg =
-          'Multiple accounts match that name. Re-enter your company access code, then try again. If it still fails, ask an owner to clean up duplicate profiles.';
+        msg = t('auth.multipleAccountsMatch');
       } else if (isInvalidAuthTokenError(msg) || /^invalid token$/i.test(msg)) {
-        msg = friendlyAuthTokenMessage(msg, 'signin');
+        msg = friendlyAuthTokenMessage(msg, 'signin', locale);
       }
       const hint =
         msg.includes('timed out') || msg.includes('Could not reach')
-          ? `\n\nTrying: ${portalWebUrl()}`
+          ? t('auth.tryingUrl', { url: portalWebUrl() })
           : '';
       setMessage(msg + hint);
       return;
@@ -395,18 +394,26 @@ export default function LoginScreen() {
     if (companyId) {
       await storeCompanySession({ companyId });
     }
-    router.replace(res.role === 'manager' ? '/manager' : '/employee');
+    router.replace(
+      isAdminRole(res.role)
+        ? '/manager/schedule'
+        : isManagerLikeRole(res.role)
+          ? '/manager'
+          : res.role === 'employee'
+            ? '/employee'
+            : '/'
+    );
   }
 
   async function onForgot() {
     clearMsg();
     const name = loginName.trim();
     if (!name) {
-      setMessage('Enter your sign-in name.');
+      setMessage(t('auth.enterSignInName'));
       return;
     }
     if (!isPortalAuthConfigured()) {
-      setMessage('Set EXPO_PUBLIC_GM_WEB_URL to your web server, then restart Expo.');
+      setMessage(t('auth.portalNotConfigured'));
       return;
     }
     setBusy(true);
@@ -419,7 +426,7 @@ export default function LoginScreen() {
     setSuccess(true);
     setMessage(
       res.message ||
-        'If that name is on file, we sent a password reset link. Check your inbox and spam folder.'
+        t('auth.resetEmailSent')
     );
   }
 
@@ -429,23 +436,23 @@ export default function LoginScreen() {
     const ln = lastName.trim();
     const displayName = `${fn} ${ln}`.trim();
     if (!displayName) {
-      setMessage('First and last name are required.');
+      setMessage(t('auth.firstLastRequired'));
       return;
     }
     if (!phone.trim()) {
-      setMessage('Phone number is required.');
+      setMessage(t('auth.phoneRequired'));
       return;
     }
     if (!recoveryEmail.trim()) {
-      setMessage('Recovery email is required.');
+      setMessage(t('auth.recoveryEmailRequired'));
       return;
     }
     if (regPassword.length < 4) {
-      setMessage('Password must be at least 4 characters.');
+      setMessage(t('auth.passwordMinLength'));
       return;
     }
     if (regPassword !== regPasswordConfirm) {
-      setMessage('Passwords do not match.');
+      setMessage(t('auth.passwordsMismatch'));
       return;
     }
     setBusy(true);
@@ -469,7 +476,7 @@ export default function LoginScreen() {
     }
     if (res.needsSignIn) {
       setSuccess(true);
-      setMessage(res.message || 'Account created. Sign in with your name and password.');
+      setMessage(res.message || t('auth.accountCreatedSignIn'));
       goSignIn(displayName);
       return;
     }
@@ -480,19 +487,19 @@ export default function LoginScreen() {
     clearMsg();
     const name = mgrName.trim();
     if (!name) {
-      setMessage('Name is required.');
+      setMessage(t('auth.nameRequired'));
       return;
     }
     if (!mgrRecoveryEmail.trim()) {
-      setMessage('Recovery email is required.');
+      setMessage(t('auth.recoveryEmailRequired'));
       return;
     }
     if (mgrPassword.length < 4) {
-      setMessage('Password must be at least 4 characters.');
+      setMessage(t('auth.passwordMinLength'));
       return;
     }
     if (mgrPassword !== mgrPasswordConfirm) {
-      setMessage('Passwords do not match.');
+      setMessage(t('auth.passwordsMismatch'));
       return;
     }
     setBusy(true);
@@ -511,7 +518,7 @@ export default function LoginScreen() {
     }
     if (res.needsSignIn) {
       setSuccess(true);
-      setMessage(res.message || 'Account created. Sign in with your name and password.');
+      setMessage(res.message || t('auth.accountCreatedSignIn'));
       goSignIn(name);
       return;
     }
@@ -529,6 +536,9 @@ export default function LoginScreen() {
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
+            <View style={styles.langRow}>
+              <LanguageToggle variant="compact" />
+            </View>
             {showRedPokeBrand ? (
               <View style={styles.logoWrap}>
                 <Image
@@ -555,20 +565,14 @@ export default function LoginScreen() {
             </Text>
 
             {!supabaseOk ? (
-              <Text style={styles.warn}>
-                Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY
-                in mobile/.env (or EAS secrets for production builds).
-              </Text>
+              <Text style={styles.warn}>{t('auth.supabaseNotConfigured')}</Text>
             ) : !portalOk ? (
-              <Text style={styles.warn}>
-                Set EXPO_PUBLIC_GM_WEB_URL in mobile/.env (HTTPS production or LAN IP), then restart Expo
-                with -c.
-              </Text>
+              <Text style={styles.warn}>{t('auth.portalEnvHint')}</Text>
             ) : null}
 
             {panel === 'landing' ? (
               <>
-                <Text style={styles.subtitle}>Staff scheduling for restaurants</Text>
+                <Text style={styles.subtitle}>{t('auth.tagline')}</Text>
                 <View style={styles.landingActions}>
                   <Pressable
                     style={[styles.button, styles.buttonPrimary]}
@@ -577,7 +581,7 @@ export default function LoginScreen() {
                       setPanel('access-code');
                     }}
                   >
-                    <Text style={styles.buttonText}>Log in</Text>
+                    <Text style={styles.buttonText}>{t('auth.logIn')}</Text>
                   </Pressable>
                   <Pressable
                     style={[styles.button, styles.buttonSecondary]}
@@ -586,7 +590,7 @@ export default function LoginScreen() {
                       setPanel('create-company');
                     }}
                   >
-                    <Text style={styles.buttonSecondaryText}>Create company</Text>
+                    <Text style={styles.buttonSecondaryText}>{t('auth.createCompany')}</Text>
                   </Pressable>
                 </View>
               </>
@@ -594,9 +598,9 @@ export default function LoginScreen() {
 
             {panel === 'access-code' ? (
               <>
-                <Text style={styles.subtitle}>Enter your company access code</Text>
-                <Text style={styles.hint}>Your manager can share this code with you.</Text>
-                <Text style={styles.label}>Access code</Text>
+                <Text style={styles.subtitle}>{t('auth.enterAccessCode')}</Text>
+                <Text style={styles.hint}>{t('auth.accessCodeHint')}</Text>
+                <Text style={styles.label}>{t('auth.accessCode')}</Text>
                 <TextInput
                   style={styles.input}
                   autoCapitalize="none"
@@ -604,7 +608,7 @@ export default function LoginScreen() {
                   spellCheck={false}
                   value={companyAccessCode}
                   onChangeText={setCompanyAccessCode}
-                  placeholder="Company access code"
+                  placeholder={t('auth.accessCodePlaceholder')}
                   placeholderTextColor={INPUT_PLACEHOLDER}
                   returnKeyType="go"
                   onSubmitEditing={() => void onVerifyAccessCode()}
@@ -620,22 +624,20 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Continue</Text>
+                    <Text style={styles.buttonText}>{t('common.continue')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
-                  <Text style={styles.linkText}>Back</Text>
+                  <Text style={styles.linkText}>{t('common.back')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'create-company' ? (
               <>
-                <Text style={styles.subtitle}>Create your company</Text>
-                <Text style={styles.hint}>
-                  Set up Shiflow for your team. We will email you to confirm before you can sign in.
-                </Text>
-                <Text style={styles.label}>Company name</Text>
+                <Text style={styles.subtitle}>{t('auth.createCompanyTitle')}</Text>
+                <Text style={styles.hint}>{t('auth.createCompanyHint')}</Text>
+                <Text style={styles.label}>{t('auth.companyName')}</Text>
                 <TextInput
                   style={styles.input}
                   value={createCompanyName}
@@ -643,7 +645,7 @@ export default function LoginScreen() {
                   autoCapitalize="words"
                   maxLength={120}
                 />
-                <Text style={styles.label}>Your username</Text>
+                <Text style={styles.label}>{t('auth.yourUsername')}</Text>
                 <TextInput
                   style={styles.input}
                   value={createUsername}
@@ -652,7 +654,7 @@ export default function LoginScreen() {
                   autoComplete="username"
                   maxLength={80}
                 />
-                <Text style={styles.label}>Your email</Text>
+                <Text style={styles.label}>{t('auth.yourEmail')}</Text>
                 <TextInput
                   style={styles.input}
                   value={createEmail}
@@ -662,20 +664,21 @@ export default function LoginScreen() {
                   autoComplete="email"
                   maxLength={120}
                 />
-                <Text style={styles.label}>Password</Text>
+                <Text style={styles.label}>{t('auth.password')}</Text>
                 <PasswordInput
                   value={createPassword}
                   onChangeText={setCreatePassword}
                   autoComplete="new-password"
                   textContentType="newPassword"
+                  placeholder={t('auth.password')}
                 />
-                <Text style={styles.label}>Confirm password</Text>
+                <Text style={styles.label}>{t('auth.confirmPassword')}</Text>
                 <PasswordInput
                   value={createPasswordConfirm}
                   onChangeText={setCreatePasswordConfirm}
                   autoComplete="new-password"
                   textContentType="newPassword"
-                  placeholder="Confirm password"
+                  placeholder={t('auth.confirmPassword')}
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -686,22 +689,20 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Create company</Text>
+                    <Text style={styles.buttonText}>{t('auth.createCompany')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
-                  <Text style={styles.linkText}>Back</Text>
+                  <Text style={styles.linkText}>{t('common.back')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'pending' ? (
               <>
-                <Text style={styles.subtitle}>Confirm your email</Text>
+                <Text style={styles.subtitle}>{t('auth.confirmEmail')}</Text>
                 <Text style={styles.hint}>{pendingMessage}</Text>
-                <Text style={styles.hint}>
-                  After you tap the email link, open this app (or the web page) to set your access code.
-                </Text>
+                <Text style={styles.hint}>{t('auth.afterEmailLink')}</Text>
                 <Pressable
                   style={[styles.button, styles.buttonPrimary]}
                   onPress={() => {
@@ -709,23 +710,19 @@ export default function LoginScreen() {
                     setPanel('setup-access-code');
                   }}
                 >
-                  <Text style={styles.buttonText}>I confirmed — set access code</Text>
+                  <Text style={styles.buttonText}>{t('auth.confirmedSetAccessCode')}</Text>
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
-                  <Text style={styles.linkText}>Back to home</Text>
+                  <Text style={styles.linkText}>{t('auth.backToHome')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'setup-access-code' ? (
               <>
-                <Text style={styles.subtitle}>Set your company access code</Text>
-                <Text style={styles.hint}>
-                  Choose a unique access code. Your team will enter it before signing in. Open the
-                  confirmation link from your email on this device (or in a private browser window on
-                  the web) so the correct account is signed in.
-                </Text>
-                <Text style={styles.label}>Company access code</Text>
+                <Text style={styles.subtitle}>{t('auth.setupAccessCode')}</Text>
+                <Text style={styles.hint}>{t('auth.setupAccessCodeLongHint')}</Text>
+                <Text style={styles.label}>{t('auth.companyAccessCode')}</Text>
                 <TextInput
                   style={styles.input}
                   value={setupAccessCodeValue}
@@ -733,7 +730,7 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   maxLength={48}
-                  placeholder="e.g. my-restaurant"
+                  placeholder={t('auth.accessCodeExample')}
                   placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 {message ? (
@@ -747,33 +744,33 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Save access code</Text>
+                    <Text style={styles.buttonText}>{t('auth.saveAccessCode')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
-                  <Text style={styles.linkText}>Back to home</Text>
+                  <Text style={styles.linkText}>{t('auth.backToHome')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'signin' ? (
               <>
-                <Text style={styles.subtitle}>Sign in to continue</Text>
-                <Text style={styles.label}>Name</Text>
+                <Text style={styles.subtitle}>{t('auth.signInContinue')}</Text>
+                <Text style={styles.label}>{t('auth.nameLabel')}</Text>
                 <TextInput
                   style={styles.input}
                   autoCapitalize="words"
                   autoComplete="username"
                   value={loginName}
                   onChangeText={setLoginName}
-                  placeholder="Your full name"
+                  placeholder={t('auth.yourFullName')}
                   placeholderTextColor={INPUT_PLACEHOLDER}
                 />
-                <Text style={styles.label}>Password</Text>
+                <Text style={styles.label}>{t('auth.password')}</Text>
                 <PasswordInput
                   value={password}
                   onChangeText={setPassword}
-                  placeholder="Password"
+                  placeholder={t('auth.password')}
                   returnKeyType="go"
                   onSubmitEditing={() => void onSignIn()}
                 />
@@ -788,7 +785,7 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Sign in</Text>
+                    <Text style={styles.buttonText}>{t('auth.signIn')}</Text>
                   )}
                 </Pressable>
                 <Pressable
@@ -798,7 +795,7 @@ export default function LoginScreen() {
                     setPanel('forgot');
                   }}
                 >
-                  <Text style={styles.linkText}>Forgot password?</Text>
+                  <Text style={styles.linkText}>{t('auth.forgotPassword')}</Text>
                 </Pressable>
                 <Pressable
                   style={styles.linkBtn}
@@ -807,7 +804,7 @@ export default function LoginScreen() {
                     setPanel('employee-reg');
                   }}
                 >
-                  <Text style={styles.linkText}>Create employee account</Text>
+                  <Text style={styles.linkText}>{t('auth.createEmployeeAccount')}</Text>
                 </Pressable>
                 <Pressable
                   style={styles.linkBtn}
@@ -816,27 +813,25 @@ export default function LoginScreen() {
                     setPanel('manager-reg');
                   }}
                 >
-                  <Text style={styles.linkText}>Create manager account</Text>
+                  <Text style={styles.linkText}>{t('auth.createManagerAccount')}</Text>
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
-                  <Text style={styles.linkText}>Back to home</Text>
+                  <Text style={styles.linkText}>{t('auth.backToHome')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'forgot' ? (
               <>
-                <Text style={styles.subtitle}>Reset password</Text>
-                <Text style={styles.hint}>
-                  Enter your sign-in name. We email a reset link to the recovery email on that account.
-                </Text>
-                <Text style={styles.label}>Name</Text>
+                <Text style={styles.subtitle}>{t('auth.forgotTitle')}</Text>
+                <Text style={styles.hint}>{t('auth.forgotHintLong')}</Text>
+                <Text style={styles.label}>{t('auth.nameLabel')}</Text>
                 <TextInput
                   style={styles.input}
                   autoCapitalize="words"
                   value={loginName}
                   onChangeText={setLoginName}
-                  placeholder="Your sign-in name"
+                  placeholder={t('auth.yourSignInName')}
                   placeholderTextColor={INPUT_PLACEHOLDER}
                 />
                 {message ? (
@@ -850,33 +845,33 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Send reset link</Text>
+                    <Text style={styles.buttonText}>{t('auth.sendResetLink')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={() => goSignIn()}>
-                  <Text style={styles.linkText}>Back to sign in</Text>
+                  <Text style={styles.linkText}>{t('auth.backToSignIn')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'employee-reg' ? (
               <>
-                <Text style={styles.subtitle}>Create employee account</Text>
-                <Text style={styles.label}>First name</Text>
+                <Text style={styles.subtitle}>{t('auth.registerEmployeeTitle')}</Text>
+                <Text style={styles.label}>{t('auth.firstName')}</Text>
                 <TextInput
                   style={styles.input}
                   value={firstName}
                   onChangeText={setFirstName}
                   autoCapitalize="words"
                 />
-                <Text style={styles.label}>Last name</Text>
+                <Text style={styles.label}>{t('auth.lastName')}</Text>
                 <TextInput
                   style={styles.input}
                   value={lastName}
                   onChangeText={setLastName}
                   autoCapitalize="words"
                 />
-                <Text style={styles.label}>Phone number</Text>
+                <Text style={styles.label}>{t('auth.phoneNumber')}</Text>
                 <TextInput
                   style={styles.input}
                   value={phone}
@@ -884,7 +879,7 @@ export default function LoginScreen() {
                   keyboardType="phone-pad"
                   autoComplete="tel"
                 />
-                <Text style={styles.label}>Recovery email</Text>
+                <Text style={styles.label}>{t('auth.recoveryEmail')}</Text>
                 <TextInput
                   style={styles.input}
                   value={recoveryEmail}
@@ -893,36 +888,37 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoComplete="email"
                 />
-                <Text style={styles.hintTight}>Used to reset your password if you forget it.</Text>
-                <Text style={styles.label}>Staff type</Text>
+                <Text style={styles.hintTight}>{t('auth.recoveryHintShort')}</Text>
+                <Text style={styles.label}>{t('auth.staffType')}</Text>
                 <View style={styles.chipRow}>
-                  {STAFF_TYPES.map((st) => {
-                    const on = staffType === st.value;
+                  {STAFF_TYPE_VALUES.map((st) => {
+                    const on = staffType === st;
                     return (
                       <Pressable
-                        key={st.value}
+                        key={st}
                         style={[styles.chip, on && styles.chipOn]}
-                        onPress={() => setStaffType(st.value)}
+                        onPress={() => setStaffType(st)}
                       >
-                        <Text style={[styles.chipText, on && styles.chipTextOn]}>{st.label}</Text>
+                        <Text style={[styles.chipText, on && styles.chipTextOn]}>{staffTypeLabel(st)}</Text>
                       </Pressable>
                     );
                   })}
                 </View>
-                <Text style={styles.label}>Password</Text>
+                <Text style={styles.label}>{t('auth.password')}</Text>
                 <PasswordInput
                   value={regPassword}
                   onChangeText={setRegPassword}
                   autoComplete="new-password"
                   textContentType="newPassword"
+                  placeholder={t('auth.password')}
                 />
-                <Text style={styles.label}>Confirm password</Text>
+                <Text style={styles.label}>{t('auth.confirmPassword')}</Text>
                 <PasswordInput
                   value={regPasswordConfirm}
                   onChangeText={setRegPasswordConfirm}
                   autoComplete="new-password"
                   textContentType="newPassword"
-                  placeholder="Confirm password"
+                  placeholder={t('auth.confirmPassword')}
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -933,22 +929,20 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Create account</Text>
+                    <Text style={styles.buttonText}>{t('auth.createAccount')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={() => goSignIn()}>
-                  <Text style={styles.linkText}>Back to sign in</Text>
+                  <Text style={styles.linkText}>{t('auth.backToSignIn')}</Text>
                 </Pressable>
               </>
             ) : null}
 
             {panel === 'manager-reg' ? (
               <>
-                <Text style={styles.subtitle}>Create manager account</Text>
-                <Text style={styles.hint}>
-                  Enter the access code, your name, recovery email, and password.
-                </Text>
-                <Text style={styles.label}>Access code</Text>
+                <Text style={styles.subtitle}>{t('auth.registerManagerTitle')}</Text>
+                <Text style={styles.hint}>{t('auth.managerRegHint')}</Text>
+                <Text style={styles.label}>{t('auth.accessCode')}</Text>
                 <TextInput
                   style={styles.input}
                   value={accessCode}
@@ -956,17 +950,17 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   spellCheck={false}
-                  placeholder="Access code"
+                  placeholder={t('auth.accessCode')}
                   placeholderTextColor={INPUT_PLACEHOLDER}
                 />
-                <Text style={styles.label}>Name</Text>
+                <Text style={styles.label}>{t('auth.nameLabel')}</Text>
                 <TextInput
                   style={styles.input}
                   value={mgrName}
                   onChangeText={setMgrName}
                   autoCapitalize="words"
                 />
-                <Text style={styles.label}>Recovery email</Text>
+                <Text style={styles.label}>{t('auth.recoveryEmail')}</Text>
                 <TextInput
                   style={styles.input}
                   value={mgrRecoveryEmail}
@@ -975,21 +969,22 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoComplete="email"
                 />
-                <Text style={styles.hintTight}>Used to reset your password if you forget it.</Text>
-                <Text style={styles.label}>Password</Text>
+                <Text style={styles.hintTight}>{t('auth.recoveryHintShort')}</Text>
+                <Text style={styles.label}>{t('auth.password')}</Text>
                 <PasswordInput
                   value={mgrPassword}
                   onChangeText={setMgrPassword}
                   autoComplete="new-password"
                   textContentType="newPassword"
+                  placeholder={t('auth.password')}
                 />
-                <Text style={styles.label}>Confirm password</Text>
+                <Text style={styles.label}>{t('auth.confirmPassword')}</Text>
                 <PasswordInput
                   value={mgrPasswordConfirm}
                   onChangeText={setMgrPasswordConfirm}
                   autoComplete="new-password"
                   textContentType="newPassword"
-                  placeholder="Confirm password"
+                  placeholder={t('auth.confirmPassword')}
                 />
                 {message ? <Text style={styles.feedback}>{message}</Text> : null}
                 <Pressable
@@ -1000,11 +995,11 @@ export default function LoginScreen() {
                   {busy ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.buttonText}>Create manager account</Text>
+                    <Text style={styles.buttonText}>{t('auth.createManagerAccountBtn')}</Text>
                   )}
                 </Pressable>
                 <Pressable style={styles.linkBtn} onPress={() => goSignIn()}>
-                  <Text style={styles.linkText}>Back to sign in</Text>
+                  <Text style={styles.linkText}>{t('auth.backToSignIn')}</Text>
                 </Pressable>
               </>
             ) : null}
@@ -1041,6 +1036,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 12 },
     elevation: 4,
   },
+  langRow: { alignItems: 'flex-end', marginBottom: 8 },
   brandWrap: { alignItems: 'center', marginBottom: 12 },
   brandMark: {
     width: 52,

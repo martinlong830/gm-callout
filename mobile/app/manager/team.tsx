@@ -3,11 +3,14 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from '
 import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
 import { EmployeePhoto } from '../../components/EmployeePhoto';
 import { useAppData } from '../../contexts/AppDataContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../contexts/LocaleContext';
 import {
   employeeClockPinLine,
   employeeDisplayName,
   employeeUsualLocationLine,
-  staffTypeLabel,
+  employeeVisibleInManagerStoreScope,
+  managerManagedRestaurantId,
   type EmployeeRow,
 } from '../../lib/employees';
 import { leaveSummaryLines } from '../../lib/employeeLeave';
@@ -30,9 +33,11 @@ function MetaRow({ label, value }: { label: string; value: string }) {
 const TeamMemberCard = memo(function TeamMemberCard({
   item,
   onPress,
+  t,
 }: {
   item: EmployeeRow;
   onPress: () => void;
+  t: (key: string) => string;
 }) {
   const pinLine = employeeClockPinLine(item);
   const leaveLines = leaveSummaryLines(item);
@@ -43,9 +48,9 @@ const TeamMemberCard = memo(function TeamMemberCard({
         <EmployeePhoto employee={item} size={52} />
         <View style={styles.rowBody}>
           <Text style={styles.name}>{employeeDisplayName(item)}</Text>
-          <MetaRow label="Phone" value={(item.phone || '').trim() || '—'} />
-          <MetaRow label="Location" value={employeeUsualLocationLine(item.usualRestaurant)} />
-          {pinLine ? <MetaRow label="PIN" value={pinLine} /> : null}
+          <MetaRow label={t('common.phone')} value={(item.phone || '').trim() || '—'} />
+          <MetaRow label={t('team.location')} value={employeeUsualLocationLine(item.usualRestaurant)} />
+          {pinLine ? <MetaRow label={t('team.pin')} value={pinLine} /> : null}
           {leaveLines.length ? (
             <View style={styles.leaveBlock}>
               {leaveLines.slice(0, 2).map((line) => (
@@ -61,7 +66,7 @@ const TeamMemberCard = memo(function TeamMemberCard({
   );
 });
 
-function buildTeamRows(employees: EmployeeRow[]): TeamRow[] {
+function buildTeamRows(employees: EmployeeRow[], staffTypeLabel: (code: string) => string): TeamRow[] {
   const byTitle = new Map<string, EmployeeRow[]>();
   for (const e of employees) {
     const title = staffTypeLabel(e.staffType);
@@ -72,7 +77,12 @@ function buildTeamRows(employees: EmployeeRow[]): TeamRow[] {
   for (const list of byTitle.values()) {
     list.sort(compareEmployeesByDisplayName);
   }
-  const knownOrder = ['Front of the House', 'Back of the House', 'Delivery/Dishwasher', 'Unassigned'];
+  const knownOrder = [
+    staffTypeLabel('Bartender'),
+    staffTypeLabel('Kitchen'),
+    staffTypeLabel('Server'),
+    staffTypeLabel(''),
+  ];
   const titles = [
     ...knownOrder.filter((t) => byTitle.has(t)),
     ...[...byTitle.keys()].filter((t) => !knownOrder.includes(t)).sort(),
@@ -88,7 +98,9 @@ function buildTeamRows(employees: EmployeeRow[]): TeamRow[] {
 }
 
 export default function ManagerTeam() {
-  const { employees, teamState, loading, error, refetch } = useAppData();
+  const { employees, teamState, loading, error, refetch, myEmployee } = useAppData();
+  const { role } = useAuth();
+  const { t, staffTypeLabel } = useI18n();
   const [selected, setSelected] = useState<EmployeeRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -98,7 +110,15 @@ export default function ManagerTeam() {
     [teamState]
   );
 
-  const rows = useMemo(() => buildTeamRows(employees), [employees]);
+  const scopedEmployees = useMemo(() => {
+    const scope = managerManagedRestaurantId(myEmployee, role);
+    return employees.filter((e) => employeeVisibleInManagerStoreScope(e, scope));
+  }, [employees, myEmployee, role]);
+
+  const rows = useMemo(
+    () => buildTeamRows(scopedEmployees, staffTypeLabel),
+    [scopedEmployees, staffTypeLabel]
+  );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -109,14 +129,14 @@ export default function ManagerTeam() {
     if (item.kind === 'section') {
       return <Text style={styles.sectionTitle}>{item.title}</Text>;
     }
-    return <TeamMemberCard item={item.employee} onPress={() => setSelected(item.employee)} />;
-  }, []);
+    return <TeamMemberCard item={item.employee} onPress={() => setSelected(item.employee)} t={t} />;
+  }, [t]);
 
   return (
     <View style={styles.screen}>
       {error ? <Text style={styles.err}>{error}</Text> : null}
       <View style={styles.headerRow}>
-        <Text style={styles.header}>{employees.length} people</Text>
+        <Text style={styles.header}>{t('team.people', { count: employees.length })}</Text>
         <Pressable
           style={styles.addBtn}
           onPress={() => {
@@ -124,7 +144,7 @@ export default function ManagerTeam() {
             setCreating(true);
           }}
         >
-          <Text style={styles.addBtnText}>+ Add</Text>
+          <Text style={styles.addBtnText}>{t('team.add')}</Text>
         </Pressable>
       </View>
       {loading && !employees.length ? (
@@ -140,7 +160,7 @@ export default function ManagerTeam() {
           maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
           contentContainerStyle={styles.scrollContent}
           ListEmptyComponent={
-            !loading ? <Text style={styles.muted}>No employees in Supabase yet.</Text> : null
+            !loading ? <Text style={styles.muted}>{t('team.noEmployeesSupabase')}</Text> : null
           }
           keyboardShouldPersistTaps="handled"
         />

@@ -1815,6 +1815,13 @@ export function getWorkerScheduleBuckets(params: {
   assignmentStore: AssignmentStore;
   /** Monday ISO keys (or schedule_published blob) — unpublished weeks are hidden. */
   schedulePublishedRaw?: unknown;
+  /** When true (default), hide shifts on unpublished weeks — same gate for employee + manager Home. */
+  requirePublished?: boolean;
+  /**
+   * Employees are scoped to Team `usualRestaurant`. Managers keep full cross-store buckets
+   * (parity with web `getWorkerScheduleBuckets` when not on employee-app).
+   */
+  respectUsualRestaurant?: boolean;
 }): { today: WorkerShiftRow[]; upcoming: WorkerShiftRow[] } {
   const {
     workerName,
@@ -1826,6 +1833,8 @@ export function getWorkerScheduleBuckets(params: {
     restaurants,
     assignmentStore,
     schedulePublishedRaw,
+    requirePublished = true,
+    respectUsualRestaurant = true,
   } = params;
   const published = normalizeSchedulePublishedMap(schedulePublishedRaw);
   seedDefaultPublishedWeeks(published, weekMeta);
@@ -1850,9 +1859,15 @@ export function getWorkerScheduleBuckets(params: {
   for (const o of all) {
     if (windowStartIso && o.iso && o.iso < windowStartIso) continue;
     if (windowEndIso && o.iso && o.iso > windowEndIso) continue;
-    if (!isScheduleWeekPublished(published, o.iso)) continue;
+    if (requirePublished && !isScheduleWeekPublished(published, o.iso)) continue;
     /* Employee portal: only shifts at Team-assigned store(s) (`usualRestaurant` / both). */
-    if (workerEmp && !employeeMatchesScheduleRestaurantLite(workerEmp, o.restaurantId)) continue;
+    if (
+      respectUsualRestaurant &&
+      workerEmp &&
+      !employeeMatchesScheduleRestaurantLite(workerEmp, o.restaurantId)
+    ) {
+      continue;
+    }
     if (o.iso === todayIso) today.push(o);
     else if (o.iso && o.iso > todayIso) upcoming.push(o);
   }

@@ -13,6 +13,8 @@ import {
 import { AvailabilityMatrixEditor, availabilityCheckAll } from './AvailabilityMatrixEditor';
 import { ScheduleWeekPicker } from './ScheduleWeekPicker';
 import { useAppData } from '../contexts/AppDataContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useI18n } from '../contexts/LocaleContext';
 import {
   applyAvailabilityWeekEntry,
   availabilityStatusLabel,
@@ -21,7 +23,12 @@ import {
   type AvailabilityWeekStatus,
 } from '../lib/availabilityByWeek';
 import { saveEmployeeRow } from '../lib/employeeSave';
-import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../lib/employees';
+import {
+  employeeDisplayName,
+  employeeVisibleInManagerStoreScope,
+  managerManagedRestaurantId,
+  type EmployeeRow,
+} from '../lib/employees';
 import {
   buildWeeksFromMonday,
   getScheduleAnchorMondayDate,
@@ -69,16 +76,22 @@ function StatusBadge({ status }: { status: AvailabilityWeekStatus }) {
 }
 
 export function AvailabilityScreen({ mode, selfEmployee }: Props) {
-  const { employees, staffRequests, teamState, refetch, loading } = useAppData();
+  const { employees, staffRequests, teamState, refetch, loading, myEmployee } = useAppData();
+  const { role } = useAuth();
+  const { t, staffTypeLabel } = useI18n();
   const weekMeta = useMemo(
     () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
     []
   );
 
-  const roster = useMemo(
-    () => [...employees].sort(compareEmployeesByScheduleOrder),
-    [employees]
-  );
+  const roster = useMemo(() => {
+    const scope = mode === 'manager' ? managerManagedRestaurantId(myEmployee, role) : null;
+    const list =
+      mode === 'manager'
+        ? employees.filter((e) => employeeVisibleInManagerStoreScope(e, scope))
+        : employees;
+    return [...list].sort(compareEmployeesByScheduleOrder);
+  }, [employees, mode, myEmployee, role]);
 
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
@@ -216,8 +229,8 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
             syncWeeklyGrid: false,
             forceDraft: true,
           });
-          if (!res.ok) Alert.alert('Availability', res.message);
-          else setFeedback('Draft saved');
+          if (!res.ok) Alert.alert(t('title.availability'), res.message);
+          else setFeedback(t('availability.draftSaved'));
         })();
       }
     },
@@ -235,7 +248,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
           preserveSubmittedAt: submittedAt,
         });
         if (!res.ok) {
-          Alert.alert('Availability', res.message);
+          Alert.alert(t('title.availability'), res.message);
           return;
         }
       }
@@ -256,7 +269,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
           preserveSubmittedAt: submittedAt,
         });
         if (!res.ok) {
-          Alert.alert('Availability', res.message);
+          Alert.alert(t('title.availability'), res.message);
           return;
         }
       }
@@ -286,7 +299,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
         Alert.alert('Availability', res.message);
         return;
       }
-      setFeedback(`Saved availability for ${employeeDisplayName(activeEmployee)}.`);
+      setFeedback(t('availability.savedFor', { name: employeeDisplayName(activeEmployee) }));
     } finally {
       setBusy(false);
     }
@@ -306,13 +319,15 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
           preserveSubmittedAt: submittedAt,
         });
         if (!res.ok) {
-          Alert.alert('Availability', res.message);
+          Alert.alert(t('title.availability'), res.message);
           return;
         }
         await syncMatchingAvailabilityStaffRequest(activeEmployee, weekIndex, nextStatus);
         setStatus(nextStatus);
         setFeedback(
-          `${nextStatus === 'approved' ? 'Approved' : 'Declined'} availability for ${employeeDisplayName(activeEmployee)}.`
+          t(nextStatus === 'approved' ? 'availability.approvedFor' : 'availability.declinedFor', {
+            name: employeeDisplayName(activeEmployee),
+          })
         );
         void refetch({ silent: true });
       } finally {
@@ -351,7 +366,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
       skipNextHydrate.current = true;
       setStatus('submitted');
       setSubmittedAt(today);
-      setFeedback('Submitted. Waiting for your manager to approve.');
+      setFeedback(t('availability.submittedWaiting'));
       void refetch({ silent: true });
     } finally {
       setBusy(false);
@@ -370,7 +385,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
     return (
       <View style={styles.centered}>
         <Text style={styles.muted}>
-          {mode === 'employee' ? 'Your roster profile is not linked yet.' : 'No team members found.'}
+          {mode === 'employee' ? t('availability.rosterNotLinked') : t('availability.noTeamMembers')}
         </Text>
       </View>
     );
@@ -384,7 +399,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {mode === 'manager' ? (
           <View style={styles.pickerBlock}>
-            <Text style={styles.fieldLabel}>Employee</Text>
+            <Text style={styles.fieldLabel}>{t('availability.employee')}</Text>
             <Pressable style={styles.employeeSelect} onPress={() => setPickerOpen(true)}>
               <Text style={styles.employeeSelectText} numberOfLines={1}>
                 {employeeDisplayName(activeEmployee)}
@@ -394,9 +409,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
             <Text style={styles.roleLine}>{staffTypeLabel(staffType)}</Text>
           </View>
         ) : (
-          <Text style={styles.hint}>
-            Edit your availability by week. Changes save as a draft until you submit.
-          </Text>
+          <Text style={styles.hint}>{t('availability.employeeHint')}</Text>
         )}
 
         <ScheduleWeekPicker
@@ -411,7 +424,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
 
         {mode === 'manager' && pendingEmployees.length > 0 ? (
           <View style={styles.pendingBlock}>
-            <Text style={styles.pendingLabel}>Pending</Text>
+            <Text style={styles.pendingLabel}>{t('availability.pendingLabel')}</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -455,7 +468,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
 
         <View style={styles.actions}>
           <Pressable style={styles.btnSecondary} onPress={onCheckAll} disabled={busy || !grid}>
-            <Text style={styles.btnSecondaryText}>Check all</Text>
+            <Text style={styles.btnSecondaryText}>{t('availability.checkAll')}</Text>
           </Pressable>
           {mode === 'manager' ? (
             <>
@@ -464,7 +477,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
                 disabled={busy || !grid}
                 onPress={() => void onManagerSave()}
               >
-                <Text style={styles.btnPrimaryText}>{busy ? 'Saving…' : 'Save'}</Text>
+                <Text style={styles.btnPrimaryText}>{busy ? t('common.saving') : t('common.save')}</Text>
               </Pressable>
               {showReviewActions ? (
                 <>
@@ -473,14 +486,14 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
                     disabled={busy || !grid}
                     onPress={() => void onManagerReview('approve')}
                   >
-                    <Text style={styles.btnPrimaryText}>Approve</Text>
+                    <Text style={styles.btnPrimaryText}>{t('common.approve')}</Text>
                   </Pressable>
                   <Pressable
                     style={[styles.btnSecondary, busy && styles.btnDisabled]}
                     disabled={busy || !grid}
                     onPress={() => void onManagerReview('decline')}
                   >
-                    <Text style={styles.btnSecondaryText}>Decline</Text>
+                    <Text style={styles.btnSecondaryText}>{t('common.decline')}</Text>
                   </Pressable>
                 </>
               ) : null}
@@ -491,7 +504,7 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
               disabled={busy || !grid}
               onPress={() => void onEmployeeSubmit()}
             >
-              <Text style={styles.btnPrimaryText}>{busy ? 'Submitting…' : 'Submit'}</Text>
+              <Text style={styles.btnPrimaryText}>{busy ? t('common.submitting') : t('common.submit')}</Text>
             </Pressable>
           )}
         </View>
@@ -501,9 +514,9 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
         <Modal visible={pickerOpen} animationType="slide" presentationStyle="pageSheet">
           <View style={styles.modal}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Team roster</Text>
+              <Text style={styles.modalTitle}>{t('availability.teamRoster')}</Text>
               <Pressable onPress={() => setPickerOpen(false)} hitSlop={8}>
-                <Text style={styles.modalClose}>Close</Text>
+                <Text style={styles.modalClose}>{t('common.close')}</Text>
               </Pressable>
             </View>
             <FlatList
@@ -526,8 +539,8 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
                       <Text style={styles.rosterName}>{employeeDisplayName(item)}</Text>
                       <Text style={styles.rosterMeta}>
                         {staffTypeLabel(item.staffType)}
-                        {entry.status === 'submitted' ? ' · Pending' : ''}
-                        {entry.status === 'approved' ? ' · Approved' : ''}
+                        {entry.status === 'submitted' ? t('availability.statusSubmitted') : ''}
+                        {entry.status === 'approved' ? t('availability.statusApproved') : ''}
                       </Text>
                     </View>
                     {on ? <Text style={styles.rosterCheck}>✓</Text> : null}

@@ -13,6 +13,7 @@ import { DatePickerField } from '../../components/DatePickerField';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../contexts/LocaleContext';
 import { employeeDisplayName } from '../../lib/employees';
 import {
   compactShiftTimeLabel,
@@ -56,14 +57,15 @@ function isoDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-const CHIPS: { key: FormKey; label: string }[] = [
-  { key: 'timeoff', label: 'Time Off' },
-  { key: 'swap', label: 'Shift Swap' },
-  { key: 'callout', label: 'Callout' },
+const CHIPS: { key: FormKey; labelKey: string }[] = [
+  { key: 'timeoff', labelKey: 'actions.timeOff' },
+  { key: 'swap', labelKey: 'actions.shiftSwaps' },
+  { key: 'callout', labelKey: 'actions.callouts' },
 ];
 
 export default function EmployeeActions() {
   const { displayName } = useAuth();
+  const { t, statusLabel } = useI18n();
   const { myEmployee, employees, staffRequests, teamState, refetch } = useAppData();
   const roleCode = myEmployee?.staffType ?? 'Kitchen';
   const nameForRequests = myEmployee ? employeeDisplayName(myEmployee) : displayName;
@@ -185,20 +187,20 @@ export default function EmployeeActions() {
 
   const submitTimeoff = useCallback(async () => {
     if (!supabase) {
-      Alert.alert('Error', 'Not configured');
+      Alert.alert(t('common.error'), t('errors.notConfigured'));
       return;
     }
     if (!timeoffStartDate || !timeoffEndDate) {
-      Alert.alert('Time off', 'Choose start and end dates.');
+      Alert.alert(t('actions.timeOff'), t('actions.chooseDates'));
       return;
     }
     const timeoffStart = isoDate(timeoffStartDate);
     const timeoffEnd = isoDate(timeoffEndDate);
     if (timeoffEnd < timeoffStart) {
-      Alert.alert('Time off', 'End date must be on or after start.');
+      Alert.alert(t('actions.timeOff'), t('actions.endBeforeStart'));
       return;
     }
-    const typeLabel = timeoffLeaveType === 'sick' ? 'Sick leave' : 'Vacation leave';
+    const typeLabel = timeoffLeaveType === 'sick' ? t('actions.sickLeave') : t('actions.vacationLeave');
     setBusy(true);
     try {
       const res = await insertStaffRequest(supabase, {
@@ -210,9 +212,9 @@ export default function EmployeeActions() {
         timeoffEnd,
         summary: `${typeLabel}: ${timeoffStart} to ${timeoffEnd}${timeoffNote.trim() ? `. Notes: ${timeoffNote.trim()}` : ''}`,
       });
-      if (!res.ok) Alert.alert('Error', res.message);
+      if (!res.ok) Alert.alert(t('common.error'), res.message);
       else {
-        Alert.alert('Sent', 'Submitted. Your manager will see it under Actions.');
+        Alert.alert(t('common.sent'), t('actions.submittedManager'));
         setTimeoffStartDate(null);
         setTimeoffEndDate(null);
         setTimeoffNote('');
@@ -225,11 +227,11 @@ export default function EmployeeActions() {
 
   const submitSwapOffer = useCallback(async () => {
     if (!supabase) {
-      Alert.alert('Error', 'Not configured');
+      Alert.alert(t('common.error'), t('errors.notConfigured'));
       return;
     }
     if (!swapOfferShift) {
-      Alert.alert('Shift swap', 'Choose one of your upcoming shifts to offer.');
+      Alert.alert(t('actions.shiftSwaps'), t('actions.chooseShiftOffer'));
       return;
     }
     const shiftLabel = formatShiftRequestLabel(swapOfferShift);
@@ -245,9 +247,9 @@ export default function EmployeeActions() {
           shiftLabel +
           (swapNote.trim() ? '. Notes: ' + swapNote.trim() : ''),
       });
-      if (!res.ok) Alert.alert('Error', res.message);
+      if (!res.ok) Alert.alert(t('common.error'), res.message);
       else {
-        Alert.alert('Sent', 'Posted. Your manager approves every swap.');
+        Alert.alert(t('common.sent'), t('actions.postedManager'));
         setSwapNote('');
         void refetch();
       }
@@ -258,11 +260,11 @@ export default function EmployeeActions() {
 
   const submitSwapAccept = useCallback(async () => {
     if (!supabase) {
-      Alert.alert('Error', 'Not configured');
+      Alert.alert(t('common.error'), t('errors.notConfigured'));
       return;
     }
     if (!swapAcceptId) {
-      Alert.alert('Shift swap', 'Choose an open offer to accept.');
+      Alert.alert(t('actions.shiftSwaps'), t('actions.chooseOfferAccept'));
       return;
     }
     const offer = openSwapOffers.find((r) => r.id === swapAcceptId);
@@ -281,9 +283,9 @@ export default function EmployeeActions() {
           offerLabel +
           (swapAcceptNote.trim() ? '. Note: ' + swapAcceptNote.trim() : ''),
       });
-      if (!res.ok) Alert.alert('Error', res.message);
+      if (!res.ok) Alert.alert(t('common.error'), res.message);
       else {
-        Alert.alert('Sent', 'Submitted. Waiting for manager approval.');
+        Alert.alert(t('common.sent'), t('actions.waitingApproval'));
         setSwapAcceptNote('');
         setSwapAcceptId(null);
         void refetch();
@@ -295,15 +297,15 @@ export default function EmployeeActions() {
 
   const submitCallout = useCallback(async () => {
     if (!supabase) {
-      Alert.alert('Error', 'Not configured');
+      Alert.alert(t('common.error'), t('errors.notConfigured'));
       return;
     }
     if (!calloutShift) {
-      Alert.alert('Callout', 'Pick a shift from the list.');
+      Alert.alert(t('actions.callouts'), t('actions.pickShift'));
       return;
     }
     if (!calloutReason.trim()) {
-      Alert.alert('Callout', 'Add notes for your manager.');
+      Alert.alert(t('actions.callouts'), t('actions.addNotes'));
       return;
     }
     const optLabel = formatShiftRequestLabel(calloutShift);
@@ -316,9 +318,9 @@ export default function EmployeeActions() {
         role: roleCode,
         summary,
       });
-      if (!res.ok) Alert.alert('Error', res.message);
+      if (!res.ok) Alert.alert(t('common.error'), res.message);
       else {
-        Alert.alert('Sent', 'Submitted. Your manager will see it under Actions.');
+        Alert.alert(t('common.sent'), t('actions.submittedManager'));
         setCalloutReason('');
         setCalloutShift(null);
         void refetch();
@@ -328,12 +330,12 @@ export default function EmployeeActions() {
     }
   }, [supabase, calloutShift, calloutReason, nameForRequests, roleCode, refetch]);
 
-  const requestTypeLabel = (t: string) => {
-    if (t === 'availability') return 'Availability';
-    if (t === 'timeoff') return 'Time off';
-    if (t === 'swap') return 'Shift swap';
-    if (t === 'callout_request' || t === 'callout') return 'Callout';
-    return t;
+  const requestTypeLabel = (type: string) => {
+    if (type === 'availability') return t('employee.requestAvailability');
+    if (type === 'timeoff') return t('employee.requestTimeOff');
+    if (type === 'swap') return t('employee.requestSwap');
+    if (type === 'callout_request' || type === 'callout') return t('employee.requestCallout');
+    return type;
   };
 
   return (
@@ -346,10 +348,7 @@ export default function EmployeeActions() {
     >
       {!myEmployee && displayName ? (
         <View style={styles.banner}>
-          <Text style={styles.bannerText}>
-            Submitting as {displayName}. If requests fail to appear for your manager, ask them to link your login to
-            your roster row in Team.
-          </Text>
+          <Text style={styles.bannerText}>{t('employee.submittingAs', { name: displayName })}</Text>
         </View>
       ) : null}
 
@@ -360,20 +359,20 @@ export default function EmployeeActions() {
             onPress={() => setActiveForm(c.key)}
             style={[styles.chip, activeForm === c.key && styles.chipActive]}
           >
-            <Text style={[styles.chipText, activeForm === c.key && styles.chipTextActive]}>{c.label}</Text>
+            <Text style={[styles.chipText, activeForm === c.key && styles.chipTextActive]}>{t(c.labelKey)}</Text>
           </Pressable>
         ))}
       </View>
 
       {activeForm === 'timeoff' ? (
         <View style={styles.card}>
-          <Text style={styles.hint}>Select the day range you need off. This submits as full-day time off.</Text>
-          <Text style={styles.fieldLabel}>Leave type</Text>
+          <Text style={styles.hint}>{t('actions.timeoffHint')}</Text>
+          <Text style={styles.fieldLabel}>{t('actions.leaveType')}</Text>
           <View style={styles.chipRow}>
             {(
               [
-                { value: 'vacation' as const, label: 'Vacation' },
-                { value: 'sick' as const, label: 'Sick' },
+                { value: 'vacation' as const, labelKey: 'actions.vacation' },
+                { value: 'sick' as const, labelKey: 'actions.sick' },
               ] as const
             ).map((opt) => {
               const on = timeoffLeaveType === opt.value;
@@ -383,39 +382,41 @@ export default function EmployeeActions() {
                   style={[styles.chip, on && styles.chipActive]}
                   onPress={() => setTimeoffLeaveType(opt.value)}
                 >
-                  <Text style={[styles.chipText, on && styles.chipTextActive]}>{opt.label}</Text>
+                  <Text style={[styles.chipText, on && styles.chipTextActive]}>{t(opt.labelKey)}</Text>
                 </Pressable>
               );
             })}
           </View>
-          <DatePickerField label="Start date" value={timeoffStartDate} onChange={setTimeoffStartDate} />
+          <DatePickerField label={t('actions.startDate')} value={timeoffStartDate} onChange={setTimeoffStartDate} />
           <DatePickerField
-            label="End date"
+            label={t('actions.endDate')}
             value={timeoffEndDate}
             onChange={setTimeoffEndDate}
             minimumDate={timeoffStartDate ?? undefined}
           />
-          <Text style={styles.fieldLabel}>Notes (optional)</Text>
+          <Text style={styles.fieldLabel}>{t('actions.notesOptional')}</Text>
           <TextInput
             style={[styles.input, styles.tall]}
-            placeholder="Reason, partial-day details, or context…"
+            placeholder={t('actions.notesPlaceholder')}
             value={timeoffNote}
             onChangeText={setTimeoffNote}
             multiline
           />
           <Pressable style={[styles.btnPrimary, styles.mt]} disabled={busy} onPress={() => void submitTimeoff()}>
-            <Text style={styles.btnPrimaryText}>{busy ? 'Submitting…' : 'Submit Time Off'}</Text>
+            <Text style={styles.btnPrimaryText}>
+              {busy ? t('common.submitting') : t('actions.submitTimeOff')}
+            </Text>
           </Pressable>
         </View>
       ) : null}
 
       {activeForm === 'swap' ? (
         <View style={styles.card}>
-          <Text style={styles.hint}>Offer a shift or accept a teammate’s offer. Manager approval required.</Text>
+          <Text style={styles.hint}>{t('actions.swapHint')}</Text>
 
-          <Text style={styles.sectionTitle}>Offer a shift</Text>
+          <Text style={styles.sectionTitle}>{t('actions.offerShift')}</Text>
           {!workerShifts.length ? (
-            <Text style={styles.muted}>No shifts in the current schedule window.</Text>
+            <Text style={styles.muted}>{t('actions.noShiftsWindow')}</Text>
           ) : (
             <>
               <ScheduleWeekPicker
@@ -427,7 +428,7 @@ export default function EmployeeActions() {
                 currentWeekIndex={scheduleCurrentWeekIndex}
               />
               {!shiftsInPickWeek.length ? (
-                <Text style={styles.muted}>No shifts this week.</Text>
+                <Text style={styles.muted}>{t('employee.noShiftsThisWeek')}</Text>
               ) : (
                 shiftsInPickWeek.map((row) => (
                   <CompactShiftRow
@@ -440,22 +441,22 @@ export default function EmployeeActions() {
               )}
             </>
           )}
-          <Text style={[styles.fieldLabel, styles.mtSm]}>Notes (optional)</Text>
+          <Text style={[styles.fieldLabel, styles.mtSm]}>{t('actions.notesOptional')}</Text>
           <TextInput
             style={[styles.input, styles.tall]}
-            placeholder="Preferences or who you’d like to swap with…"
+            placeholder={t('actions.swapNotesPlaceholder')}
             value={swapNote}
             onChangeText={setSwapNote}
             multiline
           />
           <Pressable style={[styles.btnPrimary, styles.mtSm]} disabled={busy} onPress={() => void submitSwapOffer()}>
-            <Text style={styles.btnPrimaryText}>{busy ? 'Posting…' : 'Post offer'}</Text>
+            <Text style={styles.btnPrimaryText}>{busy ? t('common.posting') : t('actions.postOffer')}</Text>
           </Pressable>
 
           <View style={styles.sectionDivider} />
-          <Text style={styles.sectionTitle}>Open offers</Text>
+          <Text style={styles.sectionTitle}>{t('actions.openOffers')}</Text>
           {!openSwapOffers.length ? (
-            <Text style={styles.muted}>No open swap offers.</Text>
+            <Text style={styles.muted}>{t('actions.noOpenOffers')}</Text>
           ) : (
             openSwapOffers.map((o) => {
               const sel = swapAcceptId === o.id;
@@ -468,31 +469,33 @@ export default function EmployeeActions() {
                   <Text style={styles.offerText} numberOfLines={2}>
                     {o.offeredShiftLabel}
                   </Text>
-                  <Text style={styles.offerSub}>from {o.employeeName}</Text>
+                  <Text style={styles.offerSub}>{t('common.from')} {o.employeeName}</Text>
                 </Pressable>
               );
             })
           )}
-          <Text style={[styles.fieldLabel, styles.mtSm]}>Message (optional)</Text>
+          <Text style={[styles.fieldLabel, styles.mtSm]}>{t('actions.messageOptional')}</Text>
           <TextInput
             style={[styles.input, styles.tall]}
-            placeholder="Note for your manager…"
+            placeholder={t('actions.managerNotePlaceholder')}
             value={swapAcceptNote}
             onChangeText={setSwapAcceptNote}
             multiline
           />
           <Pressable style={[styles.btnSecondary, styles.mtSm]} disabled={busy} onPress={() => void submitSwapAccept()}>
-            <Text style={styles.btnSecondaryText}>{busy ? 'Submitting…' : 'Request to accept'}</Text>
+            <Text style={styles.btnSecondaryText}>
+              {busy ? t('common.submitting') : t('actions.requestAccept')}
+            </Text>
           </Pressable>
         </View>
       ) : null}
 
       {activeForm === 'callout' ? (
         <View style={styles.card}>
-          <Text style={styles.hint}>Select the shift you cannot work. Your manager will review it.</Text>
-          <Text style={styles.sectionTitle}>Your shift</Text>
+          <Text style={styles.hint}>{t('actions.calloutHint')}</Text>
+          <Text style={styles.sectionTitle}>{t('actions.yourShift')}</Text>
           {!workerShifts.length ? (
-            <Text style={styles.muted}>No scheduled shifts in the window — contact your manager.</Text>
+            <Text style={styles.muted}>{t('actions.noShiftsContact')}</Text>
           ) : (
             <>
               <ScheduleWeekPicker
@@ -504,7 +507,7 @@ export default function EmployeeActions() {
                 currentWeekIndex={scheduleCurrentWeekIndex}
               />
               {!shiftsInPickWeek.length ? (
-                <Text style={styles.muted}>No shifts this week.</Text>
+                <Text style={styles.muted}>{t('employee.noShiftsThisWeek')}</Text>
               ) : (
                 shiftsInPickWeek.map((row) => (
                   <CompactShiftRow
@@ -517,37 +520,35 @@ export default function EmployeeActions() {
               )}
             </>
           )}
-          <Text style={[styles.fieldLabel, styles.mt]}>Notes for your manager</Text>
+          <Text style={[styles.fieldLabel, styles.mt]}>{t('actions.managerNotes')}</Text>
           <TextInput
             style={[styles.input, styles.tall]}
-            placeholder="Why you need coverage…"
+            placeholder={t('actions.calloutNotesPlaceholder')}
             value={calloutReason}
             onChangeText={setCalloutReason}
             multiline
           />
           <Pressable style={[styles.btnPrimary, styles.mt]} disabled={busy} onPress={() => void submitCallout()}>
-            <Text style={styles.btnPrimaryText}>{busy ? 'Submitting…' : 'Submit Callout'}</Text>
+            <Text style={styles.btnPrimaryText}>
+              {busy ? t('common.submitting') : t('actions.submitCallout')}
+            </Text>
           </Pressable>
         </View>
       ) : null}
 
       {myRequests.length ? (
         <View style={[styles.card, styles.requestsCard]}>
-          <Text style={styles.requestsTitle}>Your recent requests</Text>
-          {myRequests.map((r) => {
-            const status =
-              r.status === 'approved' ? 'Approved' : r.status === 'declined' ? 'Declined' : 'Pending';
-            return (
-              <View key={r.id} style={styles.requestRow}>
-                <Text style={styles.requestMain}>
-                  {requestTypeLabel(r.type)} · {status}
-                </Text>
+          <Text style={styles.requestsTitle}>{t('employee.recentRequests')}</Text>
+          {myRequests.map((r) => (
+            <View key={r.id} style={styles.requestRow}>
+              <Text style={styles.requestMain}>
+                {requestTypeLabel(r.type)} · {statusLabel(r.status)}
+              </Text>
                 <Text style={styles.requestSub}>
                   {formatStaffRequestSubmittedDate(r.submittedAt)} — {r.summary}
                 </Text>
               </View>
-            );
-          })}
+          ))}
         </View>
       ) : null}
     </ScrollView>

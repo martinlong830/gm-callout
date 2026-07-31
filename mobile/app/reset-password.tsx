@@ -19,6 +19,7 @@ import {
   portalResetPassword,
   portalVerifyResetToken,
 } from '../lib/portalAuth';
+import { useI18n } from '../contexts/LocaleContext';
 
 /** Near-black so secureTextEntry bullets stay visible on light fields (Android OEM themes). */
 const INPUT_TEXT = '#020617';
@@ -69,6 +70,7 @@ function tokenFromUrl(url: string | null): string {
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
+  const { t: tr } = useI18n();
   const params = useLocalSearchParams<{ token?: string }>();
   const [token, setToken] = useState('');
   const [loginName, setLoginName] = useState('');
@@ -91,7 +93,7 @@ export default function ResetPasswordScreen() {
       if (!t) {
         if (!cancelled) {
           setVerifying(false);
-          setMessage('Missing reset link. Open the link from your email or request a new reset from sign in.');
+          setMessage(tr('auth.missingResetLink'));
         }
         return;
       }
@@ -99,7 +101,7 @@ export default function ResetPasswordScreen() {
       if (!isPortalAuthConfigured()) {
         if (!cancelled) {
           setVerifying(false);
-          setMessage('Set EXPO_PUBLIC_GM_WEB_URL to your web server, then restart the app.');
+          setMessage(tr('auth.portalNotConfigured'));
         }
         return;
       }
@@ -133,15 +135,15 @@ export default function ResetPasswordScreen() {
   async function onSubmit() {
     setMessage(null);
     if (!token) {
-      setMessage('Reset link is missing or invalid.');
+      setMessage(tr('auth.resetLinkInvalid'));
       return;
     }
     if (password.length < 4) {
-      setMessage('Password must be at least 4 characters.');
+      setMessage(tr('auth.passwordMinLength'));
       return;
     }
     if (password !== confirm) {
-      setMessage('Passwords do not match.');
+      setMessage(tr('auth.passwordsMismatch'));
       return;
     }
     setBusy(true);
@@ -152,18 +154,18 @@ export default function ResetPasswordScreen() {
       return;
     }
     setSuccess(true);
-    setMessage(res.message || 'Password updated. Sign in with your new password.');
+    setMessage(res.message || tr('auth.passwordUpdated'));
   }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={styles.title}>Reset password</Text>
+          <Text style={styles.title}>{tr('auth.forgotTitle')}</Text>
           {loginName ? (
-            <Text style={styles.subtitle}>Set a new password for {loginName}.</Text>
+            <Text style={styles.subtitle}>{tr('auth.setPasswordFor', { name: loginName })}</Text>
           ) : (
-            <Text style={styles.subtitle}>Set a new password for your account.</Text>
+            <Text style={styles.subtitle}>{tr('auth.setPasswordAccount')}</Text>
           )}
 
           {verifying ? (
@@ -172,17 +174,17 @@ export default function ResetPasswordScreen() {
             <View style={styles.card}>
               {!success ? (
                 <>
-                  <Text style={styles.label}>New password</Text>
+                  <Text style={styles.label}>{tr('auth.newPassword')}</Text>
                   <PasswordInput
                     value={password}
                     onChangeText={setPassword}
-                    placeholder="New password"
+                    placeholder={tr('auth.newPassword')}
                   />
-                  <Text style={styles.label}>Confirm password</Text>
+                  <Text style={styles.label}>{tr('auth.confirmPassword')}</Text>
                   <PasswordInput
                     value={confirm}
                     onChangeText={setConfirm}
-                    placeholder="Confirm password"
+                    placeholder={tr('auth.confirmPassword')}
                   />
                   {message ? (
                     <Text style={[styles.feedback, success && styles.feedbackOk]}>{message}</Text>
@@ -191,7 +193,7 @@ export default function ResetPasswordScreen() {
                     {busy ? (
                       <ActivityIndicator color="#fff" />
                     ) : (
-                      <Text style={styles.buttonText}>Update password</Text>
+                      <Text style={styles.buttonText}>{tr('auth.updatePassword')}</Text>
                     )}
                   </Pressable>
                 </>
@@ -199,12 +201,12 @@ export default function ResetPasswordScreen() {
                 <>
                   {message ? <Text style={[styles.feedback, styles.feedbackOk]}>{message}</Text> : null}
                   <Pressable style={styles.buttonPrimary} onPress={() => router.replace('/login')}>
-                    <Text style={styles.buttonText}>Back to sign in</Text>
+                    <Text style={styles.buttonText}>{tr('auth.backToSignIn')}</Text>
                   </Pressable>
                 </>
               )}
               <Pressable style={styles.linkBtn} onPress={() => router.replace('/login')}>
-                <Text style={styles.linkText}>Cancel</Text>
+                <Text style={styles.linkText}>{tr('common.cancel')}</Text>
               </Pressable>
             </View>
           )}

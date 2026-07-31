@@ -604,6 +604,65 @@ html.authed .login-screen {
   }
 }
 
+.lang-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.lang-toggle-btn {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.lang-toggle-btn + .lang-toggle-btn {
+  border-left: 1px solid var(--border);
+}
+
+.lang-toggle-btn.is-active {
+  background: var(--text, #1e3a5f);
+  color: #fff;
+}
+
+.lang-toggle-btn:hover:not(.is-active),
+.lang-toggle-btn:focus-visible:not(.is-active) {
+  background: var(--hover-fill);
+  color: var(--text);
+  outline: none;
+}
+
+.lang-toggle--login {
+  margin-left: auto;
+}
+
+.login-lang-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+
+.account-lang-row {
+  margin-bottom: 4px;
+}
+
+.account-lang-row .lang-toggle {
+  margin-top: 6px;
+}
+
 .header-actions {
   display: none;
   flex-shrink: 0;
@@ -612,12 +671,26 @@ html.authed .login-screen {
   margin-left: auto;
 }
 
+html.authed .header-actions .lang-toggle {
+  display: inline-flex;
+}
+
 html.authed .header-actions {
   display: flex;
 }
 
 html.timeclock-app .header-actions {
   display: none;
+}
+
+html.timeclock-app .header > .lang-toggle {
+  display: inline-flex;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+html.timeclock-app .header > .header-signout-btn {
+  margin-left: 0;
 }
 
 .header > .header-signout-btn {
@@ -639,6 +712,164 @@ html.timeclock-app .header-actions {
   font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.header-notifications-wrap {
+  position: relative;
+}
+
+.header-notifications-btn {
+  appearance: none;
+  position: relative;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.header-notifications-btn:hover,
+.header-notifications-btn:focus-visible {
+  background: var(--hover-fill);
+}
+
+.header-notifications-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  line-height: 0;
+}
+
+.header-notifications-icon svg {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.header-notifications-badge {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: #c41230;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.1rem;
+  text-align: center;
+}
+
+.notifications-panel {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  /* Above sticky chrome (.app-top:10), calendar overlays (≤30), and app modals (60–66). */
+  z-index: 200;
+  width: min(22rem, calc(100vw - 1.5rem));
+  max-height: min(24rem, 70vh);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  padding: 0.75rem;
+}
+
+/*
+ * Portaled to document.body (see notifications-center.js) so .header { overflow:hidden }
+ * and the app-top nav row cannot clip or paint over the menu.
+ */
+.notifications-panel.is-portaled {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: auto;
+  z-index: 200;
+}
+
+.notifications-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.notifications-panel-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.notifications-mark-all {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #c41230;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.notifications-panel-empty {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.notifications-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.notifications-item {
+  padding: 0.65rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.notifications-item + .notifications-item {
+  border-top: 1px solid var(--border);
+}
+
+.notifications-item.is-unread {
+  background: #fff7f8;
+}
+
+.notifications-item-title {
+  font-weight: 650;
+  font-size: 0.875rem;
+}
+
+.notifications-item-body {
+  margin-top: 0.15rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.notifications-item-meta {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.schedule-publish-audience-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 1rem;
 }
 
 html.authed .header-account-btn,
@@ -1615,6 +1846,10 @@ html.authed .header-signout-btn {
   padding: 0 var(--space-main);
   background: var(--surface);
   box-sizing: border-box;
+}
+
+.top-nav .nav-item[hidden] {
+  display: none !important;
 }
 
 .top-nav .nav-item {
@@ -4635,10 +4870,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   white-space: nowrap;
 }
 
+.calendar-matrix--readonly .calendar-slot-wrap,
 .calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly {
   cursor: default;
 }
 
+.calendar-matrix--readonly .calendar-slot-wrap:hover,
+.calendar-matrix--readonly .calendar-slot-wrap:focus-visible,
 .calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly:hover {
   box-shadow: none;
 }
@@ -6290,7 +6528,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .timecards-table--wide {
-  min-width: 1040px;
+  min-width: 1180px;
 }
 
 .timecards-extra-cell {

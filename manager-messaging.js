@@ -15,6 +15,13 @@
     return document.getElementById(id);
   }
 
+  function t(key, vars) {
+    if (typeof window !== 'undefined' && window.gmI18n && window.gmI18n.t) {
+      return window.gmI18n.t(key, vars);
+    }
+    return key;
+  }
+
   /** Pre-May 2026 demo seed thread (id `jamie`, swap-offer message). */
   function isLegacyJamieDemoThread(t) {
     if (!t) return false;
@@ -247,7 +254,7 @@
           '<span class="emp-thread-name">' +
           escapeHtml(p.name) +
           '</span>' +
-          '<span class="emp-thread-pick-hint">Start a conversation</span>' +
+          '<span class="emp-thread-pick-hint">' + escapeHtml(t('messages.startConversation')) + '</span>' +
           '<span class="emp-thread-sub">' +
           escapeHtml(p.subtitle || '') +
           '</span>' +
@@ -259,8 +266,8 @@
       threadList.innerHTML =
         '<li class="emp-thread-empty"><p class="emp-shift-empty">' +
         (q
-          ? 'No conversations or team members match your search.'
-          : 'Type in the search box to find a team member and start a conversation.') +
+          ? t('messages.searchNoMatch')
+          : t('messages.searchHintManager')) +
         '</p></li>';
       return;
     }
@@ -315,7 +322,7 @@
     if (!chatLog || !thread) return;
     if (!thread.messages || !thread.messages.length) {
       chatLog.innerHTML =
-        '<p class="emp-chat-empty">No messages yet. Type below to send your first message.</p>';
+        '<p class="emp-chat-empty">' + escapeHtml(t('messages.noMessagesFirst')) + '</p>';
       return;
     }
     chatLog.innerHTML = (thread.messages || [])

@@ -50,6 +50,7 @@ export function employeeHomeRestaurant(emp: EmployeeRow): string {
  * Roster / store-filter membership (mirrors web full-report inclusion).
  * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
  * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
+ * UI is per-store only (rp-8 | rp-9); filter 'all' (if used) keeps show-everyone behavior.
  */
 export function rosterRowVisibleAtLocation(emp: EmployeeRow, locationFilter: LocationFilter): boolean {
   if (locationFilter === 'all') return true;
@@ -59,6 +60,13 @@ export function rosterRowVisibleAtLocation(emp: EmployeeRow, locationFilter: Loc
     return employeePrimaryLocationId(emp) === locationFilter;
   }
   return false;
+}
+
+/** Short store label for person-week Location column (8th Ave / 9th Ave). */
+export function restaurantShortLabelForId(restaurantId: string | null | undefined): string {
+  if (restaurantId === 'rp-8') return '8th Ave';
+  if (restaurantId === 'rp-9') return '9th Ave';
+  return restaurantId || '—';
 }
 
 /** True when a built roster row has schedule or punch activity at the filtered location. */

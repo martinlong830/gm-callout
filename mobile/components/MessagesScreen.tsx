@@ -13,8 +13,14 @@ import {
   View,
 } from 'react-native';
 import { useAppData } from '../contexts/AppDataContext';
+import { useI18n } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
-import { employeeDisplayName, staffTypeLabel } from '../lib/employees';
+import {
+  employeeDisplayName,
+  employeeVisibleInManagerStoreScope,
+  managerManagedRestaurantId,
+} from '../lib/employees';
+import { isManagerLikeRole } from '../lib/roles';
 import {
   flushChatStoreSave,
   loadChatStore,
@@ -27,7 +33,7 @@ import {
 } from '../lib/chatStore';
 import { supabase } from '../lib/supabase';
 
-const MANAGER_CONTACT = { id: 'msg-mgr', name: 'MARK ONG', subtitle: 'Manager' };
+const MANAGER_CONTACT = { id: 'msg-mgr', name: 'MARK ONG', subtitleKey: 'messages.manager' as const };
 const CHAT_REFRESH_FRESH_MS = 30_000;
 
 type MessageRecipient = { id: string; name: string; subtitle: string };
@@ -111,7 +117,8 @@ function formatMessageBubbleTime(iso: string | undefined): string {
 
 export function MessagesScreen() {
   const { user, displayName, role } = useAuth();
-  const { employees } = useAppData();
+  const { t, staffTypeLabel, dateLocale } = useI18n();
+  const { employees, myEmployee } = useAppData();
   const uid = user?.id;
   const [store, setStore] = useState<ChatStore | null>(null);
   const [search, setSearch] = useState('');
@@ -227,24 +234,26 @@ export function MessagesScreen() {
   const messageRecipients = useMemo((): MessageRecipient[] => {
     const out: MessageRecipient[] = [];
     if (role === 'employee') {
-      out.push(MANAGER_CONTACT);
+      out.push({ id: MANAGER_CONTACT.id, name: MANAGER_CONTACT.name, subtitle: t('messages.manager') });
     }
+    const scope = isManagerLikeRole(role) ? managerManagedRestaurantId(myEmployee, role) : null;
     const selfLower = displayName.trim().toLowerCase();
     for (const e of employees) {
+      if (isManagerLikeRole(role) && !employeeVisibleInManagerStoreScope(e, scope)) continue;
       const n = employeeDisplayName(e);
       if (role === 'employee' && n.trim().toLowerCase() === selfLower) continue;
       out.push({ id: String(e.id), name: n, subtitle: staffTypeLabel(e.staffType) });
     }
     return out;
-  }, [employees, role, displayName]);
+  }, [employees, role, displayName, t, staffTypeLabel, myEmployee]);
 
   const listRows = useMemo((): ListRow[] => {
     if (!store) return [];
     const q = search.trim().toLowerCase();
     const rows: ListRow[] = [];
     const threadSlice = threadsMatching(store, search);
-    threadSlice.forEach((t) => {
-      rows.push({ key: `th-${t.id}`, kind: 'thread', thread: t });
+    threadSlice.forEach((thread) => {
+      rows.push({ key: `th-${thread.id}`, kind: 'thread', thread });
     });
     if (!q) return rows;
     const matchedPeople = messageRecipients.filter((p) => {
@@ -323,7 +332,7 @@ export function MessagesScreen() {
   if (!uid || !supabase) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.muted}>Sign in to use messages.</Text>
+        <Text style={styles.muted}>{t('messages.signInRequired')}</Text>
       </View>
     );
   }
@@ -331,7 +340,7 @@ export function MessagesScreen() {
   if (loading && !store) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.muted}>Loading…</Text>
+        <Text style={styles.muted}>{t('common.loading')}</Text>
       </View>
     );
   }
@@ -339,7 +348,7 @@ export function MessagesScreen() {
   if (!store) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.muted}>Could not load messages.</Text>
+        <Text style={styles.muted}>{t('messages.couldNotLoad')}</Text>
       </View>
     );
   }
@@ -353,7 +362,7 @@ export function MessagesScreen() {
       >
         <View style={styles.chatHeader}>
           <Pressable onPress={closeThread} style={styles.backBtn}>
-            <Text style={styles.backText}>Back</Text>
+            <Text style={styles.backText}>{t('common.back')}</Text>
           </Pressable>
           <Text style={styles.chatTitle} numberOfLines={1}>
             {activeThread.peerName}
@@ -364,9 +373,7 @@ export function MessagesScreen() {
           data={activeThread.messages}
           keyExtractor={(_, i) => String(i)}
           ListEmptyComponent={
-            <Text style={styles.chatEmpty}>
-              No messages yet. Type below to send your first message.
-            </Text>
+            <Text style={styles.chatEmpty}>{t('messages.firstMessage')}</Text>
           }
           renderItem={({ item }) => {
             const timeLabel = formatMessageBubbleTime(item.at);
@@ -383,11 +390,11 @@ export function MessagesScreen() {
             style={styles.chatInput}
             value={input}
             onChangeText={setInput}
-            placeholder="Write a message…"
+            placeholder={t('messages.write')}
             placeholderTextColor="#888"
           />
           <Pressable style={styles.sendBtn} onPress={sendMessage}>
-            <Text style={styles.sendText}>Send</Text>
+            <Text style={styles.sendText}>{t('common.send')}</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -395,9 +402,7 @@ export function MessagesScreen() {
   }
 
   const q = search.trim();
-  const emptyHint = q
-    ? 'No conversations or team members match your search.'
-    : 'Type in the search box to find a team member and start a conversation.';
+  const emptyHint = q ? t('messages.noSearchMatch') : t('messages.searchToStart');
 
   return (
     <View style={styles.flex}>
@@ -405,7 +410,7 @@ export function MessagesScreen() {
         style={styles.search}
         value={search}
         onChangeText={setSearch}
-        placeholder="Search conversations or team…"
+        placeholder={t('messages.searchConversations')}
         placeholderTextColor="#888"
       />
       <FlatList
@@ -428,18 +433,18 @@ export function MessagesScreen() {
             return (
               <Pressable style={[styles.threadRow, styles.threadRowPick]} onPress={() => void openOrCreatePerson(p)}>
                 <Text style={styles.threadName}>{p.name}</Text>
-                <Text style={styles.pickHint}>Start a conversation</Text>
+                <Text style={styles.pickHint}>{t('messages.startConversation')}</Text>
                 {p.subtitle ? <Text style={styles.threadSub}>{p.subtitle}</Text> : null}
               </Pressable>
             );
           }
-          const t = item.thread;
-          const last = t.messages?.length ? t.messages[t.messages.length - 1] : null;
+          const thread = item.thread;
+          const last = thread.messages?.length ? thread.messages[thread.messages.length - 1] : null;
           const previewText = last ? String(last.body || '') : '';
           return (
-            <Pressable style={styles.threadRow} onPress={() => openThread(t.id)}>
-              <Text style={styles.threadName}>{t.peerName}</Text>
-              {t.subtitle ? <Text style={styles.threadSub}>{t.subtitle}</Text> : null}
+            <Pressable style={styles.threadRow} onPress={() => openThread(thread.id)}>
+              <Text style={styles.threadName}>{thread.peerName}</Text>
+              {thread.subtitle ? <Text style={styles.threadSub}>{thread.subtitle}</Text> : null}
               <Text style={styles.threadPreview} numberOfLines={2}>
                 {previewText}
               </Text>

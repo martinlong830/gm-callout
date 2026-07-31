@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { DateTimePickerField } from '../../../../components/DateTimePickerField';
 import { useAppData } from '../../../../contexts/AppDataContext';
+import { useI18n } from '../../../../contexts/LocaleContext';
 import { useTimecards } from '../../../../contexts/TimecardsContext';
 import { employeeDisplayName, type EmployeeRow } from '../../../../lib/employees';
 import {
@@ -94,6 +95,7 @@ function toLite(e: EmployeeRow): EmployeeLite {
 }
 
 export default function TimecardsShiftScreen() {
+  const { t } = useI18n();
   const { employeeId, shiftId, iso } = useLocalSearchParams<{
     employeeId: string;
     shiftId: string;
@@ -221,14 +223,14 @@ export default function TimecardsShiftScreen() {
     const offSchedule = isOffScheduleShiftDayRow(shiftRow);
     navigation.setOptions({
       title: offSchedule
-        ? s.day + ' · Off schedule'
+        ? s.day + t('timecards.offScheduleSuffix')
         : s.day + ' · ' + (s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)),
     });
     const open = dayEntries.filter(isEntryOpen);
     const pick = open.length ? open[open.length - 1] : dayEntries[dayEntries.length - 1] ?? null;
     loadEntry(pick);
     void loadDayLeave();
-  }, [shiftRow, emp, dayEntries, navigation, loadEntry, loadDayLeave]);
+  }, [shiftRow, emp, dayEntries, navigation, loadEntry, loadDayLeave, t]);
 
   const hasPunchTimes = useMemo(() => {
     if (!shiftRow) return false;
@@ -354,7 +356,7 @@ export default function TimecardsShiftScreen() {
     });
     if (!res.ok) {
       setBusy(false);
-      Alert.alert('Save failed', res.message);
+      Alert.alert(t('timecards.saveFailed'), res.message);
       return;
     }
     setBusy(false);
@@ -395,7 +397,7 @@ export default function TimecardsShiftScreen() {
         return;
       }
       if (showDishwasherTip && dishwasherTip > 0 && vl <= 0 && sl <= 0) {
-        Alert.alert('Timecard', DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
+        Alert.alert(t('timecards.title'), DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
         return;
       }
       setBusy(true);
@@ -406,15 +408,12 @@ export default function TimecardsShiftScreen() {
         const delRes = await deleteTimeClockEntries(supabase, dayEntryIds);
         if (!delRes.ok) {
           setBusy(false);
-          Alert.alert('Save failed', delRes.message);
+          Alert.alert(t('timecards.saveFailed'), delRes.message);
           return;
         }
         if (delRes.deletedIds.length !== dayEntryIds.length) {
           setBusy(false);
-          Alert.alert(
-            'Save failed',
-            'Could not delete all punch records. Sign in as a manager and apply the latest Supabase migrations (time_clock_entries_delete_managers).'
-          );
+          Alert.alert(t('timecards.saveFailed'), t('timecards.deletePunchesFailed'));
           return;
         }
       }
@@ -426,53 +425,53 @@ export default function TimecardsShiftScreen() {
       }
       setBusy(false);
       await refresh();
-      Alert.alert('Saved', 'Vacation/sick hours saved for this day.');
+      Alert.alert(t('common.saved'), t('timecards.vlSlSaved'));
       return;
     }
 
     if (!inIso || isMidnightOnShiftDate(clockInDate, shiftRow.iso)) {
-      Alert.alert('Timecard', 'Set clock in time.');
+      Alert.alert(t('timecards.title'), t('timecards.setClockIn'));
       return;
     }
     const nowTs = new Date();
     if (new Date(inIso).getTime() > nowTs.getTime()) {
-      Alert.alert('Timecard', 'Clock in cannot be in the future.');
+      Alert.alert(t('timecards.title'), t('timecards.clockInFuture'));
       return;
     }
     if (breakEndIso && !breakStartIso) {
-      Alert.alert('Timecard', 'Set break start before break end.');
+      Alert.alert(t('timecards.title'), t('timecards.setBreakOrder'));
       return;
     }
     if (breakStartIso) {
       const breakStartTs = new Date(breakStartIso).getTime();
       if (breakStartTs < new Date(inIso).getTime()) {
-        Alert.alert('Timecard', 'Break start must be after clock in.');
+        Alert.alert(t('timecards.title'), t('timecards.breakStartAfterIn'));
         return;
       }
       if (breakStartTs > nowTs.getTime()) {
-        Alert.alert('Timecard', 'Break start cannot be in the future.');
+        Alert.alert(t('timecards.title'), t('timecards.breakStartFuture'));
         return;
       }
     }
     if (breakEndIso) {
       const breakEndTs = new Date(breakEndIso).getTime();
       if (breakStartIso && breakEndTs < new Date(breakStartIso).getTime()) {
-        Alert.alert('Timecard', 'Break end must be after break start.');
+        Alert.alert(t('timecards.title'), t('timecards.breakEndAfterStart'));
         return;
       }
       if (breakEndTs > nowTs.getTime()) {
-        Alert.alert('Timecard', 'Break end cannot be in the future.');
+        Alert.alert(t('timecards.title'), t('timecards.breakEndFuture'));
         return;
       }
     }
     if (outIso) {
       const outD = new Date(outIso);
       if (outD.getTime() > nowTs.getTime()) {
-        Alert.alert('Timecard', 'Clock out cannot be in the future.');
+        Alert.alert(t('timecards.title'), t('timecards.clockOutFuture'));
         return;
       }
       if (outD.getTime() < new Date(inIso).getTime()) {
-        Alert.alert('Timecard', 'Clock out must be after clock in.');
+        Alert.alert(t('timecards.title'), t('timecards.clockOutAfterIn'));
         return;
       }
       const norm = normalizePunchTimesForShift(inIso, outIso, shiftRow.iso, shiftRow.shift.start);
@@ -497,7 +496,7 @@ export default function TimecardsShiftScreen() {
     });
     setBusy(false);
     if (!res.ok) {
-      Alert.alert('Save failed', res.message);
+      Alert.alert(t('timecards.saveFailed'), res.message);
       return;
     }
     await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
@@ -507,7 +506,7 @@ export default function TimecardsShiftScreen() {
       await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
     }
     await refresh();
-    Alert.alert('Saved', 'Punch updated.');
+    Alert.alert(t('common.saved'), t('timecards.punchUpdated'));
   };
 
   if (!emp || !shiftRow) {
@@ -532,39 +531,54 @@ export default function TimecardsShiftScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>{offSchedule ? 'Day (off schedule)' : 'Scheduled'}</Text>
+        <Text style={styles.cardTitle}>
+          {offSchedule ? t('timecards.dayOffSchedule') : t('timecards.scheduled')}
+        </Text>
         <Text style={styles.line}>
           {s.day}
-          {offSchedule ? ' · Off schedule' : ` · ${s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)}`}
+          {offSchedule
+            ? t('timecards.offScheduleSuffix')
+            : ` · ${s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)}`}
         </Text>
         {!offSchedule ? (
           <Text style={styles.line}>
-            Paid {decimalHoursFromMinutes(scheduledPaidMinutes(s, emp))}h · Break{' '}
-            {schedBreak ? `${schedBreak} min` : 'none'}
+            {t('timecards.paidBreakLine', {
+              paid: decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)),
+              break: schedBreak ? `${schedBreak} min` : t('timecards.breakNone'),
+            })}
           </Text>
         ) : (
-          <Text style={styles.line}>No scheduled shift — recorded time uses weekly 40h regular cap.</Text>
+          <Text style={styles.line}>{t('timecards.noScheduledShift')}</Text>
         )}
         <Text style={styles.line}>
-          Day total: {dayMins ? decimalHoursFromMinutes(roundToNearest5Minutes(dayMins)) + 'h' : '—'}
-          {dayEntries.length > 1 ? ` · ${dayEntries.length} punches` : ''}
+          {t('timecards.dayTotal', {
+            total: dayMins ? decimalHoursFromMinutes(roundToNearest5Minutes(dayMins)) + 'h' : '—',
+          })}
+          {dayEntries.length > 1 ? t('timecards.punchesCount', { n: dayEntries.length }) : ''}
         </Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Pay (this shift)</Text>
+        <Text style={styles.cardTitle}>{t('timecards.payThisShift')}</Text>
         <Text style={styles.line}>
-          Regular {decimalHoursFromMinutes(shiftPay?.regMins ?? 0)}h ·{' '}
-          {formatPayAmount(shiftPay?.regPay)}
+          {t('timecards.regularLine', {
+            hours: decimalHoursFromMinutes(shiftPay?.regMins ?? 0),
+            pay: formatPayAmount(shiftPay?.regPay),
+          })}
         </Text>
         <Text style={styles.line}>
-          Overtime {decimalHoursFromMinutes(shiftPay?.otMins ?? 0)}h · {formatPayAmount(shiftPay?.otPay)}
+          {t('timecards.overtimeLine', {
+            hours: decimalHoursFromMinutes(shiftPay?.otMins ?? 0),
+            pay: formatPayAmount(shiftPay?.otPay),
+          })}
         </Text>
-        <Text style={styles.lineStrong}>Shift total {shiftPay ? formatShiftPayLabel(shiftPay) : '—'}</Text>
-        <Text style={styles.line}>Pay/hr {formatHourlyRateLabel(emp)}</Text>
+        <Text style={styles.lineStrong}>
+          {t('timecards.shiftTotal', { total: shiftPay ? formatShiftPayLabel(shiftPay) : '—' })}
+        </Text>
+        <Text style={styles.line}>{t('timecards.payHr')} {formatHourlyRateLabel(emp)}</Text>
       </View>
 
-      <Text style={styles.sectionTitle}>Punches this day</Text>
+      <Text style={styles.sectionTitle}>{t('timecards.punchesThisDay')}</Text>
       {dayEntries.map((punch, idx) => {
         const active = punch.id === entryId;
         const paid = recordedPaidMinutes(punch, shiftRow, emp);
@@ -576,64 +590,68 @@ export default function TimecardsShiftScreen() {
           >
             <Text style={styles.punchTitle}>
               #{idx + 1} {formatPunchClock(punch.clock_in_at)} –{' '}
-              {isEntryOpen(punch) ? 'still in' : formatPunchClock(punch.clock_out_at)}
+              {isEntryOpen(punch) ? t('timecards.stillIn') : formatPunchClock(punch.clock_out_at)}
               {formatBreakRangeLabel(punch)}
-              {isEntryOpen(punch) ? ' (Open)' : ''}
+              {isEntryOpen(punch) ? t('timecards.stillInParen') : ''}
             </Text>
-            <Text style={styles.punchSub}>{decimalHoursFromMinutes(paid)}h paid</Text>
+            <Text style={styles.punchSub}>
+              {t('timecards.hoursPaid', { hours: decimalHoursFromMinutes(paid) })}
+            </Text>
           </Pressable>
         );
       })}
-      {!dayEntries.length ? <Text style={styles.muted}>No punches yet.</Text> : null}
+      {!dayEntries.length ? <Text style={styles.muted}>{t('timecards.noPunchesYet')}</Text> : null}
 
-      <Text style={styles.sectionTitle}>{editingEntry ? 'Edit punch' : 'Add punch'}</Text>
-      <Text style={styles.hint}>Closed punches round to 5 minutes when saved.</Text>
+      <Text style={styles.sectionTitle}>
+        {editingEntry ? t('timecards.editPunch') : t('timecards.addPunch')}
+      </Text>
+      <Text style={styles.hint}>{t('timecards.punchRoundHint')}</Text>
 
       <DateTimePickerField
-        label="Clock in"
+        label={t('timecards.clockIn')}
         value={clockInDate}
         onChange={setClockInDate}
         maximumDate={new Date()}
         allowClear
-        clearLabel="No clock in"
+        clearLabel={t('timecards.noClockIn')}
       />
 
       <DateTimePickerField
-        label="Clock out"
+        label={t('timecards.clockOut')}
         value={clockOutDate}
         onChange={setClockOutDate}
         maximumDate={new Date()}
         minimumDate={clockInDate ?? undefined}
         allowClear
-        clearLabel="Still clocked in"
+        clearLabel={t('timecards.stillClockedIn')}
       />
 
       <Pressable style={styles.btnSecondary} onPress={clearPunchFields}>
-        <Text style={styles.btnSecondaryText}>Clear punch times</Text>
+        <Text style={styles.btnSecondaryText}>{t('timecards.clearPunchTimes')}</Text>
       </Pressable>
 
       <Pressable style={styles.btnSecondary} onPress={() => setClockOutDate(new Date())}>
-        <Text style={styles.btnSecondaryText}>End punch now</Text>
+        <Text style={styles.btnSecondaryText}>{t('timecards.endPunchNow')}</Text>
       </Pressable>
 
       <DateTimePickerField
-        label="Break start"
+        label={t('timecards.breakStart')}
         value={breakStartDate}
         onChange={setBreakStartDate}
         maximumDate={new Date()}
         minimumDate={clockInDate ?? undefined}
         allowClear
-        clearLabel="No break"
+        clearLabel={t('timecards.noBreak')}
       />
 
       <DateTimePickerField
-        label="Break end"
+        label={t('timecards.breakEnd')}
         value={breakEndDate}
         onChange={setBreakEndDate}
         maximumDate={new Date()}
         minimumDate={breakStartDate ?? clockInDate ?? undefined}
         allowClear
-        clearLabel="On break / no end"
+        clearLabel={t('timecards.onBreakNoEnd')}
       />
 
       <Pressable style={styles.btnSecondary} onPress={() => setBreakEndDate(new Date())}>
@@ -647,7 +665,12 @@ export default function TimecardsShiftScreen() {
       <View style={styles.chipRow}>
         {(['inherit', 'paid', 'unpaid'] as const).map((c) => {
           const on = breakPaidChoice === c;
-          const label = c === 'inherit' ? 'Default' : c === 'paid' ? 'Paid' : 'Unpaid';
+          const label =
+            c === 'inherit'
+              ? t('timecards.breakPaidDefault')
+              : c === 'paid'
+                ? t('timecards.breakPaid')
+                : t('timecards.breakUnpaid');
           return (
             <Pressable
               key={c}
@@ -741,7 +764,11 @@ export default function TimecardsShiftScreen() {
       )}
 
       <Pressable style={styles.btnPrimary} disabled={busy} onPress={() => void save()}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryText}>Save</Text>}
+        {busy ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.btnPrimaryText}>{t('common.save')}</Text>
+        )}
       </Pressable>
       <Pressable
         style={styles.btnSecondary}

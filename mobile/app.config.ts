@@ -11,7 +11,7 @@ const config: ExpoConfig = {
   name: 'Shiflow',
   slug: 'gm-callout',
   version: '1.0.2',
-  orientation: 'portrait',
+  orientation: 'default',
   icon: './assets/icon.png',
   userInterfaceStyle: 'light',
   newArchEnabled: true,

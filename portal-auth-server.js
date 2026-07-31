@@ -45,6 +45,36 @@ function companyHasUsableAccessCode(company) {
   return !!String(company.access_code || "").trim() && !isPendingAccessCode(company.access_code);
 }
 
+/** Managers and admins share elevated portal powers; admins are company-wide. */
+function isManagerLikeRole(role) {
+  return role === "manager" || role === "admin";
+}
+
+function employeeStoreScope(usualRestaurant, meta) {
+  const home = String(usualRestaurant || "").trim() || "rp-9";
+  if (home === "rp-8" || home === "rp-9") return home;
+  if (home === "both") {
+    const m = meta && typeof meta === "object" ? meta : {};
+    const raw = m.primaryLocationId || m.primaryRestaurantId || "";
+    const id = String(raw).trim();
+    if (id === "rp-8" || id === "rp-9") return id;
+    return null;
+  }
+  return null;
+}
+
+function employeeMatchesRestaurant(emp, restaurantId) {
+  if (!restaurantId) return true;
+  if (!emp) return false;
+  const scope = employeeStoreScope(emp.usual_restaurant, emp.meta);
+  if (scope == null) {
+    // Multi-store without primary: treat as belonging to both for notify.
+    const home = String(emp.usual_restaurant || "").trim();
+    return home === "both" || home === restaurantId;
+  }
+  return scope === restaurantId;
+}
+
 /** Prefer company-scoped match; never use unscoped .maybeSingle() across tenants. */
 function pickProfileRows(rows, duplicateMessage) {
   if (!rows || !rows.length) return { notFound: true };
@@ -294,7 +324,7 @@ async function ensureCompanyReadyOnLogin(admin, profile) {
   if (!company) return { company: null };
   if (
     !company.confirmed_at &&
-    profile.role === "manager" &&
+    isManagerLikeRole(profile.role) &&
     companyHasUsableAccessCode(company)
   ) {
     await admin
@@ -307,7 +337,7 @@ async function ensureCompanyReadyOnLogin(admin, profile) {
     company.confirmed_at = new Date().toISOString();
     if (!company.owner_user_id) company.owner_user_id = profile.id;
   }
-  if (profile.role === "manager" && companyHasUsableAccessCode(company)) {
+  if (isManagerLikeRole(profile.role) && companyHasUsableAccessCode(company)) {
     await seedCompanyTeamState(admin, company);
   }
   return { company };
@@ -959,7 +989,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             "Confirm your email first using the link we sent, then return here to set your access code.",
         });
       }
-      if (authed.profile.role !== "manager") {
+      if (!isManagerLikeRole(authed.profile.role)) {
         return res.status(403).json({ ok: false, message: "Manager account required." });
       }
       const company = await loadCompanyForProfile(admin, authed.profile);
@@ -1255,7 +1285,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (authed.error) {
       return { error: authed.error, status: authed.status || 401 };
     }
-    if (authed.profile.role !== "manager") {
+    if (!isManagerLikeRole(authed.profile.role)) {
       return { error: "Manager sign-in required.", status: 403 };
     }
     return authed;
@@ -1770,7 +1800,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
-  /** Manager: notify company devices that a week’s schedule is ready (Expo Push API). */
+  /** Manager/admin: notify selected audience that a week’s schedule is ready (Expo Push + in-app). */
   router.post("/schedule/notify-published", async (req, res) => {
     try {
       const auth = await profileFromAccessToken(req);
@@ -1781,14 +1811,27 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           needsSignIn: !!auth.needsSignIn,
         });
       }
-      if (auth.profile.role !== "manager") {
-        return res.status(403).json({ ok: false, message: "Managers only." });
+      if (!isManagerLikeRole(auth.profile.role)) {
+        return res.status(403).json({ ok: false, message: "Managers and admins only." });
       }
       const body = req.body || {};
       const weekMondayIso = String(body.weekMondayIso || "").slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
         return res.status(400).json({ ok: false, message: "weekMondayIso is required (YYYY-MM-DD)." });
       }
+      const audienceRaw = String(body.audience || body.notifyAudience || "employees")
+        .trim()
+        .toLowerCase();
+      const audience =
+        audienceRaw === "admins" || audienceRaw === "admin" ? "admins" : "employees";
+      const restaurantId = String(body.restaurantId || body.storeId || "").trim();
+      if (restaurantId && restaurantId !== "rp-8" && restaurantId !== "rp-9") {
+        return res.status(400).json({
+          ok: false,
+          message: "restaurantId must be rp-8 or rp-9 when provided.",
+        });
+      }
+
       let weekRangeLabel = String(body.weekRangeLabel || body.weekLabel || "").trim();
       if (!weekRangeLabel) {
         const m = weekMondayIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1836,6 +1879,107 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
       if (!teamStateId) teamStateId = "main";
 
+      const storeLabel =
+        restaurantId === "rp-8" ? "8th Ave" : restaurantId === "rp-9" ? "9th Ave" : "";
+      const title = weekRangeLabel
+        ? "Schedule for " + weekRangeLabel + " is ready"
+        : "Your schedule is ready";
+      const bodyText = storeLabel
+        ? "Open Shiflow to view the " + storeLabel + " schedule."
+        : "Open Shiflow to view your shifts.";
+
+      // Resolve recipient user ids for the selected audience (store-scoped when restaurantId set).
+      const recipientIds = [];
+      const seenRecipients = Object.create(null);
+      function addRecipient(uid) {
+        const id = String(uid || "").trim();
+        if (!id || seenRecipients[id]) return;
+        seenRecipients[id] = true;
+        recipientIds.push(id);
+      }
+
+      if (audience === "admins") {
+        let adminQuery = admin.from("profiles").select("id").eq("role", "admin");
+        if (companyId) adminQuery = adminQuery.eq("company_id", companyId);
+        const { data: adminRows, error: adminErr } = await adminQuery;
+        if (adminErr) {
+          console.warn("schedule/notify-published admins", adminErr);
+          return res.status(500).json({
+            ok: false,
+            message: adminErr.message || "Could not load admin accounts.",
+          });
+        }
+        (adminRows || []).forEach((row) => addRecipient(row && row.id));
+      } else {
+        // Employees (+ store managers) at the published restaurant only.
+        let empQuery = admin
+          .from("employees")
+          .select("auth_user_id, usual_restaurant, meta, company_id");
+        if (companyId) empQuery = empQuery.eq("company_id", companyId);
+        const { data: empRows, error: empErr } = await empQuery;
+        if (empErr) {
+          console.warn("schedule/notify-published employees", empErr);
+          return res.status(500).json({
+            ok: false,
+            message: empErr.message || "Could not load employees.",
+          });
+        }
+        const authIdsAtStore = [];
+        (empRows || []).forEach((emp) => {
+          if (!emp || !emp.auth_user_id) return;
+          if (restaurantId && !employeeMatchesRestaurant(emp, restaurantId)) return;
+          authIdsAtStore.push(emp.auth_user_id);
+        });
+
+        if (authIdsAtStore.length) {
+          const { data: roleRows, error: roleErr } = await admin
+            .from("profiles")
+            .select("id, role")
+            .in("id", authIdsAtStore);
+          if (roleErr) {
+            console.warn("schedule/notify-published roles", roleErr);
+            return res.status(500).json({
+              ok: false,
+              message: roleErr.message || "Could not load recipient roles.",
+            });
+          }
+          (roleRows || []).forEach((row) => {
+            if (!row) return;
+            // Employees + store managers at this store; admins use the admins audience.
+            if (row.role === "employee" || row.role === "manager") addRecipient(row.id);
+          });
+        }
+      }
+
+      // Persist in-app notifications even when push later fails / no tokens.
+      let inAppCreated = 0;
+      let inAppError = null;
+      if (recipientIds.length) {
+        const notifRows = recipientIds.map((userId) => ({
+          user_id: userId,
+          company_id: companyId,
+          team_state_id: teamStateId,
+          restaurant_id: restaurantId || null,
+          type: "schedule_published",
+          title,
+          body: bodyText,
+          data: {
+            weekMondayIso,
+            teamStateId,
+            restaurantId: restaurantId || null,
+            audience,
+          },
+        }));
+        const { error: notifErr } = await admin.from("app_notifications").insert(notifRows);
+        if (notifErr) {
+          // Table may not exist until migration is applied — do not block publish notify entirely.
+          inAppError = notifErr.message || String(notifErr);
+          console.warn("schedule/notify-published in-app", notifErr);
+        } else {
+          inAppCreated = notifRows.length;
+        }
+      }
+
       let tokenQuery = admin
         .from("device_push_tokens")
         .select("expo_push_token, user_id")
@@ -1843,10 +1987,25 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (companyId) {
         tokenQuery = tokenQuery.or(`company_id.eq.${companyId},company_id.is.null`);
       }
-      const { data: tokenRows, error: tokErr } = await tokenQuery;
+      if (recipientIds.length) {
+        tokenQuery = tokenQuery.in("user_id", recipientIds);
+      } else {
+        // No recipients → no tokens to query.
+        tokenQuery = null;
+      }
+      const { data: tokenRows, error: tokErr } = tokenQuery
+        ? await tokenQuery
+        : { data: [], error: null };
       if (tokErr) {
         console.warn("schedule/notify-published tokens", tokErr);
-        return res.status(500).json({ ok: false, message: tokErr.message || "Could not load push tokens." });
+        return res.status(500).json({
+          ok: false,
+          message: tokErr.message || "Could not load push tokens.",
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          audience,
+          recipients: recipientIds.length,
+        });
       }
 
       const tokens = [];
@@ -1858,28 +2017,62 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         tokens.push(t);
       });
 
+      if (!recipientIds.length) {
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          recipients: 0,
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          audience,
+          restaurantId: restaurantId || null,
+          message:
+            audience === "admins"
+              ? "No admin accounts found to notify."
+              : "No employees (or store managers) found for this store to notify.",
+          weekMondayIso,
+        });
+      }
+
       if (!tokens.length) {
         return res.json({
           ok: true,
           sent: 0,
           failed: 0,
           tokens: 0,
+          recipients: recipientIds.length,
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          audience,
+          restaurantId: restaurantId || null,
           message:
-            "No registered devices. Open the Shiflow app on a physical phone, sign in, and allow notifications.",
+            inAppCreated > 0
+              ? "In-app notifications saved for " +
+                inAppCreated +
+                " recipient" +
+                (inAppCreated === 1 ? "" : "s") +
+                ". No registered devices for push — open the Shiflow app on a physical phone and allow notifications."
+              : "No registered devices. Open the Shiflow app on a physical phone, sign in, and allow notifications." +
+                (inAppError ? " (In-app save failed: " + inAppError + ")" : ""),
+          weekMondayIso,
         });
       }
 
-      const title = weekRangeLabel
-        ? "Schedule for " + weekRangeLabel + " is ready"
-        : "Your schedule is ready";
-      const bodyText = "Open Shiflow to view your shifts.";
       const messages = tokens.map((to) => ({
         to,
         sound: "default",
         title,
         body: bodyText,
         channelId: "schedule",
-        data: { type: "schedule_published", weekMondayIso, teamStateId },
+        data: {
+          type: "schedule_published",
+          weekMondayIso,
+          teamStateId,
+          restaurantId: restaurantId || null,
+          audience,
+        },
       }));
 
       let sent = 0;
@@ -1906,12 +2099,16 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             sent,
             failed: tokens.length - sent,
             tokens: tokens.length,
+            recipients: recipientIds.length,
+            inAppCreated,
+            inAppError: inAppError || undefined,
+            audience,
+            restaurantId: restaurantId || null,
           });
         }
         const pushJson = await pushRes.json().catch(() => null);
         const tickets = (pushJson && pushJson.data) || [];
         if (!tickets.length) {
-          // Unexpected empty ticket list — do not count as success.
           failed += chunk.length;
           const emptyMsg = "Expo returned no push tickets.";
           if (!seenErrors[emptyMsg]) {
@@ -1936,18 +2133,59 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
+      const credentialsHint = errorMessages.some((e) =>
+        /InvalidCredentials|APNs|FCM|credentials/i.test(String(e))
+      )
+        ? " Push credentials may be missing in EAS (Apple Push Key / FCM). In-app notifications were still saved."
+        : "";
+
       if (sent === 0) {
         const detail = errorMessages.length ? errorMessages.join(" | ") : "unknown push error";
         console.warn("schedule/notify-published delivery failed", {
           tokens: tokens.length,
           failed,
           detail,
+          audience,
+          inAppCreated,
         });
+        // In-app rows already written — treat as partial success when in-app worked.
+        if (inAppCreated > 0) {
+          return res.json({
+            ok: true,
+            sent: 0,
+            failed,
+            tokens: tokens.length,
+            recipients: recipientIds.length,
+            inAppCreated,
+            audience,
+            restaurantId: restaurantId || null,
+            errors: errorMessages,
+            message:
+              "In-app notifications saved for " +
+              inAppCreated +
+              " recipient" +
+              (inAppCreated === 1 ? "" : "s") +
+              ", but push failed for " +
+              tokens.length +
+              " device" +
+              (tokens.length === 1 ? "" : "s") +
+              ": " +
+              detail +
+              "." +
+              credentialsHint,
+            weekMondayIso,
+          });
+        }
         return res.status(502).json({
           ok: false,
           sent: 0,
           failed,
           tokens: tokens.length,
+          recipients: recipientIds.length,
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          audience,
+          restaurantId: restaurantId || null,
           errors: errorMessages,
           message:
             "Push delivery failed for " +
@@ -1955,7 +2193,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             " device" +
             (tokens.length === 1 ? "" : "s") +
             ": " +
-            detail,
+            detail +
+            "." +
+            credentialsHint,
           weekMondayIso,
         });
       }
@@ -1965,11 +2205,26 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         sent,
         failed,
         tokens: tokens.length,
+        recipients: recipientIds.length,
+        inAppCreated,
+        inAppError: inAppError || undefined,
+        audience,
+        restaurantId: restaurantId || null,
         errors: errorMessages.length ? errorMessages : undefined,
         message:
           failed > 0
-            ? "Notified " + sent + " device(s); " + failed + " failed (" + errorMessages.join(" | ") + ")."
-            : undefined,
+            ? "Notified " +
+              sent +
+              " device(s); " +
+              failed +
+              " failed (" +
+              errorMessages.join(" | ") +
+              ")." +
+              (inAppCreated ? " In-app: " + inAppCreated + "." : "") +
+              credentialsHint
+            : inAppCreated
+              ? undefined
+              : undefined,
         weekMondayIso,
       });
     } catch (err) {
@@ -1988,6 +2243,7 @@ module.exports = {
   decodeSupabaseKeyRole,
   pickProfileRows,
   preferProfileAmongDuplicates,
+  isManagerLikeRole,
   PORTAL_ACCESS_CODE,
   RED_POKE_COMPANY_ID,
 };

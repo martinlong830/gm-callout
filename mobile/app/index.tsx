@@ -1,6 +1,7 @@
 import { Redirect } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
+import { isAdminRole, isManagerLikeRole } from '../lib/roles';
 import { isSupabaseConfigured } from '../lib/supabase';
 
 export default function Index() {
@@ -20,7 +21,10 @@ export default function Index() {
   if (!session) {
     return <Redirect href="/login" />;
   }
-  if (role === 'manager') {
+  if (isAdminRole(role)) {
+    return <Redirect href="/manager/schedule" />;
+  }
+  if (isManagerLikeRole(role)) {
     return <Redirect href="/manager" />;
   }
   if (role === 'employee') {

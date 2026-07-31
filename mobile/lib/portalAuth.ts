@@ -829,9 +829,28 @@ export async function portalNotifySchedulePublished(payload: {
   weekMondayIso: string;
   weekRangeLabel?: string;
   teamStateId?: string;
+  audience?: 'admins' | 'employees';
+  restaurantId?: string;
 }): Promise<
-  | { ok: true; sent: number; failed?: number; tokens?: number; message?: string }
-  | { ok: false; message: string; sent?: number; failed?: number; tokens?: number }
+  | {
+      ok: true;
+      sent: number;
+      failed?: number;
+      tokens?: number;
+      recipients?: number;
+      inAppCreated?: number;
+      audience?: string;
+      message?: string;
+    }
+  | {
+      ok: false;
+      message: string;
+      sent?: number;
+      failed?: number;
+      tokens?: number;
+      recipients?: number;
+      inAppCreated?: number;
+    }
 > {
   if (!isPortalAuthConfigured()) {
     return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
@@ -840,11 +859,16 @@ export async function portalNotifySchedulePublished(payload: {
     sent?: number;
     failed?: number;
     tokens?: number;
+    recipients?: number;
+    inAppCreated?: number;
+    audience?: string;
     message?: string;
   }>('POST', '/api/portal/schedule/notify-published', {
     weekMondayIso: payload.weekMondayIso,
     weekRangeLabel: payload.weekRangeLabel || '',
     teamStateId: payload.teamStateId || '',
+    audience: payload.audience || 'employees',
+    restaurantId: payload.restaurantId || '',
   });
   if (!r.ok) return r;
   return {
@@ -852,6 +876,9 @@ export async function portalNotifySchedulePublished(payload: {
     sent: r.sent != null ? Number(r.sent) : 0,
     failed: r.failed != null ? Number(r.failed) : 0,
     tokens: r.tokens != null ? Number(r.tokens) : 0,
+    recipients: r.recipients != null ? Number(r.recipients) : 0,
+    inAppCreated: r.inAppCreated != null ? Number(r.inAppCreated) : 0,
+    audience: r.audience,
     message: r.message,
   };
 }

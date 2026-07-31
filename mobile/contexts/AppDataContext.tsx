@@ -32,6 +32,7 @@ import {
 } from '../lib/teamStateColumns';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
+import { isManagerLikeRole } from '../lib/roles';
 import { useAuth } from './AuthContext';
 
 type AppDataState = HydrationResult & {
@@ -110,7 +111,12 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         }
         setEmployees(data.employees);
         setStaffRequests(data.staffRequests);
-        setTeamState(data.teamState);
+        setTeamState((prev) => {
+          const remote = data.teamState;
+          if (!remote) return null;
+          if (!prev) return remote;
+          return mergeTeamStatePartial(prev, remote as Record<string, unknown>) as HydrationResult['teamState'];
+        });
         hydratedRef.current = true;
         lastHydrateAtRef.current = Date.now();
       } catch (e) {
@@ -221,7 +227,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   }, [runRefetch, role, session?.user?.id]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !session?.user || role !== 'manager') return;
+    if (!isSupabaseConfigured || !supabase || !session?.user || !isManagerLikeRole(role)) return;
     if (realtimePaused) return;
     return subscribeEmployees(supabase, () => {
       void refreshEmployeesOnly();
@@ -314,7 +320,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const myEmployee = useMemo(() => {
-    if (!session?.user?.id || role !== 'employee') return null;
+    if (!session?.user?.id || (role !== 'employee' && !isManagerLikeRole(role))) return null;
     const uid = session.user.id;
     const byAuth = employees.find((e) => e.authUserId === uid);
     if (byAuth) return byAuth;

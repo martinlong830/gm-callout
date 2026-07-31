@@ -4,7 +4,8 @@ import { CompactShiftRow } from '../../components/CompactShiftRow';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { employeeDisplayName, staffTypeLabel, type EmployeeRow } from '../../lib/employees';
+import { useI18n } from '../../contexts/LocaleContext';
+import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
 import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
@@ -30,22 +31,17 @@ function toLite(e: EmployeeRow): EmployeeLite {
   };
 }
 
-function requestTypeLabel(r: StaffRequestUi): string {
-  if (r.type === 'availability') return 'Availability';
-  if (r.type === 'timeoff') return 'Time off';
-  if (r.type === 'swap') return 'Shift swap';
-  if (r.type === 'callout_request' || r.type === 'callout') return 'Callout';
+function requestTypeLabel(r: StaffRequestUi, t: ReturnType<typeof useI18n>['t']): string {
+  if (r.type === 'availability') return t('employee.requestAvailability');
+  if (r.type === 'timeoff') return t('employee.requestTimeOff');
+  if (r.type === 'swap') return t('employee.requestSwap');
+  if (r.type === 'callout_request' || r.type === 'callout') return t('employee.requestCallout');
   return r.type;
-}
-
-function statusLabel(status: string): string {
-  if (status === 'approved') return 'Approved';
-  if (status === 'declined') return 'Declined';
-  return 'Pending';
 }
 
 export default function EmployeeHome() {
   const { displayName } = useAuth();
+  const { t, staffTypeLabel, statusLabel } = useI18n();
   const { myEmployee, employees, staffRequests, teamState, loading, error, refetch } = useAppData();
   const [refreshing, setRefreshing] = useState(false);
   const [upcomingWeekCursor, setUpcomingWeekCursor] = useState(0);
@@ -165,39 +161,37 @@ export default function EmployeeHome() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c41230" />}
       nestedScrollEnabled
     >
-      <Text style={styles.h1}>Welcome</Text>
+      <Text style={styles.h1}>{t('employee.welcomeTitle')}</Text>
       <Text style={styles.sub}>{displayName}</Text>
       {myEmployee ? (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Your role</Text>
+          <Text style={styles.cardTitle}>{t('employee.yourRole')}</Text>
           <Text style={styles.body}>{staffTypeLabel(myEmployee.staffType)}</Text>
         </View>
       ) : (
         <View style={styles.card}>
-          <Text style={styles.warn}>
-            No roster row linked to your account yet. Ask a manager to connect your auth user in Team.
-          </Text>
+          <Text style={styles.warn}>{t('employee.noRosterLinked')}</Text>
         </View>
       )}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Schedule</Text>
-        {loading && !teamState ? <Text style={styles.muted}>Loading from Supabase…</Text> : null}
+        <Text style={styles.cardTitle}>{t('employee.scheduleSection')}</Text>
+        {loading && !teamState ? <Text style={styles.muted}>{t('employee.loadingSupabase')}</Text> : null}
         {error ? <Text style={styles.err}>{error}</Text> : null}
         {!loading && !teamState ? (
-          <Text style={styles.muted}>Schedule data is not available yet. Pull to refresh.</Text>
+          <Text style={styles.muted}>{t('employee.scheduleUnavailable')}</Text>
         ) : null}
         {teamState ? (
           <>
-            <Text style={styles.sectionLabel}>Today</Text>
+            <Text style={styles.sectionLabel}>{t('common.today')}</Text>
             {!buckets.today.length ? (
-              <Text style={styles.muted}>No shifts scheduled for you today.</Text>
+              <Text style={styles.muted}>{t('employee.noShiftsToday')}</Text>
             ) : (
               buckets.today.map((row) => (
                 <CompactShiftRow key={`t-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
               ))
             )}
             <View style={styles.upcomingHead}>
-              <Text style={[styles.sectionLabel, styles.sectionSpaced]}>Upcoming</Text>
+              <Text style={[styles.sectionLabel, styles.sectionSpaced]}>{t('employee.upcomingShifts')}</Text>
               {upcomingGrouped.order.length ? (
                 <ScheduleWeekPicker
                   mode="pager"
@@ -209,12 +203,9 @@ export default function EmployeeHome() {
               ) : null}
             </View>
             {!upcomingGrouped.order.length ? (
-              <Text style={styles.muted}>
-                No later published shifts in the current window. Unpublished weeks stay hidden until
-                your manager publishes.
-              </Text>
+              <Text style={styles.muted}>{t('employee.noLaterShifts')}</Text>
             ) : !upcomingWeekRows.length ? (
-              <Text style={styles.muted}>No shifts this week.</Text>
+              <Text style={styles.muted}>{t('employee.noShiftsThisWeek')}</Text>
             ) : (
               upcomingWeekRows.map((row) => (
                 <CompactShiftRow key={`u-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
@@ -224,14 +215,14 @@ export default function EmployeeHome() {
         ) : null}
       </View>
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Your recent requests</Text>
-        {loading && !staffRequests.length ? <Text style={styles.muted}>Loading…</Text> : null}
+        <Text style={styles.cardTitle}>{t('employee.recentRequests')}</Text>
+        {loading && !staffRequests.length ? <Text style={styles.muted}>{t('common.loading')}</Text> : null}
         {!loading && !recentRequests.length ? (
-          <Text style={styles.muted}>No requests yet. Use the Actions tab.</Text>
+          <Text style={styles.muted}>{t('employee.noRequestsYet')}</Text>
         ) : null}
         {recentRequests.map((r) => (
           <View key={r.id} style={styles.reqRow}>
-            <Text style={styles.reqType}>{requestTypeLabel(r)}</Text>
+            <Text style={styles.reqType}>{requestTypeLabel(r, t)}</Text>
             <Text style={styles.reqMeta}>
               {statusLabel(r.status)} · {formatStaffRequestSubmittedDate(r.submittedAt)}
             </Text>
