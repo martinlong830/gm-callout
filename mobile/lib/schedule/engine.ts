@@ -1403,26 +1403,45 @@ export function namesForScheduleRowPersonPicker(
   return out;
 }
 
-/** Dominant assigned person across staffed days in a calendar row (visible week). */
+/** Dominant assigned person across staffed days in a calendar row (visible week).
+ *  Also reads pending assignment stubs for days with no draft times yet (new empty slots). */
 export function scheduleRowPrimaryPerson(
   schedule: ScheduleRow[],
   role: RoleKey,
   trIdx: number,
   visibleDays: string[],
   employees: EmployeeLite[],
-  restaurantId: string
+  restaurantId: string,
+  assignmentStore?: AssignmentStore | null,
+  weekIndex?: number
 ): string {
   const counts: Record<string, number> = Object.create(null);
   const order: string[] = [];
-  (visibleDays || []).forEach((dayStr) => {
+  const roleIdx = roleIdxForDraftRole(role);
+  const rs =
+    assignmentStore && restaurantId
+      ? getCurrentRestaurantAssignments(assignmentStore, restaurantId)
+      : null;
+  (visibleDays || []).forEach((dayStr, dayInWeek) => {
     const shift = schedule.find((s) => s.day === dayStr && s.role === role && s.trIdx === trIdx);
-    if (!shift) return;
-    const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
-      (n) => n && n !== 'Unassigned'
-    );
-    let name = workers.length
-      ? canonicalScheduleWorkerNameLite(employees, workers[0], restaurantId)
-      : 'Unassigned';
+    let name = 'Unassigned';
+    if (shift) {
+      const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+        (n) => n && n !== 'Unassigned'
+      );
+      name = workers.length
+        ? canonicalScheduleWorkerNameLite(employees, workers[0], restaurantId)
+        : 'Unassigned';
+    } else if (rs && roleIdx >= 0 && weekIndex != null && !Number.isNaN(weekIndex)) {
+      const shiftId = `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`;
+      const stub = normalizeScheduleAssignment(rs[shiftId]);
+      const stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
+      name = stubWorkers.length
+        ? canonicalScheduleWorkerNameLite(employees, stubWorkers[0], restaurantId)
+        : 'Unassigned';
+    } else {
+      return;
+    }
     if (!name) name = 'Unassigned';
     if (!counts[name]) {
       counts[name] = 0;
@@ -1467,7 +1486,9 @@ export function orderedScheduleSlotIndicesForRole(
   return idxs;
 }
 
-/** Assign one person to every staffed day in a schedule row for the visible week. */
+/** Assign one person to every staffed day in a schedule row for the visible week.
+ *  Empty/new slots (no draft times → no schedule rows) get pending assignment stubs
+ *  so Person sticks and is applied when times are set later. */
 export function assignPersonToScheduleRow(
   store: AssignmentStore,
   schedule: ScheduleRow[],
@@ -1476,7 +1497,8 @@ export function assignPersonToScheduleRow(
   trIdx: number,
   visibleDays: string[],
   personName: string,
-  employees: EmployeeLite[]
+  employees: EmployeeLite[],
+  weekIndex?: number
 ): AssignmentStore {
   const canon =
     !personName || personName === 'Unassigned'
@@ -1485,12 +1507,21 @@ export function assignPersonToScheduleRow(
   const list = canon === 'Unassigned' ? ['Unassigned'] : [canon];
   const next = JSON.parse(JSON.stringify(store)) as AssignmentStore;
   if (!next[restaurantId]) next[restaurantId] = {};
+  const roleIdx = roleIdxForDraftRole(role);
   let any = false;
-  (visibleDays || []).forEach((dayStr) => {
+  (visibleDays || []).forEach((dayStr, dayInWeek) => {
     const shift = schedule.find((s) => s.day === dayStr && s.role === role && s.trIdx === trIdx);
-    if (!shift) return;
+    if (shift) {
+      any = true;
+      next[restaurantId][shift.id] = list;
+      return;
+    }
+    if (roleIdx < 0 || weekIndex == null || Number.isNaN(weekIndex)) return;
+    const shiftId = `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`;
+    const entry = normalizeScheduleAssignment(next[restaurantId][shiftId] || { workers: ['Unassigned'] });
+    entry.workers = list.slice();
+    next[restaurantId][shiftId] = entry;
     any = true;
-    next[restaurantId][shift.id] = list;
   });
   return any ? next : store;
 }

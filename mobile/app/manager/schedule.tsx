@@ -556,7 +556,17 @@ export default function ManagerScheduleScreen() {
       setEditEnd(defs[1]);
       setEditBreakType('BREAK TIME');
       setEditBreakTime('15:00');
-      setEditWorker('Unassigned');
+      const rowPerson = scheduleRowPrimaryPerson(
+        schedule,
+        target.role,
+        target.trIdx,
+        visibleDays,
+        lites,
+        currentRestaurantId,
+        assignmentStoreRef.current,
+        weekIndex
+      );
+      setEditWorker(rowPerson && rowPerson !== 'Unassigned' ? rowPerson : 'Unassigned');
     }
     setShiftEditor(target);
   }
@@ -759,7 +769,8 @@ export default function ManagerScheduleScreen() {
       target.trIdx,
       visibleDays,
       workerName,
-      lites
+      lites,
+      weekIndex
     );
     if (next === assignmentStore) {
       setRowPersonPicker(null);
@@ -781,7 +792,9 @@ export default function ManagerScheduleScreen() {
       rowPersonPicker.trIdx,
       visibleDays,
       lites,
-      currentRestaurantId
+      currentRestaurantId,
+      assignmentStore,
+      weekIndex
     );
     const pool = namesForScheduleRowPersonPicker(lites, rowPersonPicker.role, currentRestaurantId);
     if (selected && selected !== 'Unassigned') {
@@ -790,7 +803,7 @@ export default function ManagerScheduleScreen() {
       if (!inPool) return ['Unassigned', selected, ...pool];
     }
     return ['Unassigned', ...pool];
-  }, [rowPersonPicker, schedule, visibleDays, lites, currentRestaurantId]);
+  }, [rowPersonPicker, schedule, visibleDays, lites, currentRestaurantId, assignmentStore, weekIndex]);
 
   const shiftPickerNames = useMemo(() => {
     if (!shiftEditor) return [] as string[];
@@ -968,6 +981,8 @@ export default function ManagerScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
+                    assignmentStore={assignmentStore}
+                    weekIndex={weekIndex}
                     editable={scheduleEditable}
                     onOpenRowPerson={setRowPersonPicker}
                     onAddSlot={addSlotForRole}
@@ -1179,6 +1194,8 @@ type PersonColRowProps = {
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
+  assignmentStore: AssignmentStore;
+  weekIndex: number;
   editable: boolean;
   onOpenRowPerson: (t: RowPersonTarget) => void;
   onAddSlot: (role: RoleKey) => void;
@@ -1194,6 +1211,8 @@ const PersonColRow = memo(function PersonColRow({
   visibleDays,
   employees,
   restaurantId,
+  assignmentStore,
+  weekIndex,
   editable,
   onOpenRowPerson,
   onAddSlot,
@@ -1243,7 +1262,9 @@ const PersonColRow = memo(function PersonColRow({
     row.trIdx,
     visibleDays,
     employees,
-    restaurantId
+    restaurantId,
+    assignmentStore,
+    weekIndex
   );
   const label = selected && selected !== 'Unassigned' ? selected : 'Unassigned';
 

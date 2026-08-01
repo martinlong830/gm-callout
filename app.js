@@ -10030,21 +10030,40 @@
     return out;
   }
 
-  /** Dominant assigned person across staffed days in a calendar row (visible week). */
+  /** Dominant assigned person across staffed days in a calendar row (visible week).
+   *  Also reads pending assignment stubs for days with no draft times yet (new empty slots). */
   function scheduleRowPrimaryPerson(role, trIdx, visibleDays) {
     var counts = Object.create(null);
     var order = [];
+    var roleIdx = roleIdxForDraftRole(role);
+    var rs = roleIdx >= 0 ? getCurrentRestaurantAssignments() : null;
     (visibleDays || getVisibleWeekDays()).forEach(function (dayStr) {
       var shift = SCHEDULE.find(function (s) {
         return s.day === dayStr && s.role === role && s.trIdx === trIdx;
       });
-      if (!shift) return;
-      var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
-        return n && n !== 'Unassigned';
-      });
-      var name = workers.length
-        ? canonicalScheduleWorkerName(workers[0], currentRestaurantId)
-        : 'Unassigned';
+      var name = 'Unassigned';
+      if (shift) {
+        var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
+          return n && n !== 'Unassigned';
+        });
+        name = workers.length
+          ? canonicalScheduleWorkerName(workers[0], currentRestaurantId)
+          : 'Unassigned';
+      } else if (rs) {
+        var globalDayIdx = ALL_WEEK_DAYS.indexOf(dayStr);
+        if (globalDayIdx < 0) return;
+        var stub = normalizeScheduleAssignment(
+          rs['shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx]
+        );
+        var stubWorkers = (stub.workers || []).filter(function (n) {
+          return n && n !== 'Unassigned';
+        });
+        name = stubWorkers.length
+          ? canonicalScheduleWorkerName(stubWorkers[0], currentRestaurantId)
+          : 'Unassigned';
+      } else {
+        return;
+      }
       if (!name) name = 'Unassigned';
       if (!counts[name]) {
         counts[name] = 0;
@@ -10201,25 +10220,36 @@
     );
   }
 
-  /** Assign one person to every staffed day in a schedule row for the visible week. */
+  /** Assign one person to every staffed day in a schedule row for the visible week.
+   *  Empty/new slots (no draft times → no SCHEDULE rows) get pending assignment stubs
+   *  so Person sticks and is applied when times are set later. */
   function assignPersonToScheduleRow(role, trIdx, personName) {
     if (!managerCanEditCurrentRestaurant()) return;
     var canon =
       !personName || personName === 'Unassigned'
         ? 'Unassigned'
         : canonicalScheduleWorkerName(personName, currentRestaurantId) || 'Unassigned';
+    var list = canon === 'Unassigned' ? ['Unassigned'] : [canon];
     var visibleDays = getVisibleWeekDays();
-    var any = false;
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return;
+    var anyShift = false;
+    var pendingStubIds = [];
     visibleDays.forEach(function (dayStr) {
       var shift = SCHEDULE.find(function (s) {
         return s.day === dayStr && s.role === role && s.trIdx === trIdx;
       });
-      if (!shift) return;
-      any = true;
-      shift.workers = canon === 'Unassigned' ? ['Unassigned'] : [canon];
-      shift.worker = shift.workers[0];
+      if (shift) {
+        anyShift = true;
+        shift.workers = list.slice();
+        shift.worker = shift.workers[0];
+        return;
+      }
+      var globalDayIdx = ALL_WEEK_DAYS.indexOf(dayStr);
+      if (globalDayIdx < 0) return;
+      pendingStubIds.push('shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx);
     });
-    if (!any) return;
+    if (!anyShift && !pendingStubIds.length) return;
     /* Blur before force-render so the open menulist does not block the rebuild. */
     var ae = document.activeElement;
     if (ae && ae.classList && ae.classList.contains('calendar-row-person-select') && ae.blur) {
@@ -10231,7 +10261,25 @@
     }
     /* Assignment rebuild paints current SoT — drop any deferred remote refresh. */
     calendarInlineEditDeferredRemoteRefresh = false;
-    saveScheduleAssignments();
+    if (anyShift) {
+      saveScheduleAssignments();
+    } else {
+      pushScheduleUndoSnapshot();
+    }
+    if (pendingStubIds.length) {
+      var store = loadScheduleAssignmentsStore();
+      if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
+      var rs = store[currentRestaurantId];
+      pendingStubIds.forEach(function (shiftId) {
+        var entry =
+          rs[shiftId] != null
+            ? cloneScheduleAssignment(rs[shiftId])
+            : { workers: ['Unassigned'] };
+        entry.workers = list.slice();
+        rs[shiftId] = entry;
+      });
+      saveScheduleAssignmentsStore(store);
+    }
     rebuildSchedule();
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
