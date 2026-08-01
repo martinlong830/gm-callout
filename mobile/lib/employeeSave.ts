@@ -27,7 +27,6 @@ export function employeeToDbRow(
   else if ('email' in meta) delete meta.email;
   const row: Record<string, unknown> = {
     id: emp.id,
-    auth_user_id: emp.authUserId ?? null,
     first_name: emp.firstName || '',
     last_name: emp.lastName || '',
     display_name: (display || '').trim() || 'Staff',
@@ -38,6 +37,8 @@ export function employeeToDbRow(
     weekly_grid: emp.weeklyGrid || {},
     meta,
   };
+  /* Only set auth_user_id when known — writing null on upsert wipes portal links. */
+  if (emp.authUserId) row.auth_user_id = emp.authUserId;
   if (companyId) row.company_id = companyId;
   if (emp.clockPin) row.clock_pin = String(emp.clockPin);
   if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {

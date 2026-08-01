@@ -2293,6 +2293,34 @@
     return { start: start, end: end, leaveType: leaveType };
   }
 
+  function isApprovedCalloutForShift(req, emp, shift) {
+    if (!req || (req.type !== 'callout_request' && req.type !== 'callout')) return false;
+    if (req.status !== 'approved') return false;
+    if (!staffRequestMatchesEmployee(req, emp)) return false;
+    var offered = req.offeredShift;
+    if (offered && offered.shiftId) {
+      if (shift && shift.id && String(offered.shiftId) === String(shift.id)) {
+        if (offered.restaurantId && shift.restaurantId) {
+          return String(offered.restaurantId) === String(shift.restaurantId);
+        }
+        return true;
+      }
+      return false;
+    }
+    var iso = offered && offered.iso ? String(offered.iso).slice(0, 10) : '';
+    if (iso && shift && shift.iso && iso === shift.iso) return true;
+    return false;
+  }
+
+  function shiftExcludedByApprovedCallout(emp, shift) {
+    var reqs = d().getStaffRequests ? d().getStaffRequests() : [];
+    if (!reqs || !reqs.length) return false;
+    for (var i = 0; i < reqs.length; i += 1) {
+      if (isApprovedCalloutForShift(reqs[i], emp, shift)) return true;
+    }
+    return false;
+  }
+
   function staffRequestMatchesEmployee(req, emp) {
     if (!req || !emp || !d().normNameKey) return false;
     var a = d().normNameKey(d().employeeDisplayName(emp));
@@ -8775,6 +8803,12 @@
     var scheduled = getWorkerScheduleShifts(emp)
       .filter(function (item) {
         return item.iso >= startIso && item.iso <= endIso;
+      })
+      .filter(function (item) {
+        return !shiftExcludedByApprovedCallout(
+          emp,
+          Object.assign({}, item.shift, { iso: item.iso })
+        );
       })
       .map(function (item) {
         return {

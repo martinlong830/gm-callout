@@ -36,13 +36,19 @@ export default function ManagerLayout() {
     const timer = setTimeout(() => {
       void import('../../lib/pushNotifications')
         .then((m) => {
-          if (!cancelled) m.scheduleDevicePushTokenRegistration(0);
+          if (cancelled) return;
+          m.setPushNotificationRouteRoleGetter(() => role);
+          m.startPushNotificationResponseRouting();
+          m.scheduleDevicePushTokenRegistration(0);
         })
         .catch((err) => console.warn('pushNotifications dynamic import', err));
     }, 2500);
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      void import('../../lib/pushNotifications')
+        .then((m) => m.setPushNotificationRouteRoleGetter(null))
+        .catch(() => undefined);
     };
   }, [session, role]);
 

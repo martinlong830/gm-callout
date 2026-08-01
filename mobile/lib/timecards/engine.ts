@@ -33,6 +33,7 @@ import {
   getEmployeeDayLeaveSync,
   leaveHoursFromBalanceForDay,
   loadWeekExtrasSlice,
+  shiftExcludedByApprovedCallout,
   sumEmployeeWeekAdditionalCashTipsSync,
   type WeekExtrasSlice,
 } from './weekExtras';
@@ -964,6 +965,10 @@ export function buildShiftsForEmployeeInWeek(
       isToday: iso === todayIso,
       isUpcoming: iso > todayIso,
     };
+  }).filter((row) => {
+    /* Approved callout: drop the shift entirely from timecards (no worked / leave row). */
+    if (!options?.staffRequests?.length) return true;
+    return !shiftExcludedByApprovedCallout(emp, name, row.shift, options.staffRequests);
   });
 
   const scheduledIsos = new Set(scheduled.map((r) => r.iso).filter(Boolean));

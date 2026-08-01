@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { CompactShiftRow } from '../../components/CompactShiftRow';
 import { DatePickerField } from '../../components/DatePickerField';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
@@ -36,6 +37,11 @@ import {
 } from '../../lib/schedule/engine';
 import type { EmployeeLite, RoleKey } from '../../lib/schedule/types';
 import { formatStaffRequestSubmittedDate, insertStaffRequest } from '../../lib/staffRequests';
+import {
+  coworkerSwapTargets,
+  offerVisibleToWorker,
+  swapRequestDisplayStatus,
+} from '../../lib/shiftSwap';
 import { supabase } from '../../lib/supabase';
 
 type FormKey = 'timeoff' | 'swap' | 'callout';
@@ -67,11 +73,23 @@ export default function EmployeeActions() {
   const { displayName } = useAuth();
   const { t, statusLabel } = useI18n();
   const { myEmployee, employees, staffRequests, teamState, refetch } = useAppData();
+  const params = useLocalSearchParams<{ subsection?: string; requestId?: string }>();
   const roleCode = myEmployee?.staffType ?? 'Kitchen';
   const nameForRequests = myEmployee ? employeeDisplayName(myEmployee) : displayName;
 
   const [activeForm, setActiveForm] = useState<FormKey>('timeoff');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const raw = String(params.subsection || '')
+      .trim()
+      .toLowerCase();
+    if (raw === 'timeoff' || raw === 'swap' || raw === 'callout' || raw === 'callout_request') {
+      setActiveForm(raw === 'callout_request' ? 'callout' : (raw as FormKey));
+    }
+  }, [params.subsection]);
+
+  const focusRequestId = String(params.requestId || '').trim();
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
@@ -123,6 +141,8 @@ export default function EmployeeActions() {
 
   const [swapOfferShift, setSwapOfferShift] = useState<WorkerShiftRow | null>(null);
   const [swapNote, setSwapNote] = useState('');
+  /** Empty string = everyone; otherwise employee id. */
+  const [swapTargetId, setSwapTargetId] = useState('');
   const [swapAcceptId, setSwapAcceptId] = useState<string | null>(null);
   const [swapAcceptNote, setSwapAcceptNote] = useState('');
 
@@ -181,10 +201,21 @@ export default function EmployeeActions() {
         String(r.employeeName || '')
           .trim()
           .toLowerCase() !== self &&
-        r.offeredShiftLabel
+        r.offeredShiftLabel &&
+        offerVisibleToWorker(r, nameForRequests, myEmployee?.id)
     );
-  }, [staffRequests, nameForRequests]);
+  }, [staffRequests, nameForRequests, myEmployee?.id]);
 
+  useEffect(() => {
+    if (!focusRequestId || activeForm !== 'swap') return;
+    const offer = openSwapOffers.find((r) => r.id === focusRequestId);
+    if (offer) setSwapAcceptId(offer.id);
+  }, [focusRequestId, activeForm, openSwapOffers]);
+
+  const swapCoworkers = useMemo(
+    () => coworkerSwapTargets(employees, nameForRequests, myEmployee?.id),
+    [employees, nameForRequests, myEmployee?.id]
+  );
   const submitTimeoff = useCallback(async () => {
     if (!supabase) {
       Alert.alert(t('common.error'), t('errors.notConfigured'));
@@ -235,6 +266,9 @@ export default function EmployeeActions() {
       return;
     }
     const shiftLabel = formatShiftRequestLabel(swapOfferShift);
+    const target = swapTargetId
+      ? swapCoworkers.find((c) => c.id === swapTargetId) || null
+      : null;
     setBusy(true);
     try {
       const res = await insertStaffRequest(supabase, {
@@ -242,21 +276,42 @@ export default function EmployeeActions() {
         employeeName: nameForRequests,
         role: roleCode,
         offeredShiftLabel: shiftLabel,
+        offeredShift: {
+          restaurantId: swapOfferShift.restaurantId,
+          shiftId: swapOfferShift.id,
+          day: swapOfferShift.day,
+          timeLabel: compactShiftTimeLabel(swapOfferShift),
+          iso: swapOfferShift.iso,
+        },
+        swapTargetEmployeeId: target ? target.id : null,
+        swapTargetEmployeeName: target ? target.name : null,
         summary:
           'Shift Swap Offer: ' +
           shiftLabel +
+          (target ? `. Requested cover: ${target.name}` : '. Send to everyone') +
           (swapNote.trim() ? '. Notes: ' + swapNote.trim() : ''),
       });
       if (!res.ok) Alert.alert(t('common.error'), res.message);
       else {
         Alert.alert(t('common.sent'), t('actions.postedManager'));
         setSwapNote('');
+        setSwapTargetId('');
         void refetch();
       }
     } finally {
       setBusy(false);
     }
-  }, [supabase, swapOfferShift, swapNote, nameForRequests, roleCode, refetch]);
+  }, [
+    supabase,
+    swapOfferShift,
+    swapNote,
+    swapTargetId,
+    swapCoworkers,
+    nameForRequests,
+    roleCode,
+    refetch,
+    t,
+  ]);
 
   const submitSwapAccept = useCallback(async () => {
     if (!supabase) {
@@ -278,6 +333,8 @@ export default function EmployeeActions() {
         employeeName: nameForRequests,
         role: roleCode,
         swapOfferId: swapAcceptId,
+        offeredShiftLabel: offer?.offeredShiftLabel,
+        offeredShift: offer?.offeredShift,
         summary:
           'Shift Swap Acceptance (manager approval): ' +
           offerLabel +
@@ -316,6 +373,14 @@ export default function EmployeeActions() {
         type: 'callout_request',
         employeeName: nameForRequests,
         role: roleCode,
+        offeredShiftLabel: optLabel,
+        offeredShift: {
+          restaurantId: calloutShift.restaurantId,
+          shiftId: calloutShift.id,
+          day: calloutShift.day,
+          timeLabel: compactShiftTimeLabel(calloutShift),
+          iso: calloutShift.iso,
+        },
         summary,
       });
       if (!res.ok) Alert.alert(t('common.error'), res.message);
@@ -441,6 +506,31 @@ export default function EmployeeActions() {
               )}
             </>
           )}
+          <Text style={[styles.fieldLabel, styles.mtSm]}>{t('actions.swapWith')}</Text>
+          <View style={styles.chipRow}>
+            <Pressable
+              style={[styles.chip, !swapTargetId && styles.chipActive]}
+              onPress={() => setSwapTargetId('')}
+            >
+              <Text style={[styles.chipText, !swapTargetId && styles.chipTextActive]}>
+                {t('actions.swapEveryone')}
+              </Text>
+            </Pressable>
+            {swapCoworkers.map((c) => {
+              const on = swapTargetId === c.id;
+              return (
+                <Pressable
+                  key={c.id}
+                  style={[styles.chip, on && styles.chipActive]}
+                  onPress={() => setSwapTargetId(c.id)}
+                >
+                  <Text style={[styles.chipText, on && styles.chipTextActive]} numberOfLines={1}>
+                    {c.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <Text style={[styles.fieldLabel, styles.mtSm]}>{t('actions.notesOptional')}</Text>
           <TextInput
             style={[styles.input, styles.tall]}
@@ -540,9 +630,15 @@ export default function EmployeeActions() {
         <View style={[styles.card, styles.requestsCard]}>
           <Text style={styles.requestsTitle}>{t('employee.recentRequests')}</Text>
           {myRequests.map((r) => (
-            <View key={r.id} style={styles.requestRow}>
+            <View
+              key={r.id}
+              style={[
+                styles.requestRow,
+                focusRequestId && r.id === focusRequestId ? styles.requestRowFocused : null,
+              ]}
+            >
               <Text style={styles.requestMain}>
-                {requestTypeLabel(r.type)} · {statusLabel(r.status)}
+                {requestTypeLabel(r.type)} · {statusLabel(swapRequestDisplayStatus(r, staffRequests))}
               </Text>
                 <Text style={styles.requestSub}>
                   {formatStaffRequestSubmittedDate(r.submittedAt)} — {r.summary}
@@ -641,6 +737,14 @@ const styles = StyleSheet.create({
     borderTopColor: '#e8eaed',
     paddingTop: 10,
     marginTop: 10,
+  },
+  requestRowFocused: {
+    backgroundColor: '#fff7ed',
+    marginHorizontal: -8,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#c41230',
   },
   requestMain: { fontSize: 14, fontWeight: '700', color: '#334155' },
   requestSub: { fontSize: 13, color: '#64748b', marginTop: 4, lineHeight: 18 },

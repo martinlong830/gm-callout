@@ -2074,7 +2074,26 @@
     if (p.submittedWeekLabel) full.submittedWeekLabel = p.submittedWeekLabel;
     if (p.submittedWeekIndex != null) full.submittedWeekIndex = p.submittedWeekIndex;
     if (p.offeredShiftLabel) full.offeredShiftLabel = p.offeredShiftLabel;
+    if (p.offeredShift && typeof p.offeredShift === 'object') {
+      full.offeredShift = {
+        restaurantId: p.offeredShift.restaurantId != null ? String(p.offeredShift.restaurantId) : '',
+        shiftId: p.offeredShift.shiftId != null ? String(p.offeredShift.shiftId) : '',
+        day: p.offeredShift.day != null ? String(p.offeredShift.day) : '',
+        timeLabel: p.offeredShift.timeLabel != null ? String(p.offeredShift.timeLabel) : '',
+        iso: p.offeredShift.iso != null ? String(p.offeredShift.iso) : '',
+      };
+    }
     if (p.swapOfferId) full.swapOfferId = p.swapOfferId;
+    if (p.swapTargetEmployeeId != null && String(p.swapTargetEmployeeId).trim()) {
+      full.swapTargetEmployeeId = String(p.swapTargetEmployeeId).trim();
+    } else {
+      full.swapTargetEmployeeId = null;
+    }
+    if (p.swapTargetEmployeeName != null && String(p.swapTargetEmployeeName).trim()) {
+      full.swapTargetEmployeeName = String(p.swapTargetEmployeeName).trim();
+    } else {
+      full.swapTargetEmployeeName = null;
+    }
     if (p.leaveType) full.leaveType = p.leaveType;
     if (p.timeoffStart) full.timeoffStart = p.timeoffStart;
     if (p.timeoffEnd) full.timeoffEnd = p.timeoffEnd;
@@ -2112,7 +2131,6 @@
     else if ('email' in meta) delete meta.email;
     var row = {
       id: emp.id,
-      auth_user_id: emp.authUserId || null,
       first_name: emp.firstName || '',
       last_name: emp.lastName || '',
       display_name: (display || '').trim() || 'Staff',
@@ -2122,6 +2140,8 @@
       weekly_grid: emp.weeklyGrid || {},
       meta: meta,
     };
+    /* Only set auth_user_id when known — writing null on upsert wipes portal links. */
+    if (emp.authUserId) row.auth_user_id = emp.authUserId;
     /* Omit email until the column exists (avoids upsert failures + stale-name sync loops). */
     if (gmEmployeesEmailColumnAvailable !== false) {
       row.email = emailVal;
@@ -2240,7 +2260,17 @@
     if (full.submittedWeekLabel) payload.submittedWeekLabel = full.submittedWeekLabel;
     if (full.submittedWeekIndex != null) payload.submittedWeekIndex = full.submittedWeekIndex;
     if (full.offeredShiftLabel) payload.offeredShiftLabel = full.offeredShiftLabel;
+    if (full.offeredShift) payload.offeredShift = full.offeredShift;
     if (full.swapOfferId) payload.swapOfferId = full.swapOfferId;
+    if (full.swapTargetEmployeeId) {
+      payload.swapTargetEmployeeId = full.swapTargetEmployeeId;
+      if (full.swapTargetEmployeeName) {
+        payload.swapTargetEmployeeName = full.swapTargetEmployeeName;
+      }
+    } else if (full.type === 'swap' && !full.swapOfferId) {
+      payload.swapTargetEmployeeId = null;
+      payload.swapTargetEmployeeName = null;
+    }
     if (full.leaveType) payload.leaveType = full.leaveType;
     if (full.timeoffStart) payload.timeoffStart = full.timeoffStart;
     if (full.timeoffEnd) payload.timeoffEnd = full.timeoffEnd;
@@ -2269,6 +2299,285 @@
     if (res.error) {
       console.warn('gm-callout: staff_requests update', res.error);
       return { ok: false };
+    }
+    return { ok: true };
+  }
+
+  /** Manager may approve a swap only after a cover acceptance row exists. */
+  function swapRequestCanManagerApprove(req) {
+    if (!req || req.type !== 'swap') return true;
+    if (req.status !== 'pending') return false;
+    return !!req.swapOfferId;
+  }
+
+  function isSwapOfferAwaitingCover(req) {
+    if (!req || req.type !== 'swap' || req.status !== 'pending' || req.swapOfferId) return false;
+    return !staffRequests.some(function (r) {
+      return (
+        r.type === 'swap' &&
+        r.status === 'pending' &&
+        r.swapOfferId === req.id &&
+        r.id !== req.id
+      );
+    });
+  }
+
+  function swapRequestDisplayStatus(req) {
+    if (!req || req.type !== 'swap' || req.status !== 'pending') return req ? req.status : 'pending';
+    if (req.swapOfferId) return 'pending';
+    if (isSwapOfferAwaitingCover(req)) return 'awaiting_cover';
+    return 'pending';
+  }
+
+  function offerVisibleToWorker(offer, workerName, workerEmployeeId) {
+    var targetId = String((offer && offer.swapTargetEmployeeId) || '').trim();
+    var targetName = String((offer && offer.swapTargetEmployeeName) || '')
+      .trim()
+      .toLowerCase();
+    if (!targetId && !targetName) return true;
+    if (targetId && workerEmployeeId && targetId === workerEmployeeId) return true;
+    var self = String(workerName || '')
+      .trim()
+      .toLowerCase();
+    if (targetName && self && targetName === self) return true;
+    return false;
+  }
+
+  /**
+   * Reassign the offered shift to the cover worker in schedule_assignments SoT.
+   * Returns { ok, message? }.
+   */
+  function applyApprovedSwapToSchedule(offerReq, coverWorkerName) {
+    var shift = offerReq && offerReq.offeredShift;
+    if (!shift || !shift.restaurantId || !shift.shiftId) {
+      return {
+        ok: false,
+        message:
+          'This swap offer is missing shift details. Ask the employee to re-post the offer, then approve again.',
+      };
+    }
+    var cover = String(coverWorkerName || '').trim();
+    if (!cover) return { ok: false, message: 'Cover worker name is missing.' };
+    var rid = String(shift.restaurantId);
+    var sid = String(shift.shiftId);
+    var store = loadScheduleAssignmentsStore();
+    if (!store[rid]) store[rid] = {};
+    var existing = store[rid][sid];
+    var entry =
+      existing != null ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
+    var canon = canonicalScheduleWorkerName(cover, rid) || cover;
+    entry.workers = clampScheduleWorkersToSingle([canon]);
+    store[rid][sid] = entry;
+    saveScheduleAssignmentsStore(store);
+
+    if (rid === currentRestaurantId) {
+      var live = SCHEDULE.find(function (x) {
+        return x.id === sid;
+      });
+      if (live) {
+        live.workers = [canon];
+        live.worker = canon;
+      }
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+    }
+    return { ok: true };
+  }
+
+  function approveSwapAcceptanceRequest(acceptanceReq) {
+    if (!swapRequestCanManagerApprove(acceptanceReq)) {
+      return {
+        ok: false,
+        message: gmT('employee.swapNeedsCover'),
+      };
+    }
+    var offer = staffRequests.find(function (o) {
+      return o.id === acceptanceReq.swapOfferId;
+    });
+    if (!offer) {
+      return { ok: false, message: 'Linked swap offer was not found.' };
+    }
+    var scheduleRes = applyApprovedSwapToSchedule(offer, acceptanceReq.employeeName);
+    if (!scheduleRes.ok) return scheduleRes;
+
+    acceptanceReq.status = 'approved';
+    if (GM_SUPABASE_DATA && isUuidCloudId(acceptanceReq.id)) {
+      updateStaffRequestStatusRemote(acceptanceReq.id, 'approved');
+    }
+    if (offer.status === 'pending') {
+      offer.status = 'approved';
+      if (GM_SUPABASE_DATA && isUuidCloudId(offer.id)) {
+        updateStaffRequestStatusRemote(offer.id, 'approved');
+      }
+    }
+    staffRequests.forEach(function (r) {
+      if (
+        r.type === 'swap' &&
+        r.status === 'pending' &&
+        r.swapOfferId === offer.id &&
+        r.id !== acceptanceReq.id
+      ) {
+        r.status = 'declined';
+        if (GM_SUPABASE_DATA && isUuidCloudId(r.id)) {
+          updateStaffRequestStatusRemote(r.id, 'declined');
+        }
+      }
+    });
+    return { ok: true };
+  }
+
+  function isoFromScheduleShiftId(shiftId) {
+    var p = parseShiftIdParts(shiftId);
+    if (!p) return '';
+    var meta = WEEK_META[p.globalDayIdx];
+    return meta && meta.iso ? meta.iso : '';
+  }
+
+  /**
+   * Unassign worker from resolved schedule rows (includes pattern-inherited staffing).
+   * Writes explicit Unassigned onto each matching shift id so future weeks don't keep the pattern.
+   */
+  function clearWorkerFromResolvedSchedule(workerName, isoPredicate) {
+    var snapshot = buildAllLocationScheduleSnapshot();
+    var store = loadScheduleAssignmentsStore();
+    var changed = false;
+    var hoursByIso = {};
+    snapshot.forEach(function (s) {
+      if (!shiftRowIncludesWorker(s, workerName)) return;
+      var meta = WEEK_META.find(function (m) {
+        return m.label === s.day;
+      });
+      var iso = meta ? meta.iso : isoFromScheduleShiftId(s.id);
+      if (typeof isoPredicate === 'function' && !isoPredicate(iso, s)) return;
+      var rid = String(s.restaurantId || '');
+      var sid = String(s.id || '');
+      if (!rid || !sid) return;
+      if (!store[rid]) store[rid] = {};
+      var existing = store[rid][sid];
+      var entry =
+        existing != null ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
+      entry.workers = ['Unassigned'];
+      store[rid][sid] = entry;
+      changed = true;
+      var h =
+        s.redPokeHours != null && s.redPokeHours !== ''
+          ? parseFloat(s.redPokeHours)
+          : NaN;
+      if (!(h > 0) && existing && existing.hours != null && existing.hours !== '') {
+        h = parseFloat(existing.hours);
+      }
+      if (iso && h > 0) hoursByIso[iso] = (hoursByIso[iso] || 0) + h;
+    });
+    if (changed) {
+      saveScheduleAssignmentsStore(store);
+      rebuildSchedule();
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+    }
+    return { changed: changed, hoursByIso: hoursByIso };
+  }
+
+  /**
+   * On timeoff approve: write VL/SL leaveBalance entries + clear schedule for the range.
+   */
+  function applyTimeoffApprovalEffects(req) {
+    if (!req || req.type !== 'timeoff') return { ok: true };
+    var emp = employeeByDisplayName(req.employeeName);
+    if (!emp) return { ok: false, message: 'Could not find the employee for this time-off request.' };
+    var start = req.timeoffStart ? String(req.timeoffStart).slice(0, 10) : '';
+    var end = req.timeoffEnd ? String(req.timeoffEnd).slice(0, 10) : '';
+    var summary = String(req.summary || '');
+    var m = summary.match(
+      /(?:Time Off|Vacation leave|Sick leave):\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/i
+    );
+    if (m) {
+      if (!start) start = m[1];
+      if (!end) end = m[2];
+    }
+    if (!start || !end || end < start) {
+      return { ok: false, message: 'This time-off request is missing a valid date range.' };
+    }
+    var leaveType =
+      req.leaveType === 'sick' || req.leaveType === 'vacation' ? req.leaveType : 'vacation';
+    if (req.leaveType !== 'sick' && req.leaveType !== 'vacation') {
+      if (/^sick leave:/i.test(summary)) leaveType = 'sick';
+      else if (/^vacation leave:/i.test(summary)) leaveType = 'vacation';
+    }
+    var range = { start: start, end: end, leaveType: leaveType };
+    var workerName = employeeDisplayName(emp);
+    var cleared = clearWorkerFromResolvedSchedule(workerName, function (iso) {
+      return !!iso && iso >= range.start && iso <= range.end;
+    });
+    var hoursByIso = cleared.hoursByIso || {};
+    var L = typeof gmLeave === 'function' ? gmLeave() : window.gmEmployeeLeave;
+    var defaultH = (L && L.HOURS_PER_DAY) || 8;
+    var entries = [];
+    var cur = new Date(range.start + 'T12:00:00');
+    var endD = new Date(range.end + 'T12:00:00');
+    while (cur <= endD) {
+      var iso =
+        cur.getFullYear() +
+        '-' +
+        String(cur.getMonth() + 1).padStart(2, '0') +
+        '-' +
+        String(cur.getDate()).padStart(2, '0');
+      var h = hoursByIso[iso];
+      entries.push({
+        date: iso,
+        hours: h != null && h > 0 ? Math.round(h * 100) / 100 : defaultH,
+      });
+      cur.setDate(cur.getDate() + 1);
+    }
+    if (L && typeof L.appendLeaveBalanceEntries === 'function') {
+      L.appendLeaveBalanceEntries(emp, range.leaveType, entries);
+      saveEmployees({ singleEmployee: emp });
+    }
+    if (window.gmCalloutTimecards) {
+      if (typeof window.gmCalloutTimecards.invalidatePayWeekScheduleCache === 'function') {
+        window.gmCalloutTimecards.invalidatePayWeekScheduleCache();
+      }
+      if (typeof window.gmCalloutTimecards.invalidateFullReportSheetsCache === 'function') {
+        window.gmCalloutTimecards.invalidateFullReportSheetsCache();
+      }
+    }
+    return { ok: true };
+  }
+
+  /** On callout approve: clear the offered shift (or iso day) from the main schedule. */
+  function applyCalloutApprovalEffects(req) {
+    if (!req || (req.type !== 'callout_request' && req.type !== 'callout')) return { ok: true };
+    var shift = req.offeredShift;
+    if (shift && shift.restaurantId && shift.shiftId) {
+      var store = loadScheduleAssignmentsStore();
+      var rid = String(shift.restaurantId);
+      var sid = String(shift.shiftId);
+      if (!store[rid]) store[rid] = {};
+      var existing = store[rid][sid];
+      var entry =
+        existing != null ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
+      entry.workers = ['Unassigned'];
+      store[rid][sid] = entry;
+      saveScheduleAssignmentsStore(store);
+      if (rid === currentRestaurantId) {
+        var live = SCHEDULE.find(function (x) {
+          return x.id === sid;
+        });
+        if (live) {
+          live.workers = ['Unassigned'];
+          live.worker = 'Unassigned';
+        }
+        rebuildSchedule();
+        renderCalendar();
+        if (scheduleBody) renderSchedule();
+      }
+      return { ok: true };
+    }
+    var iso = shift && shift.iso ? String(shift.iso).slice(0, 10) : '';
+    if (iso && req.employeeName) {
+      clearWorkerFromResolvedSchedule(req.employeeName, function (dayIso) {
+        return dayIso === iso;
+      });
     }
     return { ok: true };
   }
@@ -3300,7 +3609,14 @@
         if (mapped.submittedWeekLabel) ex.submittedWeekLabel = mapped.submittedWeekLabel;
         if (mapped.submittedWeekIndex != null) ex.submittedWeekIndex = mapped.submittedWeekIndex;
         if (mapped.offeredShiftLabel) ex.offeredShiftLabel = mapped.offeredShiftLabel;
+        if (mapped.offeredShift) ex.offeredShift = mapped.offeredShift;
         if (mapped.swapOfferId) ex.swapOfferId = mapped.swapOfferId;
+        if (mapped.swapTargetEmployeeId !== undefined) {
+          ex.swapTargetEmployeeId = mapped.swapTargetEmployeeId;
+        }
+        if (mapped.swapTargetEmployeeName !== undefined) {
+          ex.swapTargetEmployeeName = mapped.swapTargetEmployeeName;
+        }
       } else {
         staffRequests.push(mapped);
         changed = true;
@@ -4138,7 +4454,14 @@
         ex.status = row.status != null ? row.status : ex.status;
         if (row.submittedGrid) ex.submittedGrid = row.submittedGrid;
         if (row.offeredShiftLabel) ex.offeredShiftLabel = row.offeredShiftLabel;
+        if (row.offeredShift) ex.offeredShift = row.offeredShift;
         if (row.swapOfferId) ex.swapOfferId = row.swapOfferId;
+        if (row.swapTargetEmployeeId !== undefined) {
+          ex.swapTargetEmployeeId = row.swapTargetEmployeeId;
+        }
+        if (row.swapTargetEmployeeName !== undefined) {
+          ex.swapTargetEmployeeName = row.swapTargetEmployeeName;
+        }
         if (row.submittedWeekLabel) ex.submittedWeekLabel = row.submittedWeekLabel;
         if (row.submittedWeekIndex != null) ex.submittedWeekIndex = row.submittedWeekIndex;
       }
@@ -10043,6 +10366,54 @@
     syncTimeClockEntriesRealtimeForScreen();
   }
 
+  function setRequestsTypeFilter(type) {
+    var t = String(type || '').trim().toLowerCase();
+    if (t !== 'timeoff' && t !== 'swap' && t !== 'callout') return;
+    requestsTypeFilter = t;
+    if (requestsTypeChips) {
+      requestsTypeChips.querySelectorAll('[data-request-type]').forEach(function (c) {
+        c.classList.toggle('active', c.getAttribute('data-request-type') === requestsTypeFilter);
+      });
+    }
+    if (requestsEmployeeSearch) {
+      requestsEmployeeSearch.placeholder =
+        t === 'callout' ? 'Search shift, names, location…' : 'Search employee name';
+    }
+  }
+
+  /** Deep-link from notification center click → Actions / Availability / Schedule. */
+  function openNotificationRoute(route) {
+    if (!route || typeof route !== 'object') return;
+    if (document.documentElement.classList.contains('employee-app')) {
+      if (typeof window.gmCalloutEmployeeOpenNotificationRoute === 'function') {
+        window.gmCalloutEmployeeOpenNotificationRoute(route);
+      }
+      return;
+    }
+    var screen = String(route.screen || '').trim().toLowerCase();
+    var subsection = String(route.subsection || '').trim().toLowerCase();
+    if (screen === 'availability' || subsection === 'availability') {
+      showScreen(13);
+      return;
+    }
+    if (screen === 'schedule' || subsection === 'schedule') {
+      var weekIso = String(route.weekMondayIso || '').trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(weekIso)) {
+        setScheduleCalendarWeekIndex(weekIndexForPayWeekStartIso(weekIso));
+      }
+      showScreen(1);
+      return;
+    }
+    if (screen === 'actions' || subsection === 'timeoff' || subsection === 'swap' || subsection === 'callout') {
+      if (subsection === 'timeoff' || subsection === 'swap' || subsection === 'callout') {
+        setRequestsTypeFilter(subsection);
+      }
+      showScreen(8);
+    }
+  }
+
+  window.gmCalloutOpenNotificationRoute = openNotificationRoute;
+
   function gmSupabaseReadyNow() {
     return !!(window.gmSupabaseEnabled && window.gmSupabase);
   }
@@ -13041,6 +13412,7 @@
               ? gmT('actions.callout')
               : gmT('actions.timeOff');
         var roleLabel = STAFF_TYPE_LABELS[r.role] || r.role || '';
+        var displayStatus = swapRequestDisplayStatus(r);
         var statusClass =
           r.status === 'approved' ? 'filled' : r.status === 'declined' ? 'declined' : 'pending';
         var statusWord =
@@ -13048,16 +13420,22 @@
             ? gmT('status.approved')
             : r.status === 'declined'
               ? gmT('status.declined')
-              : gmT('status.pending');
+              : displayStatus === 'awaiting_cover'
+                ? gmT('status.awaiting_cover')
+                : gmT('status.pending');
+        var canApprove =
+          r.status === 'pending' && (r.type !== 'swap' || swapRequestCanManagerApprove(r));
         var actionsHtml = '';
         if (r.status === 'pending') {
           actionsHtml =
             '<div class="request-item-actions">' +
-            '<button type="button" class="btn btn-primary request-action-btn" data-request-id="' +
-            escapeHtml(r.id) +
-            '" data-request-action="approve">' +
-            escapeHtml(gmT('common.approve')) +
-            '</button>' +
+            (canApprove
+              ? '<button type="button" class="btn btn-primary request-action-btn" data-request-id="' +
+                escapeHtml(r.id) +
+                '" data-request-action="approve">' +
+                escapeHtml(gmT('common.approve')) +
+                '</button>'
+              : '') +
             '<button type="button" class="btn btn-secondary request-action-btn" data-request-id="' +
             escapeHtml(r.id) +
             '" data-request-action="decline">' +
@@ -13069,8 +13447,23 @@
         if (r.type === 'swap') {
           if (r.offeredShiftLabel) {
             swapDetailHtml +=
-              '<p class="history-item-meta request-swap-offer">Offered shift: ' +
+              '<p class="history-item-meta request-swap-offer">' +
+              escapeHtml(gmT('employee.offeredShift')) +
+              ': ' +
               escapeHtml(r.offeredShiftLabel) +
+              '</p>';
+          }
+          if (!r.swapOfferId && r.swapTargetEmployeeName) {
+            swapDetailHtml +=
+              '<p class="history-item-meta">' +
+              escapeHtml(gmT('employee.swapTarget')) +
+              ': ' +
+              escapeHtml(r.swapTargetEmployeeName) +
+              '</p>';
+          } else if (!r.swapOfferId && !r.swapTargetEmployeeId) {
+            swapDetailHtml +=
+              '<p class="history-item-meta">' +
+              escapeHtml(gmT('employee.swapTargetEveryone')) +
               '</p>';
           }
           if (r.swapOfferId) {
@@ -13079,10 +13472,19 @@
             });
             var acceptLabel =
               offerRow && offerRow.offeredShiftLabel
-                ? 'Accepting offer: ' + offerRow.offeredShiftLabel
-                : 'Accepting offer #' + String(r.swapOfferId).slice(0, 8) + '…';
+                ? gmT('employee.acceptingOffer') + ': ' + offerRow.offeredShiftLabel
+                : gmT('employee.acceptingOffer') +
+                  ' #' +
+                  String(r.swapOfferId).slice(0, 8) +
+                  '…';
             swapDetailHtml +=
               '<p class="history-item-meta">' + escapeHtml(acceptLabel) + '</p>';
+          }
+          if (displayStatus === 'awaiting_cover') {
+            swapDetailHtml +=
+              '<p class="history-item-meta">' +
+              escapeHtml(gmT('employee.swapAwaitingCover')) +
+              '</p>';
           }
         }
         return (
@@ -14141,9 +14543,50 @@
         return r.id === id;
       });
       if (!req || req.status !== 'pending') return;
+      if (action === 'approve' && req.type === 'swap') {
+        if (!swapRequestCanManagerApprove(req)) {
+          window.alert(gmT('employee.swapNeedsCover'));
+          return;
+        }
+        var swapRes = approveSwapAcceptanceRequest(req);
+        if (!swapRes.ok) {
+          window.alert(swapRes.message || gmT('employee.swapNeedsCover'));
+          return;
+        }
+        persistStaffRequestStatuses();
+        renderRequestsList();
+        return;
+      }
+      if (action === 'approve' && req.type === 'timeoff') {
+        var timeoffRes = applyTimeoffApprovalEffects(req);
+        if (!timeoffRes.ok) {
+          window.alert(timeoffRes.message || 'Could not apply time-off approval.');
+          return;
+        }
+      }
+      if (
+        action === 'approve' &&
+        (req.type === 'callout_request' || req.type === 'callout')
+      ) {
+        applyCalloutApprovalEffects(req);
+      }
       req.status = action === 'approve' ? 'approved' : 'declined';
       if (GM_SUPABASE_DATA && isUuidCloudId(id)) {
         updateStaffRequestStatusRemote(id, req.status);
+      }
+      if (action === 'decline' && req.type === 'swap' && !req.swapOfferId) {
+        staffRequests.forEach(function (r) {
+          if (
+            r.type === 'swap' &&
+            r.status === 'pending' &&
+            r.swapOfferId === req.id
+          ) {
+            r.status = 'declined';
+            if (GM_SUPABASE_DATA && isUuidCloudId(r.id)) {
+              updateStaffRequestStatusRemote(r.id, 'declined');
+            }
+          }
+        });
       }
       if (req.type === 'availability' && req.submittedGrid) {
         var availEmp = employeeByDisplayName(req.employeeName);
@@ -14166,7 +14609,13 @@
       }
       persistStaffRequestStatuses();
       renderRequestsList();
-      if (req.type === 'timeoff' && timecardsScreenActive() && window.gmCalloutTimecards) {
+      if (
+        (req.type === 'timeoff' ||
+          req.type === 'callout_request' ||
+          req.type === 'callout') &&
+        timecardsScreenActive() &&
+        window.gmCalloutTimecards
+      ) {
         window.gmCalloutTimecards.renderRoster();
       }
     });
@@ -14792,6 +15241,17 @@
         if (typeof empStaffType.focus === 'function') empStaffType.focus();
         return;
       }
+      var phoneSave = empPhone ? (empPhone.value || '').trim() : '';
+      if (!editingEmployeeId && !phoneSave) {
+        window.alert('Phone number is required for new employees.');
+        if (empPhone && typeof empPhone.focus === 'function') empPhone.focus();
+        return;
+      }
+      if (!editingEmployeeId && phoneSave.replace(/\D/g, '').length < 7) {
+        window.alert('Enter a valid phone number (at least 7 digits).');
+        if (empPhone && typeof empPhone.focus === 'function') empPhone.focus();
+        return;
+      }
       var existingEmp = editingEmployeeId
         ? employees.find(function (e) {
             return e.id === editingEmployeeId;
@@ -14819,7 +15279,7 @@
         firstName: first,
         lastName: last,
         staffType: stSave,
-        phone: empPhone ? (empPhone.value || '').trim() : '',
+        phone: phoneSave,
         email: empEmail ? (empEmail.value || '').trim() : '',
         weeklyGrid: normalizeWeeklyGrid(wg, stSave),
         usualRestaurant: urVal,
@@ -14839,7 +15299,6 @@
         );
         return;
       }
-      var portalCreateWarning = null;
       if (
         wasNew &&
         GM_SUPABASE_DATA &&
@@ -14865,9 +15324,13 @@
           loginName: displayNameNew,
           password: portalPw,
           displayName: displayNameNew,
+          firstName: first,
+          lastName: last,
           phone: rec.phone || '',
           staffType: stSave,
+          usualRestaurant: urVal,
           role: portalRole,
+          employeeId: savedId,
         };
         if (portalRe) {
           portalPayload.recoveryEmail = portalRe;
@@ -14878,12 +15341,28 @@
         var portalRes = await window.gmPortalAuth.createEmployeeAccount(portalPayload);
         if (saveBtnPortal) saveBtnPortal.disabled = false;
         if (!portalRes || !portalRes.ok) {
-          portalCreateWarning =
+          window.alert(
             (portalRes && portalRes.message) ||
-            'Could not create app login for this employee.';
-        } else if (portalRes.userId) {
-          rec.authUserId = portalRes.userId;
+              'Could not create app login for this employee. They were not added to the roster.'
+          );
+          return;
         }
+        if (!portalRes.userId) {
+          window.alert(
+            'Portal account was not created (missing user id). Employee was not added to the roster.'
+          );
+          return;
+        }
+        rec.authUserId = portalRes.userId;
+        if (portalRes.employeeId) {
+          rec.id = portalRes.employeeId;
+          savedId = portalRes.employeeId;
+        }
+      } else if (wasNew && GM_SUPABASE_DATA) {
+        window.alert(
+          'App login could not be created (portal auth unavailable). Sign in as a manager with portal auth configured, then try again.'
+        );
+        return;
       }
       var previousDisplayName = null;
       if (editingEmployeeId) {
@@ -15013,9 +15492,6 @@
         return;
       }
       editingEmployeeId = null;
-      if (portalCreateWarning) {
-        window.alert('Employee saved to the roster. App login was not created: ' + portalCreateWarning);
-      }
       rebuildEmployeeDerivedData();
       renderEmployeeList();
       if (pendingEmployeePhotoFile) {
@@ -15225,6 +15701,7 @@
     var staffType = String(opts.staffType != null ? opts.staffType : '').trim();
     var phone = String(opts.phone != null ? opts.phone : '').trim();
     var email = String(opts.email != null ? opts.email : opts.recoveryEmail != null ? opts.recoveryEmail : '').trim();
+    var preferredId = String(opts.employeeId != null ? opts.employeeId : '').trim();
     if (!fn || !ln) return { ok: false, message: 'First and last name are required.' };
     if (!phone) return { ok: false, message: 'Phone number is required.' };
     var phoneDigits = phone.replace(/\D/g, '');
@@ -15236,7 +15713,15 @@
     }
     var displayName = fn + ' ' + ln;
     var loginKey = normPortalLoginKey(displayName);
-    if (employeeByDisplayName(displayName)) {
+    var existingLocal = employeeByDisplayName(displayName);
+    if (existingLocal) {
+      /* Server signup may have already inserted + synced this roster row. */
+      if (preferredId && existingLocal.id === preferredId) {
+        return { ok: true, message: 'Account created.', displayName: displayName, employeeId: existingLocal.id };
+      }
+      if (existingLocal.authUserId) {
+        return { ok: true, message: 'Account created.', displayName: displayName, employeeId: existingLocal.id };
+      }
       return { ok: false, message: 'An employee with that name already exists.' };
     }
     var accounts = loadPortalEmployeeAccounts();
@@ -15244,7 +15729,7 @@
       return { ok: false, message: 'An account already exists for that name.' };
     }
     var rec = migrateEmployeeRecord({
-      id: newEmployeeId(),
+      id: preferredId || newEmployeeId(),
       firstName: fn,
       lastName: ln,
       staffType: staffType,
@@ -15271,6 +15756,7 @@
         ok: true,
         message: 'Account created. Sign in with your name and password.',
         displayName: displayName,
+        employeeId: rec.id,
       };
     }
 
@@ -15280,10 +15766,29 @@
         var sessRes = await sb.auth.getSession();
         if (sessRes.data && sessRes.data.session) {
           rec.authUserId = sessRes.data.session.user.id;
+          var existing = await sb
+            .from('employees')
+            .select('id')
+            .eq('auth_user_id', sessRes.data.session.user.id)
+            .limit(1)
+            .maybeSingle();
+          if (existing.data && existing.data.id) {
+            rec.id = existing.data.id;
+          } else if (preferredId) {
+            rec.id = preferredId;
+          }
           var row = employeeRecordToDbRow(rec);
           row.auth_user_id = sessRes.data.session.user.id;
-          var ins = await sb.from('employees').insert(row).select('id').maybeSingle();
+          var ins = existing.data && existing.data.id
+            ? await sb.from('employees').upsert(row, { onConflict: 'id' }).select('id').maybeSingle()
+            : await sb.from('employees').insert(row).select('id').maybeSingle();
           if (ins.error) {
+            /* Server ensureEmployeeRosterRow may already own the row — treat as success when linked. */
+            if (preferredId || (existing.data && existing.data.id)) {
+              if (existing.data && existing.data.id) rec.id = existing.data.id;
+              else if (preferredId) rec.id = preferredId;
+              return pushAndRender();
+            }
             return {
               ok: false,
               message: ins.error.message || 'Could not save roster to cloud.',
@@ -15293,6 +15798,16 @@
             rec.id = ins.data.id;
             await assignClockPinRemote(rec.id);
           }
+          return pushAndRender();
+        }
+        /* No session (needsSignIn): server already created roster when employeeId is present. */
+        if (preferredId) {
+          return {
+            ok: true,
+            message: 'Account created. Sign in with your name and password.',
+            displayName: displayName,
+            employeeId: preferredId,
+          };
         }
         return pushAndRender();
       })();
@@ -15468,12 +15983,15 @@
     getOpenSwapOffers: function (workerName) {
       mergeEmployeeSubmittedFromStorage();
       var selfKey = String(workerName || '').trim().toLowerCase();
+      var selfEmp = employeeByDisplayName(workerName);
+      var selfId = selfEmp && selfEmp.id ? selfEmp.id : null;
       return staffRequests
         .filter(function (r) {
           if (!r || r.type !== 'swap' || r.status !== 'pending' || r.swapOfferId) return false;
           if (!r.offeredShiftLabel) return false;
           var nameKey = String(r.employeeName || '').trim().toLowerCase();
           if (selfKey && nameKey === selfKey) return false;
+          if (!offerVisibleToWorker(r, workerName, selfId)) return false;
           return true;
         })
         .map(function (r) {
@@ -15483,7 +16001,28 @@
             role: r.role,
             offeredShiftLabel: r.offeredShiftLabel,
             summary: r.summary || '',
+            swapTargetEmployeeId: r.swapTargetEmployeeId || null,
+            swapTargetEmployeeName: r.swapTargetEmployeeName || null,
           };
+        });
+    },
+    getSwapCoworkerTargets: function (workerName) {
+      var selfKey = String(workerName || '').trim().toLowerCase();
+      var selfEmp = employeeByDisplayName(workerName);
+      var selfId = selfEmp && selfEmp.id ? selfEmp.id : null;
+      return employees
+        .filter(function (e) {
+          if (selfId && e.id === selfId) return false;
+          var name = String(employeeDisplayName(e) || '').trim();
+          if (!name) return false;
+          if (selfKey && name.toLowerCase() === selfKey) return false;
+          return true;
+        })
+        .map(function (e) {
+          return { id: e.id, name: employeeDisplayName(e).trim() };
+        })
+        .sort(function (a, b) {
+          return a.name.localeCompare(b.name);
         });
     },
     getAvailabilityWeekOptions: function () {
@@ -15524,6 +16063,9 @@
     },
     setScheduleCalendarWeekIndex: function (weekIndex) {
       setScheduleCalendarWeekIndex(Number(weekIndex));
+    },
+    weekIndexForMondayIso: function (mondayIso) {
+      return weekIndexForPayWeekStartIso(mondayIso);
     },
     formatScheduleWeekRangeLabel: function (weekIndex) {
       return formatScheduleWeekRangeLabel(weekIndex);
@@ -15633,7 +16175,15 @@
       if (row.submittedWeekLabel) full.submittedWeekLabel = row.submittedWeekLabel;
       if (row.submittedWeekIndex != null) full.submittedWeekIndex = row.submittedWeekIndex;
       if (row.offeredShiftLabel) full.offeredShiftLabel = row.offeredShiftLabel;
+      if (row.offeredShift) full.offeredShift = row.offeredShift;
       if (row.swapOfferId) full.swapOfferId = row.swapOfferId;
+      if (row.swapTargetEmployeeId) {
+        full.swapTargetEmployeeId = row.swapTargetEmployeeId;
+        if (row.swapTargetEmployeeName) full.swapTargetEmployeeName = row.swapTargetEmployeeName;
+      } else if (row.type === 'swap' && !row.swapOfferId) {
+        full.swapTargetEmployeeId = null;
+        full.swapTargetEmployeeName = null;
+      }
       if (row.leaveType) full.leaveType = row.leaveType;
       if (row.timeoffStart) full.timeoffStart = row.timeoffStart;
       if (row.timeoffEnd) full.timeoffEnd = row.timeoffEnd;

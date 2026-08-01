@@ -161,6 +161,7 @@
     var empTimeoffLeaveType = el('empTimeoffLeaveType');
     var empTimeoffNote = el('empTimeoffNote');
     var empSwapShiftOffer = el('empSwapShiftOffer');
+    var empSwapTarget = el('empSwapTarget');
     var empSwapAvailableShift = el('empSwapAvailableShift');
     var empSwapAcceptBtn = el('empSwapAcceptBtn');
     var empSwapAcceptNote = el('empSwapAcceptNote');
@@ -684,6 +685,25 @@
           .join('');
     }
 
+    function populateSwapTargetSelect() {
+      if (!empSwapTarget) return;
+      var coworkers =
+        bridge.getSwapCoworkerTargets && typeof bridge.getSwapCoworkerTargets === 'function'
+          ? bridge.getSwapCoworkerTargets(WORKER)
+          : [];
+      empSwapTarget.innerHTML =
+        '<option value="">' +
+        escapeHtml(t('employee.swapEveryone')) +
+        '</option>' +
+        coworkers
+          .map(function (c) {
+            return (
+              '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>'
+            );
+          })
+          .join('');
+    }
+
     function populateAvailableSwapOffersSelect() {
       if (!empSwapAvailableShift) return;
       var offers = bridge.getOpenSwapOffers ? bridge.getOpenSwapOffers(WORKER) : [];
@@ -710,6 +730,7 @@
     }
 
     function showEmpRequestForm(formKey) {
+      var key = formKey === 'callout' ? 'callout_request' : formKey;
       var map = {
         timeoff: 'empFormTimeoff',
         swap: 'empFormSwap',
@@ -717,16 +738,56 @@
       };
       Object.keys(map).forEach(function (k) {
         var f = el(map[k]);
-        if (f) f.hidden = k !== formKey;
+        if (f) f.hidden = k !== key;
       });
       document.querySelectorAll('[data-req-form]').forEach(function (c) {
-        c.classList.toggle('active', c.getAttribute('data-req-form') === formKey);
+        c.classList.toggle('active', c.getAttribute('data-req-form') === key);
       });
-      if (formKey === 'swap') {
+      if (key === 'swap') {
         populateSwapShiftOfferSelect();
+        populateSwapTargetSelect();
         populateAvailableSwapOffersSelect();
       }
     }
+
+    function openEmployeeNotificationRoute(route) {
+      if (!route || typeof route !== 'object') return;
+      var screen = String(route.screen || '').trim().toLowerCase();
+      var subsection = String(route.subsection || '').trim().toLowerCase();
+      if (screen === 'availability' || subsection === 'availability') {
+        showAvailFeedback('');
+        renderEmployeeAvailabilityTab();
+        showEmpNav('availability');
+        return;
+      }
+      if (screen === 'schedule' || subsection === 'schedule') {
+        var weekIso = String(route.weekMondayIso || '').trim().slice(0, 10);
+        if (
+          /^\d{4}-\d{2}-\d{2}$/.test(weekIso) &&
+          bridge.weekIndexForMondayIso &&
+          bridge.setScheduleCalendarWeekIndex
+        ) {
+          var wi = bridge.weekIndexForMondayIso(weekIso);
+          if (wi != null && !isNaN(wi)) bridge.setScheduleCalendarWeekIndex(Number(wi));
+        }
+        renderMasterScheduleScreen();
+        showEmpNav('schedule');
+        return;
+      }
+      var formKey = 'timeoff';
+      if (subsection === 'swap') formKey = 'swap';
+      else if (subsection === 'callout' || subsection === 'callout_request') formKey = 'callout_request';
+      else if (subsection === 'timeoff') formKey = 'timeoff';
+      populateCalloutShiftSelect();
+      populateSwapShiftOfferSelect();
+      populateAvailableSwapOffersSelect();
+      initTimeoffDateRangeForm();
+      showEmpRequestForm(formKey);
+      showRequestFeedback('');
+      showEmpNav('requests');
+    }
+
+    window.gmCalloutEmployeeOpenNotificationRoute = openEmployeeNotificationRoute;
 
     function showAvailFeedback(msg) {
       if (!empAvailFeedback) return;
@@ -922,16 +983,49 @@
         var opt = sel.options[sel.selectedIndex];
         var note = (ta && ta.value) || '';
         var shiftLabel = opt ? opt.textContent : '';
-        return {
+        var parts = String(sel.value || '').split('|');
+        var restaurantId = parts[0] || '';
+        var shiftId = parts[1] || '';
+        var day = '';
+        var timeLabel = '';
+        try {
+          day = parts[2] ? decodeURIComponent(parts[2]) : '';
+          timeLabel = parts[3] ? decodeURIComponent(parts[3]) : '';
+        } catch (_eDecode) {
+          day = parts[2] || '';
+          timeLabel = parts[3] || '';
+        }
+        var targetId = empSwapTarget ? String(empSwapTarget.value || '').trim() : '';
+        var targetName = '';
+        if (targetId && empSwapTarget) {
+          var tOpt = empSwapTarget.options[empSwapTarget.selectedIndex];
+          targetName = tOpt ? String(tOpt.textContent || '').trim() : '';
+        }
+        var payload = {
           type: 'swap',
           employeeName: WORKER,
           role: roleCode,
           offeredShiftLabel: shiftLabel,
+          offeredShift: {
+            restaurantId: restaurantId,
+            shiftId: shiftId,
+            day: day,
+            timeLabel: timeLabel,
+          },
           summary:
             'Shift Swap Offer: ' +
             shiftLabel +
+            (targetName ? '. Requested cover: ' + targetName : '. Send to everyone') +
             (String(note).trim() ? '. Notes: ' + String(note).trim() : ''),
         };
+        if (targetId) {
+          payload.swapTargetEmployeeId = targetId;
+          payload.swapTargetEmployeeName = targetName;
+        } else {
+          payload.swapTargetEmployeeId = null;
+          payload.swapTargetEmployeeName = null;
+        }
+        return payload;
       });
 
       wireRequestForm('empFormTimeoff', function () {
@@ -976,12 +1070,41 @@
         var reason = (ta && ta.value) || '';
         if (!String(reason).trim()) return null;
         var opt = sel.options[sel.selectedIndex];
+        var shiftLabel = opt ? opt.textContent : '';
         var summary =
-          'Cannot work scheduled shift: ' + (opt ? opt.textContent : '') + '. ' + String(reason).trim();
+          'Cannot work scheduled shift: ' + shiftLabel + '. ' + String(reason).trim();
+        var parts = String(sel.value || '').split('|');
+        var restaurantId = parts[0] || '';
+        var shiftId = parts[1] || '';
+        var day = '';
+        var timeLabel = '';
+        try {
+          day = parts[2] ? decodeURIComponent(parts[2]) : '';
+          timeLabel = parts[3] ? decodeURIComponent(parts[3]) : '';
+        } catch (_eDecode) {
+          day = parts[2] || '';
+          timeLabel = parts[3] || '';
+        }
+        var iso = '';
+        var rows = allShiftsForSelect();
+        for (var i = 0; i < rows.length; i += 1) {
+          if (String(rows[i].id) === String(shiftId) && String(rows[i].restaurantId) === String(restaurantId)) {
+            iso = rows[i].iso || '';
+            break;
+          }
+        }
         return {
           type: 'callout_request',
           employeeName: WORKER,
           role: roleCode,
+          offeredShiftLabel: shiftLabel,
+          offeredShift: {
+            restaurantId: restaurantId,
+            shiftId: shiftId,
+            day: day,
+            timeLabel: timeLabel,
+            iso: iso,
+          },
           summary: summary,
         };
       });
@@ -1142,6 +1265,7 @@
 
     window.gmCalloutEmployeeStaffRequestsRefreshUi = function () {
       populateAvailableSwapOffersSelect();
+      populateSwapTargetSelect();
     };
 
     window.gmCalloutEmployeeMessagesRefreshUi = function () {

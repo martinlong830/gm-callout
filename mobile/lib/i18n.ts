@@ -95,6 +95,7 @@ const EN: Dict = {
   'status.approved': 'Approved',
   'status.declined': 'Declined',
   'status.pending': 'Pending',
+  'status.awaiting_cover': 'Awaiting cover',
   'status.draft': 'Draft',
 
   'auth.tagline': 'Staff scheduling for restaurants',
@@ -297,6 +298,7 @@ const EN: Dict = {
   'auth.lastName': 'Last name',
   'auth.phoneNumber': 'Phone number',
   'auth.phoneRequired': 'Phone number is required.',
+  'auth.phoneInvalid': 'Enter a valid phone number (at least 7 digits).',
   'auth.recoveryEmailRequired': 'Recovery email is required.',
   'auth.firstLastRequired': 'First and last name are required.',
   'auth.nameRequired': 'Name is required.',
@@ -409,6 +411,10 @@ const EN: Dict = {
   'requests.submitted': 'Submitted',
   'requests.offeredShift': 'Offered shift',
   'requests.acceptingOffer': 'Accepting offer',
+  'requests.swapTarget': 'Requested cover',
+  'requests.swapTargetEveryone': 'Sent to everyone',
+  'requests.swapAwaitingCover': 'Waiting for a teammate to accept before you can approve.',
+  'requests.swapNeedsCover': 'A cover worker must accept this swap before you can approve it.',
   'requests.employeeCallouts': 'Employee call-outs',
   'requests.coverageCampaigns': 'Coverage campaigns',
   'requests.emptyCallout': 'No employee call-outs or coverage campaigns match this filter.',
@@ -450,10 +456,12 @@ const EN: Dict = {
   'actions.swapHint': 'Offer a shift or accept a teammate’s offer. Manager approval required.',
   'actions.offerShift': 'Offer a shift',
   'actions.noShiftsWindow': 'No shifts in the current schedule window.',
-  'actions.swapNotesPlaceholder': 'Preferences or who you’d like to swap with…',
+  'actions.swapWith': 'Send request to',
+  'actions.swapEveryone': 'Everyone',
+  'actions.swapNotesPlaceholder': 'Preferences or notes…',
   'actions.postOffer': 'Post offer',
   'actions.chooseShiftOffer': 'Choose one of your upcoming shifts to offer.',
-  'actions.postedManager': 'Posted. Your manager approves every swap.',
+  'actions.postedManager': 'Posted. Your manager approves every swap after someone accepts.',
   'actions.openOffers': 'Open offers',
   'actions.noOpenOffers': 'No open swap offers.',
   'actions.messageOptional': 'Message (optional)',
@@ -612,6 +620,7 @@ const EN: Dict = {
   'notifications.empty': 'No notifications yet.',
   'notifications.markAllRead': 'Mark all read',
   'notifications.unread': 'unread',
+  'notifications.openHint': 'Opens the related screen',
 };
 
 const ES: Dict = {
@@ -705,6 +714,7 @@ const ES: Dict = {
   'status.approved': 'Aprobado',
   'status.declined': 'Rechazado',
   'status.pending': 'Pendiente',
+  'status.awaiting_cover': 'Esperando cobertura',
   'status.draft': 'Borrador',
 
   'auth.tagline': 'Horarios de personal para restaurantes',
@@ -909,6 +919,7 @@ const ES: Dict = {
   'auth.lastName': 'Apellido',
   'auth.phoneNumber': 'Número de teléfono',
   'auth.phoneRequired': 'El número de teléfono es obligatorio.',
+  'auth.phoneInvalid': 'Introduce un número de teléfono válido (al menos 7 dígitos).',
   'auth.recoveryEmailRequired': 'El correo de recuperación es obligatorio.',
   'auth.firstLastRequired': 'Nombre y apellido son obligatorios.',
   'auth.nameRequired': 'El nombre es obligatorio.',
@@ -1021,6 +1032,10 @@ const ES: Dict = {
   'requests.submitted': 'Enviado',
   'requests.offeredShift': 'Turno ofrecido',
   'requests.acceptingOffer': 'Aceptando oferta',
+  'requests.swapTarget': 'Cobertura solicitada',
+  'requests.swapTargetEveryone': 'Enviado a todos',
+  'requests.swapAwaitingCover': 'Esperando que un compañero acepte antes de poder aprobar.',
+  'requests.swapNeedsCover': 'Un compañero debe aceptar este cambio antes de que puedas aprobarlo.',
   'requests.employeeCallouts': 'Faltas de empleados',
   'requests.coverageCampaigns': 'Campañas de cobertura',
   'requests.emptyCallout': 'Ninguna falta ni campaña de cobertura coincide con este filtro.',
@@ -1063,10 +1078,12 @@ const ES: Dict = {
   'actions.swapHint': 'Ofrece un turno o acepta la oferta de un compañero. Requiere aprobación del gerente.',
   'actions.offerShift': 'Ofrecer un turno',
   'actions.noShiftsWindow': 'No hay turnos en la ventana actual del horario.',
-  'actions.swapNotesPlaceholder': 'Preferencias o con quién te gustaría cambiar…',
+  'actions.swapWith': 'Enviar solicitud a',
+  'actions.swapEveryone': 'Todos',
+  'actions.swapNotesPlaceholder': 'Preferencias o notas…',
   'actions.postOffer': 'Publicar oferta',
   'actions.chooseShiftOffer': 'Elige uno de tus próximos turnos para ofrecer.',
-  'actions.postedManager': 'Publicado. Tu gerente aprueba cada cambio.',
+  'actions.postedManager': 'Publicado. Tu gerente aprueba cada cambio después de que alguien acepte.',
   'actions.openOffers': 'Ofertas abiertas',
   'actions.noOpenOffers': 'No hay ofertas de cambio abiertas.',
   'actions.messageOptional': 'Mensaje (opcional)',
@@ -1226,6 +1243,7 @@ const ES: Dict = {
   'notifications.empty': 'Aún no hay notificaciones.',
   'notifications.markAllRead': 'Marcar todo como leído',
   'notifications.unread': 'sin leer',
+  'notifications.openHint': 'Abre la pantalla relacionada',
 };
 
 const DICTS: Record<Locale, Dict> = { en: EN, es: ES };
@@ -1253,6 +1271,7 @@ export function statusLabel(locale: Locale, status: string | null | undefined): 
   const s = String(status || '').toLowerCase();
   if (s === 'approved') return translate(locale, 'status.approved');
   if (s === 'declined') return translate(locale, 'status.declined');
+  if (s === 'awaiting_cover') return translate(locale, 'status.awaiting_cover');
   if (s === 'pending') return translate(locale, 'status.pending');
   if (s === 'draft') return translate(locale, 'status.draft');
   return status || '';

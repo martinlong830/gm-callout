@@ -1584,27 +1584,33 @@
           <button type="button" class="filter-chip" data-req-form="callout_request"><span data-i18n="actions.callout">Callout</span></button>
         </div>
         <form class="emp-request-form emp-form-swap" id="empFormSwap" hidden>
-          <p class="emp-swap-intro">
-            Post a shift you want to trade, or pick up someone else’s open offer. Your manager approves every swap.
+          <p class="emp-swap-intro" data-i18n="employee.swapIntro">
+            Post a shift you want to trade, or pick up someone else’s open offer. Your manager approves after someone accepts.
           </p>
           <section class="emp-swap-panel emp-swap-panel--offer" aria-labelledby="empSwapOfferTitle">
             <div class="emp-swap-panel-head">
               <span class="emp-swap-panel-badge" aria-hidden="true">1</span>
               <div class="emp-swap-panel-head-text">
-                <h3 class="emp-swap-panel-title" id="empSwapOfferTitle">Offer a shift</h3>
-                <p class="emp-swap-panel-desc">Choose an upcoming shift from your schedule to make available for others.</p>
+                <h3 class="emp-swap-panel-title" id="empSwapOfferTitle" data-i18n="employee.offerShift">Offer a shift</h3>
+                <p class="emp-swap-panel-desc" data-i18n="employee.offerShiftDesc">Choose an upcoming shift from your schedule to make available for others.</p>
               </div>
             </div>
             <div class="emp-swap-panel-body">
               <label class="form-field form-field-block emp-swap-field">
-                <span class="form-label">Your shift</span>
+                <span class="form-label" data-i18n="employee.yourShift">Your shift</span>
                 <select id="empSwapShiftOffer" class="emp-swap-select" required></select>
               </label>
               <label class="form-field form-field-block emp-swap-field">
-                <span class="form-label">Notes <span class="emp-swap-optional">(optional)</span></span>
-                <textarea id="empSwapDetails" class="emp-swap-textarea" rows="3" placeholder="Preferences, timing, or who you’d like to swap with…"></textarea>
+                <span class="form-label" data-i18n="employee.swapWith">Send request to</span>
+                <select id="empSwapTarget" class="emp-swap-select">
+                  <option value="">Everyone</option>
+                </select>
               </label>
-              <button type="submit" class="btn btn-primary btn-block emp-swap-submit-offer">Post offer</button>
+              <label class="form-field form-field-block emp-swap-field">
+                <span class="form-label">Notes <span class="emp-swap-optional">(optional)</span></span>
+                <textarea id="empSwapDetails" class="emp-swap-textarea" rows="3" placeholder="Preferences, timing, or notes…"></textarea>
+              </label>
+              <button type="submit" class="btn btn-primary btn-block emp-swap-submit-offer" data-i18n="employee.postOffer">Post offer</button>
             </div>
           </section>
           <div class="emp-swap-connector" aria-hidden="true"></div>
@@ -3261,6 +3267,13 @@
             window.gmPortalAuth.enabled() &&
             typeof window.gmCalloutRegisterEmployeeRosterOnly === 'function'
           ) {
+            if (!verifiedAccessCode && !readStoredCompanyId()) {
+              showRegisterError(
+                'Enter your company access code first, then create your account.'
+              );
+              showAccessCodePanel();
+              return;
+            }
             var displayName =
               (fn && fn.value ? String(fn.value).trim() : '') +
               ' ' +
@@ -3279,6 +3292,8 @@
                   password: p1,
                   role: 'employee',
                   displayName: displayName,
+                  firstName: fn && fn.value ? String(fn.value).trim() : '',
+                  lastName: ln && ln.value ? String(ln.value).trim() : '',
                   phone: ph && ph.value ? String(ph.value).trim() : '',
                   staffType: st && st.value ? String(st.value) : '',
                   recoveryEmail: re && re.value ? String(re.value).trim() : '',
@@ -3295,16 +3310,22 @@
                   phone: ph && ph.value,
                   staffType: st && st.value,
                   email: re && re.value ? String(re.value).trim() : '',
+                  employeeId: up.employeeId || '',
                 });
                 if (roster && typeof roster.then === 'function') {
                   roster = await roster;
                 }
                 if (!roster || !roster.ok) {
-                  showRegisterError(
-                    (roster && roster.message) ||
-                      'Account was created but roster update failed. Ask a manager for help.'
-                  );
-                  return;
+                  /* Server ensureEmployeeRosterRow already ran on signup — don't fail a good portal create. */
+                  if (up.employeeId) {
+                    roster = { ok: true, displayName: displayName, employeeId: up.employeeId };
+                  } else {
+                    showRegisterError(
+                      (roster && roster.message) ||
+                        'Account was created but roster update failed. Ask a manager for help.'
+                    );
+                    return;
+                  }
                 }
                 registerForm.reset();
                 if (up.needsSignIn) {
@@ -3635,7 +3656,7 @@
   <script defer src="timeclock-schedule-match.js?v=admin-notif-1"></script>
   <script defer src="timeclock-app.js?v=admin-notif-1"></script>
   <script defer src="portal-auth-client.js?v=admin-notif-1"></script>
-  <script defer src="notifications-center.js?v=notif-panel-z-1"></script>
+  <script defer src="notifications-center.js?v=notif-route-1"></script>
   <script defer src="login-timeclock.js?v=admin-notif-1"></script>
 </body>
 </html>

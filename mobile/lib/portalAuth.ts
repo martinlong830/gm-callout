@@ -455,16 +455,27 @@ export type PortalSignUpPayload = {
   password: string;
   role: 'manager' | 'employee';
   accessCode?: string;
+  companyId?: string;
   displayName?: string;
   phone?: string;
   staffType?: string;
   recoveryEmail?: string;
+  firstName?: string;
+  lastName?: string;
+  usualRestaurant?: string;
 };
 
 export async function portalSignUp(
   payload: PortalSignUpPayload
 ): Promise<
-  | { ok: true; needsSignIn?: boolean; message?: string; role?: string; displayName?: string }
+  | {
+      ok: true;
+      needsSignIn?: boolean;
+      message?: string;
+      role?: string;
+      displayName?: string;
+      employeeId?: string;
+    }
   | { ok: false; message: string }
 > {
   const r = await portalPost<{
@@ -474,10 +485,16 @@ export async function portalSignUp(
     message?: string;
     role?: string;
     displayName?: string;
+    employeeId?: string;
   }>('/api/portal/signup', payload as unknown as Record<string, unknown>);
   if (!r.ok) return r;
   if (r.needsSignIn) {
-    return { ok: true, needsSignIn: true, message: r.message };
+    return {
+      ok: true,
+      needsSignIn: true,
+      message: r.message,
+      employeeId: r.employeeId,
+    };
   }
   if (r.access_token) {
     const applied = await applyPortalSession({
@@ -486,7 +503,13 @@ export async function portalSignUp(
     });
     if (!applied.ok) return applied;
   }
-  return { ok: true, role: r.role, displayName: r.displayName, message: r.message };
+  return {
+    ok: true,
+    role: r.role,
+    displayName: r.displayName,
+    message: r.message,
+    employeeId: r.employeeId,
+  };
 }
 
 export async function portalRequestPasswordReset(
@@ -670,6 +693,11 @@ export type PortalCreateEmployeePayload = {
   staffType?: string;
   recoveryEmail?: string;
   role?: 'employee' | 'manager';
+  firstName?: string;
+  lastName?: string;
+  usualRestaurant?: string;
+  /** Roster row id to link employees.auth_user_id after create. */
+  employeeId?: string;
 };
 
 /** Manager-only: create portal login for a new employee/manager without changing the current session. */
@@ -682,6 +710,7 @@ export async function portalCreateEmployeeAccount(
       loginName?: string;
       displayName?: string;
       role?: string;
+      employeeId?: string;
       message?: string;
     }
   | { ok: false; message: string }
@@ -694,6 +723,7 @@ export async function portalCreateEmployeeAccount(
     loginName?: string;
     displayName?: string;
     role?: string;
+    employeeId?: string;
     message?: string;
   }>('POST', '/api/portal/admin/create-employee', payload as unknown as Record<string, unknown>);
   if (!r.ok) return r;
@@ -703,6 +733,7 @@ export async function portalCreateEmployeeAccount(
     loginName: r.loginName,
     displayName: r.displayName,
     role: r.role,
+    employeeId: r.employeeId,
     message: r.message || 'Portal account created.',
   };
 }

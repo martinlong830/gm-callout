@@ -121,6 +121,7 @@ window.GM_I18N_ES = {
   'status.approved': 'Aprobado',
   'status.declined': 'Rechazado',
   'status.pending': 'Pendiente',
+  'status.awaiting_cover': 'Esperando cobertura',
   'status.draft': 'Borrador',
   'status.submitted': 'Enviado',
 
@@ -469,10 +470,12 @@ window.GM_I18N_ES = {
   'employee.calloutNotes': 'Notas para tu gerente',
   'employee.submitCallout': 'Enviar falta',
   'employee.swapIntro':
-    'Publica un turno que quieras cambiar o toma una oferta abierta de un compañero. Tu gerente aprueba cada cambio.',
+    'Publica un turno que quieras cambiar o toma una oferta abierta de un compañero. Tu gerente aprueba después de que alguien acepte.',
   'employee.offerShift': 'Ofrecer un turno',
   'employee.offerShiftDesc': 'Elige un turno próximo de tu horario para ponerlo a disposición de otros.',
   'employee.yourShift': 'Tu turno',
+  'employee.swapWith': 'Enviar solicitud a',
+  'employee.swapEveryone': 'Todos',
   'employee.postOffer': 'Publicar oferta',
   'employee.availableShifts': 'Turnos disponibles',
   'employee.availableShiftsDesc':
@@ -482,6 +485,12 @@ window.GM_I18N_ES = {
   'employee.noScheduledShifts': 'No hay turnos programados en la ventana actual',
   'employee.noUpcomingShiftsOption': 'No hay turnos próximos disponibles',
   'employee.noSwapOffers': 'No hay ofertas de cambio de turno abiertas',
+  'employee.swapAwaitingCover': 'Esperando que un compañero acepte antes de poder aprobar.',
+  'employee.swapNeedsCover': 'Un compañero debe aceptar este cambio antes de que puedas aprobarlo.',
+  'employee.swapTarget': 'Cobertura solicitada',
+  'employee.swapTargetEveryone': 'Enviado a todos',
+  'employee.acceptingOffer': 'Aceptando oferta',
+  'employee.offeredShift': 'Turno ofrecido',
 
   'empForm.profile': 'Perfil',
   'empForm.schedule': 'Horario',
@@ -511,6 +520,7 @@ window.GM_I18N_ES = {
   'notifications.empty': 'Aún no hay notificaciones.',
   'notifications.markAllRead': 'Marcar todo como leído',
   'notifications.unread': 'sin leer',
+  'notifications.openHint': 'Abre la pantalla relacionada',
 
   'support.title': 'Soporte',
   'privacy.title': 'Privacidad',

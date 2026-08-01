@@ -130,6 +130,7 @@
     var s = String(status || '').toLowerCase();
     if (s === 'approved') return t('status.approved');
     if (s === 'declined') return t('status.declined');
+    if (s === 'awaiting_cover') return t('status.awaiting_cover');
     if (s === 'pending') return t('status.pending');
     if (s === 'draft') return t('status.draft');
     return status || '';

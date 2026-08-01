@@ -50,29 +50,235 @@ function isManagerLikeRole(role) {
   return role === "manager" || role === "admin";
 }
 
-function employeeStoreScope(usualRestaurant, meta) {
-  const home = String(usualRestaurant || "").trim() || "rp-9";
-  if (home === "rp-8" || home === "rp-9") return home;
-  if (home === "both") {
-    const m = meta && typeof meta === "object" ? meta : {};
-    const raw = m.primaryLocationId || m.primaryRestaurantId || "";
-    const id = String(raw).trim();
-    if (id === "rp-8" || id === "rp-9") return id;
-    return null;
-  }
-  return null;
-}
-
+/**
+ * Schedule publish notify: who works at this store.
+ * - Single-store usual → that store only
+ * - `both` → either store (primaryLocationId is for timecards/defaulting, not notify)
+ */
 function employeeMatchesRestaurant(emp, restaurantId) {
   if (!restaurantId) return true;
   if (!emp) return false;
-  const scope = employeeStoreScope(emp.usual_restaurant, emp.meta);
-  if (scope == null) {
-    // Multi-store without primary: treat as belonging to both for notify.
-    const home = String(emp.usual_restaurant || "").trim();
-    return home === "both" || home === restaurantId;
+  const home = String(emp.usual_restaurant || "").trim() || "rp-9";
+  if (home === "both") return true;
+  return home === restaurantId;
+}
+
+function employeeDisplayNorm(emp) {
+  if (!emp) return "";
+  const display = String(emp.display_name || "").trim();
+  if (display) return normalizeLoginName(display);
+  const first = String(emp.first_name || "").trim();
+  const last = String(emp.last_name || "").trim();
+  return normalizeLoginName((first + " " + last).trim());
+}
+
+/** Link roster row → profile when auth_user_id is missing but names match. */
+async function healEmployeeAuthLink(adminClient, emp, profileId) {
+  if (!adminClient || !emp || !emp.id || !profileId) return;
+  if (emp.auth_user_id === profileId) return;
+  const { error } = await adminClient
+    .from("employees")
+    .update({ auth_user_id: profileId })
+    .eq("id", emp.id)
+    .is("auth_user_id", null);
+  if (error) {
+    console.warn("healEmployeeAuthLink", emp.id, error.message || error);
   }
-  return scope === restaurantId;
+}
+
+/**
+ * After sign-in: if this profile has no employees.auth_user_id row, link by login/display name.
+ */
+async function ensureSignedInEmployeeLinked(adminClient, profile) {
+  if (!adminClient || !profile || !profile.id) return;
+  const role = String(profile.role || "").trim();
+  if (role !== "employee" && role !== "manager") return;
+
+  const { data: already } = await adminClient
+    .from("employees")
+    .select("id")
+    .eq("auth_user_id", profile.id)
+    .limit(1);
+  if (already && already.length) return;
+
+  const candidates = [];
+  const loginNorm = normalizeLoginName(profile.login_name || profile.display_name || "");
+  const displayNorm = normalizeLoginName(profile.display_name || "");
+  if (loginNorm) candidates.push(loginNorm);
+  if (displayNorm && displayNorm !== loginNorm) candidates.push(displayNorm);
+  if (!candidates.length) return;
+
+  let query = adminClient
+    .from("employees")
+    .select("id, auth_user_id, display_name, first_name, last_name, company_id")
+    .is("auth_user_id", null);
+  if (profile.company_id) query = query.eq("company_id", profile.company_id);
+  const { data: rows, error } = await query.limit(500);
+  if (error || !rows || !rows.length) return;
+
+  const match = rows.find((emp) => {
+    const n = employeeDisplayNorm(emp);
+    return n && candidates.includes(n);
+  });
+  if (!match) return;
+  await healEmployeeAuthLink(adminClient, match, profile.id);
+}
+
+function splitEmployeeNameParts(displayName, firstName, lastName) {
+  let fn = String(firstName || "").trim();
+  let ln = String(lastName || "").trim();
+  if (!fn && !ln) {
+    const parts = String(displayName || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (parts.length === 1) {
+      fn = parts[0];
+    } else if (parts.length > 1) {
+      fn = parts[0];
+      ln = parts.slice(1).join(" ");
+    }
+  }
+  if (!fn) fn = "Staff";
+  return { firstName: fn, lastName: ln };
+}
+
+/**
+ * Create or link employees roster row for a new auth user (service role).
+ * Used by self-register and manager "add team member".
+ */
+async function ensureEmployeeRosterRow(adminClient, opts) {
+  if (!adminClient || !opts || !opts.userId) {
+    return { error: "Missing auth user for roster." };
+  }
+  const userId = opts.userId;
+  const staffType = parseRequiredStaffType(opts.staffType);
+  if (!staffType) {
+    return {
+      error:
+        "Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.",
+    };
+  }
+
+  const { data: already } = await adminClient
+    .from("employees")
+    .select("id")
+    .eq("auth_user_id", userId)
+    .limit(1);
+  if (already && already.length) {
+    return { employeeId: already[0].id, alreadyLinked: true };
+  }
+
+  const names = splitEmployeeNameParts(opts.displayName, opts.firstName, opts.lastName);
+  const display =
+    String(opts.displayName || "").trim() ||
+    `${names.firstName} ${names.lastName}`.trim() ||
+    "Staff";
+  const phone = opts.phone != null ? String(opts.phone).trim() : "";
+  const email = opts.email != null ? String(opts.email).trim() : "";
+  const companyId = opts.companyId ? String(opts.companyId).trim() : "";
+  const employeeId = opts.employeeId ? String(opts.employeeId).trim() : "";
+  const urRaw = String(opts.usualRestaurant || "").trim();
+  const usualRestaurant = urRaw === "rp-8" || urRaw === "rp-9" || urRaw === "both" ? urRaw : "rp-9";
+  const meta = email ? { email } : {};
+
+  const baseRow = {
+    auth_user_id: userId,
+    first_name: names.firstName,
+    last_name: names.lastName,
+    display_name: display,
+    phone,
+    staff_type: staffType,
+    usual_restaurant: usualRestaurant,
+    weekly_grid: {},
+    meta,
+  };
+  if (companyId) baseRow.company_id = companyId;
+  if (email) baseRow.email = email;
+
+  if (employeeId) {
+    const { data: byId, error: byIdErr } = await adminClient
+      .from("employees")
+      .select("id, auth_user_id")
+      .eq("id", employeeId)
+      .maybeSingle();
+    if (byIdErr) {
+      console.warn("ensureEmployeeRosterRow by id", byIdErr);
+    }
+    if (byId) {
+      if (byId.auth_user_id && String(byId.auth_user_id) !== String(userId)) {
+        return { error: "That roster row is already linked to another account." };
+      }
+      const patch = {
+        auth_user_id: userId,
+        first_name: names.firstName,
+        last_name: names.lastName,
+        display_name: display,
+        phone,
+        staff_type: staffType,
+        usual_restaurant: usualRestaurant,
+        meta,
+      };
+      if (companyId) patch.company_id = companyId;
+      if (email) patch.email = email;
+      let { error: updErr } = await adminClient.from("employees").update(patch).eq("id", employeeId);
+      if (updErr && /email/i.test(String(updErr.message || "")) && "email" in patch) {
+        delete patch.email;
+        ({ error: updErr } = await adminClient.from("employees").update(patch).eq("id", employeeId));
+      }
+      if (updErr) return { error: updErr.message || "Could not link roster row." };
+      return { employeeId };
+    }
+  }
+
+  const insertRow = employeeId ? { ...baseRow, id: employeeId } : { ...baseRow };
+  let { data: inserted, error: insErr } = await adminClient
+    .from("employees")
+    .insert(insertRow)
+    .select("id")
+    .maybeSingle();
+  if (insErr && /email/i.test(String(insErr.message || "")) && "email" in insertRow) {
+    const { email: _drop, ...withoutEmail } = insertRow;
+    ({ data: inserted, error: insErr } = await adminClient
+      .from("employees")
+      .insert(withoutEmail)
+      .select("id")
+      .maybeSingle());
+  }
+  if (insErr) {
+    if (/duplicate|unique/i.test(String(insErr.message || ""))) {
+      try {
+        await ensureSignedInEmployeeLinked(adminClient, {
+          id: userId,
+          role: "employee",
+          display_name: display,
+          login_name: display,
+          company_id: companyId || null,
+        });
+        const { data: linked } = await adminClient
+          .from("employees")
+          .select("id")
+          .eq("auth_user_id", userId)
+          .limit(1);
+        if (linked && linked.length) {
+          return { employeeId: linked[0].id, linkedByName: true };
+        }
+      } catch (linkErr) {
+        console.warn("ensureEmployeeRosterRow link by name", linkErr);
+      }
+    }
+    return { error: insErr.message || "Could not create roster row." };
+  }
+
+  const newId = inserted && inserted.id;
+  if (newId) {
+    try {
+      await adminClient.rpc("assign_employee_clock_pin", { p_employee_id: newId });
+    } catch (pinErr) {
+      console.warn("ensureEmployeeRosterRow clock pin", pinErr);
+    }
+  }
+  return { employeeId: newId || employeeId || null };
 }
 
 /** Prefer company-scoped match; never use unscoped .maybeSingle() across tenants. */
@@ -1128,6 +1334,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!sess || sess.error) {
         return res.status(401).json({ ok: false, message: (sess && sess.error) || "Name or password is incorrect." });
       }
+      try {
+        await ensureSignedInEmployeeLinked(admin, sess.profile);
+      } catch (linkErr) {
+        console.warn("portal signin link employee", linkErr);
+      }
       const companyPayload = companyClientPayload(sess.company, sess.profile);
       return res.json({
         ok: true,
@@ -1183,7 +1394,19 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       let companyId = body.companyId ? String(body.companyId).trim() : "";
       if (!companyId && accessCode) {
         const co = await findCompanyByAccessCode(admin, accessCode);
+        if (co.error) {
+          return res.status(400).json({ ok: false, message: co.error });
+        }
         if (co.company) companyId = co.company.id;
+        else if (co.notFound) {
+          return res.status(400).json({ ok: false, message: "Company access code is incorrect." });
+        }
+      }
+      if (role === "employee" && !companyId) {
+        return res.status(400).json({
+          ok: false,
+          message: "Enter your company access code first, then create your account.",
+        });
       }
       const nameTaken = await findDuplicateProfileByLoginName(loginNameNorm, companyId || null);
       if (nameTaken.error) {
@@ -1213,6 +1436,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
+      const phoneTrim = body.phone ? String(body.phone).trim() : "";
+      if (role === "employee" && !phoneTrim) {
+        return res.status(400).json({ ok: false, message: "Phone number is required." });
+      }
+
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email: internalEmail,
         password,
@@ -1222,7 +1450,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           display_name: displayName,
           login_name: loginName,
           login_name_norm: loginNameNorm,
-          phone: body.phone ? String(body.phone).trim() : "",
+          phone: phoneTrim,
           staff_type: staffTypeParsed || "",
           company_id: companyId || null,
         },
@@ -1242,7 +1470,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         internal_auth_email: internalEmail,
         display_name: displayName,
         role,
-        phone: body.phone ? String(body.phone).trim() : null,
+        phone: phoneTrim || null,
         staff_type: staffTypeParsed,
       };
       if (companyId) profilePatch.company_id = companyId;
@@ -1255,6 +1483,29 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       profilePatch.recovery_email_norm = saved.recoveryEmail;
       await admin.from("profiles").update(profilePatch).eq("id", userId);
 
+      let rosterEmployeeId = null;
+      if (role === "employee" && staffTypeParsed) {
+        const roster = await ensureEmployeeRosterRow(admin, {
+          userId,
+          companyId,
+          staffType: staffTypeParsed,
+          displayName,
+          firstName: body.firstName,
+          lastName: body.lastName,
+          phone: phoneTrim,
+          email: recoveryEmailRaw,
+          usualRestaurant: body.usualRestaurant,
+        });
+        if (roster.error) {
+          await admin.auth.admin.deleteUser(userId);
+          return res.status(400).json({
+            ok: false,
+            message: roster.error || "Could not create employee roster row.",
+          });
+        }
+        rosterEmployeeId = roster.employeeId || null;
+      }
+
       const { data: signInData, error: signInErr } = await admin.auth.signInWithPassword({
         email: internalEmail,
         password,
@@ -1264,6 +1515,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           ok: true,
           needsSignIn: true,
           message: "Account created. Sign in with your name and password.",
+          employeeId: rosterEmployeeId,
         });
       }
 
@@ -1271,6 +1523,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         ok: true,
         role,
         displayName,
+        employeeId: rosterEmployeeId,
         access_token: signInData.session.access_token,
         refresh_token: signInData.session.refresh_token,
       });
@@ -1325,6 +1578,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
+      const phoneTrim = body.phone != null ? String(body.phone).trim() : "";
+      if (accountRole === "employee" && !phoneTrim) {
+        return res.status(400).json({ ok: false, message: "Phone number is required." });
+      }
+
       const managerCompanyId = mgr.profile.company_id || null;
       let isCreator = false;
       if (managerCompanyId) {
@@ -1360,7 +1618,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         display_name: displayName,
         login_name: loginName,
         login_name_norm: loginNameNorm,
-        phone: body.phone ? String(body.phone).trim() : "",
+        phone: phoneTrim,
         staff_type: staffTypeParsed || "",
       };
       if (managerCompanyId) userMetadata.company_id = managerCompanyId;
@@ -1385,7 +1643,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         internal_auth_email: internalEmail,
         display_name: displayName,
         role: accountRole,
-        phone: body.phone ? String(body.phone).trim() : null,
+        phone: phoneTrim || null,
         staff_type: staffTypeParsed,
       };
       if (managerCompanyId) profilePatch.company_id = managerCompanyId;
@@ -1400,12 +1658,44 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
       await admin.from("profiles").update(profilePatch).eq("id", userId);
 
+      let rosterEmployeeId = null;
+      if (staffTypeParsed) {
+        const roster = await ensureEmployeeRosterRow(admin, {
+          userId,
+          companyId: managerCompanyId,
+          staffType: staffTypeParsed,
+          displayName,
+          firstName: body.firstName,
+          lastName: body.lastName,
+          phone: phoneTrim,
+          email: recoveryEmailRaw || body.email,
+          employeeId: String(body.employeeId || body.rosterEmployeeId || "").trim() || null,
+          usualRestaurant: body.usualRestaurant,
+        });
+        if (roster.error) {
+          await admin.auth.admin.deleteUser(userId);
+          return res.status(400).json({
+            ok: false,
+            message: roster.error || "Could not create employee roster row.",
+          });
+        }
+        rosterEmployeeId = roster.employeeId || null;
+      } else if (accountRole === "employee") {
+        await admin.auth.admin.deleteUser(userId);
+        return res.status(400).json({
+          ok: false,
+          message:
+            "Staff type / role type is required. Choose Front of the House, Back of the House, or Delivery/Dishwasher.",
+        });
+      }
+
       return res.json({
         ok: true,
         userId,
         loginName,
         displayName,
         role: accountRole,
+        employeeId: rosterEmployeeId,
         message:
           accountRole === "manager"
             ? "Manager account created. They can sign in with their name and password."
@@ -1912,9 +2202,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         (adminRows || []).forEach((row) => addRecipient(row && row.id));
       } else {
         // Employees (+ store managers) at the published restaurant only.
+        // Prefer employees.auth_user_id; fall back to profile name match and heal the link.
         let empQuery = admin
           .from("employees")
-          .select("auth_user_id, usual_restaurant, meta, company_id");
+          .select(
+            "id, auth_user_id, display_name, first_name, last_name, usual_restaurant, meta, company_id"
+          );
         if (companyId) empQuery = empQuery.eq("company_id", companyId);
         const { data: empRows, error: empErr } = await empQuery;
         if (empErr) {
@@ -1925,17 +2218,64 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           });
         }
         const authIdsAtStore = [];
+        const unlinkedAtStore = [];
         (empRows || []).forEach((emp) => {
-          if (!emp || !emp.auth_user_id) return;
+          if (!emp) return;
           if (restaurantId && !employeeMatchesRestaurant(emp, restaurantId)) return;
-          authIdsAtStore.push(emp.auth_user_id);
+          if (emp.auth_user_id) {
+            authIdsAtStore.push(emp.auth_user_id);
+          } else {
+            unlinkedAtStore.push(emp);
+          }
         });
 
+        if (unlinkedAtStore.length) {
+          let profQuery = admin
+            .from("profiles")
+            .select("id, role, display_name, login_name, login_name_norm")
+            .in("role", ["employee", "manager"]);
+          if (companyId) profQuery = profQuery.eq("company_id", companyId);
+          const { data: nameProfiles, error: nameProfErr } = await profQuery;
+          if (nameProfErr) {
+            console.warn("schedule/notify-published name profiles", nameProfErr);
+          } else {
+            const byNorm = Object.create(null);
+            (nameProfiles || []).forEach((p) => {
+              if (!p || !p.id) return;
+              const keys = [
+                normalizeLoginName(p.login_name_norm || p.login_name || ""),
+                normalizeLoginName(p.display_name || ""),
+                normalizeLoginName(p.login_name || ""),
+              ];
+              keys.forEach((k) => {
+                if (!k) return;
+                if (!byNorm[k]) byNorm[k] = p;
+              });
+            });
+            for (const emp of unlinkedAtStore) {
+              const norm = employeeDisplayNorm(emp);
+              const matched = norm ? byNorm[norm] : null;
+              if (!matched || !matched.id) continue;
+              authIdsAtStore.push(matched.id);
+              // Fire-and-forget heal so future publishes use auth_user_id directly.
+              void healEmployeeAuthLink(admin, emp, matched.id);
+            }
+          }
+        }
+
         if (authIdsAtStore.length) {
+          const uniqueAuthIds = [];
+          const seenAuth = Object.create(null);
+          authIdsAtStore.forEach((id) => {
+            const s = String(id || "").trim();
+            if (!s || seenAuth[s]) return;
+            seenAuth[s] = true;
+            uniqueAuthIds.push(s);
+          });
           const { data: roleRows, error: roleErr } = await admin
             .from("profiles")
             .select("id, role")
-            .in("id", authIdsAtStore);
+            .in("id", uniqueAuthIds);
           if (roleErr) {
             console.warn("schedule/notify-published roles", roleErr);
             return res.status(500).json({
@@ -1968,6 +2308,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
             teamStateId,
             restaurantId: restaurantId || null,
             audience,
+            subsection: "schedule",
+            type: "schedule_published",
           },
         }));
         const { error: notifErr } = await admin.from("app_notifications").insert(notifRows);
@@ -2072,6 +2414,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           teamStateId,
           restaurantId: restaurantId || null,
           audience,
+          subsection: "schedule",
         },
       }));
 
@@ -2244,6 +2587,10 @@ module.exports = {
   pickProfileRows,
   preferProfileAmongDuplicates,
   isManagerLikeRole,
+  employeeMatchesRestaurant,
+  employeeDisplayNorm,
+  ensureEmployeeRosterRow,
+  splitEmployeeNameParts,
   PORTAL_ACCESS_CODE,
   RED_POKE_COMPANY_ID,
 };

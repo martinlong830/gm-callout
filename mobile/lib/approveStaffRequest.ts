@@ -2,7 +2,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { applyAvailabilityWeekEntry } from './availabilityByWeek';
 import { saveEmployeeRow } from './employeeSave';
 import { employeeDisplayName, type EmployeeRow } from './employees';
-import type { DraftGrid } from './schedule/types';
+import {
+  applyCalloutApprovalEffects,
+  applyTimeoffApprovalEffects,
+} from './leaveApprovalEffects';
+import type { AssignmentStore, DraftGrid } from './schedule/types';
+import { approveSwapAcceptance, swapRequestCanManagerApprove } from './shiftSwap';
 import { updateStaffRequestStatus, type StaffRequestUi } from './staffRequests';
 import { normalizeWeeklyGrid } from './weeklyAvailabilityMatrix';
 
@@ -22,13 +27,41 @@ function findEmployeeForRequest(employees: EmployeeRow[], request: StaffRequestU
   );
 }
 
-/** Approve a request and run side effects (e.g. merge availability grid into roster). */
+function isCalloutRequest(request: StaffRequestUi): boolean {
+  return request.type === 'callout_request' || request.type === 'callout';
+}
+
+export type ApproveStaffRequestResult =
+  | { ok: true; store?: AssignmentStore }
+  | { ok: false; message: string };
+
+/** Approve a request and run side effects (availability, swap, timeoff/callout schedule + leave). */
 export async function approveStaffRequest(
   sb: SupabaseClient,
   request: StaffRequestUi,
   employees: EmployeeRow[],
-  draftRows: DraftGrid
-): Promise<{ ok: true } | { ok: false; message: string }> {
+  draftRows: DraftGrid,
+  opts?: {
+    allRequests?: StaffRequestUi[];
+    assignmentStore?: AssignmentStore | null;
+    draftScheduleRaw?: unknown;
+  }
+): Promise<ApproveStaffRequestResult> {
+  if (request.type === 'swap') {
+    if (!swapRequestCanManagerApprove(request)) {
+      return {
+        ok: false,
+        message: 'A cover worker must accept this swap before you can approve it.',
+      };
+    }
+    return approveSwapAcceptance(
+      sb,
+      request,
+      opts?.allRequests || [],
+      opts?.assignmentStore
+    );
+  }
+
   if (request.type === 'availability' && request.submittedGrid) {
     const emp = findEmployeeForRequest(employees, request);
     if (emp) {
@@ -54,6 +87,34 @@ export async function approveStaffRequest(
         };
       }
     }
+  }
+
+  const scheduleOpts = {
+    assignmentStore: (opts?.assignmentStore || {}) as AssignmentStore,
+    draftRows,
+    draftScheduleRaw: opts?.draftScheduleRaw,
+    employees,
+  };
+
+  if (request.type === 'timeoff') {
+    const emp = findEmployeeForRequest(employees, request);
+    if (!emp) {
+      return { ok: false, message: 'Could not find the employee for this time-off request.' };
+    }
+    const effects = await applyTimeoffApprovalEffects(sb, request, emp, scheduleOpts);
+    if (!effects.ok) return effects;
+    const statusRes = await updateStaffRequestStatus(sb, request.id, 'approved');
+    if (!statusRes.ok) return statusRes;
+    return { ok: true, store: effects.store };
+  }
+
+  if (isCalloutRequest(request)) {
+    const emp = findEmployeeForRequest(employees, request);
+    const effects = await applyCalloutApprovalEffects(sb, request, emp, scheduleOpts);
+    if (!effects.ok) return effects;
+    const statusRes = await updateStaffRequestStatus(sb, request.id, 'approved');
+    if (!statusRes.ok) return statusRes;
+    return { ok: true, store: effects.store };
   }
 
   return updateStaffRequestStatus(sb, request.id, 'approved');

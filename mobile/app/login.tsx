@@ -447,6 +447,10 @@ export default function LoginScreen() {
 
   async function onEmployeeRegister() {
     clearMsg();
+    if (!verifiedAccessCode) {
+      setMessage(t('auth.enterAccessCodeError'));
+      return;
+    }
     const fn = firstName.trim();
     const ln = lastName.trim();
     const displayName = `${fn} ${ln}`.trim();
@@ -456,6 +460,10 @@ export default function LoginScreen() {
     }
     if (!phone.trim()) {
       setMessage(t('auth.phoneRequired'));
+      return;
+    }
+    if (phone.replace(/\D/g, '').length < 7) {
+      setMessage(t('auth.phoneInvalid'));
       return;
     }
     if (!recoveryEmail.trim()) {
@@ -477,6 +485,8 @@ export default function LoginScreen() {
         password: regPassword,
         role: 'employee',
         displayName,
+        firstName: fn,
+        lastName: ln,
         phone: phone.trim(),
         staffType,
         recoveryEmail: recoveryEmail.trim(),

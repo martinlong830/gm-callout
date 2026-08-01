@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -17,6 +18,7 @@ import {
   markNotificationsRead,
   type AppNotification,
 } from '../lib/notifications';
+import { hrefForNotificationRoute, resolveNotificationRoute } from '../lib/notificationRoutes';
 import { supabase } from '../lib/supabase';
 
 function formatWhen(iso: string, locale: string): string {
@@ -35,8 +37,9 @@ function formatWhen(iso: string, locale: string): string {
 }
 
 export function NotificationBellButton() {
-  const { session } = useAuth();
+  const { session, role } = useAuth();
   const { t, locale } = useI18n();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<AppNotification[]>([]);
@@ -87,6 +90,25 @@ export function NotificationBellButton() {
       if (supabase) void supabase.removeChannel(channel);
     };
   }, [refresh, userId]);
+
+  const onItemPress = useCallback(
+    async (n: AppNotification) => {
+      if (supabase && userId && !n.read_at) {
+        await markNotificationsRead(supabase, userId, [n.id]);
+        await refresh();
+      }
+      setOpen(false);
+      const route = resolveNotificationRoute(n.type, n.data);
+      if (!route) return;
+      const href = hrefForNotificationRoute(role, route);
+      try {
+        router.push(href as never);
+      } catch (err) {
+        console.warn('notification navigate', err);
+      }
+    },
+    [refresh, role, router, userId]
+  );
 
   if (!userId) return null;
 
@@ -139,9 +161,9 @@ export function NotificationBellButton() {
                   key={n.id}
                   style={[styles.item, !n.read_at && styles.itemUnread]}
                   onPress={() => {
-                    if (!supabase || !userId || n.read_at) return;
-                    void markNotificationsRead(supabase, userId, [n.id]).then(() => refresh());
+                    void onItemPress(n);
                   }}
+                  accessibilityHint={t('notifications.openHint')}
                 >
                   <Text style={styles.itemTitle}>{n.title}</Text>
                   {n.body ? <Text style={styles.itemBody}>{n.body}</Text> : null}

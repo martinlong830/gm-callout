@@ -492,6 +492,41 @@ export function parseTimeoffRequest(req: {
   return { start, end, leaveType };
 }
 
+/** Approved callout that targets a specific schedule shift (or iso day). */
+export function isApprovedCalloutForShift(
+  req: StaffRequestUi,
+  emp: EmployeeRow,
+  displayName: string,
+  shift: { id?: string; restaurantId?: string; iso?: string }
+): boolean {
+  if (!req || (req.type !== 'callout_request' && req.type !== 'callout')) return false;
+  if (req.status !== 'approved') return false;
+  if (!staffRequestMatchesEmployee(req, emp, displayName)) return false;
+  const offered = req.offeredShift;
+  if (offered?.shiftId) {
+    if (shift.id && String(offered.shiftId) === String(shift.id)) {
+      if (offered.restaurantId && shift.restaurantId) {
+        return String(offered.restaurantId) === String(shift.restaurantId);
+      }
+      return true;
+    }
+    return false;
+  }
+  const iso = offered?.iso ? String(offered.iso).slice(0, 10) : '';
+  if (iso && shift.iso && iso === shift.iso) return true;
+  return false;
+}
+
+export function shiftExcludedByApprovedCallout(
+  emp: EmployeeRow,
+  displayName: string,
+  shift: { id?: string; restaurantId?: string; iso?: string },
+  staffRequests: StaffRequestUi[] | undefined
+): boolean {
+  if (!staffRequests?.length) return false;
+  return staffRequests.some((req) => isApprovedCalloutForShift(req, emp, displayName, shift));
+}
+
 export async function setEmployeeWeekExtras(
   empId: string,
   vl: number,

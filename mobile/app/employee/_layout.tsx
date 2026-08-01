@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { LanguageToggle } from '../../components/LanguageToggle';
 import { NotificationBellButton } from '../../components/NotificationBellButton';
@@ -27,6 +28,25 @@ function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
 export default function EmployeeLayout() {
   const { session, role, signOut } = useAuth();
   const { t } = useI18n();
+
+  useEffect(() => {
+    if (!session || role !== 'employee') return;
+    let cancelled = false;
+    void import('../../lib/pushNotifications')
+      .then((m) => {
+        if (cancelled) return;
+        m.setPushNotificationRouteRoleGetter(() => role);
+        m.startPushNotificationResponseRouting();
+      })
+      .catch((err) => console.warn('pushNotifications routing', err));
+    return () => {
+      cancelled = true;
+      void import('../../lib/pushNotifications')
+        .then((m) => m.setPushNotificationRouteRoleGetter(null))
+        .catch(() => undefined);
+    };
+  }, [session, role]);
+
   if (!session || role !== 'employee') {
     return <Redirect href="/login" />;
   }

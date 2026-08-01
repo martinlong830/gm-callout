@@ -1,5 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+export type OfferedShiftRef = {
+  restaurantId: string;
+  shiftId: string;
+  day?: string;
+  timeLabel?: string;
+  iso?: string;
+};
+
 export type StaffRequestUi = {
   id: string;
   type: string;
@@ -9,10 +17,17 @@ export type StaffRequestUi = {
   submittedAt: string;
   status: string;
   offeredShiftLabel?: string;
+  offeredShift?: OfferedShiftRef;
   swapOfferId?: string;
+  /** Null/absent = broadcast to everyone; else specific roster employee id. */
+  swapTargetEmployeeId?: string | null;
+  swapTargetEmployeeName?: string | null;
   submittedGrid?: unknown;
   submittedWeekLabel?: string;
   submittedWeekIndex?: number;
+  leaveType?: 'sick' | 'vacation';
+  timeoffStart?: string;
+  timeoffEnd?: string;
 };
 
 function staffRequestStatusFromDb(st: string): string {
@@ -20,6 +35,19 @@ function staffRequestStatusFromDb(st: string): string {
   if (st === 'closed') return 'approved';
   if (st === 'pending' || st === 'approved' || st === 'declined') return st;
   return 'pending';
+}
+
+function parseOfferedShift(raw: unknown): OfferedShiftRef | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const restaurantId = o.restaurantId != null ? String(o.restaurantId) : '';
+  const shiftId = o.shiftId != null ? String(o.shiftId) : '';
+  if (!restaurantId || !shiftId) return undefined;
+  const out: OfferedShiftRef = { restaurantId, shiftId };
+  if (o.day != null) out.day = String(o.day);
+  if (o.timeLabel != null) out.timeLabel = String(o.timeLabel);
+  if (o.iso != null) out.iso = String(o.iso);
+  return out;
 }
 
 export function mapStaffRequestFromDbRow(row: {
@@ -45,10 +73,25 @@ export function mapStaffRequestFromDbRow(row: {
     status: staffRequestStatusFromDb(row.status),
   };
   if (p.offeredShiftLabel) full.offeredShiftLabel = p.offeredShiftLabel as string;
+  const offeredShift = parseOfferedShift(p.offeredShift);
+  if (offeredShift) full.offeredShift = offeredShift;
   if (p.swapOfferId) full.swapOfferId = p.swapOfferId as string;
+  if (p.swapTargetEmployeeId != null && String(p.swapTargetEmployeeId).trim()) {
+    full.swapTargetEmployeeId = String(p.swapTargetEmployeeId).trim();
+  } else {
+    full.swapTargetEmployeeId = null;
+  }
+  if (p.swapTargetEmployeeName != null && String(p.swapTargetEmployeeName).trim()) {
+    full.swapTargetEmployeeName = String(p.swapTargetEmployeeName).trim();
+  } else {
+    full.swapTargetEmployeeName = null;
+  }
   if (p.submittedGrid != null) full.submittedGrid = p.submittedGrid;
   if (p.submittedWeekLabel) full.submittedWeekLabel = p.submittedWeekLabel as string;
   if (p.submittedWeekIndex != null) full.submittedWeekIndex = Number(p.submittedWeekIndex);
+  if (p.leaveType === 'sick' || p.leaveType === 'vacation') full.leaveType = p.leaveType;
+  if (p.timeoffStart) full.timeoffStart = String(p.timeoffStart).slice(0, 10);
+  if (p.timeoffEnd) full.timeoffEnd = String(p.timeoffEnd).slice(0, 10);
   return full;
 }
 
@@ -127,7 +170,10 @@ export type NewStaffRequestInput = {
   submittedWeekLabel?: string;
   submittedWeekIndex?: number;
   offeredShiftLabel?: string;
+  offeredShift?: OfferedShiftRef;
   swapOfferId?: string;
+  swapTargetEmployeeId?: string | null;
+  swapTargetEmployeeName?: string | null;
   leaveType?: 'sick' | 'vacation';
   timeoffStart?: string;
   timeoffEnd?: string;
@@ -152,7 +198,17 @@ export async function insertStaffRequest(
   if (full.submittedWeekLabel) payload.submittedWeekLabel = full.submittedWeekLabel;
   if (full.submittedWeekIndex != null) payload.submittedWeekIndex = full.submittedWeekIndex;
   if (full.offeredShiftLabel) payload.offeredShiftLabel = full.offeredShiftLabel;
+  if (full.offeredShift) payload.offeredShift = full.offeredShift;
   if (full.swapOfferId) payload.swapOfferId = full.swapOfferId;
+  if (full.swapTargetEmployeeId) {
+    payload.swapTargetEmployeeId = full.swapTargetEmployeeId;
+    if (full.swapTargetEmployeeName) {
+      payload.swapTargetEmployeeName = full.swapTargetEmployeeName;
+    }
+  } else {
+    payload.swapTargetEmployeeId = null;
+    payload.swapTargetEmployeeName = null;
+  }
   if (full.leaveType) payload.leaveType = full.leaveType;
   if (full.timeoffStart) payload.timeoffStart = full.timeoffStart;
   if (full.timeoffEnd) payload.timeoffEnd = full.timeoffEnd;

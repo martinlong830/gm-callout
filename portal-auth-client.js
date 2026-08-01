@@ -468,7 +468,12 @@
       const r = await portalFetch("/api/portal/signup", payload || {});
       if (!r.ok) return r;
       if (r.data.needsSignIn) {
-        return { ok: true, needsSignIn: true, message: r.data.message };
+        return {
+          ok: true,
+          needsSignIn: true,
+          message: r.data.message,
+          employeeId: r.data.employeeId || "",
+        };
       }
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;
@@ -476,6 +481,7 @@
         ok: true,
         role: r.data.role,
         displayName: r.data.displayName,
+        employeeId: r.data.employeeId || "",
       };
     },
 
@@ -488,6 +494,8 @@
         userId: r.data.userId,
         loginName: r.data.loginName || "",
         displayName: r.data.displayName || "",
+        employeeId: r.data.employeeId || "",
+        role: r.data.role || "",
         message: r.data.message || "Portal account created.",
       };
     },

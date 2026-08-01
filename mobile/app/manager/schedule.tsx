@@ -14,6 +14,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
@@ -158,6 +159,7 @@ export default function ManagerScheduleScreen() {
   const { role, session } = useAuth();
   const { t, staffTypeLabel } = useI18n();
   const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee } = useAppData();
+  const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   /** Main store leftmost; does not reshuffle when the selected chip changes. */
@@ -219,6 +221,19 @@ export default function ManagerScheduleScreen() {
     [allWeekDays, weekIndex]
   );
 
+  useEffect(() => {
+    const iso = String(params.weekMondayIso || '')
+      .trim()
+      .slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+    for (let w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+      if (weekMeta[w * 7]?.iso === iso) {
+        setWeekIndex(w);
+        break;
+      }
+    }
+  }, [params.weekMondayIso, weekMeta]);
+
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
     seedDefaultPublishedWeeks(map, weekMeta);
@@ -278,12 +293,18 @@ export default function ManagerScheduleScreen() {
               notify.failed && notify.failed > 0
                 ? ` ${notify.failed} failed${notify.message ? ` (${notify.message})` : ''}.`
                 : '';
+            const inAppNote =
+              notify.inAppCreated && notify.inAppCreated > 0
+                ? ` In-app notifications: ${notify.inAppCreated}.`
+                : '';
             Alert.alert(
               t('schedule.published'),
               t('schedule.publishedNotified', {
                 count: notify.sent,
                 s: notify.sent === 1 ? '' : 's',
-              }) + failNote
+              }) +
+                failNote +
+                inAppNote
             );
           } else {
             Alert.alert(

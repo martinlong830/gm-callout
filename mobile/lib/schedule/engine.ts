@@ -927,9 +927,11 @@ function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): {
     return { store, changed };
   }
   const offset = SCHEDULE_PAST_WEEK_COUNT * 7;
+  let sawStaffedRestaurant = false;
   Object.keys(store).forEach((rid) => {
     const rs = store[rid];
     if (!rs || typeof rs !== 'object') return;
+    if (Object.keys(rs).length) sawStaffedRestaurant = true;
     if (!scheduleAssignmentStoreUsesLegacySingleWeekKeys(rs)) return;
     const removeIds: string[] = [];
     Object.keys(rs).forEach((shiftId) => {
@@ -947,7 +949,8 @@ function migrateScheduleAssignmentsForPastWeeks(store: AssignmentStore): {
       changed = true;
     });
   });
-  legacyPastWeeksMigrationDone = true;
+  /* Do not mark done on empty first hydrate — real remote data may arrive next tick. */
+  if (sawStaffedRestaurant) legacyPastWeeksMigrationDone = true;
   return { store, changed };
 }
 

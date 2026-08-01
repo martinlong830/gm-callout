@@ -8,13 +8,15 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useI18n } from '../../contexts/LocaleContext';
 import {
-  employeePrimaryLocationId,
   filterRestaurantsForUsualLocation,
+  managerScheduleMainRestaurantId,
+  orderRestaurantsMainFirst,
   type EmployeeRow,
 } from '../../lib/employees';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
@@ -86,24 +88,40 @@ export default function EmployeeScheduleScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { t, staffTypeLabel } = useI18n();
   const { myEmployee, employees, teamState, loading } = useAppData();
+  const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const allRestaurants = useMemo(() => defaultRestaurants(), []);
-  /** Team `usualRestaurant`: single store → that store only; `both` → all. */
-  const restaurants = useMemo(
-    () => filterRestaurantsForUsualLocation(allRestaurants, myEmployee?.usualRestaurant),
-    [allRestaurants, myEmployee?.usualRestaurant]
-  );
+  /**
+   * Team `usualRestaurant`: single store → that store only; `both` → all.
+   * Main/primary store stays leftmost (same helper as manager schedule pills).
+   */
+  const restaurants = useMemo(() => {
+    const visible = filterRestaurantsForUsualLocation(
+      allRestaurants,
+      myEmployee?.usualRestaurant
+    );
+    return orderRestaurantsMainFirst(visible, managerScheduleMainRestaurantId(myEmployee));
+  }, [allRestaurants, myEmployee]);
   const [currentRestaurantId, setCurrentRestaurantId] = useState(
     () => defaultRestaurants()[0]?.id ?? 'rp-9'
   );
   const dayScrollRef = useRef<ScrollView | null>(null);
+  const didInitRestaurantRef = useRef(false);
 
   useEffect(() => {
     if (!restaurants.length) return;
+    if (!didInitRestaurantRef.current) {
+      didInitRestaurantRef.current = true;
+      const main = managerScheduleMainRestaurantId(myEmployee);
+      if (main && restaurants.some((r) => r.id === main)) {
+        setCurrentRestaurantId(main);
+        return;
+      }
+    }
     if (restaurants.some((r) => r.id === currentRestaurantId)) return;
-    const primary = employeePrimaryLocationId(myEmployee);
+    const main = managerScheduleMainRestaurantId(myEmployee);
     const next =
-      (primary && restaurants.find((r) => r.id === primary)?.id) || restaurants[0]?.id;
+      (main && restaurants.find((r) => r.id === main)?.id) || restaurants[0]?.id;
     if (next) setCurrentRestaurantId(next);
   }, [restaurants, currentRestaurantId, myEmployee]);
 
@@ -116,6 +134,19 @@ export default function EmployeeScheduleScreen() {
     () => getVisibleWeekDays(allWeekDays, weekIndex),
     [allWeekDays, weekIndex]
   );
+
+  useEffect(() => {
+    const iso = String(params.weekMondayIso || '')
+      .trim()
+      .slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+    for (let w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+      if (weekMeta[w * 7]?.iso === iso) {
+        setWeekIndex(w);
+        break;
+      }
+    }
+  }, [params.weekMondayIso, weekMeta]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);

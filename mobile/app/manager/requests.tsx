@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,21 +10,29 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
+import { approveStaffRequest } from '../../lib/approveStaffRequest';
 import {
   employeeDisplayName,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
 } from '../../lib/employees';
-import { supabase } from '../../lib/supabase';
+import { DEFAULT_DRAFT_SCHEDULE_ROWS } from '../../lib/schedule/engine';
+import type { AssignmentStore } from '../../lib/schedule/types';
 import {
   formatStaffRequestSubmittedDate,
   isCloudStaffRequestId,
   type StaffRequestUi,
   updateStaffRequestStatus,
 } from '../../lib/staffRequests';
+import {
+  swapRequestCanManagerApprove,
+  swapRequestDisplayStatus,
+} from '../../lib/shiftSwap';
+import { supabase } from '../../lib/supabase';
 
 type ActionTypeFilter = 'timeoff' | 'swap' | 'callout';
 type StatusFilter = 'all' | 'pending' | 'closed';
@@ -125,9 +133,11 @@ const TYPE_CHIPS: { id: ActionTypeFilter; labelKey: string }[] = [
 ];
 
 export default function ManagerRequests() {
-  const { staffRequests, teamState, loading, error, refetch, employees, myEmployee } = useAppData();
+  const { staffRequests, teamState, loading, error, refetch, employees, myEmployee, applyLocalScheduleAssignments } =
+    useAppData();
   const { role } = useAuth();
   const { t, staffTypeLabel, statusLabel } = useI18n();
+  const params = useLocalSearchParams<{ subsection?: string; requestId?: string }>();
   const [typeFilter, setTypeFilter] = useState<ActionTypeFilter>('timeoff');
   const [statusByType, setStatusByType] = useState<Record<ActionTypeFilter, StatusFilter>>({
     timeoff: 'all',
@@ -137,6 +147,17 @@ export default function ManagerRequests() {
   const [search, setSearch] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const listRef = useRef<FlatList<Row> | null>(null);
+  const focusRequestId = String(params.requestId || '').trim();
+
+  useEffect(() => {
+    const raw = String(params.subsection || '')
+      .trim()
+      .toLowerCase();
+    if (raw === 'timeoff' || raw === 'swap' || raw === 'callout') {
+      setTypeFilter(raw);
+    }
+  }, [params.subsection]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -148,6 +169,10 @@ export default function ManagerRequests() {
 
   const storeScope = useMemo(() => managerManagedRestaurantId(myEmployee, role), [myEmployee, role]);
 
+  const assignmentStore = useMemo(
+    () => (teamState?.schedule_assignments || {}) as AssignmentStore,
+    [teamState?.schedule_assignments]
+  );
   const scopedNameSet = useMemo(() => {
     if (!storeScope) return null;
     const set = new Set<string>();
@@ -218,6 +243,22 @@ export default function ManagerRequests() {
     return out;
   }, [staffRequests, typeFilter, statusFilter, q, calloutHistory, t, requestInScope, storeScope]);
 
+  useEffect(() => {
+    if (!focusRequestId || !rows.length) return;
+    const idx = rows.findIndex(
+      (r) => r.kind === 'staff' && r.request.id === focusRequestId
+    );
+    if (idx < 0) return;
+    const timer = setTimeout(() => {
+      try {
+        listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.15 });
+      } catch {
+        /* ignore measure failures before layout */
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [focusRequestId, rows]);
+
   const setStatusForType = useCallback((s: StatusFilter) => {
     setStatusByType((prev) => ({ ...prev, [typeFilter]: s }));
   }, [typeFilter]);
@@ -227,11 +268,22 @@ export default function ManagerRequests() {
       Alert.alert(t('requests.cannotUpdate'), t('requests.notInSupabase'));
       return;
     }
+    if (req.type === 'swap' && !swapRequestCanManagerApprove(req)) {
+      Alert.alert(t('requests.cannotUpdate'), t('requests.swapNeedsCover'));
+      return;
+    }
     setBusyId(req.id);
-    const res = await updateStaffRequestStatus(supabase, req.id, 'approved');
+    const res = await approveStaffRequest(supabase, req, employees, DEFAULT_DRAFT_SCHEDULE_ROWS, {
+      allRequests: staffRequests,
+      assignmentStore,
+      draftScheduleRaw: teamState?.draft_schedule,
+    });
     setBusyId(null);
     if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
-    else void refetch({ silent: true });
+    else {
+      if (res.store) applyLocalScheduleAssignments(res.store);
+      void refetch({ silent: true });
+    }
   };
 
   const onDecline = async (id: string) => {
@@ -240,7 +292,20 @@ export default function ManagerRequests() {
       return;
     }
     setBusyId(id);
+    const req = staffRequests.find((r) => r.id === id);
     const res = await updateStaffRequestStatus(supabase, id, 'declined');
+    if (res.ok && req?.type === 'swap' && !req.swapOfferId) {
+      const linked = staffRequests.filter(
+        (r) =>
+          r.type === 'swap' &&
+          r.status === 'pending' &&
+          r.swapOfferId === id &&
+          isCloudStaffRequestId(r.id)
+      );
+      for (const c of linked) {
+        await updateStaffRequestStatus(supabase, c.id, 'declined');
+      }
+    }
     setBusyId(null);
     if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
     else void refetch({ silent: true });
@@ -301,12 +366,19 @@ export default function ManagerRequests() {
 
     const r = item.request;
     const roleLabel = staffTypeLabel(r.role);
-    const statusWord = statusLabel(r.status);
+    const displayStatus = swapRequestDisplayStatus(r, staffRequests);
+    const statusWord = statusLabel(displayStatus);
     const staffStatusStyle =
-      r.status === 'approved' ? styles.status_ok : r.status === 'declined' ? styles.status_bad : styles.status_pending;
+      r.status === 'approved'
+        ? styles.status_ok
+        : r.status === 'declined'
+          ? styles.status_bad
+          : styles.status_pending;
+    const canApprove =
+      r.status === 'pending' && (r.type !== 'swap' || swapRequestCanManagerApprove(r));
 
     return (
-      <View style={styles.row}>
+      <View style={[styles.row, focusRequestId && r.id === focusRequestId ? styles.rowFocused : null]}>
         <View style={styles.rowHeader}>
           <Text style={styles.empName}>{r.employeeName}</Text>
           <Text style={[styles.statusPill, staffStatusStyle]}>{statusWord}</Text>
@@ -318,6 +390,14 @@ export default function ManagerRequests() {
         {r.type === 'swap' && r.offeredShiftLabel ? (
           <Text style={styles.highlight}>{t('requests.offeredShift')}: {r.offeredShiftLabel}</Text>
         ) : null}
+        {r.type === 'swap' && !r.swapOfferId && r.swapTargetEmployeeName ? (
+          <Text style={styles.meta}>
+            {t('requests.swapTarget')}: {r.swapTargetEmployeeName}
+          </Text>
+        ) : null}
+        {r.type === 'swap' && !r.swapOfferId && !r.swapTargetEmployeeId ? (
+          <Text style={styles.meta}>{t('requests.swapTargetEveryone')}</Text>
+        ) : null}
         {r.type === 'swap' && r.swapOfferId ? (
           <Text style={styles.meta}>
             {(() => {
@@ -328,16 +408,21 @@ export default function ManagerRequests() {
             })()}
           </Text>
         ) : null}
+        {r.type === 'swap' && displayStatus === 'awaiting_cover' ? (
+          <Text style={styles.mutedLine}>{t('requests.swapAwaitingCover')}</Text>
+        ) : null}
         <Text style={styles.notes}>{r.summary}</Text>
         {r.status === 'pending' ? (
           <View style={styles.actions}>
-            <Pressable
-              style={[styles.btnPrimary, busyId === r.id && styles.btnDisabled]}
-              disabled={busyId === r.id}
-              onPress={() => void onApprove(r)}
-            >
-              <Text style={styles.btnPrimaryText}>{t('common.approve')}</Text>
-            </Pressable>
+            {canApprove ? (
+              <Pressable
+                style={[styles.btnPrimary, busyId === r.id && styles.btnDisabled]}
+                disabled={busyId === r.id}
+                onPress={() => void onApprove(r)}
+              >
+                <Text style={styles.btnPrimaryText}>{t('common.approve')}</Text>
+              </Pressable>
+            ) : null}
             <Pressable
               style={[styles.btnGhost, busyId === r.id && styles.btnDisabled]}
               disabled={busyId === r.id}
@@ -409,12 +494,26 @@ export default function ManagerRequests() {
         <ActivityIndicator style={{ marginTop: 24 }} />
       ) : (
         <FlatList
+          ref={listRef}
           style={styles.list}
           data={rows}
           keyExtractor={(item) => item.key}
           refreshing={refreshing}
           onRefresh={onRefresh}
           renderItem={renderRow}
+          onScrollToIndexFailed={(info) => {
+            setTimeout(() => {
+              try {
+                listRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: true,
+                  viewPosition: 0.15,
+                });
+              } catch {
+                /* ignore */
+              }
+            }, 300);
+          }}
           ListEmptyComponent={<Text style={styles.muted}>{empty}</Text>}
           contentContainerStyle={styles.listPad}
           keyboardShouldPersistTaps="handled"
@@ -484,6 +583,11 @@ const styles = StyleSheet.create({
     padding: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#e8eaed',
+  },
+  rowFocused: {
+    backgroundColor: '#fff7ed',
+    borderLeftWidth: 3,
+    borderLeftColor: '#c41230',
   },
   rowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   empName: { fontSize: 16, fontWeight: '700', color: '#111', flex: 1 },

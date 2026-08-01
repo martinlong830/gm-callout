@@ -198,6 +198,41 @@ export function ensureEmployeeLeaveBalance(emp: EmployeeRow): boolean {
   return true;
 }
 
+/**
+ * Append dated VL/SL usage entries (dedupe by date). When sick `hoursRemaining` is an
+ * explicit override, deduct newly added hours so PTO totals stay consistent.
+ */
+export function appendLeaveBalanceEntries(
+  emp: EmployeeRow,
+  leaveType: 'sick' | 'vacation',
+  entries: LeaveEntry[]
+): { addedHours: number; addedDates: string[] } {
+  ensureEmployeeLeaveBalance(emp);
+  const bal = normalizeLeaveBalance(emp.meta?.leaveBalance);
+  const side = leaveType === 'sick' ? bal.sick : bal.vacation;
+  const existingDates = new Set(
+    side.entries.map((e) => String(e.date || '').slice(0, 10)).filter(Boolean)
+  );
+  let addedHours = 0;
+  const addedDates: string[] = [];
+  for (const raw of entries) {
+    const date = String(raw.date || '').slice(0, 10);
+    if (!date || existingDates.has(date)) continue;
+    const hours = Math.max(0, Number(raw.hours) || LEAVE_HOURS_PER_DAY);
+    if (hours <= 0) continue;
+    side.entries.push({ date, hours });
+    existingDates.add(date);
+    addedHours += hours;
+    addedDates.push(date);
+  }
+  if (leaveType === 'sick' && bal.sick.hoursRemaining != null && addedHours > 0) {
+    bal.sick.hoursRemaining = Math.max(0, Number(bal.sick.hoursRemaining) - addedHours);
+  }
+  if (!emp.meta) emp.meta = {};
+  emp.meta.leaveBalance = bal;
+  return { addedHours, addedDates };
+}
+
 export function applyLeaveSeedsToEmployees(employees: EmployeeRow[]): number {
   let n = 0;
   for (const emp of employees) {

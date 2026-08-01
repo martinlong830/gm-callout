@@ -300,6 +300,39 @@
     return { vl: vl, sl: sl };
   }
 
+  /**
+   * Append dated VL/SL usage entries (dedupe by date). Deducts sick hoursRemaining
+   * override when present so PTO remaining stays consistent.
+   */
+  function appendLeaveBalanceEntries(emp, leaveType, entries) {
+    if (!emp) return { addedHours: 0, addedDates: [] };
+    ensureEmployeeLeaveBalance(emp);
+    var bal = normalizeBalance(emp.meta.leaveBalance);
+    var side = leaveType === 'sick' ? bal.sick : bal.vacation;
+    var existing = {};
+    (side.entries || []).forEach(function (e) {
+      var d = String(e.date || '').slice(0, 10);
+      if (d) existing[d] = true;
+    });
+    var addedHours = 0;
+    var addedDates = [];
+    (entries || []).forEach(function (raw) {
+      var date = String((raw && raw.date) || '').slice(0, 10);
+      if (!date || existing[date]) return;
+      var hours = Math.max(0, parseFloat(raw && raw.hours) || HOURS_PER_DAY);
+      if (hours <= 0) return;
+      side.entries.push({ date: date, hours: hours });
+      existing[date] = true;
+      addedHours += hours;
+      addedDates.push(date);
+    });
+    if (leaveType === 'sick' && side.hoursRemaining != null && addedHours > 0) {
+      side.hoursRemaining = Math.max(0, Number(side.hoursRemaining) - addedHours);
+    }
+    emp.meta.leaveBalance = bal;
+    return { addedHours: addedHours, addedDates: addedDates };
+  }
+
   global.gmEmployeeLeave = {
     HOURS_PER_DAY: HOURS_PER_DAY,
     SEED_VERSION: SEED_VERSION,
@@ -314,5 +347,6 @@
     formatHours: formatHours,
     sumEntryHours: sumEntryHours,
     leaveHoursInWeek: leaveHoursInWeek,
+    appendLeaveBalanceEntries: appendLeaveBalanceEntries,
   };
 })(typeof window !== 'undefined' ? window : global);

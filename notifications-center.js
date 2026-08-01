@@ -163,6 +163,99 @@
     }
   }
 
+  function subsectionFromRequestType(requestType) {
+    var t = String(requestType || '')
+      .trim()
+      .toLowerCase();
+    if (t === 'callout' || t === 'callout_request') return 'callout';
+    if (t === 'timeoff' || t === 'vacation' || t === 'sick' || t === 'pto') return 'timeoff';
+    if (t === 'swap' || t === 'shift_swap') return 'swap';
+    if (t === 'availability') return 'availability';
+    return null;
+  }
+
+  /** Resolve notification → { screen, subsection, requestId, weekMondayIso }. */
+  function resolveNotificationRoute(type, data) {
+    var d = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    var notifType = String(type || d.type || '')
+      .trim()
+      .toLowerCase();
+    var requestType = String(d.requestType || d.request_type || '').trim();
+    var requestId = String(
+      d.requestId || d.request_id || d.staffRequestId || d.staff_request_id || ''
+    ).trim();
+    var weekMondayIso = String(d.weekMondayIso || d.week_monday_iso || '')
+      .trim()
+      .slice(0, 10);
+    var explicit = String(d.subsection || d.screen || '')
+      .trim()
+      .toLowerCase();
+    var subsection = null;
+    if (
+      explicit === 'timeoff' ||
+      explicit === 'swap' ||
+      explicit === 'callout' ||
+      explicit === 'availability' ||
+      explicit === 'schedule'
+    ) {
+      subsection = explicit;
+    } else {
+      subsection = subsectionFromRequestType(requestType);
+    }
+    if (!subsection) {
+      if (notifType === 'availability_submitted') subsection = 'availability';
+      else if (notifType === 'schedule_published') subsection = 'schedule';
+      else if (notifType === 'swap_offer_targeted' || notifType.indexOf('swap') >= 0) subsection = 'swap';
+      else if (notifType.indexOf('callout') >= 0) subsection = 'callout';
+      else if (
+        notifType.indexOf('timeoff') >= 0 ||
+        notifType.indexOf('vacation') >= 0 ||
+        notifType.indexOf('sick') >= 0
+      ) {
+        subsection = 'timeoff';
+      }
+    }
+    if (!subsection) return null;
+    if (subsection === 'availability') {
+      return { screen: 'availability', subsection: subsection, requestId: requestId || null };
+    }
+    if (subsection === 'schedule') {
+      return {
+        screen: 'schedule',
+        subsection: subsection,
+        requestId: requestId || null,
+        weekMondayIso: /^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso) ? weekMondayIso : null,
+      };
+    }
+    return {
+      screen: 'actions',
+      subsection: subsection,
+      requestId: requestId || null,
+    };
+  }
+
+  function openNotificationRoute(route) {
+    if (!route) return;
+    if (typeof window.gmCalloutOpenNotificationRoute === 'function') {
+      window.gmCalloutOpenNotificationRoute(route);
+      return;
+    }
+    if (
+      document.documentElement.classList.contains('employee-app') &&
+      typeof window.gmCalloutEmployeeOpenNotificationRoute === 'function'
+    ) {
+      window.gmCalloutEmployeeOpenNotificationRoute(route);
+    }
+  }
+
+  function onNotificationClick(n) {
+    var route = resolveNotificationRoute(n && n.type, n && n.data);
+    void markRead(n && n.id ? [n.id] : []).then(function () {
+      setPanelOpen(false);
+      openNotificationRoute(route);
+    });
+  }
+
   function renderList() {
     var e = els();
     if (!e.list) return;
@@ -176,6 +269,8 @@
       var li = document.createElement('li');
       li.className = 'notifications-item' + (n.read_at ? '' : ' is-unread');
       li.setAttribute('data-id', n.id);
+      li.setAttribute('role', 'button');
+      li.tabIndex = 0;
       var title = document.createElement('div');
       title.className = 'notifications-item-title';
       title.textContent = n.title || '';
@@ -188,8 +283,16 @@
       li.appendChild(title);
       if (n.body) li.appendChild(body);
       li.appendChild(meta);
-      li.addEventListener('click', function () {
-        void markRead([n.id]);
+      li.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onNotificationClick(n);
+      });
+      li.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          onNotificationClick(n);
+        }
       });
       e.list.appendChild(li);
     });
@@ -418,6 +521,7 @@
     start: start,
     stop: stop,
     refresh: refresh,
+    resolveRoute: resolveNotificationRoute,
   };
 
   document.addEventListener('DOMContentLoaded', function () {

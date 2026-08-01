@@ -13,6 +13,8 @@ export type RegisterEmployeeInput = {
   email?: string;
   staffType: 'Kitchen' | 'Bartender' | 'Server';
   authUserId?: string;
+  /** Prefer this id when the server already created the roster row. */
+  employeeId?: string;
 };
 
 export async function createEmployeeRosterRow(
@@ -40,11 +42,28 @@ export async function createEmployeeRosterRow(
     };
   }
   const email = String(input.email || '').trim();
+
+  let rosterId =
+    String(input.employeeId || '').trim() ||
+    (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
+
+  /* Server signup/create-employee may already have inserted the linked roster row. */
+  if (input.authUserId) {
+    const existing = await sb
+      .from('employees')
+      .select('id')
+      .eq('auth_user_id', input.authUserId)
+      .limit(1)
+      .maybeSingle();
+    if (existing.data && existing.data.id) {
+      rosterId = String(existing.data.id);
+    }
+  }
+
   const emp: EmployeeRow = {
-    id:
-      typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    id: rosterId,
     authUserId: input.authUserId,
     firstName: fn,
     lastName: ln,

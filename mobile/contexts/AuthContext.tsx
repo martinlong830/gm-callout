@@ -223,14 +223,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const rosterRes = await createEmployeeRosterRow(supabase, {
           ...roster,
           authUserId: data.session.user.id,
+          employeeId: up.employeeId || roster.employeeId,
         });
         if (!rosterRes.ok) {
-          return {
-            ok: false as const,
-            message:
-              rosterRes.message ||
-              'Account was created but roster update failed. Ask a manager for help.',
-          };
+          /* Server signup already inserts the roster via ensureEmployeeRosterRow.
+             Prefer that over failing a successful portal signup on a client sync miss. */
+          if (!up.employeeId) {
+            return {
+              ok: false as const,
+              message:
+                rosterRes.message ||
+                'Account was created but roster update failed. Ask a manager for help.',
+            };
+          }
+          console.warn('createEmployeeRosterRow after signup', rosterRes.message);
         }
       }
       if (isAppRole(up.role)) {

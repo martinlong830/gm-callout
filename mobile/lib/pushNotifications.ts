@@ -1,7 +1,10 @@
 import Constants from 'expo-constants';
+import { router } from 'expo-router';
 import { InteractionManager, Platform } from 'react-native';
 import { portalRegisterPushToken } from './portalAuth';
 import { readStoredTeamStateId } from './companySession';
+import { hrefForNotificationRoute, resolveNotificationRoute } from './notificationRoutes';
+import type { AppRole } from './roles';
 
 /**
  * IMPORTANT: Do not statically import `expo-notifications` or `expo-device` here.
@@ -9,6 +12,15 @@ import { readStoredTeamStateId } from './companySession';
  * from employee/manager layouts would run at cold start (before login) and can
  * crash the process if native modules are missing or version-mismatched.
  */
+
+type NotificationResponseLike = {
+  notification?: {
+    request?: {
+      identifier?: string;
+      content?: { data?: unknown; title?: string };
+    };
+  };
+};
 
 type NotificationsModule = {
   AndroidImportance: { DEFAULT: number };
@@ -20,11 +32,19 @@ type NotificationsModule = {
   getPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
   requestPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
   getExpoPushTokenAsync: (opts: { projectId: string }) => Promise<{ data?: string }>;
+  addNotificationResponseReceivedListener: (
+    listener: (response: NotificationResponseLike) => void
+  ) => { remove: () => void };
+  getLastNotificationResponseAsync: () => Promise<NotificationResponseLike | null>;
 };
 
 let registrationInFlight: Promise<{ ok: boolean; reason?: string }> | null = null;
 let deferredTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRegisterAttemptAt = 0;
+let roleGetter: (() => AppRole | null | undefined) | null = null;
+let responseSub: { remove: () => void } | null = null;
+let responseRoutingStarted = false;
+let lastHandledResponseId: string | null = null;
 
 function isExpoGoRuntime(): boolean {
   try {
@@ -172,4 +192,88 @@ export function scheduleDevicePushTokenRegistration(delayMs = 2500): void {
 /** @deprecated Prefer scheduleDevicePushTokenRegistration — same implementation. */
 export function scheduleEmployeePushTokenRegistration(delayMs = 2500): void {
   scheduleDevicePushTokenRegistration(delayMs);
+}
+
+/** Keep role current so cold-start / background taps route to manager vs employee tabs. */
+export function setPushNotificationRouteRoleGetter(
+  getter: (() => AppRole | null | undefined) | null
+): void {
+  roleGetter = getter;
+}
+
+function asDataRecord(data: unknown): Record<string, unknown> {
+  return data && typeof data === 'object' && !Array.isArray(data)
+    ? (data as Record<string, unknown>)
+    : {};
+}
+
+function navigateFromPushResponse(response: NotificationResponseLike | null | undefined): void {
+  try {
+    const content = response?.notification?.request?.content;
+    const data = asDataRecord(content?.data);
+    const type = String(data.type || data.notifType || '').trim();
+    const route = resolveNotificationRoute(type, data);
+    if (!route) return;
+    const role = roleGetter ? roleGetter() : null;
+    const href = hrefForNotificationRoute(role, route);
+    const id =
+      String(response?.notification?.request?.identifier || '').trim() ||
+      `${route.screen}:${route.subsection || ''}:${route.requestId || ''}:${route.weekMondayIso || ''}`;
+    if (id && id === lastHandledResponseId) return;
+    lastHandledResponseId = id;
+    // Let auth/tab layouts settle after cold start or background resume.
+    setTimeout(() => {
+      try {
+        router.push(href as never);
+      } catch (err) {
+        console.warn('push notification navigate', err);
+      }
+    }, 250);
+  } catch (err) {
+    console.warn('navigateFromPushResponse', err);
+  }
+}
+
+/**
+ * Listen for OS notification taps (and cold-start last response).
+ * Safe to call repeatedly; never throws. Dynamic-imports expo-notifications.
+ */
+export function startPushNotificationResponseRouting(): void {
+  if (responseRoutingStarted) return;
+  responseRoutingStarted = true;
+  void (async () => {
+    try {
+      const Notifications = await loadNotifications();
+      if (!Notifications?.addNotificationResponseReceivedListener) {
+        responseRoutingStarted = false;
+        return;
+      }
+      if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+        try {
+          const last = await Notifications.getLastNotificationResponseAsync();
+          if (last) navigateFromPushResponse(last);
+        } catch (err) {
+          console.warn('getLastNotificationResponseAsync', err);
+        }
+      }
+      responseSub?.remove();
+      responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
+        navigateFromPushResponse(response);
+      });
+    } catch (err) {
+      console.warn('startPushNotificationResponseRouting', err);
+      responseRoutingStarted = false;
+    }
+  })();
+}
+
+export function stopPushNotificationResponseRouting(): void {
+  try {
+    responseSub?.remove();
+  } catch {
+    /* ignore */
+  }
+  responseSub = null;
+  responseRoutingStarted = false;
+  lastHandledResponseId = null;
 }

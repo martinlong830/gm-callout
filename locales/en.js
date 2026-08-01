@@ -122,6 +122,7 @@ window.GM_I18N_EN = {
   'status.approved': 'Approved',
   'status.declined': 'Declined',
   'status.pending': 'Pending',
+  'status.awaiting_cover': 'Awaiting cover',
   'status.draft': 'Draft',
   'status.submitted': 'Submitted',
 
@@ -468,10 +469,12 @@ window.GM_I18N_EN = {
   'employee.calloutNotes': 'Notes for your manager',
   'employee.submitCallout': 'Submit Callout',
   'employee.swapIntro':
-    "Post a shift you want to trade, or pick up someone else's open offer. Your manager approves every swap.",
+    "Post a shift you want to trade, or pick up someone else's open offer. Your manager approves after someone accepts.",
   'employee.offerShift': 'Offer a shift',
   'employee.offerShiftDesc': 'Choose an upcoming shift from your schedule to make available for others.',
   'employee.yourShift': 'Your shift',
+  'employee.swapWith': 'Send request to',
+  'employee.swapEveryone': 'Everyone',
   'employee.postOffer': 'Post offer',
   'employee.availableShifts': 'Available shifts',
   'employee.availableShiftsDesc':
@@ -481,6 +484,12 @@ window.GM_I18N_EN = {
   'employee.noScheduledShifts': 'No scheduled shifts in the current window',
   'employee.noUpcomingShiftsOption': 'No upcoming shifts available',
   'employee.noSwapOffers': 'No open shift swap offers',
+  'employee.swapAwaitingCover': 'Waiting for a teammate to accept before you can approve.',
+  'employee.swapNeedsCover': 'A cover worker must accept this swap before you can approve it.',
+  'employee.swapTarget': 'Requested cover',
+  'employee.swapTargetEveryone': 'Sent to everyone',
+  'employee.acceptingOffer': 'Accepting offer',
+  'employee.offeredShift': 'Offered shift',
 
   'empForm.profile': 'Profile',
   'empForm.schedule': 'Schedule',
@@ -510,6 +519,7 @@ window.GM_I18N_EN = {
   'notifications.empty': 'No notifications yet.',
   'notifications.markAllRead': 'Mark all read',
   'notifications.unread': 'unread',
+  'notifications.openHint': 'Opens the related screen',
 
   'support.title': 'Support',
   'privacy.title': 'Privacy',

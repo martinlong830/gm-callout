@@ -327,6 +327,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       Alert.alert('Profile', 'Phone number is required for new employees.');
       return;
     }
+    if (isCreate && phoneTrim.replace(/\D/g, '').length < 7) {
+      Alert.alert('Profile', 'Enter a valid phone number (at least 7 digits).');
+      return;
+    }
     const hrRaw = hourlyRate.trim();
     const hrNum = hrRaw === '' ? undefined : parseFloat(hrRaw);
     if (hrNum != null && (Number.isNaN(hrNum) || hrNum < 0)) {
@@ -341,33 +345,59 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     }
 
     let authUserId = employee?.authUserId;
-    let portalCreateWarning: string | null = null;
     const emailTrim = email.trim();
+    let rosterId =
+      employee?.id ||
+      (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
     if (isCreate) {
       const pw = portalPassword.trim() || 'pass';
       if (pw.length < 4) {
         Alert.alert('App login', 'Password must be at least 4 characters.');
         return;
       }
-      if (isPortalAuthConfigured()) {
-        const displayNameNew = `${first} ${last}`.trim();
-        const portalPayload: Parameters<typeof portalCreateEmployeeAccount>[0] = {
-          loginName: displayNameNew,
-          password: pw,
-          displayName: displayNameNew,
-          phone: phoneTrim,
-          staffType,
-          role: canCreateManager ? portalAccountType : 'employee',
-        };
-        const recovery = portalRecoveryEmail.trim() || emailTrim;
-        if (recovery) portalPayload.recoveryEmail = recovery;
-        setBusy(true);
-        const portalRes = await portalCreateEmployeeAccount(portalPayload);
-        if (!portalRes.ok) {
-          portalCreateWarning = portalRes.message;
-        } else if (portalRes.userId) {
-          authUserId = portalRes.userId;
-        }
+      if (!isPortalAuthConfigured()) {
+        Alert.alert(
+          'App login',
+          'Portal auth is not configured. Set EXPO_PUBLIC_GM_WEB_URL and try again.'
+        );
+        return;
+      }
+      const displayNameNew = `${first} ${last}`.trim();
+      const accountRole = canCreateManager ? portalAccountType : 'employee';
+      const portalPayload: Parameters<typeof portalCreateEmployeeAccount>[0] = {
+        loginName: displayNameNew,
+        password: pw,
+        displayName: displayNameNew,
+        firstName: first,
+        lastName: last,
+        phone: phoneTrim,
+        staffType,
+        usualRestaurant,
+        role: accountRole,
+        employeeId: rosterId,
+      };
+      const recovery = portalRecoveryEmail.trim() || emailTrim;
+      if (recovery) portalPayload.recoveryEmail = recovery;
+      setBusy(true);
+      const portalRes = await portalCreateEmployeeAccount(portalPayload);
+      if (!portalRes.ok) {
+        setBusy(false);
+        Alert.alert('App login', portalRes.message || 'Could not create app login.');
+        return;
+      }
+      if (!portalRes.userId) {
+        setBusy(false);
+        Alert.alert(
+          'App login',
+          'Portal account was not created (missing user id). Employee was not added.'
+        );
+        return;
+      }
+      authUserId = portalRes.userId;
+      if (portalRes.employeeId) {
+        rosterId = portalRes.employeeId;
       }
     } else if (!employee) {
       return;
@@ -396,11 +426,9 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     const previousDisplayName = employee ? employeeDisplayName(employee) : '';
     const updated: EmployeeRow = {
       ...(employee ?? {
-        id:
-          typeof globalThis.crypto !== 'undefined' && globalThis.crypto.randomUUID
-            ? globalThis.crypto.randomUUID()
-            : `emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        id: rosterId,
       }),
+      id: rosterId,
       firstName: first,
       lastName: last,
       displayName: `${first} ${last}`.trim(),
@@ -437,12 +465,6 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       }
     } else if (isCloudEmployeeId(updated.id) && !clockPin && !pinDraft) {
       void assignEmployeeClockPin(supabase, updated.id);
-    }
-    if (portalCreateWarning) {
-      Alert.alert(
-        isCreate ? 'Employee added' : 'Employee saved',
-        `Saved to the roster, but app login was not created: ${portalCreateWarning}`
-      );
     }
     setStatusMsg(isCreate ? 'Employee added.' : 'Employee saved.');
     onSaved();

@@ -838,6 +838,11 @@ html.timeclock-app .header > .header-signout-btn {
   padding: 0.65rem 0.5rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.notifications-item:hover {
+  background: #f8fafc;
 }
 
 .notifications-item + .notifications-item {
@@ -846,6 +851,10 @@ html.timeclock-app .header > .header-signout-btn {
 
 .notifications-item.is-unread {
   background: #fff7f8;
+}
+
+.notifications-item.is-unread:hover {
+  background: #fff1f2;
 }
 
 .notifications-item-title {
