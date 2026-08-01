@@ -738,6 +738,66 @@
     return gmT('schedule.dayOffLabel');
   }
 
+  function weekdayShortLabel(wk) {
+    var key = String(wk || '').slice(0, 3);
+    var map = {
+      Mon: 'days.mon',
+      Tue: 'days.tue',
+      Wed: 'days.wed',
+      Thu: 'days.thu',
+      Fri: 'days.fri',
+      Sat: 'days.sat',
+      Sun: 'days.sun',
+    };
+    return map[key] ? gmT(map[key]) : String(wk || '');
+  }
+
+  function weekdayFullUpperLabel(enUpperOrIndex) {
+    var keys = [
+      'days.monday',
+      'days.tuesday',
+      'days.wednesday',
+      'days.thursday',
+      'days.friday',
+      'days.saturday',
+      'days.sunday',
+    ];
+    if (typeof enUpperOrIndex === 'number' && enUpperOrIndex >= 0 && enUpperOrIndex < 7) {
+      return gmT(keys[enUpperOrIndex]);
+    }
+    var u = String(enUpperOrIndex || '').toUpperCase();
+    var idx = FULL_WEEKDAY_NAMES_UPPER.indexOf(u);
+    if (idx >= 0) return gmT(keys[idx]);
+    var shortIdx = WEEKDAY_KEYS.indexOf(String(enUpperOrIndex || '').slice(0, 3));
+    if (shortIdx >= 0) return gmT(keys[shortIdx]);
+    return u;
+  }
+
+  function breakAnnotationTypeLabel(type) {
+    var t = String(type || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, ' ');
+    if (t === 'NO BREAK' || t === 'NO BREAK TIME') return gmT('schedule.noBreak');
+    if (t === 'OFFICE') return gmT('schedule.office');
+    if (t === 'BREAK TIME' || t === 'BREAK') return gmT('schedule.breakTime');
+    return String(type || '');
+  }
+
+  /** Localized break tile text; storage stays English via formatBreakAnnotation. */
+  function displayBreakAnnotation(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    var parsed = parseBreakAnnotation(s);
+    if (parsed.type === 'NO BREAK' || /no\s*break/i.test(s)) {
+      return '(' + gmT('schedule.noBreak') + ')';
+    }
+    if (parsed.time && parsed.type) {
+      return '(' + parsed.time + ' ' + breakAnnotationTypeLabel(parsed.type) + ')';
+    }
+    return s;
+  }
+
   const STAFF_TYPE_LABELS = {
     get Kitchen() {
       return gmStaffTypeLabel('Kitchen');
@@ -1272,27 +1332,27 @@
       document.documentElement.classList.contains('manager-app') &&
       !managerCanEditCurrentRestaurant();
     if (past) {
-      btn.textContent = 'Past week';
+      btn.textContent = gmT('schedule.pastWeek');
       btn.disabled = true;
-      btn.title = 'Cannot publish or notify for a week that has already passed';
+      btn.title = gmT('schedule.pastWeekHint');
       return;
     }
     if (otherStore) {
-      btn.textContent = 'View only';
+      btn.textContent = gmT('schedule.viewOnly');
       btn.disabled = true;
-      btn.title = 'You can view this store’s schedule but only edit your own store';
+      btn.title = gmT('schedule.viewOnlyOtherStoreHint');
       return;
     }
     var published = weekIso && isScheduleWeekPublished(weekIso);
     btn.textContent = forceDisabled
-      ? 'Publishing…'
+      ? gmT('common.publishing')
       : published
-        ? 'Notify again'
-        : 'Publish / Notify';
+        ? gmT('common.notifyAgain')
+        : gmT('schedule.publishNotify');
     btn.disabled = forceDisabled;
     btn.title = published
-      ? 'This week (' + range + ') is already published — send another push notification'
-      : 'Publish this week’s schedule (' + range + ') and notify employees';
+      ? gmT('schedule.notifyAgainHint', { range: range })
+      : gmT('schedule.publishHint', { range: range });
   }
 
   async function publishSelectedWeekScheduleAndNotify(opts) {
@@ -4459,12 +4519,28 @@
       .join('');
     var typeOpts = BREAK_ANNOTATION_TYPE_PRESETS.map(function (t) {
       var sel = parsed.type === t ? ' selected' : '';
-      return '<option value="' + escapeHtml(t) + '"' + sel + '>' + escapeHtml(t) + '</option>';
+      return (
+        '<option value="' +
+        escapeHtml(t) +
+        '"' +
+        sel +
+        '>' +
+        escapeHtml(breakAnnotationTypeLabel(t)) +
+        '</option>'
+      );
     }).join('');
     return (
       '<div class="draft-cell-break"' + (off ? ' hidden' : '') + '>' +
-        '<select class="draft-break-type" aria-label="Break label">' + typeOpts + '</select>' +
-        '<select class="draft-break-time" aria-label="Break time"' + (parsed.type === 'NO BREAK' ? ' disabled' : '') + '>' +
+        '<select class="draft-break-type" aria-label="' +
+        escapeHtml(gmT('schedule.breakOffice')) +
+        '">' +
+        typeOpts +
+        '</select>' +
+        '<select class="draft-break-time" aria-label="' +
+        escapeHtml(gmT('schedule.assignedTime')) +
+        '"' +
+        (parsed.type === 'NO BREAK' ? ' disabled' : '') +
+        '>' +
           timeOpts +
         '</select>' +
       '</div>'
@@ -6160,17 +6236,12 @@
       showScheduleNotice('Keep at least one slot row per role.', false);
       return;
     }
-    var slotLabel = 'Slot ' + (trIdx + 1);
     draftModalScratch = rows;
     var hasContent = draftSlotRowHasContent(role, trIdx, wi, rid);
     draftModalScratch = null;
     if (
       hasContent &&
-      !confirm(
-        'Delete slot "' +
-          slotLabel +
-          '"? Shift times and assignments for this row will be removed.'
-      )
+      !confirm(gmT('schedule.deleteSlotConfirm', { n: trIdx + 1 }))
     ) {
       return;
     }
@@ -8030,7 +8101,7 @@
   function renderRestaurantSwitcher() {
     var el = document.getElementById('restaurantSwitcher');
     if (!el) return;
-    el.innerHTML = restaurantsList
+    el.innerHTML = restaurantsForManagerScheduleSwitcher()
       .map(function (r) {
         return (
           '<button type="button" class="restaurant-chip' +
@@ -8150,6 +8221,48 @@
     return null;
   }
 
+  /**
+   * Preferred "main" store for schedule restaurant pills (leftmost).
+   * Single-store usualRestaurant → that store; both → primary when set; else null
+   * (stable default list order: rp-9 then rp-8). Admins use primary when set —
+   * unlike currentManagerStoreScope, which is always null for admins.
+   */
+  function managerScheduleMainRestaurantId(emp) {
+    if (!emp) return null;
+    var home = emp.usualRestaurant || 'both';
+    if (home === 'rp-8' || home === 'rp-9') return home;
+    if (home === 'both') return employeePrimaryLocationId(emp);
+    return null;
+  }
+
+  /**
+   * Schedule store switcher order: preferred main first; remaining keep restaurantsList order.
+   * Does not follow the currently selected store — switching tabs must not reshuffle.
+   */
+  function orderRestaurantsMainFirst(list, mainId) {
+    var src = list && list.length ? list.slice() : [];
+    if (!mainId || src.length < 2) return src;
+    var ix = -1;
+    for (var i = 0; i < src.length; i += 1) {
+      if (src[i] && src[i].id === mainId) {
+        ix = i;
+        break;
+      }
+    }
+    if (ix <= 0) return src;
+    var main = src.splice(ix, 1)[0];
+    src.unshift(main);
+    return src;
+  }
+
+  function restaurantsForManagerScheduleSwitcher() {
+    if (!gmCalloutSessionIsManager) return restaurantsList.slice();
+    return orderRestaurantsMainFirst(
+      restaurantsList,
+      managerScheduleMainRestaurantId(signedInManagerEmployee())
+    );
+  }
+
   function employeeVisibleInManagerStoreScope(emp, scopeRid) {
     if (!scopeRid) return true;
     if (!emp) return false;
@@ -8203,7 +8316,18 @@
     var scope = currentManagerStoreScope();
     if ((scope === 'rp-8' || scope === 'rp-9') && currentRestaurantId !== scope) {
       switchRestaurant(scope);
+      return;
     }
+    /* Company-wide / admin with a preferred primary: land on main store. */
+    if (!scope) {
+      var main = managerScheduleMainRestaurantId(signedInManagerEmployee());
+      if ((main === 'rp-8' || main === 'rp-9') && currentRestaurantId !== main) {
+        switchRestaurant(main);
+        return;
+      }
+    }
+    /* Re-render pills once manager identity is known (main-left order). */
+    updateRestaurantSwitcherUI();
   }
 
   function employeesInManagerStoreScope() {
@@ -8407,8 +8531,14 @@
       return employeeDisplayName(e) === name;
     });
     if (exact) return exact;
+    /* Portal / DB display_name may differ from first+last (e.g. "Mark Ong" vs "MARK ONG"). */
+    var byStoredDisplay = employees.find(function (e) {
+      return e.displayName && String(e.displayName).trim() === name;
+    });
+    if (byStoredDisplay) return byStoredDisplay;
     var fuzzy = employees.find(function (e) {
-      return workerNamesMatch(name, employeeDisplayName(e));
+      if (workerNamesMatch(name, employeeDisplayName(e))) return true;
+      return !!(e.displayName && workerNamesMatch(name, e.displayName));
     });
     if (fuzzy) return fuzzy;
     return employees.find(function (e) {
@@ -9363,17 +9493,28 @@
       draftModalBreakScratch = initDraftModalBreakScratch(draftModalWeekIndex, draftModalRestaurantId, draftModalScratch);
     }
     var breakRows = draftModalBreakScratch[role] || [];
-    var head = '<thead><tr><th class="draft-slot-label">Slot</th>' +
+    var head =
+      '<thead><tr><th class="draft-slot-label">' +
+      escapeHtml(gmT('schedule.slotHeader')) +
+      '</th>' +
       WEEKDAY_KEYS.map(function (wk) {
-        return '<th>' + escapeHtml(wk) + '</th>';
+        return '<th>' + escapeHtml(weekdayShortLabel(wk)) + '</th>';
       }).join('') +
       '</tr></thead>';
     var body = '<tbody>' + rows.map(function (row, ri) {
       return '<tr data-draft-row="' + ri + '">' +
         '<th scope="row" class="draft-slot-label">' +
           '<div class="draft-slot-label-inner">' +
-            '<span class="draft-slot-row-label">Slot ' + (ri + 1) + '</span>' +
-            '<button type="button" class="btn btn-secondary draft-delete-slot-btn" data-draft-delete-row="' + ri + '" aria-label="Delete slot ' + (ri + 1) + '">Delete slot</button>' +
+            '<span class="draft-slot-row-label">' +
+            escapeHtml(gmT('common.slot', { n: ri + 1 })) +
+            '</span>' +
+            '<button type="button" class="btn btn-secondary draft-delete-slot-btn" data-draft-delete-row="' +
+            ri +
+            '" aria-label="' +
+            escapeHtml(gmT('schedule.deleteSlot') + ' ' + (ri + 1)) +
+            '">' +
+            escapeHtml(gmT('schedule.deleteSlot')) +
+            '</button>' +
           '</div>' +
         '</th>' +
         WEEKDAY_KEYS.map(function (wk, di) {
@@ -9477,14 +9618,10 @@
         var role = draftModalActiveRole;
         if (!draftModalScratch[role] || ri < 0 || ri >= draftModalScratch[role].length) return;
         flushDraftScheduleScratchFromDom();
-        var slotLabel = 'Slot ' + (ri + 1);
+        var slotLabel = gmT('common.slot', { n: ri + 1 });
         if (
           draftSlotRowHasContent(role, ri, draftModalWeekIndex, draftModalRestaurantId) &&
-          !confirm(
-            'Delete slot "' +
-              slotLabel +
-              '"? Shift times for this row will be removed when you save.'
-          )
+          !confirm(gmT('schedule.deleteSlotConfirm', { n: ri + 1 }))
         ) {
           return;
         }
@@ -10030,14 +10167,36 @@
     return out;
   }
 
+  /** Read staffed workers from a pending assignment stub (empty draft day / Unassigned shift). */
+  function scheduleRowStubWorkers(rs, roleIdx, trIdx, dayStr, dayInWeek, shiftId) {
+    if (!rs || roleIdx < 0) return [];
+    var entry = null;
+    if (shiftId && rs[shiftId] != null) {
+      entry = normalizeScheduleAssignment(rs[shiftId]);
+    } else {
+      var globalDayIdx =
+        dayInWeek != null && !isNaN(dayInWeek)
+          ? scheduleCalendarWeekIndex * 7 + dayInWeek
+          : ALL_WEEK_DAYS.indexOf(dayStr);
+      if (globalDayIdx < 0) return [];
+      entry = normalizeScheduleAssignment(
+        rs['shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx]
+      );
+    }
+    return (entry.workers || []).filter(function (n) {
+      return n && n !== 'Unassigned';
+    });
+  }
+
   /** Dominant assigned person across staffed days in a calendar row (visible week).
-   *  Also reads pending assignment stubs for days with no draft times yet (new empty slots). */
+   *  Also reads pending assignment stubs for days with no draft times yet (new empty slots),
+   *  and for SCHEDULE rows still Unassigned when the store already has a person. */
   function scheduleRowPrimaryPerson(role, trIdx, visibleDays) {
     var counts = Object.create(null);
     var order = [];
     var roleIdx = roleIdxForDraftRole(role);
     var rs = roleIdx >= 0 ? getCurrentRestaurantAssignments() : null;
-    (visibleDays || getVisibleWeekDays()).forEach(function (dayStr) {
+    (visibleDays || getVisibleWeekDays()).forEach(function (dayStr, dayInWeek) {
       var shift = SCHEDULE.find(function (s) {
         return s.day === dayStr && s.role === role && s.trIdx === trIdx;
       });
@@ -10046,18 +10205,16 @@
         var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
           return n && n !== 'Unassigned';
         });
-        name = workers.length
-          ? canonicalScheduleWorkerName(workers[0], currentRestaurantId)
-          : 'Unassigned';
+        if (workers.length) {
+          name = canonicalScheduleWorkerName(workers[0], currentRestaurantId);
+        } else {
+          var fromStore = scheduleRowStubWorkers(rs, roleIdx, trIdx, dayStr, dayInWeek, shift.id);
+          name = fromStore.length
+            ? canonicalScheduleWorkerName(fromStore[0], currentRestaurantId)
+            : 'Unassigned';
+        }
       } else if (rs) {
-        var globalDayIdx = ALL_WEEK_DAYS.indexOf(dayStr);
-        if (globalDayIdx < 0) return;
-        var stub = normalizeScheduleAssignment(
-          rs['shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx]
-        );
-        var stubWorkers = (stub.workers || []).filter(function (n) {
-          return n && n !== 'Unassigned';
-        });
+        var stubWorkers = scheduleRowStubWorkers(rs, roleIdx, trIdx, dayStr, dayInWeek, null);
         name = stubWorkers.length
           ? canonicalScheduleWorkerName(stubWorkers[0], currentRestaurantId)
           : 'Unassigned';
@@ -10082,6 +10239,19 @@
       }
     });
     return bestCount > 0 ? best : 'Unassigned';
+  }
+
+  /** Keep Person column ::after overlay in sync with the select value (native menulists shrink). */
+  function syncCalendarRowPersonSelectLabel(sel, personName) {
+    if (!sel) return;
+    var label = displayScheduleWorkerName(
+      !personName || personName === 'Unassigned'
+        ? 'Unassigned'
+        : canonicalScheduleWorkerName(personName, currentRestaurantId) || personName
+    );
+    var wrap = sel.closest ? sel.closest('.calendar-row-person-select-wrap') : null;
+    if (wrap) wrap.setAttribute('data-label', label);
+    sel.title = label;
   }
 
   /**
@@ -10214,7 +10384,11 @@
       escapeHtml(role) +
       '" data-delete-slot-tr="' +
       trIdx +
-      '" title="Delete this slot row">Delete slot</button>' +
+      '" title="' +
+      escapeHtml(gmT('schedule.deleteSlotTitle')) +
+      '">' +
+      escapeHtml(gmT('schedule.deleteSlot')) +
+      '</button>' +
       '</div>' +
       '</td>'
     );
@@ -10233,9 +10407,10 @@
     var visibleDays = getVisibleWeekDays();
     var roleIdx = roleIdxForDraftRole(role);
     if (roleIdx < 0) return;
+    var weekStart = scheduleCalendarWeekIndex * 7;
     var anyShift = false;
     var pendingStubIds = [];
-    visibleDays.forEach(function (dayStr) {
+    visibleDays.forEach(function (dayStr, dayInWeek) {
       var shift = SCHEDULE.find(function (s) {
         return s.day === dayStr && s.role === role && s.trIdx === trIdx;
       });
@@ -10245,9 +10420,7 @@
         shift.worker = shift.workers[0];
         return;
       }
-      var globalDayIdx = ALL_WEEK_DAYS.indexOf(dayStr);
-      if (globalDayIdx < 0) return;
-      pendingStubIds.push('shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx);
+      pendingStubIds.push('shift-' + (weekStart + dayInWeek) + '-' + roleIdx + '-' + trIdx);
     });
     if (!anyShift && !pendingStubIds.length) return;
     /* Blur before force-render so the open menulist does not block the rebuild. */
@@ -10283,6 +10456,22 @@
     rebuildSchedule();
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
+    /* If a deferred path skipped rebuild, still paint the overlay for this row. */
+    if (calendarGrid) {
+      var stillOpen = null;
+      calendarGrid.querySelectorAll('.calendar-row-person-select').forEach(function (el) {
+        if (
+          el.getAttribute('data-role') === role &&
+          String(el.getAttribute('data-tr-idx')) === String(trIdx)
+        ) {
+          stillOpen = el;
+        }
+      });
+      if (stillOpen) {
+        stillOpen.value = canon;
+        syncCalendarRowPersonSelectLabel(stillOpen, canon);
+      }
+    }
   }
 
   function ensureDraftRoleRow(draft, role, trIdx) {
@@ -10463,11 +10652,15 @@
 
     const visibleDays = getVisibleWeekDays();
     const colCount = visibleDays.length + 1;
-    const headerHtml =
+    var headerHtml =
       '<thead><tr>' +
       '<th scope="col" class="time-col calendar-row-person-col">' +
-      '<span class="calendar-th-full">Person</span>' +
-      '<div class="calendar-th-date-sub">Row assignee</div>' +
+      '<span class="calendar-th-full">' +
+      escapeHtml(gmT('schedule.personHeader')) +
+      '</span>' +
+      '<div class="calendar-th-date-sub">' +
+      escapeHtml(gmT('schedule.rowAssignee')) +
+      '</div>' +
       '</th>' +
       visibleDays
         .map(function (dayStr) {
@@ -10475,7 +10668,10 @@
             return m.label === dayStr;
           });
           var d = parseDayHeader(dayStr);
-          var full = meta && meta.dayNameUpper ? meta.dayNameUpper : String(d.dow || '').toUpperCase();
+          var full =
+            meta && meta.dayNameUpper
+              ? weekdayFullUpperLabel(meta.dayNameUpper)
+              : weekdayFullUpperLabel(d.dow);
           return (
             '<th scope="col">' +
             '<span class="calendar-th-full">' +
@@ -10500,10 +10696,13 @@
       if (rd.role === 'Bartender') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-foh">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">FRONT OF THE HOUSE' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">' +
+            escapeHtml(gmStaffTypeLabel('Bartender')) +
             (readOnly
               ? ''
-              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Bartender">Add slot</button></span>') +
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Bartender">' +
+                escapeHtml(gmT('schedule.addSlot')) +
+                '</button></span>') +
             '</td>' +
             '<td colspan="' +
             (colCount - 1) +
@@ -10513,10 +10712,13 @@
       if (rd.role === 'Server') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-delivery">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">DELIVERY/DISHWASHER' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">' +
+            escapeHtml(gmStaffTypeLabel('Server')) +
             (readOnly
               ? ''
-              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Server">Add slot</button></span>') +
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Server">' +
+                escapeHtml(gmT('schedule.addSlot')) +
+                '</button></span>') +
             '</td>' +
             '<td colspan="' +
             (colCount - 1) +
@@ -10526,10 +10728,13 @@
       if (rd.role === 'Kitchen') {
         bodyRows.push(
           '<tr class="calendar-group-row calendar-section-boh">' +
-            '<td class="time-col calendar-row-person-col calendar-group-label">BACK OF THE HOUSE' +
+            '<td class="time-col calendar-row-person-col calendar-group-label">' +
+            escapeHtml(gmStaffTypeLabel('Kitchen')) +
             (readOnly
               ? ''
-              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Kitchen">Add slot</button></span>') +
+              : '<span class="calendar-section-actions"><button type="button" class="calendar-add-slot-btn" data-add-slot-role="Kitchen">' +
+                escapeHtml(gmT('schedule.addSlot')) +
+                '</button></span>') +
             '</td>' +
             '<td colspan="' +
             (colCount - 1) +
@@ -10636,7 +10841,7 @@
               escapeHtml(rpTime) +
               '</div>' +
               '<div class="calendar-slot-rp-break">' +
-              escapeHtml(rpBreak) +
+              escapeHtml(displayBreakAnnotation(rpBreak)) +
               '</div>' +
               '<div class="calendar-slot-rp-hours">' +
               escapeHtml(rpHrs) +
@@ -11134,6 +11339,8 @@
       var role = sel.getAttribute('data-role');
       var trIdx = parseInt(sel.getAttribute('data-tr-idx'), 10);
       if (!role || isNaN(trIdx)) return;
+      /* Optimistic overlay update — ::after uses data-label, not the native select text. */
+      syncCalendarRowPersonSelectLabel(sel, sel.value);
       assignPersonToScheduleRow(role, trIdx, sel.value);
     });
 
@@ -11371,12 +11578,13 @@
         '<thead><tr>'
     );
     WEEKDAY_KEYS.forEach(function (wk) {
+      var wkLabel = weekdayShortLabel(wk);
       parts.push(
         '<th scope="col" class="availability-matrix-dayhead" title="' +
-          escapeHtml(wk) +
+          escapeHtml(wkLabel) +
           '">' +
           '<span class="availability-matrix-dayhead-dow">' +
-          escapeHtml(wk) +
+          escapeHtml(wkLabel) +
           '</span>' +
           '</th>'
       );
@@ -12320,7 +12528,9 @@
         sick,
         '<label class="form-field form-field-block emp-leave-note-field">' +
           '<span class="form-label">Note</span>' +
-          '<textarea class="emp-leave-sick-note" rows="2" placeholder="Optional note">' +
+          '<textarea class="emp-leave-sick-note" rows="2" placeholder="' +
+          escapeHtml(gmT('common.optionalNote')) +
+          '">' +
           escapeHtml(sick.note || '') +
           '</textarea></label>'
       );
@@ -15283,12 +15493,12 @@
         if (!startMeta) continue;
         var prefix =
           wi === SCHEDULE_TEMPLATE_WEEK_INDEX
-            ? 'This week'
+            ? gmT('common.thisWeek')
             : wi === SCHEDULE_TEMPLATE_WEEK_INDEX + 1
-              ? 'Next week'
+              ? gmT('days.nextWeek')
               : wi === SCHEDULE_TEMPLATE_WEEK_INDEX - 1
-                ? 'Last week'
-                : 'Week';
+                ? gmT('days.lastWeek')
+                : gmT('common.week');
         out.push({
           weekIndex: wi,
           startIso: startMeta.iso,
@@ -16058,6 +16268,17 @@
       if (typeof renderEmployeeList === 'function') renderEmployeeList();
       if (typeof renderRequestsList === 'function') renderRequestsList();
       if (typeof renderManagerAvailabilityScreen === 'function') renderManagerAvailabilityScreen();
+      if (typeof updateSchedulePublishNotifyButton === 'function') {
+        updateSchedulePublishNotifyButton();
+      }
+      if (typeof updateScheduleWeekNav === 'function') updateScheduleWeekNav();
+      if (
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.renderRoster === 'function' &&
+        currentScreen === 10
+      ) {
+        window.gmCalloutTimecards.renderRoster();
+      }
       if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
         window.gmCalloutManagerMessagesRefreshUi();
       }

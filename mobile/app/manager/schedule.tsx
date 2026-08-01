@@ -23,6 +23,8 @@ import {
   normalizeEmployeeStaffType,
   managerCanEditRestaurant,
   managerManagedRestaurantId,
+  managerScheduleMainRestaurantId,
+  orderRestaurantsMainFirst,
   type EmployeeRow,
 } from '../../lib/employees';
 import { readStoredTeamStateId } from '../../lib/companySession';
@@ -158,13 +160,21 @@ export default function ManagerScheduleScreen() {
   const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee } = useAppData();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
+  /** Main store leftmost; does not reshuffle when the selected chip changes. */
+  const scheduleRestaurants = useMemo(
+    () => orderRestaurantsMainFirst(restaurants, managerScheduleMainRestaurantId(myEmployee)),
+    [restaurants, myEmployee]
+  );
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
   const scheduleEditable = managerCanEditRestaurant(myEmployee, currentRestaurantId, role);
 
   useEffect(() => {
+    const main = managerScheduleMainRestaurantId(myEmployee);
+    if (main !== 'rp-8' && main !== 'rp-9') return;
     const scope = managerManagedRestaurantId(myEmployee, role);
-    if (scope === 'rp-8' || scope === 'rp-9') {
-      setCurrentRestaurantId(scope);
+    /* Store-scoped: always land on managed store. Company-wide / admin: prefer primary when set. */
+    if (scope === main || scope == null) {
+      setCurrentRestaurantId(main);
     }
   }, [myEmployee, role]);
   const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
@@ -907,7 +917,7 @@ export default function ManagerScheduleScreen() {
               style={styles.locChipsScroll}
               contentContainerStyle={styles.chipsRow}
             >
-              {restaurants.map((r) => (
+              {scheduleRestaurants.map((r) => (
                 <Pressable
                   key={r.id}
                   onPress={() => setCurrentRestaurantId(r.id)}
@@ -1017,7 +1027,21 @@ export default function ManagerScheduleScreen() {
                     const rest = parts.slice(1).join(' ');
                     return (
                       <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                        <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
+                        <Text style={styles.thFull}>
+                          {t(
+                            (
+                              {
+                                MONDAY: 'days.monday',
+                                TUESDAY: 'days.tuesday',
+                                WEDNESDAY: 'days.wednesday',
+                                THURSDAY: 'days.thursday',
+                                FRIDAY: 'days.friday',
+                                SATURDAY: 'days.saturday',
+                                SUNDAY: 'days.sunday',
+                              } as Record<string, string>
+                            )[meta?.dayNameUpper || dow.toUpperCase()] || 'days.monday'
+                          )}
+                        </Text>
                         <Text style={styles.thSub}>{rest}</Text>
                       </View>
                     );
@@ -1115,19 +1139,26 @@ export default function ManagerScheduleScreen() {
                     </View>
                     <Text style={styles.editFieldLabel}>{t('schedule.breakOffice')}</Text>
                     <View style={styles.chipWrap}>
-                      {BREAK_ANNOTATION_TYPE_PRESETS.map((t) => (
+                      {BREAK_ANNOTATION_TYPE_PRESETS.map((breakType) => (
                         <Pressable
-                          key={t}
-                          onPress={() => setEditBreakType(t)}
-                          style={[styles.editChip, editBreakType === t && styles.editChipActive]}
+                          key={breakType}
+                          onPress={() => setEditBreakType(breakType)}
+                          style={[
+                            styles.editChip,
+                            editBreakType === breakType && styles.editChipActive,
+                          ]}
                         >
                           <Text
                             style={[
                               styles.editChipText,
-                              editBreakType === t && styles.editChipTextActive,
+                              editBreakType === breakType && styles.editChipTextActive,
                             ]}
                           >
-                            {t}
+                            {breakType === 'BREAK TIME'
+                              ? t('schedule.breakTime')
+                              : breakType === 'OFFICE'
+                                ? t('schedule.office')
+                                : t('schedule.noBreak')}
                           </Text>
                         </Pressable>
                       ))}
@@ -1221,6 +1252,7 @@ const PersonColRow = memo(function PersonColRow({
   canMoveUp,
   canMoveDown,
 }: PersonColRowProps) {
+  const { t } = useI18n();
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
@@ -1245,9 +1277,9 @@ const PersonColRow = memo(function PersonColRow({
             onPress={() => onAddSlot(addRole)}
             style={styles.addSlotBtn}
             accessibilityRole="button"
-            accessibilityLabel={`Add slot for ${row.title}`}
+            accessibilityLabel={`${t('schedule.addSlot')} · ${row.title}`}
           >
-            <Text style={styles.addSlotBtnText}>Add slot</Text>
+            <Text style={styles.addSlotBtnText}>{t('schedule.addSlot')}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -1266,7 +1298,8 @@ const PersonColRow = memo(function PersonColRow({
     assignmentStore,
     weekIndex
   );
-  const label = selected && selected !== 'Unassigned' ? selected : 'Unassigned';
+  const label =
+    selected && selected !== 'Unassigned' ? selected : t('common.unassigned');
 
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
@@ -1317,9 +1350,9 @@ const PersonColRow = memo(function PersonColRow({
           onPress={() => onDeleteSlot(row.role, row.trIdx)}
           style={styles.deleteSlotBtn}
           accessibilityRole="button"
-          accessibilityLabel={`Delete slot ${row.trIdx + 1}`}
+          accessibilityLabel={`${t('schedule.deleteSlot')} ${row.trIdx + 1}`}
         >
-          <Text style={styles.deleteSlotBtnText}>Delete slot</Text>
+          <Text style={styles.deleteSlotBtnText}>{t('schedule.deleteSlot')}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -1372,8 +1405,18 @@ const CalendarCellView = memo(function CalendarCellView({
   editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
 }) {
+  const { t } = useI18n();
+  const dayOffLbl = t('schedule.dayOffLabel');
+  const breakDisplay = (raw: string) => {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    if (/no\s*break/i.test(s)) return `(${t('schedule.noBreak')})`;
+    return s
+      .replace(/\bBREAK\s*TIME\b/gi, t('schedule.breakTime'))
+      .replace(/\bOFFICE\b/gi, t('schedule.office'));
+  };
   if (cell.kind === 'empty') {
-    const body = <Text style={styles.dayoffSmall}>DAY-OFF</Text>;
+    const body = <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>;
     if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
     return (
       <Pressable
@@ -1390,7 +1433,7 @@ const CalendarCellView = memo(function CalendarCellView({
     const body = (
       <>
         <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-        <Text style={styles.dayoffLabel}>DAY-OFF</Text>
+        <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
       </>
     );
     if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
@@ -1417,7 +1460,9 @@ const CalendarCellView = memo(function CalendarCellView({
   const filledBody = (
     <>
       <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-      {cell.breakText ? <Text style={styles.slotBreak}>{cell.breakText}</Text> : null}
+      {cell.breakText ? (
+        <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
+      ) : null}
       <Text style={styles.slotHours}>{cell.hours}h</Text>
     </>
   );
@@ -1690,13 +1735,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     flexWrap: 'wrap',
   },
-  editField: { minWidth: 88 },
+  editField: { minWidth: 88, flexGrow: 1, flexBasis: 88 },
   editFieldLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: '#64748b',
     textTransform: 'uppercase',
     marginBottom: 4,
+    minHeight: 28,
+    lineHeight: 14,
   },
   editInput: {
     borderWidth: 1,
@@ -1708,9 +1755,24 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     backgroundColor: '#fff',
     minWidth: 88,
+    height: 44,
   },
-  editSep: { fontSize: 16, color: '#94a3b8', paddingBottom: 12 },
-  editHours: { fontSize: 13, color: '#64748b', paddingBottom: 12, fontWeight: '600' },
+  editSep: {
+    fontSize: 16,
+    color: '#94a3b8',
+    height: 44,
+    lineHeight: 44,
+    paddingBottom: 0,
+    alignSelf: 'flex-end',
+  },
+  editHours: {
+    fontSize: 13,
+    color: '#64748b',
+    height: 44,
+    lineHeight: 44,
+    fontWeight: '600',
+    alignSelf: 'flex-end',
+  },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
   editChip: {
     paddingHorizontal: 10,

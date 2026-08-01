@@ -25,6 +25,7 @@ import {
 import type { PayWeekBounds, TimecardSchema, TimeClockEntry } from '../lib/timecards/types';
 import { subscribeTimeClockEntries } from '../lib/timeClockEntriesSync';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { useI18n } from './LocaleContext';
 
 type CachedWeekEntries = {
   entries: TimeClockEntry[];
@@ -64,7 +65,12 @@ type TimecardsState = {
 const TimecardsContext = createContext<TimecardsState | null>(null);
 
 export function TimecardsProvider({ children }: { children: React.ReactNode }) {
-  const payWeekOptions = useMemo(() => buildPayWeekOptions(), []);
+  const { t } = useI18n();
+  const thisWeekLabel = t('common.thisWeek');
+  const payWeekOptions = useMemo(
+    () => buildPayWeekOptions(thisWeekLabel),
+    [thisWeekLabel]
+  );
   const [ready, setReady] = useState(false);
   const [selectedWeekStartIso, setSelectedWeekStartIso] = useState('');
   const [bounds, setBounds] = useState<PayWeekBounds>(() =>

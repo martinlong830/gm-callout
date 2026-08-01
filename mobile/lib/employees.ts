@@ -236,6 +236,39 @@ export function employeePrimaryLocationId(emp: EmployeeRow | null | undefined): 
 }
 
 /**
+ * Preferred "main" store for schedule restaurant pills (leftmost).
+ * Single-store usualRestaurant → that store; both → primary when set; else null
+ * (keep default list order: rp-9 then rp-8). Applies to managers and admins alike —
+ * unlike managerManagedRestaurantId, admins still get their primary for display order.
+ */
+export function managerScheduleMainRestaurantId(
+  emp: EmployeeRow | null | undefined
+): string | null {
+  if (!emp) return null;
+  const home = emp.usualRestaurant || 'both';
+  if (home === 'rp-8' || home === 'rp-9') return home;
+  if (home === 'both') return employeePrimaryLocationId(emp);
+  return null;
+}
+
+/**
+ * Schedule store switcher order: preferred main first; remaining keep input order.
+ * Does not follow the currently selected store — switching tabs must not reshuffle.
+ */
+export function orderRestaurantsMainFirst<T extends { id: string }>(
+  restaurants: T[],
+  mainId: string | null | undefined
+): T[] {
+  if (!mainId || restaurants.length < 2) return restaurants.slice();
+  const ix = restaurants.findIndex((r) => r.id === mainId);
+  if (ix <= 0) return restaurants.slice();
+  const next = restaurants.slice();
+  const [main] = next.splice(ix, 1);
+  next.unshift(main);
+  return next;
+}
+
+/**
  * Store a manager may manage (`rp-8` / `rp-9`), or `null` for company-wide (both editable).
  * Admins are always company-wide. Single-store usualRestaurant → that store; multi-store →
  * primaryLocationId when set; both without primary / no linked roster → unrestricted.

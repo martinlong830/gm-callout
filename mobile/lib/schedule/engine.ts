@@ -637,7 +637,13 @@ function employeeByDisplayNameLite(employees: EmployeeLite[], name: string): Emp
   if (!name) return null;
   const exact = employees.find((e) => employeeDisplayNameLite(e) === name);
   if (exact) return exact;
-  const fuzzy = employees.find((e) => workerNamesMatch(name, employeeDisplayNameLite(e)));
+  const byStored = employees.find((e) => e.displayName && e.displayName.trim() === name);
+  if (byStored) return byStored;
+  const fuzzy = employees.find(
+    (e) =>
+      workerNamesMatch(name, employeeDisplayNameLite(e)) ||
+      (!!e.displayName && workerNamesMatch(name, e.displayName))
+  );
   if (fuzzy) return fuzzy;
   return (
     employees.find((e) => {
@@ -1404,7 +1410,8 @@ export function namesForScheduleRowPersonPicker(
 }
 
 /** Dominant assigned person across staffed days in a calendar row (visible week).
- *  Also reads pending assignment stubs for days with no draft times yet (new empty slots). */
+ *  Also reads pending assignment stubs for days with no draft times yet (new empty slots),
+ *  and for schedule rows still Unassigned when the store already has a person. */
 export function scheduleRowPrimaryPerson(
   schedule: ScheduleRow[],
   role: RoleKey,
@@ -1429,9 +1436,19 @@ export function scheduleRowPrimaryPerson(
       const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
         (n) => n && n !== 'Unassigned'
       );
-      name = workers.length
-        ? canonicalScheduleWorkerNameLite(employees, workers[0], restaurantId)
-        : 'Unassigned';
+      if (workers.length) {
+        name = canonicalScheduleWorkerNameLite(employees, workers[0], restaurantId);
+      } else if (rs && roleIdx >= 0) {
+        const stubId =
+          weekIndex != null && !Number.isNaN(weekIndex)
+            ? `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`
+            : shift.id;
+        const stub = normalizeScheduleAssignment(rs[stubId] ?? rs[shift.id]);
+        const stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
+        name = stubWorkers.length
+          ? canonicalScheduleWorkerNameLite(employees, stubWorkers[0], restaurantId)
+          : 'Unassigned';
+      }
     } else if (rs && roleIdx >= 0 && weekIndex != null && !Number.isNaN(weekIndex)) {
       const shiftId = `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`;
       const stub = normalizeScheduleAssignment(rs[shiftId]);

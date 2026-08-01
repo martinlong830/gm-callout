@@ -1,4 +1,5 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useI18n } from '../contexts/LocaleContext';
 import {
   formatScheduleWeekRangeLabel,
   formatWeekOfLabel,
@@ -37,6 +38,8 @@ type ManagerNavProps = {
 type Props = PagerProps | ChipsProps | ManagerNavProps;
 
 export function ScheduleWeekPicker(props: Props) {
+  const { t } = useI18n();
+
   if (props.mode === 'managerNav') {
     const {
       weekMeta,
@@ -54,7 +57,7 @@ export function ScheduleWeekPicker(props: Props) {
           style={[styles.navArrow, weekIndex <= minWeekIndex && styles.pagerBtnDisabled]}
           disabled={weekIndex <= minWeekIndex}
           onPress={() => onWeekIndexChange(weekIndex - 1)}
-          accessibilityLabel="Previous week"
+          accessibilityLabel={t('common.prevWeek')}
         >
           <Text style={styles.navArrowText}>‹</Text>
         </Pressable>
@@ -62,19 +65,19 @@ export function ScheduleWeekPicker(props: Props) {
           <Text style={styles.managerNavLabel} numberOfLines={2}>
             {label}
           </Text>
-          {isCurrent ? <Text style={styles.managerNavBadge}>This week</Text> : null}
+          {isCurrent ? <Text style={styles.managerNavBadge}>{t('common.thisWeek')}</Text> : null}
         </View>
         <Pressable
           style={[styles.navArrow, weekIndex >= maxWeekIndex && styles.pagerBtnDisabled]}
           disabled={weekIndex >= maxWeekIndex}
           onPress={() => onWeekIndexChange(weekIndex + 1)}
-          accessibilityLabel="Next week"
+          accessibilityLabel={t('common.nextWeek')}
         >
           <Text style={styles.navArrowText}>›</Text>
         </Pressable>
         {!isCurrent && templateWeekIndex != null ? (
           <Pressable style={styles.todayBtn} onPress={() => onWeekIndexChange(templateWeekIndex)}>
-            <Text style={styles.todayBtnText}>This week</Text>
+            <Text style={styles.todayBtnText}>{t('common.thisWeek')}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -84,7 +87,7 @@ export function ScheduleWeekPicker(props: Props) {
   if (props.mode === 'pager') {
     const { weekStartIsos, cursor, onCursorChange } = props;
     const wk = weekStartIsos[cursor];
-    const label = wk ? formatWeekOfLabel(wk) : 'No upcoming shifts';
+    const label = wk ? formatWeekOfLabel(wk) : t('employee.noUpcoming');
     return (
       <View style={styles.pager}>
         <Pressable
@@ -92,7 +95,7 @@ export function ScheduleWeekPicker(props: Props) {
           disabled={cursor <= 0}
           onPress={() => onCursorChange(cursor - 1)}
         >
-          <Text style={styles.pagerBtnText}>Prev week</Text>
+          <Text style={styles.pagerBtnText}>{t('common.prevWeek')}</Text>
         </Pressable>
         <Text style={styles.pagerLabel} numberOfLines={2}>
           {label}
@@ -105,7 +108,7 @@ export function ScheduleWeekPicker(props: Props) {
           disabled={cursor >= weekStartIsos.length - 1}
           onPress={() => onCursorChange(cursor + 1)}
         >
-          <Text style={styles.pagerBtnText}>Next week</Text>
+          <Text style={styles.pagerBtnText}>{t('common.nextWeek')}</Text>
         </Pressable>
       </View>
     );
@@ -113,12 +116,12 @@ export function ScheduleWeekPicker(props: Props) {
 
   const { weekMeta, weekIndices, selectedWeekIndex, onSelectWeekIndex, currentWeekIndex } = props;
   if (!weekIndices.length) {
-    return <Text style={styles.muted}>No weeks with shifts in this window.</Text>;
+    return <Text style={styles.muted}>{t('schedule.noShifts')}</Text>;
   }
 
   return (
     <View style={styles.chipsWrap}>
-      <Text style={styles.chipsLabel}>Week</Text>
+      <Text style={styles.chipsLabel}>{t('common.week')}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
         <View style={styles.chipsRow}>
           {weekIndices.map((wi) => {
@@ -132,7 +135,7 @@ export function ScheduleWeekPicker(props: Props) {
               >
                 <Text style={[styles.chipText, on && styles.chipTextOn]} numberOfLines={2}>
                   {formatScheduleWeekRangeLabel(weekMeta, wi)}
-                  {isCurrent ? ' · This week' : ''}
+                  {isCurrent ? ` · ${t('common.thisWeek')}` : ''}
                 </Text>
               </Pressable>
             );
@@ -177,7 +180,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   chipsWrap: { marginBottom: 8 },
-  chipsLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginBottom: 6, textTransform: 'uppercase' },
+  chipsLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
   chipsRow: { flexDirection: 'row', gap: 8, paddingVertical: 2 },
   chip: {
     paddingHorizontal: 12,

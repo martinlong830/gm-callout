@@ -99,17 +99,18 @@ export function weekBoundsStorageKey(bounds: PayWeekBounds): string {
   return `${isoFromDate(bounds.start)}_${isoFromDate(bounds.end)}`;
 }
 
-export function buildPayWeekOptions(): PayWeekOption[] {
+export function buildPayWeekOptions(thisWeekPrefix?: string): PayWeekOption[] {
   const thisMon = getThisMondayDate();
   const thisIso = isoFromDate(thisMon);
   const options: PayWeekOption[] = [];
+  const prefix = thisWeekPrefix || 'This week';
   for (let i = TIMECARDS_PAST_WEEK_COUNT; i >= 0; i -= 1) {
     const mon = new Date(thisMon.getFullYear(), thisMon.getMonth(), thisMon.getDate() - i * 7);
     if (!isPayWeekOnOrAfterEarliest(mon)) continue;
     const bounds = payWeekBoundsFromMonday(mon);
     const startIso = isoFromDate(bounds.start);
     let label = formatPayWeekLabel(bounds);
-    if (startIso === thisIso) label = `This week (${label})`;
+    if (startIso === thisIso) label = `${prefix} (${label})`;
     options.push({ startIso, label, isCurrent: startIso === thisIso });
   }
   return options;

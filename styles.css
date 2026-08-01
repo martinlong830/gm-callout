@@ -2177,6 +2177,7 @@ html.authed .header-signout-btn {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  flex: 1 1 7.5rem;
 }
 
 .shift-detail-field-label {
@@ -2185,27 +2186,53 @@ html.authed .header-signout-btn {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
+  /* Reserve room for longer ES labels so Start/End and Break/Assigned columns stay level */
+  min-height: 2.4em;
+  line-height: 1.2;
+  display: flex;
+  align-items: flex-end;
 }
 
 .shift-detail-field input[type="time"],
 .shift-detail-field select {
   min-width: 7rem;
+  width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   font-size: 0.875rem;
+  line-height: 1.25;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
+  height: 2.5rem;
 }
 
 .shift-detail-field #shiftDetailBreakTime {
   min-width: 7rem;
 }
 
+.shift-detail-times .draft-time-sep {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+  margin: 0;
+  padding: 0;
+}
+
 .shift-detail-hours {
   font-variant-numeric: tabular-nums;
   font-size: 0.8125rem;
   color: var(--text-muted);
-  padding-bottom: 10px;
+  align-self: flex-end;
+  height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  padding-bottom: 0;
 }
 
 .shift-detail-break--no-time #shiftDetailBreakTime {

@@ -32,6 +32,7 @@ import {
   portalCreateCompany,
   portalRequestPasswordReset,
   portalSetupAccessCode,
+  portalTimeclockUrl,
   portalVerifyAccessCode,
   portalWebUrl,
 } from '../lib/portalAuth';
@@ -213,6 +214,20 @@ export default function LoginScreen() {
     clearMsg();
     setPanel('signin');
     if (prefillName) setLoginName(prefillName);
+  }
+
+  async function openTimeClock() {
+    clearMsg();
+    const url = portalTimeclockUrl();
+    if (!url) {
+      setMessage(t('auth.portalEnvHint'));
+      return;
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      setMessage(t('auth.portalEnvHint'));
+    }
   }
 
   const showRedPokeBrand = panel === 'signin' && isRedPokeAccessCode(verifiedAccessCode);
@@ -818,6 +833,16 @@ export default function LoginScreen() {
                 <Pressable style={styles.linkBtn} onPress={goLanding}>
                   <Text style={styles.linkText}>{t('auth.backToHome')}</Text>
                 </Pressable>
+                <View style={styles.deviceSignIn}>
+                  <Pressable
+                    style={styles.deviceLinkBtn}
+                    onPress={() => void openTimeClock()}
+                    accessibilityRole="link"
+                    accessibilityLabel={t('auth.timeclockTabletSignIn')}
+                  >
+                    <Text style={styles.deviceLinkText}>{t('auth.timeclockTabletSignIn')}</Text>
+                  </Pressable>
+                </View>
               </>
             ) : null}
 
@@ -1110,6 +1135,15 @@ const styles = StyleSheet.create({
   feedbackOk: { color: '#166534' },
   linkBtn: { marginTop: 14, alignItems: 'center' },
   linkText: { color: PRIMARY, fontWeight: '600', fontSize: 15 },
+  deviceSignIn: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e8ecef',
+    alignItems: 'center',
+  },
+  deviceLinkBtn: { paddingVertical: 4, alignItems: 'center' },
+  deviceLinkText: { color: '#6b7280', fontWeight: '500', fontSize: 13 },
   warn: { fontSize: 14, color: '#444', lineHeight: 22, marginBottom: 12 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
   chip: {

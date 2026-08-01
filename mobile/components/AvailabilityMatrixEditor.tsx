@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useI18n } from '../contexts/LocaleContext';
 import type { DraftGrid, WeekdayKey } from '../lib/schedule/types';
 import { WEEKDAY_KEYS } from '../lib/schedule/engine';
 import {
@@ -10,6 +11,16 @@ import {
 
 const COL = 56;
 const SLOT_ROW_MIN_H = 54;
+
+const WEEKDAY_I18N: Record<string, string> = {
+  Mon: 'days.mon',
+  Tue: 'days.tue',
+  Wed: 'days.wed',
+  Thu: 'days.thu',
+  Fri: 'days.fri',
+  Sat: 'days.sat',
+  Sun: 'days.sun',
+};
 
 function cloneGrid(g: WeeklyGridNormalized): WeeklyGridNormalized {
   return JSON.parse(JSON.stringify(g)) as WeeklyGridNormalized;
@@ -35,6 +46,7 @@ export function AvailabilityMatrixEditor({
   embedInParentScroll,
   enableCopyGesture = true,
 }: Props) {
+  const { t } = useI18n();
   const rows = buildAvailabilityMatrixRows(staffType, draftRows, normalized);
   const [copyPayload, setCopyPayload] = useState<CopyPayload | null>(null);
 
@@ -69,7 +81,7 @@ export function AvailabilityMatrixEditor({
         <View style={[styles.tr, styles.headRow]}>
           {WEEKDAY_KEYS.map((wk) => (
             <View key={wk} style={[styles.th, { width: COL }]}>
-              <Text style={styles.thText}>{wk}</Text>
+              <Text style={styles.thText}>{t(WEEKDAY_I18N[wk] || 'days.mon')}</Text>
             </View>
           ))}
         </View>

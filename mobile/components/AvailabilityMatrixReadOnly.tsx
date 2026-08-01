@@ -1,4 +1,5 @@
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useI18n } from '../contexts/LocaleContext';
 import type { DraftGrid } from '../lib/schedule/types';
 import { WEEKDAY_KEYS } from '../lib/schedule/engine';
 import {
@@ -11,6 +12,16 @@ const COL = 56;
 /** Fixed row height so every slot cell lines up; checkboxes sit on the same baseline per row. */
 const SLOT_ROW_MIN_H = 54;
 
+const WEEKDAY_I18N: Record<string, string> = {
+  Mon: 'days.mon',
+  Tue: 'days.tue',
+  Wed: 'days.wed',
+  Thu: 'days.thu',
+  Fri: 'days.fri',
+  Sat: 'days.sat',
+  Sun: 'days.sun',
+};
+
 type Props = {
   weeklyGrid: Record<string, unknown>;
   staffType: string;
@@ -20,6 +31,7 @@ type Props = {
 };
 
 export function AvailabilityMatrixReadOnly({ weeklyGrid, staffType, draftRows, embedInParentScroll }: Props) {
+  const { t } = useI18n();
   const normalized = normalizeWeeklyGrid(weeklyGrid, staffType, draftRows);
   const rows = buildAvailabilityMatrixRows(staffType, draftRows, normalized);
 
@@ -29,7 +41,7 @@ export function AvailabilityMatrixReadOnly({ weeklyGrid, staffType, draftRows, e
         <View style={[styles.tr, styles.headRow]}>
           {WEEKDAY_KEYS.map((wk) => (
             <View key={wk} style={[styles.th, { width: COL }]}>
-              <Text style={styles.thText}>{wk}</Text>
+              <Text style={styles.thText}>{t(WEEKDAY_I18N[wk] || 'days.mon')}</Text>
             </View>
           ))}
         </View>

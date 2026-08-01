@@ -8,6 +8,14 @@
   var deps = null;
   var weekEntries = [];
   var timecardSchema = { breakMinutes: false, breakTimes: false, scheduleShiftId: false, editHistory: false, breakPaid: false };
+
+  function tcT(key, vars) {
+    if (global.gmI18n && typeof global.gmI18n.t === 'function') {
+      return global.gmI18n.t(key, vars);
+    }
+    return key;
+  }
+
   var timecardState = {
     employeeId: null,
     shiftId: null,
@@ -989,7 +997,7 @@
       var startIso = isoFromDate(bounds.start);
       var label = formatPayWeekLabel(bounds);
       if (startIso === thisIso) {
-        label = 'This week (' + label + ')';
+        label = tcT('timecards.thisWeekRange', { range: label });
       }
       options.push({ startIso: startIso, label: label, isCurrent: startIso === thisIso });
     }
@@ -2915,9 +2923,10 @@
   }
 
   function clockStatusLabel(id) {
-    if (id === 'clocked_in') return 'Clocked in';
-    if (id === 'on_break') return 'On break';
-    return 'Not on clock';
+    if (id === 'clocked_in') return tcT('timecards.clockedIn');
+    if (id === 'on_break') return tcT('timecards.onBreak');
+    if (id === 'clocked_out') return tcT('timecards.clockedOut');
+    return tcT('timecards.notOnClock');
   }
 
   function clockStatusClass(id) {
@@ -3127,7 +3136,7 @@
     var metaText =
       opts.metaText != null
         ? opts.metaText
-        : d().escapeHtml(String(totals.headcount)) + ' employees';
+        : d().escapeHtml(tcT('timecards.employeesCount', { n: totals.headcount }));
     var payReg = totals.hasRegPay ? formatPayAmount(totals.regPay) : '—';
     var payOt = totals.hasOtPay ? formatPayAmount(totals.otPay) : '—';
     var payVlSl = totals.hasVlSlPay
@@ -3137,59 +3146,83 @@
     var allPaidMins =
       totals.totalMins + Math.round(totals.vlHours * 60) + Math.round(totals.slHours * 60);
     return (
-      '<section class="timecards-grand-totals" aria-label="Pay week grand totals">' +
-      '<h3 class="timecards-grand-totals-title">Grand totals</h3>' +
+      '<section class="timecards-grand-totals" aria-label="' +
+      d().escapeHtml(tcT('timecards.grandTotalsAria')) +
+      '">' +
+      '<h3 class="timecards-grand-totals-title">' +
+      d().escapeHtml(tcT('timecards.grandTotals')) +
+      '</h3>' +
       '<p class="timecards-grand-totals-meta">' +
       metaText +
       '</p>' +
       '<div class="timecards-grand-totals-grid">' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">Scheduled</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.scheduled')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(totals.schedMins) + 'h') +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">Regular</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.regular')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(totals.regMins) + 'h') +
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(payReg) +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">Overtime</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.overtime')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(totals.otMins) + 'h') +
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(payOt) +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">VL / SL</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.vlSl')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(totals.vlHours * 60) + 'h / ' + decimalHoursFromMinutes(totals.slHours * 60) + 'h') +
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(payVlSl) +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">SoH</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.soh')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(String(totals.sohCount)) +
       '</span><span class="timecards-total-pay">' +
       d().escapeHtml(totals.hasSohPay ? formatPayAmount(totals.sohPay) : '—') +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">Net dishwasher tips</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.netDishwasherTips')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(totals.hasDishwasherTips ? formatPayAmount(totals.dishwasherTipsPay) : '—') +
       '</span></div>' +
-      '<div class="timecards-total-card"><span class="timecards-total-label">Coverage compensation</span>' +
+      '<div class="timecards-total-card"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.coverageCompensation')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(totals.hasAdditionalCashTip ? formatPayAmount(totals.additionalCashTip) : '—') +
       '</span></div>' +
       (opts.hourlyRateLabel != null
-        ? '<div class="timecards-total-card"><span class="timecards-total-label">Pay/hr</span>' +
+        ? '<div class="timecards-total-card"><span class="timecards-total-label">' +
+          d().escapeHtml(tcT('timecards.payHr')) +
+          '</span>' +
           '<span class="timecards-total-value">' +
           d().escapeHtml(opts.hourlyRateLabel) +
           '</span></div>'
         : '') +
-      '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">Total hours</span>' +
+      '<div class="timecards-total-card timecards-total-card--emph"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.totalHours')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(decimalHoursFromMinutes(allPaidMins) + 'h') +
       '</span></div>' +
-      '<div class="timecards-total-card timecards-total-card--pay"><span class="timecards-total-label">Total pay</span>' +
+      '<div class="timecards-total-card timecards-total-card--pay"><span class="timecards-total-label">' +
+      d().escapeHtml(tcT('timecards.totalPay')) +
+      '</span>' +
       '<span class="timecards-total-value">' +
       d().escapeHtml(payTotal) +
       '</span></div>' +
@@ -8358,24 +8391,28 @@
       renderSohRateControlHtml() +
       renderTipTakehomeControlHtml() +
       '<div class="timecards-download-group">' +
-      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-open>Download</button>' +
+      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-open>' +
+      d().escapeHtml(tcT('timecards.download')) +
+      '</button>' +
       '</div></div>' +
       (opts.deferGrandTotals ? '' : renderGrandTotalsHtml(computeRosterTotals(sorted))) +
       '<div class="timecards-table-wrap"><table class="timecards-table timecards-table--roster timecards-table--wide">' +
       '<thead><tr>' +
-      rosterSortHeader('name', 'Name') +
-      rosterSortHeader('role', 'Role') +
-      rosterSortHeader('clock', 'Clock') +
-      rosterSortHeader('scheduled', 'Scheduled') +
-      rosterSortHeader('regular', 'Regular') +
-      rosterSortHeader('overtime', 'Overtime') +
-      rosterSortHeader('vl', 'VL') +
-      rosterSortHeader('sl', 'SL') +
-      rosterSortHeader('soh', 'SoH') +
-      '<th scope="col">SoH dates</th>' +
-      rosterSortHeader('sohPay', 'SoH pay') +
-      rosterSortHeader('coverage', 'Coverage compensation') +
-      rosterSortHeader('total', 'Total') +
+      rosterSortHeader('name', tcT('timecards.name')) +
+      rosterSortHeader('role', tcT('timecards.role')) +
+      rosterSortHeader('clock', tcT('timecards.clock')) +
+      rosterSortHeader('scheduled', tcT('timecards.scheduled')) +
+      rosterSortHeader('regular', tcT('timecards.regular')) +
+      rosterSortHeader('overtime', tcT('timecards.overtime')) +
+      rosterSortHeader('vl', tcT('timecards.vl')) +
+      rosterSortHeader('sl', tcT('timecards.sl')) +
+      rosterSortHeader('soh', tcT('timecards.soh')) +
+      '<th scope="col">' +
+      d().escapeHtml(tcT('timecards.sohDates')) +
+      '</th>' +
+      rosterSortHeader('sohPay', tcT('timecards.sohPay')) +
+      rosterSortHeader('coverage', tcT('timecards.coverageCompensation')) +
+      rosterSortHeader('total', tcT('timecards.total')) +
       '</tr></thead><tbody>' +
       body +
       '</tbody></table></div>';
@@ -9630,20 +9667,48 @@
     var theadRow = document.querySelector('#timecardsEmployeeTable thead tr');
     if (theadRow) {
       theadRow.innerHTML =
-        '<th scope="col">Date</th>' +
-        (showLocationCol ? '<th scope="col">Location</th>' : '') +
-        '<th scope="col">Shift</th>' +
-        '<th scope="col">In / Out</th>' +
-        '<th scope="col">Scheduled</th>' +
-        '<th scope="col">Recorded</th>' +
-        '<th scope="col">Break</th>' +
-        '<th scope="col">Day total</th>' +
-        '<th scope="col">VL (hrs)</th>' +
-        '<th scope="col">SL (hrs)</th>' +
-        (showDishwasherTips ? '<th scope="col">Net delivery tip</th>' : '') +
-        '<th scope="col">Coverage</th>' +
-        '<th scope="col">Pay</th>' +
-        '<th scope="col">Pay/hr</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.date')) +
+        '</th>' +
+        (showLocationCol
+          ? '<th scope="col">' + d().escapeHtml(tcT('common.location')) + '</th>'
+          : '') +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.shiftCol')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.inOut')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.scheduled')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.recorded')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.break')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.dayTotal')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.vlHrs')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.slHrs')) +
+        '</th>' +
+        (showDishwasherTips
+          ? '<th scope="col">' + d().escapeHtml(tcT('timecards.netDeliveryTip')) + '</th>'
+          : '') +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.coverage')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.pay')) +
+        '</th>' +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('timecards.payHr')) +
+        '</th>' +
         '<th scope="col" class="timecards-col-actions"><span class="visually-hidden">Actions</span></th>';
     }
     var bounds = payWeekBounds();
@@ -10077,56 +10142,86 @@
       '<div class="timecards-detail-grid">' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">' +
-      (offSchedule ? 'Day (off schedule)' : 'Scheduled') +
+      (offSchedule ? tcT('timecards.dayOffSchedule') : tcT('timecards.scheduled')) +
       '</h3>' +
       '<dl class="timecards-dl">' +
-      '<div><dt>Shift</dt><dd>' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.shiftCol')) +
+      '</dt><dd>' +
       d().escapeHtml(
-        offSchedule ? s.day + ' · Off schedule' : s.day + ' · ' + (s.timeLabel || '')
+        offSchedule
+          ? s.day + ' · ' + tcT('timecards.offScheduleSuffix')
+          : s.day + ' · ' + (s.timeLabel || '')
       ) +
       '</dd></div>' +
       (s.restaurantName
-        ? '<div><dt>Location</dt><dd>' + d().escapeHtml(s.restaurantName) + '</dd></div>'
+        ? '<div><dt>' +
+          d().escapeHtml(tcT('common.location')) +
+          '</dt><dd>' +
+          d().escapeHtml(s.restaurantName) +
+          '</dd></div>'
         : '') +
       (offSchedule
-        ? '<div><dt>Note</dt><dd>No scheduled shift — recorded time uses weekly 40h regular cap.</dd></div>'
-        : '<div><dt>Hours</dt><dd>' +
+        ? '<div><dt>' +
+          d().escapeHtml(tcT('timecards.note')) +
+          '</dt><dd>' +
+          d().escapeHtml(tcT('timecards.noScheduledShift')) +
+          '</dd></div>'
+        : '<div><dt>' +
+          d().escapeHtml(tcT('timecards.hours')) +
+          '</dt><dd>' +
           d().escapeHtml(String(schedHrs) + 'h · paid ' + decimalHoursFromMinutes(schedPaid) + 'h') +
           '</dd></div>' +
-          '<div><dt>Employee default</dt><dd>' +
+          '<div><dt>' +
+          d().escapeHtml(tcT('timecards.employeeDefault')) +
+          '</dt><dd>' +
           d().escapeHtml(empBreakDefault) +
           '</dd></div>' +
-          '<div><dt>Scheduled break</dt><dd>' +
+          '<div><dt>' +
+          d().escapeHtml(tcT('timecards.scheduledBreak')) +
+          '</dt><dd>' +
           d().escapeHtml(
-            (schedBreak ? schedBreak + ' min · ' : 'None · ') +
+            (schedBreak ? schedBreak + ' min · ' : tcT('timecards.none') + ' · ') +
               (bp() ? bp().formatBreakPolicyLabel(schedBreakPaid) : 'Unpaid')
           ) +
           '</dd></div>') +
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
-      '<h3 class="emp-form-subtitle">Pay (this shift)</h3>' +
+      '<h3 class="emp-form-subtitle">' +
+      d().escapeHtml(tcT('timecards.payThisShift')) +
+      '</h3>' +
       '<dl class="timecards-dl" id="timecardsShiftPayCard">' +
-      '<div><dt>Regular</dt><dd id="timecardsShiftPayReg">' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.regular')) +
+      '</dt><dd id="timecardsShiftPayReg">' +
       d().escapeHtml(
         decimalHoursFromMinutes(shiftPay.regMins) +
           'h · ' +
           (shiftPay.regPay != null ? formatPayAmount(shiftPay.regPay) : '—')
       ) +
       '</dd></div>' +
-      '<div><dt>Overtime</dt><dd id="timecardsShiftPayOt">' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.overtime')) +
+      '</dt><dd id="timecardsShiftPayOt">' +
       d().escapeHtml(
         decimalHoursFromMinutes(shiftPay.otMins) +
           'h · ' +
           (shiftPay.otPay != null ? formatPayAmount(shiftPay.otPay) : '—')
       ) +
       '</dd></div>' +
-      '<div><dt>Regular pay rate</dt><dd>' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.regularPayRate')) +
+      '</dt><dd>' +
       d().escapeHtml(formatHourlyRateLabel(emp)) +
       '</dd></div>' +
-      '<div><dt>OT pay rate</dt><dd>' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.otPayRate')) +
+      '</dt><dd>' +
       d().escapeHtml(formatOtHourlyRateLabel(emp)) +
       '</dd></div>' +
-      '<div><dt>Shift total</dt><dd><strong id="timecardsShiftPayTotal">' +
+      '<div><dt>' +
+      d().escapeHtml(tcT('timecards.shiftTotal')) +
+      '</dt><dd><strong id="timecardsShiftPayTotal">' +
       d().escapeHtml(shiftPay.totalPay != null ? formatPayAmount(shiftPay.totalPay) : '—') +
       '</strong></dd></div>' +
       (isDeliveryDishwasherStaff(emp)
@@ -11094,6 +11189,31 @@
     refreshRosterForTipTakehome();
   }
 
+  function refreshForLocaleChange(screenId) {
+    var sid = Number(screenId);
+    if (sid === 10 || timecardsRosterScreenActive()) {
+      renderRoster();
+      return;
+    }
+    if ((sid === 11 || timecardsEmployeeScreenActive()) && timecardState.employeeId) {
+      var emp = d().employees.find(function (e) {
+        return e.id === timecardState.employeeId;
+      });
+      if (emp) renderEmployeeShifts(emp);
+      return;
+    }
+    if ((sid === 12 || timecardsShiftScreenActive()) && timecardState.employeeId) {
+      var emp2 = d().employees.find(function (e) {
+        return e.id === timecardState.employeeId;
+      });
+      if (emp2 && timecardState.shiftRow) {
+        renderShiftDetail(emp2, timecardState.shiftRow);
+      } else if (emp2) {
+        renderEmployeeShifts(emp2);
+      }
+    }
+  }
+
   global.gmCalloutTimecards = {
     init: init,
     renderRoster: renderRoster,
@@ -11108,6 +11228,7 @@
     applyRemoteTipPayroll: applyRemoteTipPayroll,
     applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
     onTipTakehomePctChanged: onTipTakehomePctChanged,
+    refreshForLocaleChange: refreshForLocaleChange,
   };
 
   if (global.__gmTimecardsEnableTestExports) {

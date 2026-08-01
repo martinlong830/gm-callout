@@ -310,7 +310,21 @@ export default function EmployeeScheduleScreen() {
                       const rest = parts.slice(1).join(' ');
                       return (
                         <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                          <Text style={styles.thFull}>{meta?.dayNameUpper || dow.toUpperCase()}</Text>
+                          <Text style={styles.thFull}>
+                            {t(
+                              (
+                                {
+                                  MONDAY: 'days.monday',
+                                  TUESDAY: 'days.tuesday',
+                                  WEDNESDAY: 'days.wednesday',
+                                  THURSDAY: 'days.thursday',
+                                  FRIDAY: 'days.friday',
+                                  SATURDAY: 'days.saturday',
+                                  SUNDAY: 'days.sunday',
+                                } as Record<string, string>
+                              )[meta?.dayNameUpper || dow.toUpperCase()] || 'days.monday'
+                            )}
+                          </Text>
                           <Text style={styles.thSub}>{rest}</Text>
                         </View>
                       );

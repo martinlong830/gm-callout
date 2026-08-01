@@ -597,7 +597,7 @@
                   ‹
                 </button>
                 <span class="schedule-week-nav-label" id="scheduleWeekNavLabel">—</span>
-                <span class="schedule-week-nav-badge" id="scheduleWeekNavBadge" hidden>This week</span>
+                <span class="schedule-week-nav-badge" id="scheduleWeekNavBadge" hidden data-i18n="common.thisWeek">This week</span>
                 <button
                   type="button"
                   class="btn btn-secondary schedule-week-nav-btn"
@@ -924,11 +924,11 @@
             </select>
           </label>
           <label class="form-field form-field-block">
-            <span class="form-label">Phone</span>
+            <span class="form-label"><span data-i18n="common.phone">Phone</span></span>
             <input type="tel" name="phone" id="empPhone" placeholder="e.g. 609-250-8527" autocomplete="tel" />
           </label>
           <label class="form-field form-field-block">
-            <span class="form-label">Email</span>
+            <span class="form-label"><span data-i18n="common.email">Email</span></span>
             <input
               type="email"
               name="email"
@@ -943,7 +943,7 @@
             <select name="usualRestaurant" id="empUsualRestaurant" required></select>
           </label>
           <label class="form-field form-field-block" id="empPrimaryLocationWrap" hidden>
-            <span class="form-label">Primary location</span>
+            <span class="form-label"><span data-i18n="team.primaryLocation">Primary location</span></span>
             <select name="primaryLocationId" id="empPrimaryLocation"></select>
             <span class="calendar-hint">Stored for multi-location staff; does not change payroll assignment yet.</span>
           </label>
@@ -1082,13 +1082,13 @@
                 </select>
               </label>
               <p class="calendar-hint">Applies to this employee when a shift or punch does not specify otherwise.</p>
-              <p class="calendar-hint" id="empTimeclockNewHint">Save this employee to assign a time clock PIN and view punches.</p>
+              <p class="calendar-hint" id="empTimeclockNewHint" data-i18n="empForm.saveForPin">Save this employee to assign a time clock PIN and view punches.</p>
               <div id="empTimeclockPanel" hidden>
                 <div class="form-field form-field-block" id="empClockPinBlock" hidden>
-                  <span class="form-label">Time clock PIN</span>
+                  <span class="form-label"><span data-i18n="empForm.timeclockPin">Time clock PIN</span></span>
                   <div class="emp-clock-pin-row">
                     <span class="emp-clock-pin-value" id="empClockPinDisplay" aria-label="Current PIN">----</span>
-                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empRegeneratePinBtn">Random PIN</button>
+                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empRegeneratePinBtn" data-i18n="empForm.randomPin">Random PIN</button>
                   </div>
                   <div class="emp-clock-pin-row emp-clock-pin-row--set">
                     <input
@@ -1098,14 +1098,15 @@
                       inputmode="numeric"
                       pattern="[0-9]*"
                       maxlength="4"
+                      data-i18n-placeholder="empForm.customPinPlaceholder"
                       placeholder="Custom 4-digit PIN"
                       autocomplete="off"
                     />
-                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empSavePinBtn">Save PIN</button>
+                    <button type="button" class="btn btn-secondary emp-clock-pin-btn" id="empSavePinBtn" data-i18n="empForm.savePin">Save PIN</button>
                   </div>
-                  <p class="calendar-hint">Share this 4-digit PIN with the employee for the shared time clock tablet.</p>
+                  <p class="calendar-hint" data-i18n="empForm.pinShareHint">Share this 4-digit PIN with the employee for the shared time clock tablet.</p>
                 </div>
-                <h3 class="emp-form-subtitle">This week</h3>
+                <h3 class="emp-form-subtitle" data-i18n="empForm.thisWeek">This week</h3>
                 <div id="empDetailPunchesMount" class="emp-profile-dropdown-mount" aria-live="polite"></div>
               </div>
             </div>
@@ -1553,7 +1554,7 @@
               ‹
             </button>
             <span class="schedule-week-nav-label" id="empAvailWeekLabel">—</span>
-            <span class="schedule-week-nav-badge" id="empAvailWeekBadge" hidden>This week</span>
+            <span class="schedule-week-nav-badge" id="empAvailWeekBadge" hidden data-i18n="common.thisWeek">This week</span>
             <button
               type="button"
               class="btn btn-secondary schedule-week-nav-btn"
@@ -1650,8 +1651,8 @@
             </label>
           </div>
           <label class="form-field form-field-block">
-            <span class="form-label">Notes (optional)</span>
-            <textarea id="empTimeoffNote" rows="3" placeholder="Reason, partial-day details, or context..."></textarea>
+            <span class="form-label"><span data-i18n="actions.notesOptional">Notes (optional)</span></span>
+            <textarea id="empTimeoffNote" rows="3" data-i18n-placeholder="actions.notesPlaceholder" placeholder="Reason, partial-day details, or context..."></textarea>
           </label>
           <button type="submit" class="btn btn-primary btn-block">Submit Time Off</button>
         </form>

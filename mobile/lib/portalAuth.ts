@@ -15,6 +15,13 @@ export function portalWebUrl(): string {
   return portalApiBase() || '(not set)';
 }
 
+/** Web time clock kiosk URL (`/timeclock`) — same destination as the web login link. */
+export function portalTimeclockUrl(): string | null {
+  const base = portalApiBase();
+  if (!base) return null;
+  return `${base}/timeclock`;
+}
+
 type PortalOk<T> = { ok: true } & T;
 type PortalErr = { ok: false; message: string; needsSignIn?: boolean; status?: number };
 
