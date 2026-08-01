@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { useRouter } from 'expo-router';
-import { useEffect } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect } from 'react';
+import { Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { LanguageToggle } from '../../components/LanguageToggle';
 import { NotificationBellButton } from '../../components/NotificationBellButton';
 import { useAuth } from '../../contexts/AuthContext';
@@ -11,16 +11,40 @@ import { useI18n } from '../../contexts/LocaleContext';
 function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
   const router = useRouter();
   const { t } = useI18n();
+  const { width, height } = useWindowDimensions();
+  const portrait = height >= width;
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 12 }}>
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: portrait ? 6 : 10,
+        marginRight: portrait ? 4 : 12,
+        maxWidth: portrait ? Math.min(168, width * 0.48) : undefined,
+        flexShrink: 1,
+      }}
+    >
       <NotificationBellButton />
       <LanguageToggle variant="compact" />
-      <Pressable onPress={() => router.push('/account')} hitSlop={8}>
-        <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.account')}</Text>
-      </Pressable>
-      <Pressable onPress={onSignOut} hitSlop={8}>
-        <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.signOut')}</Text>
-      </Pressable>
+      {!portrait ? (
+        <>
+          <Pressable onPress={() => router.push('/account')} hitSlop={8}>
+            <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.account')}</Text>
+          </Pressable>
+          <Pressable onPress={onSignOut} hitSlop={8}>
+            <Text style={{ color: '#c41230', fontWeight: '600' }}>{t('common.signOut')}</Text>
+          </Pressable>
+        </>
+      ) : (
+        <Pressable
+          onPress={() => router.push('/account')}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={t('common.account')}
+        >
+          <Ionicons name="person-circle-outline" size={24} color="#c41230" />
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -28,6 +52,12 @@ function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
 export default function EmployeeLayout() {
   const { session, role, signOut } = useAuth();
   const { t } = useI18n();
+  const { width, height } = useWindowDimensions();
+  const portrait = height >= width;
+  const renderHeaderRight = useCallback(
+    () => <HeaderActions onSignOut={() => void signOut()} />,
+    [signOut]
+  );
 
   useEffect(() => {
     if (!session || role !== 'employee') return;
@@ -57,7 +87,19 @@ export default function EmployeeLayout() {
         tabBarActiveTintColor: '#c41230',
         freezeOnBlur: true,
         lazy: true,
-        headerRight: () => <HeaderActions onSignOut={() => void signOut()} />,
+        headerRight: renderHeaderRight,
+        headerRightContainerStyle: {
+          paddingRight: portrait ? 4 : 8,
+          flexShrink: 1,
+          maxWidth: portrait ? '52%' : undefined,
+        },
+        headerTitleContainerStyle: {
+          flexShrink: 1,
+          maxWidth: portrait ? '46%' : undefined,
+        },
+        headerTitleStyle: {
+          fontSize: portrait ? 16 : 17,
+        },
       }}
     >
       <Tabs.Screen

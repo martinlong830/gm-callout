@@ -1,7 +1,9 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { ErrorBoundaryProps } from 'expo-router';
 import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
 import { EmployeePhoto } from '../../components/EmployeePhoto';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
@@ -16,6 +18,10 @@ import {
 import { leaveSummaryLines } from '../../lib/employeeLeave';
 import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
 import { compareEmployeesByDisplayName } from '../../lib/schedule/rosterOrder';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
 
 type TeamRow =
   | { key: string; kind: 'section'; title: string }
@@ -40,7 +46,12 @@ const TeamMemberCard = memo(function TeamMemberCard({
   t: (key: string) => string;
 }) {
   const pinLine = employeeClockPinLine(item);
-  const leaveLines = leaveSummaryLines(item);
+  let leaveLines: string[] = [];
+  try {
+    leaveLines = leaveSummaryLines(item);
+  } catch (err) {
+    console.warn('leaveSummaryLines', item.id, err);
+  }
 
   return (
     <Pressable style={styles.row} onPress={onPress}>
@@ -157,7 +168,6 @@ export default function ManagerTeam() {
           renderItem={renderRow}
           refreshing={refreshing}
           onRefresh={onRefresh}
-          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
           contentContainerStyle={styles.scrollContent}
           ListEmptyComponent={
             !loading ? <Text style={styles.muted}>{t('team.noEmployeesSupabase')}</Text> : null

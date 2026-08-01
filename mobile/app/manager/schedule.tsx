@@ -77,6 +77,7 @@ import {
   scheduleRowPrimaryPerson,
   seedDefaultPublishedWeeks,
   slotCountForRole,
+  slotCountForRoleWithAssignments,
   STAFF_TYPE_LABELS,
   assignmentShell,
   WEEKDAY_KEYS,
@@ -508,16 +509,33 @@ export default function ManagerScheduleScreen() {
         draftRows,
         lites,
         currentRestaurantId,
-        slotOrderByRestaurant
+        slotOrderByRestaurant,
+        assignmentStore,
+        weekIndex
       ),
-    [schedule, visibleDays, draftRows, lites, currentRestaurantId, slotOrderByRestaurant]
+    [
+      schedule,
+      visibleDays,
+      draftRows,
+      lites,
+      currentRestaurantId,
+      slotOrderByRestaurant,
+      assignmentStore,
+      weekIndex,
+    ]
   );
 
   /** Display position within role section → enable ↑/↓. */
   const slotMoveFlags = useMemo(() => {
     const flags = new Map<string, { up: boolean; down: boolean }>();
     (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey) => {
-      const slotN = slotCountForRole(draftRows, roleKey);
+      const slotN = slotCountForRoleWithAssignments(
+        draftRows,
+        roleKey,
+        assignmentStore,
+        currentRestaurantId,
+        weekIndex
+      );
       const order = orderedScheduleSlotIndicesForRole(
         schedule,
         roleKey,
@@ -542,6 +560,8 @@ export default function ManagerScheduleScreen() {
     lites,
     currentRestaurantId,
     slotOrderByRestaurant,
+    assignmentStore,
+    weekIndex,
   ]);
 
   const daysWidth = Math.max(
@@ -755,7 +775,13 @@ export default function ManagerScheduleScreen() {
 
   function moveScheduleRow(roleKey: RoleKey, trIdx: number, direction: -1 | 1) {
     if (!isManagerLikeRole(role) || !scheduleEditable) return;
-    const slotN = slotCountForRole(draftRows, roleKey);
+    const slotN = slotCountForRoleWithAssignments(
+      draftRows,
+      roleKey,
+      assignmentStore,
+      currentRestaurantId,
+      weekIndex
+    );
     if (slotN <= 1) return;
     const existing = getCustomSlotOrderForRole(
       slotOrderByRestaurant,

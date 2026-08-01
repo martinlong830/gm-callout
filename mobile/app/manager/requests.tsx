@@ -10,11 +10,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
-import { approveStaffRequest } from '../../lib/approveStaffRequest';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import {
   employeeDisplayName,
   employeeVisibleInManagerStoreScope,
@@ -33,6 +33,16 @@ import {
   swapRequestDisplayStatus,
 } from '../../lib/shiftSwap';
 import { supabase } from '../../lib/supabase';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
+
+/** Heavy leave/swap side-effects — keep off the Actions tab cold path. */
+async function loadApproveStaffRequest() {
+  const m = await import('../../lib/approveStaffRequest');
+  return m.approveStaffRequest;
+}
 
 type ActionTypeFilter = 'timeoff' | 'swap' | 'callout';
 type StatusFilter = 'all' | 'pending' | 'closed';
@@ -273,16 +283,25 @@ export default function ManagerRequests() {
       return;
     }
     setBusyId(req.id);
-    const res = await approveStaffRequest(supabase, req, employees, DEFAULT_DRAFT_SCHEDULE_ROWS, {
-      allRequests: staffRequests,
-      assignmentStore,
-      draftScheduleRaw: teamState?.draft_schedule,
-    });
-    setBusyId(null);
-    if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
-    else {
-      if (res.store) applyLocalScheduleAssignments(res.store);
-      void refetch({ silent: true });
+    try {
+      const approveStaffRequest = await loadApproveStaffRequest();
+      const res = await approveStaffRequest(supabase, req, employees, DEFAULT_DRAFT_SCHEDULE_ROWS, {
+        allRequests: staffRequests,
+        assignmentStore,
+        draftScheduleRaw: teamState?.draft_schedule,
+      });
+      setBusyId(null);
+      if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
+      else {
+        if (res.store) applyLocalScheduleAssignments(res.store);
+        void refetch({ silent: true });
+      }
+    } catch (err) {
+      setBusyId(null);
+      Alert.alert(
+        t('requests.updateFailed'),
+        err instanceof Error ? err.message : t('errors.generic')
+      );
     }
   };
 

@@ -1,6 +1,11 @@
-import { Stack } from 'expo-router';
+import { Stack, type ErrorBoundaryProps } from 'expo-router';
+import { RouteErrorFallback } from '../../../components/RouteErrorFallback';
 import { TimecardsProvider } from '../../../contexts/TimecardsContext';
 import { useI18n } from '../../../contexts/LocaleContext';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
 
 export default function TimecardsLayout() {
   const { t } = useI18n();

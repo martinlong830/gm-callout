@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { useI18n } from '../contexts/LocaleContext';
+import { subscribeAppNotificationsMobile } from '../lib/appNotificationsRealtime';
 import {
   fetchAppNotifications,
   markAllNotificationsRead,
@@ -67,27 +68,15 @@ export function NotificationBellButton() {
 
   useEffect(() => {
     if (!supabase || !userId) return;
-    const channel = supabase
-      .channel('app_notifications_mobile')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'app_notifications',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          void refresh();
-        }
-      )
-      .subscribe();
+    const unsub = subscribeAppNotificationsMobile(supabase, userId, () => {
+      void refresh();
+    });
     const poll = setInterval(() => {
       void refresh();
     }, 45000);
     return () => {
       clearInterval(poll);
-      if (supabase) void supabase.removeChannel(channel);
+      unsub();
     };
   }, [refresh, userId]);
 
@@ -165,8 +154,8 @@ export function NotificationBellButton() {
                   }}
                   accessibilityHint={t('notifications.openHint')}
                 >
-                  <Text style={styles.itemTitle}>{n.title}</Text>
-                  {n.body ? <Text style={styles.itemBody}>{n.body}</Text> : null}
+                  <Text style={styles.itemTitle}>{String(n.title || '')}</Text>
+                  {n.body ? <Text style={styles.itemBody}>{String(n.body)}</Text> : null}
                   <Text style={styles.itemMeta}>{formatWhen(n.created_at, locale)}</Text>
                 </Pressable>
               ))}

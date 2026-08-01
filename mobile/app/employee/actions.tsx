@@ -8,10 +8,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { CompactShiftRow } from '../../components/CompactShiftRow';
 import { DatePickerField } from '../../components/DatePickerField';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
@@ -43,6 +44,10 @@ import {
   swapRequestDisplayStatus,
 } from '../../lib/shiftSwap';
 import { supabase } from '../../lib/supabase';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
 
 type FormKey = 'timeoff' | 'swap' | 'callout';
 

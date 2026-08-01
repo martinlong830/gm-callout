@@ -203,9 +203,11 @@ export default function EmployeeScheduleScreen() {
         readSlotOrderByRestaurantForWeek(
           draftScheduleRaw,
           weekMeta[weekIndex * 7]?.iso || ''
-        )
+        ),
+        assignmentStore,
+        weekIndex
       ),
-    [schedule, visibleDays, draftRows, lites, currentRestaurantId, draftScheduleRaw, weekMeta, weekIndex]
+    [schedule, visibleDays, draftRows, lites, currentRestaurantId, draftScheduleRaw, weekMeta, weekIndex, assignmentStore]
   );
 
   const daysWidth = useMemo(

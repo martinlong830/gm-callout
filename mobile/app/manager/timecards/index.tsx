@@ -366,7 +366,9 @@ export default function TimecardsRosterScreen() {
       visibleDays,
       lites,
       locationFilter,
-      readSlotOrderByRestaurantForWeek(draftRaw, startIso)
+      readSlotOrderByRestaurantForWeek(draftRaw, startIso),
+      hydrated.store,
+      weekIdx
     );
 
     built.sort((a, b) => {

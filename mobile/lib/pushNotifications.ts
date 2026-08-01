@@ -228,7 +228,7 @@ function navigateFromPushResponse(response: NotificationResponseLike | null | un
       } catch (err) {
         console.warn('push notification navigate', err);
       }
-    }, 250);
+    }, 600);
   } catch (err) {
     console.warn('navigateFromPushResponse', err);
   }

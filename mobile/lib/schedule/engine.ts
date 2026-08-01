@@ -300,6 +300,7 @@ function sanitizeDraftRoleRows(
     for (let di = 0; di < 7; di += 1) {
       cells.push(normalizeDraftCell(row[di]));
     }
+    /* Keep all-null rows (empty slots with Person assigned via stubs). */
     out.push(cells);
   });
   return out.length ? out : JSON.parse(JSON.stringify(defaultRows));
@@ -393,6 +394,48 @@ export function draftTimeSlotFor(
 
 export function slotCountForRole(draftRows: DraftGrid, role: RoleKey): number {
   return getDraftRowsForRole(draftRows, role).length;
+}
+
+/**
+ * Highest trIdx with a saved assignment stub for this role/week (any day).
+ * Used so empty/new slots that exist only as Person stubs still get a calendar row
+ * when draft times were not yet written (or week draft fell back to a shorter template).
+ */
+export function maxAssignmentTrIdxForRoleWeek(
+  store: AssignmentStore | null | undefined,
+  restaurantId: string,
+  role: RoleKey,
+  weekIndex: number
+): number {
+  if (!store || !restaurantId || weekIndex == null || Number.isNaN(weekIndex)) return -1;
+  const roleIdx = roleIdxForDraftRole(role);
+  if (roleIdx < 0) return -1;
+  const rs = store[restaurantId];
+  if (!rs || typeof rs !== 'object') return -1;
+  const weekStart = weekIndex * 7;
+  const weekEnd = weekStart + 7;
+  let max = -1;
+  Object.keys(rs).forEach((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    if (!p || p.roleIdx !== roleIdx) return;
+    if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+    if (p.trIdx > max) max = p.trIdx;
+  });
+  return max;
+}
+
+/** Draft row count, expanded to cover any assignment stubs for the week. */
+export function slotCountForRoleWithAssignments(
+  draftRows: DraftGrid,
+  role: RoleKey,
+  store?: AssignmentStore | null,
+  restaurantId?: string,
+  weekIndex?: number
+): number {
+  const fromDraft = slotCountForRole(draftRows, role);
+  if (!store || !restaurantId || weekIndex == null || Number.isNaN(weekIndex)) return fromDraft;
+  const maxTr = maxAssignmentTrIdxForRoleWeek(store, restaurantId, role, weekIndex);
+  return Math.max(fromDraft, maxTr + 1);
 }
 
 export function getThisMondayDate(): Date {
@@ -1552,7 +1595,9 @@ export function buildCalendarBody(
   draftRows: DraftGrid,
   employees: EmployeeLite[] = [],
   restaurantId = '',
-  slotOrderByRestaurant?: SlotOrderByRestaurant | null
+  slotOrderByRestaurant?: SlotOrderByRestaurant | null,
+  assignmentStore?: AssignmentStore | null,
+  weekIndex?: number
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
@@ -1570,7 +1615,14 @@ export function buildCalendarBody(
       bodyRows.push({ kind: 'section', title: 'BACK OF THE HOUSE', variant: 'boh' });
     }
 
-    const slotN = slotCountForRole(draftRows, rd.role);
+    /* Include all-null draft rows and stub-only empty slots (Person assigned, no times yet). */
+    const slotN = slotCountForRoleWithAssignments(
+      draftRows,
+      rd.role,
+      assignmentStore,
+      restaurantId,
+      weekIndex
+    );
     const slotOrder = orderedScheduleSlotIndicesForRole(
       schedule,
       rd.role,
@@ -1638,12 +1690,20 @@ export function employeeScheduleVisualRankMap(
   visibleDays: string[],
   employees: EmployeeLite[],
   restaurantId: string,
-  slotOrderByRestaurant?: SlotOrderByRestaurant | null
+  slotOrderByRestaurant?: SlotOrderByRestaurant | null,
+  assignmentStore?: AssignmentStore | null,
+  weekIndex?: number
 ): Map<string, number> {
   const map = new Map<string, number>();
   let rank = 0;
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {
-    const slotN = slotCountForRole(draftRows, roleKey);
+    const slotN = slotCountForRoleWithAssignments(
+      draftRows,
+      roleKey,
+      assignmentStore,
+      restaurantId,
+      weekIndex
+    );
     const slotOrder = orderedScheduleSlotIndicesForRole(
       schedule,
       roleKey,
@@ -1661,7 +1721,9 @@ export function employeeScheduleVisualRankMap(
         trIdx,
         visibleDays,
         employees,
-        restaurantId
+        restaurantId,
+        assignmentStore,
+        weekIndex
       );
       if (!person || person === 'Unassigned') {
         rank += 1;
