@@ -891,6 +891,25 @@ await verifyPayslipPatchedExport();
   if (jul17[0].shift.restaurantId !== 'rp-9') {
     throw new Error('Prefer home-store row when collapsing overlapping multi-store clones');
   }
+
+  /* Corrupt overnight mega-span (am/pm clone) must not survive beside a normal day shift. */
+  const overnightRows = [
+    {
+      iso: '2026-07-27',
+      shift: { id: 's-day', start: '09:00', end: '18:00', restaurantId: 'rp-9' },
+    },
+    {
+      iso: '2026-07-27',
+      shift: { id: 's-overnight', start: '23:30', end: '21:30', restaurantId: 'rp-9' },
+    },
+  ];
+  const overnightCollapsed = T.collapseDuplicateShiftDayRows(overnightRows, emp);
+  if (overnightCollapsed.length !== 1 || overnightCollapsed[0].shift.id !== 's-day') {
+    throw new Error(
+      'Absurd overnight clone beside daytime shift must collapse to daytime row, got ' +
+        overnightCollapsed.map((r) => r.shift.id).join(',')
+    );
+  }
   console.log('OK: collapseDuplicateShiftDayRows keeps distinct slots, drops clones');
 }
 

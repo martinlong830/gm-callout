@@ -8901,6 +8901,23 @@
     return ra.start < rb.end && rb.start < ra.end;
   }
 
+  /**
+   * Overnight wrap with a huge span (e.g. 11:30pm–9:30pm = 22h) is almost always a
+   * corrupted am/pm clone of another same-day slot, not a real split shift.
+   */
+  function isAbsurdOvernightShiftDayRow(row) {
+    if (!row || !row.shift || isOffScheduleShiftDayRow(row)) return false;
+    var start = normalizeShiftDayHHMM(row.shift.start);
+    var end = normalizeShiftDayHHMM(row.shift.end);
+    if (!start || !end) return false;
+    var sp = start.split(':');
+    var ep = end.split(':');
+    var startMins = parseInt(sp[0], 10) * 60 + parseInt(sp[1], 10);
+    var endMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1], 10);
+    if (endMins > startMins) return false;
+    return endMins + 24 * 60 - startMins > 14 * 60;
+  }
+
   function scoreShiftDayRowForCollapse(row, emp) {
     var score = 0;
     if (!isOffScheduleShiftDayRow(row)) score += 100;
@@ -8949,7 +8966,19 @@
         var overlaps = keptForDay.some(function (prev) {
           return shiftDayRowsOverlap(g.row, prev.row);
         });
-        if (!overlaps) keptForDay.push(g);
+        if (overlaps) return;
+        /* Drop corrupt overnight mega-spans when a normal same-day shift is already kept. */
+        if (
+          isAbsurdOvernightShiftDayRow(g.row) &&
+          keptForDay.some(function (prev) {
+            return (
+              !isOffScheduleShiftDayRow(prev.row) && !isAbsurdOvernightShiftDayRow(prev.row)
+            );
+          })
+        ) {
+          return;
+        }
+        keptForDay.push(g);
       });
       keptForDay.forEach(function (g) {
         keep.push(g);

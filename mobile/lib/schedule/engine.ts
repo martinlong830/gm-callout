@@ -424,18 +424,17 @@ export function maxAssignmentTrIdxForRoleWeek(
   return max;
 }
 
-/** Draft row count, expanded to cover any assignment stubs for the week. */
+/** Draft row count only. Empty/new slots always persist an all-null draft row first, so
+ *  pending Person stubs stay visible without expanding for orphan assignment keys left
+ *  behind after a slot row was deleted (those used to resurrect phantom duplicate shifts). */
 export function slotCountForRoleWithAssignments(
   draftRows: DraftGrid,
   role: RoleKey,
-  store?: AssignmentStore | null,
-  restaurantId?: string,
-  weekIndex?: number
+  _store?: AssignmentStore | null,
+  _restaurantId?: string,
+  _weekIndex?: number
 ): number {
-  const fromDraft = slotCountForRole(draftRows, role);
-  if (!store || !restaurantId || weekIndex == null || Number.isNaN(weekIndex)) return fromDraft;
-  const maxTr = maxAssignmentTrIdxForRoleWeek(store, restaurantId, role, weekIndex);
-  return Math.max(fromDraft, maxTr + 1);
+  return slotCountForRole(draftRows, role);
 }
 
 export function getThisMondayDate(): Date {
@@ -956,6 +955,42 @@ function repairDoubleMigratedAssignmentKeys(store: AssignmentStore): boolean {
 }
 
 /**
+ * Drop assignment keys whose trIdx is past the draft row count for that week.
+ * Empty new slots always get an all-null draft row first, so pending Person stubs
+ * stay. Keys beyond draft length are leftovers from deleted rows (phantom dupes).
+ */
+export function pruneOrphanScheduleAssignmentsBeyondDraft(
+  store: AssignmentStore,
+  draftScheduleRaw?: unknown,
+  restaurants?: Restaurant[]
+): boolean {
+  if (!store || typeof store !== 'object') return false;
+  const rests = restaurants?.length ? restaurants : defaultRestaurants();
+  let changed = false;
+  rests.forEach((r) => {
+    const rs = store[r.id];
+    if (!rs || typeof rs !== 'object') return;
+    const removeIds: string[] = [];
+    Object.keys(rs).forEach((shiftId) => {
+      const p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      const wi = Math.floor(p.globalDayIdx / 7);
+      if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
+      const role = ROLE_DEFS[p.roleIdx]?.role as RoleKey | undefined;
+      if (!role) return;
+      const draftRows = draftForWeek(draftScheduleRaw, undefined, wi, r.id);
+      const n = slotCountForRole(draftRows, role);
+      if (p.trIdx >= n) removeIds.push(shiftId);
+    });
+    removeIds.forEach((shiftId) => {
+      delete rs[shiftId];
+      changed = true;
+    });
+  });
+  return changed;
+}
+
+/**
  * One-time legacy migration: shift-0..6 → template week (dayIdx + PAST*7).
  * Must NOT re-shift multi-week past keys (dayIdx < PAST*7) — that wiped past weeks and
  * polluted current/future on every mobile hydrate (unlike web, which only migrates legacy).
@@ -1347,6 +1382,7 @@ export function ensureRollingFutureAssignments(
      */
     draftMetaChanged = true;
   }
+  if (pruneOrphanScheduleAssignmentsBeyondDraft(next, draft, rests)) changed = true;
   return { store: next, draftSchedule: draft, changed, draftMetaChanged };
 }
 
@@ -1381,10 +1417,15 @@ export function hydrateScheduleAssignmentsFromTeamState(
     restaurants,
     draftScheduleRaw
   );
+  const pruned = pruneOrphanScheduleAssignmentsBeyondDraft(
+    rolled.store,
+    rolled.draftSchedule ?? draftScheduleRaw,
+    restaurants
+  );
   return {
     store: rolled.store,
     draftSchedule: rolled.draftSchedule,
-    changed: merged.changed || rolled.changed,
+    changed: merged.changed || rolled.changed || pruned,
     draftMetaChanged: rolled.draftMetaChanged,
   };
 }
@@ -1433,9 +1474,8 @@ function applyScheduleAssignmentsMerge(
     } else {
       delete s.breakPaid;
     }
-    /* Web always uses draft slot hours for the cell (entry.hours is editorial metadata). */
+    /* Web always uses draft slot label/hours for the cell (entry.* is editorial metadata). */
     s.redPokeHours = slotHours;
-    if (entry.timeLabel) s.timeLabel = entry.timeLabel;
     if (skipWorkers) {
       s.workers = ['Unassigned'];
       s.worker = 'Unassigned';

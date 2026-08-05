@@ -1101,6 +1101,20 @@ function shiftDayRowsOverlap(a: ShiftDayRow, b: ShiftDayRow): boolean {
   return ra.start < rb.end && rb.start < ra.end;
 }
 
+/** Overnight wrap with a huge span — usually a corrupted am/pm clone, not a real split. */
+function isAbsurdOvernightShiftDayRow(row: ShiftDayRow): boolean {
+  if (isOffScheduleShiftDayRow(row)) return false;
+  const start = normalizeShiftDayHHMM(row.shift.start);
+  const end = normalizeShiftDayHHMM(row.shift.end);
+  if (!start || !end) return false;
+  const [sh, sm] = start.split(':').map((n) => parseInt(n, 10));
+  const [eh, em] = end.split(':').map((n) => parseInt(n, 10));
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+  if (endMins > startMins) return false;
+  return endMins + 24 * 60 - startMins > 14 * 60;
+}
+
 function scoreShiftDayRowForCollapse(
   row: ShiftDayRow,
   emp: EmployeeRow,
@@ -1153,7 +1167,16 @@ export function collapseDuplicateShiftDayRows(
     const keptForDay: { row: ShiftDayRow; idx: number }[] = [];
     for (const g of pool) {
       const overlaps = keptForDay.some((prev) => shiftDayRowsOverlap(g.row, prev.row));
-      if (!overlaps) keptForDay.push(g);
+      if (overlaps) continue;
+      if (
+        isAbsurdOvernightShiftDayRow(g.row) &&
+        keptForDay.some(
+          (prev) => !isOffScheduleShiftDayRow(prev.row) && !isAbsurdOvernightShiftDayRow(prev.row)
+        )
+      ) {
+        continue;
+      }
+      keptForDay.push(g);
     }
     for (const g of keptForDay) keep.push(g);
   }

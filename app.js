@@ -2780,7 +2780,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=full-report-4';
+      script.src = 'timecards-manager.js?v=dup-shift-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -5911,6 +5911,38 @@
     return changed;
   }
 
+  /**
+   * Drop assignment keys whose trIdx is past the draft row count for that week.
+   * Empty new slots always get an all-null draft row first (addScheduleSlotLine), so
+   * pending Person stubs stay (trIdx < draft length). Keys beyond draft length are
+   * leftovers from deleted FOH rows and resurrect phantom duplicate shifts.
+   * Returns true when the in-memory store was mutated (caller persists / marks dirty).
+   */
+  function pruneOrphanScheduleAssignmentsBeyondDraft(store) {
+    if (!store || typeof store !== 'object') return false;
+    var changed = false;
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      var removeIds = [];
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        var wi = Math.floor(p.globalDayIdx / 7);
+        if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
+        var role = ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role;
+        if (!role) return;
+        var n = slotCountForRole(role, wi, r.id);
+        if (p.trIdx >= n) removeIds.push(shiftId);
+      });
+      removeIds.forEach(function (shiftId) {
+        delete rs[shiftId];
+        changed = true;
+      });
+    });
+    return changed;
+  }
+
   function migrateScheduleAssignmentsForPastWeeks(store) {
     if (!store || typeof store !== 'object') return { store: store, changed: false };
     var changed = repairDoubleMigratedAssignmentKeys(store);
@@ -5968,6 +6000,7 @@
           var mig = migrateScheduleAssignmentsForPastWeeks(p);
           var rp8Reset = resetRp8ScheduleAssignmentsOnce(mig.store);
           if (rp8Reset.changed) mig.changed = true;
+          if (pruneOrphanScheduleAssignmentsBeyondDraft(mig.store)) mig.changed = true;
           if (mig.changed) {
             try {
               localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mig.store));
@@ -6283,16 +6316,10 @@
         if (!rd || !rd.role) {
           delete rs[shiftId];
           changed = true;
-          return;
-        }
-        var shiftWeekIdx = Math.floor(p.globalDayIdx / 7);
-        var maxTr = slotCountForRole(rd.role, shiftWeekIdx, rid);
-        if (p.trIdx >= maxTr) {
-          delete rs[shiftId];
-          changed = true;
         }
       });
     });
+    if (pruneOrphanScheduleAssignmentsBeyondDraft(store)) changed = true;
     if (changed) saveScheduleAssignmentsStore(store);
   }
 
