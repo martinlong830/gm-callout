@@ -293,7 +293,7 @@ export default function ManagerRequests() {
       setBusyId(null);
       if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
       else {
-        if (res.store) applyLocalScheduleAssignments(res.store);
+        if (res.store) applyLocalScheduleAssignments(res.store, undefined, { markDirty: false });
         void refetch({ silent: true });
       }
     } catch (err) {

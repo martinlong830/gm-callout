@@ -89,6 +89,9 @@ export async function fetchTeamStateColumns(
     : null;
 }
 
+/** In-memory only — never upsert to Supabase. Prefer local schedule while a save is pending. */
+export const LOCAL_SCHEDULE_DIRTY_KEY = '__localScheduleDirty';
+
 /** Merge a partial remote row into cached team_state without dropping other columns. */
 export function mergeTeamStatePartial(
   prev: Record<string, unknown> | null,
@@ -97,26 +100,47 @@ export function mergeTeamStatePartial(
   if (!partial) return prev;
   if (!prev) return { ...partial };
   const next: Record<string, unknown> = { ...prev, ...partial };
+  const localDirty = prev[LOCAL_SCHEDULE_DIRTY_KEY] === true;
+
+  /*
+   * Prefer remote Manager SoT unless this device has unsaved schedule edits.
+   * Do not use client-bumped updated_at alone — that blocked newer web pushes forever.
+   * Do not compare timestamps either: the local cache keeps the updated_at of the last
+   * snapshot it read, so every remote row looks newer once this device has pushed once,
+   * which let a snapshot taken before the pending edit win. Web does the same thing via
+   * `teamStateAssignmentMergeLocked()` — while local edits are unsaved, remote schedule
+   * columns are skipped entirely (the row's updated_at is still adopted so freshness
+   * probes keep working). When dirty, keep BOTH assignments + draft together (never mix
+   * stale remote people with local times or the reverse).
+   */
+  if (localDirty) {
+    if (prev.schedule_assignments != null) {
+      next.schedule_assignments = prev.schedule_assignments;
+    }
+    if (prev.draft_schedule != null) {
+      if (partial.draft_schedule != null) {
+        next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+          partial.draft_schedule,
+          prev.draft_schedule
+        );
+      } else {
+        next.draft_schedule = prev.draft_schedule;
+      }
+    }
+    next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
+    return next;
+  }
+
   if (
     Object.prototype.hasOwnProperty.call(partial, 'draft_schedule') &&
     partial.draft_schedule != null &&
     prev.draft_schedule != null
   ) {
-    const prevAt = Date.parse(String(prev.updated_at || '')) || 0;
-    const remAt = Date.parse(String(partial.updated_at || '')) || 0;
-    /* Optimistic local writes bump updated_at — don't let an older REST snapshot wipe them. */
-    if (prevAt > remAt) {
-      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
-        partial.draft_schedule,
-        prev.draft_schedule
-      );
-      next.updated_at = prev.updated_at;
-    } else {
-      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
-        prev.draft_schedule,
-        partial.draft_schedule
-      );
-    }
+    next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+      prev.draft_schedule,
+      partial.draft_schedule
+    );
   }
+  delete next[LOCAL_SCHEDULE_DIRTY_KEY];
   return next;
 }

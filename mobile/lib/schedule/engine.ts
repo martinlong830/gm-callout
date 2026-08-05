@@ -15,7 +15,7 @@ import type {
   WeekdayKey,
 } from './types';
 import { compareEmployeesByDisplayName } from './rosterOrder';
-import { getCustomSlotOrderForRole } from './slotOrder';
+import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } from './slotOrder';
 import { normalizeEmployeeStaffType } from '../employees';
 
 function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
@@ -1059,26 +1059,138 @@ function copyRestaurantWeekAssignments(
   return true;
 }
 
+type FurthestSeedMeta = { mondayIso: string; seeded: boolean };
+
+function readFurthestSeedMeta(draftRaw: unknown): FurthestSeedMeta | null {
+  if (!draftRaw || typeof draftRaw !== 'object') return null;
+  const p = (draftRaw as Record<string, unknown>).furthestSeedMeta;
+  if (!p || typeof p !== 'object') return null;
+  const mon = String((p as Record<string, unknown>).mondayIso || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(mon)) return null;
+  return { mondayIso: mon, seeded: !!(p as Record<string, unknown>).seeded };
+}
+
+function writeFurthestSeedMetaOnDraft(
+  draftRaw: unknown,
+  meta: FurthestSeedMeta | null
+): unknown {
+  if (!draftRaw || typeof draftRaw !== 'object') return draftRaw;
+  const next = { ...(draftRaw as Record<string, unknown>) };
+  if (!meta) delete next.furthestSeedMeta;
+  else next.furthestSeedMeta = { mondayIso: meta.mondayIso, seeded: !!meta.seeded };
+  return next;
+}
+
+function restaurantWeekHasDirectAssignments(
+  restAssignments: Record<string, ScheduleAssignmentEntry>,
+  weekIndex: number
+): boolean {
+  if (!restAssignments || typeof restAssignments !== 'object') return false;
+  const start = weekIndex * 7;
+  const end = start + 7;
+  return Object.keys(restAssignments).some((shiftId) => {
+    const p = parseShiftIdParts(shiftId);
+    return !!(p && p.globalDayIdx >= start && p.globalDayIdx < end);
+  });
+}
+
+/** Copy draft byWeek[from] → byWeek[to] (and week slot order when Monday ISOs are known). */
+function copyDraftWeekIndexInPayload(
+  draftRaw: unknown,
+  fromWeekIndex: number,
+  toWeekIndex: number,
+  fromMondayIso?: string,
+  toMondayIso?: string
+): unknown {
+  if (!draftRaw || typeof draftRaw !== 'object' || fromWeekIndex === toWeekIndex) {
+    return draftRaw;
+  }
+  const p = draftRaw as Record<string, unknown>;
+  if (!p.byWeek || typeof p.byWeek !== 'object') return draftRaw;
+  const byWeek = p.byWeek as Record<string, unknown>;
+  const src = byWeek[String(fromWeekIndex)];
+  if (!src) return draftRaw;
+  const nextByWeek = {
+    ...byWeek,
+    [String(toWeekIndex)]: JSON.parse(JSON.stringify(src)),
+  };
+  let next: Record<string, unknown> = { ...p, byWeek: nextByWeek };
+  const fromMon = normalizeMondayIso(fromMondayIso);
+  const toMon = normalizeMondayIso(toMondayIso);
+  if (fromMon && toMon && fromMon !== toMon) {
+    const map = { ...readSlotOrderByWeek(next) };
+    if (map[fromMon]) {
+      map[toMon] = JSON.parse(JSON.stringify(map[fromMon]));
+      next = { ...next, slotOrderByWeek: map };
+    }
+  }
+  return next;
+}
+
 /**
  * Seed W+2 from current week when empty. Leaves W+1 intact; never overwrites staffed W+2.
+ * Match web: once-per-Monday seed meta so cleared (Unassigned) W+2 is not re-copied on every hydrate.
  */
 function seedFurthestFutureWeekIfEmpty(
   store: AssignmentStore,
   restaurants: Restaurant[],
-  restaurantIds: string[]
-): boolean {
+  restaurantIds: string[],
+  draftRaw: unknown,
+  mondayIso: string
+): { seeded: boolean; draftSchedule: unknown } {
   const tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
   let furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
   if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
-  if (furthest <= tpl) return false;
+  if (furthest <= tpl) {
+    return { seeded: false, draftSchedule: draftRaw };
+  }
+  const seedMeta = readFurthestSeedMeta(draftRaw);
+  if (seedMeta && seedMeta.mondayIso === mondayIso && seedMeta.seeded) {
+    return { seeded: false, draftSchedule: draftRaw };
+  }
+
   let any = false;
+  let anyTouchedFurthest = false;
   restaurantIds.forEach((rid) => {
     if (restaurantUsesDefaultUnassignedSchedule(restaurants, rid)) return;
     if (!store[rid]) store[rid] = {};
-    if (restaurantWeekHasStaffedAssignments(store[rid], furthest)) return;
+    /* Staffed OR explicit Unassigned/direct rows — do not re-copy (web uses seed meta for this). */
+    if (
+      restaurantWeekHasStaffedAssignments(store[rid], furthest) ||
+      restaurantWeekHasDirectAssignments(store[rid], furthest)
+    ) {
+      anyTouchedFurthest = true;
+      return;
+    }
     if (copyRestaurantWeekAssignments(store[rid], tpl, furthest)) any = true;
   });
-  return any;
+
+  let draft = draftRaw;
+  const primaryRid = restaurantIds[0];
+  if (
+    any ||
+    (primaryRid && !restaurantWeekHasDirectAssignments(store[primaryRid] || {}, furthest))
+  ) {
+    const anchor = getScheduleAnchorMondayDate();
+    const fromMon = new Date(
+      anchor.getFullYear(),
+      anchor.getMonth(),
+      anchor.getDate() + tpl * 7
+    );
+    const toMon = new Date(
+      anchor.getFullYear(),
+      anchor.getMonth(),
+      anchor.getDate() + furthest * 7
+    );
+    const fmt = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    draft = copyDraftWeekIndexInPayload(draft, tpl, furthest, fmt(fromMon), fmt(toMon));
+  }
+
+  if (any || anyTouchedFurthest || !seedMeta || seedMeta.mondayIso !== mondayIso) {
+    draft = writeFurthestSeedMetaOnDraft(draft, { mondayIso, seeded: true });
+  }
+  return { seeded: any, draftSchedule: draft };
 }
 
 export function currentScheduleWeekMondayIso(): string {
@@ -1172,7 +1284,13 @@ export function ensureRollingFutureAssignments(
   store: AssignmentStore,
   restaurants?: Restaurant[],
   draftScheduleRaw?: unknown
-): { store: AssignmentStore; draftSchedule: unknown; changed: boolean } {
+): {
+  store: AssignmentStore;
+  draftSchedule: unknown;
+  changed: boolean;
+  /** Only `furthestSeedMeta` moved — cache it locally, but do not spend a cloud write. */
+  draftMetaChanged: boolean;
+} {
   const next = JSON.parse(JSON.stringify(store || {})) as AssignmentStore;
   const rests = restaurants && restaurants.length ? restaurants : defaultRestaurants();
   const ids = rests.map((r) => r.id);
@@ -1202,6 +1320,8 @@ export function ensureRollingFutureAssignments(
       if (draft && typeof draft === 'object') {
         draft = { ...(draft as Record<string, unknown>), windowMondayIso: mondayIso };
       }
+      /* New Monday window — allow W+2 seed again (parity with web writeFurthestSeedMeta(null)). */
+      draft = writeFurthestSeedMetaOnDraft(draft, null);
       changed = true;
     } else if (delta < 0 && draft && typeof draft === 'object') {
       /* Clock skew / timezone — re-anchor only; do not shift forward. */
@@ -1210,11 +1330,32 @@ export function ensureRollingFutureAssignments(
     }
   }
 
-  if (seedFurthestFutureWeekIfEmpty(next, rests, ids)) {
+  const seeded = seedFurthestFutureWeekIfEmpty(next, rests, ids, draft, mondayIso);
+  draft = seeded.draftSchedule;
+  let draftMetaChanged = false;
+  if (seeded.seeded) {
     changed = true;
     purgeDefaultUnassignedRestaurantAssignments(next, rests);
+  } else if (draftDiffersIgnoringSeedMeta(draft, draftScheduleRaw)) {
+    /* W+2 draft week copy landed without assignment copies. */
+    changed = true;
+  } else if (JSON.stringify(draft) !== JSON.stringify(draftScheduleRaw)) {
+    /*
+     * Seed meta only. Web keeps this in localStorage, so cloud draft_schedule never carries
+     * it — treating it as a change made every hydrate schedule a write and re-arm the
+     * debounced save, which is how pending edits got overwritten.
+     */
+    draftMetaChanged = true;
   }
-  return { store: next, draftSchedule: draft, changed };
+  return { store: next, draftSchedule: draft, changed, draftMetaChanged };
+}
+
+function draftDiffersIgnoringSeedMeta(a: unknown, b: unknown): boolean {
+  const strip = (raw: unknown) =>
+    JSON.stringify(
+      raw && typeof raw === 'object' ? writeFurthestSeedMetaOnDraft(raw, null) : raw
+    );
+  return strip(a) !== strip(b);
 }
 
 /** Shell → remote merge → Monday window roll / W+2 seed (shared by schedule + timecards). */
@@ -1222,7 +1363,12 @@ export function hydrateScheduleAssignmentsFromTeamState(
   scheduleAssignments: unknown,
   restaurants: Restaurant[],
   draftScheduleRaw?: unknown
-): { store: AssignmentStore; draftSchedule: unknown; changed: boolean } {
+): {
+  store: AssignmentStore;
+  draftSchedule: unknown;
+  changed: boolean;
+  draftMetaChanged: boolean;
+} {
   const ids = restaurants.map((r) => r.id);
   const merged = mergeRemoteAssignments(
     assignmentShell(restaurants),
@@ -1239,6 +1385,7 @@ export function hydrateScheduleAssignmentsFromTeamState(
     store: rolled.store,
     draftSchedule: rolled.draftSchedule,
     changed: merged.changed || rolled.changed,
+    draftMetaChanged: rolled.draftMetaChanged,
   };
 }
 
@@ -1257,7 +1404,18 @@ function applyScheduleAssignmentsMerge(
   skipWorkers?: boolean
 ) {
   schedule.forEach((s) => {
-    const entry = lookupScheduleAssignment(stored, s.id);
+    /* Match web `applyScheduleAssignmentsMerge`: direct store row vs pattern inheritance,
+       and only clear pickDefault when a direct assignment exists. */
+    const directEntry =
+      stored[s.id] != null ? normalizeScheduleAssignment(stored[s.id]) : null;
+    const hasDirectAssignment = stored[s.id] != null;
+    const entry = directEntry
+      ? mergeScheduleAssignmentEntries(
+          directEntry,
+          lookupScheduleAssignmentPattern(stored, s.id)
+        )
+      : lookupScheduleAssignment(stored, s.id);
+    const hasStaffedDirect = !!(directEntry && scheduleAssignmentHasStaffedWorkers(directEntry));
     const slotLabel = redPokeShiftTimeLabel(s.start, s.end);
     const slotHours = redPokeShiftHoursDecimal(s.start, s.end);
     s.timeLabel = slotLabel;
@@ -1275,31 +1433,27 @@ function applyScheduleAssignmentsMerge(
     } else {
       delete s.breakPaid;
     }
-    if (entry.hours != null && String(entry.hours).trim() !== '') {
-      const entryH = parseFloat(entry.hours);
-      const slotH = parseFloat(slotHours);
-      if (!Number.isNaN(entryH) && !Number.isNaN(slotH) && Math.abs(entryH - slotH) > 0.02) {
-        s.redPokeHours = slotHours;
-      } else {
-        s.redPokeHours = entry.hours;
-      }
-    } else {
-      s.redPokeHours = slotHours;
-    }
+    /* Web always uses draft slot hours for the cell (entry.hours is editorial metadata). */
+    s.redPokeHours = slotHours;
     if (entry.timeLabel) s.timeLabel = entry.timeLabel;
     if (skipWorkers) {
       s.workers = ['Unassigned'];
       s.worker = 'Unassigned';
       return;
     }
-    const list = entry.workers.filter(
+    let list = entry.workers.filter(
       (n) => n && n !== 'Unassigned' && scheduleWorkerIsOnTeamLite(employees, n, restaurantId)
     );
+    if (!list.length && hasStaffedDirect && directEntry) {
+      /* Keep staffed direct names even if roster filter missed them (parity with web). */
+      list = (directEntry.workers || []).filter((n) => n && n !== 'Unassigned');
+    }
     if (!list.length) {
-      // Explicit Unassigned (or empty) assignment must clear pickDefault roster names —
-      // otherwise the slot stays staffed and blocks off-schedule punch rows for that day.
-      s.workers = ['Unassigned'];
-      s.worker = 'Unassigned';
+      if (hasDirectAssignment) {
+        /* Explicit Unassigned / empty direct row clears pickDefault roster names. */
+        s.workers = ['Unassigned'];
+        s.worker = 'Unassigned';
+      }
       return;
     }
     const canon = canonicalizeScheduleWorkerListLite(employees, list, restaurantId);
@@ -1576,7 +1730,12 @@ export function assignPersonToScheduleRow(
     const shift = schedule.find((s) => s.day === dayStr && s.role === role && s.trIdx === trIdx);
     if (shift) {
       any = true;
-      next[restaurantId][shift.id] = list;
+      /* Replace only the people — web keeps break/hours/timeLabel on the row. */
+      const staffed = normalizeScheduleAssignment(
+        next[restaurantId][shift.id] ?? { workers: ['Unassigned'] }
+      );
+      staffed.workers = list.slice();
+      next[restaurantId][shift.id] = staffed;
       return;
     }
     if (roleIdx < 0 || weekIndex == null || Number.isNaN(weekIndex)) return;

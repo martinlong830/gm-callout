@@ -130,6 +130,8 @@ type ScheduleUndoSnap = {
 };
 
 const SCHEDULE_UNDO_MAX = 40;
+const PERSIST_DEBOUNCE_MS = 3000;
+const PERSIST_RETRY_MS = 5000;
 
 function toLite(e: EmployeeRow): EmployeeLite {
   return {
@@ -199,6 +201,11 @@ export default function ManagerScheduleScreen() {
   /** Keeps a pending draft payload across debounced assignment saves (e.g. Monday window roll). */
   const pendingDraftRef = useRef<unknown>(undefined);
   const pendingStoreRef = useRef<AssignmentStore | null>(null);
+  /** True from a manager edit until its save is confirmed — hydrate must not overwrite it. */
+  const localEditPendingRef = useRef(false);
+  const persistCloudRef = useRef<
+    ((store: AssignmentStore, draftSchedule?: unknown) => Promise<void>) | null
+  >(null);
   const undoStackRef = useRef<ScheduleUndoSnap[]>([]);
   /** Skip clearing undo when hydrate re-enters after a local teamState write. */
   const suppressHydrateUndoClearRef = useRef(false);
@@ -393,6 +400,17 @@ export default function ManagerScheduleScreen() {
     setUndoDepth(next.length);
   }, [role]);
 
+  /** Re-arm the debounced save; the timer always flushes the latest pending store. */
+  const armSaveTimer = useCallback((delayMs: number) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      const latestStore = pendingStoreRef.current;
+      if (!latestStore) return;
+      void persistCloudRef.current?.(latestStore, pendingDraftRef.current);
+    }, delayMs);
+  }, []);
+
   const persistCloud = useCallback(
     async (store: AssignmentStore, draftSchedule?: unknown) => {
       if (!supabase || !isManagerLikeRole(role)) return;
@@ -412,10 +430,19 @@ export default function ManagerScheduleScreen() {
           payload.draft_schedule = draftToSave;
           fields.push('draft_schedule');
         }
-        const up = await supabase.from('team_state').upsert(payload, { onConflict: 'id' });
-        if (up.error) console.warn('team_state upsert', up.error);
-        else {
+        const up = await supabase
+          .from('team_state')
+          .upsert(payload, { onConflict: 'id' })
+          .select('id, updated_at')
+          .single();
+        if (up.error) {
+          console.warn('team_state upsert', up.error);
+          /* Stays dirty so remote cannot win; retry or the edit is lost on the next fetch. */
+          armSaveTimer(PERSIST_RETRY_MS);
+        } else {
           pendingDraftRef.current = undefined;
+          pendingStoreRef.current = null;
+          localEditPendingRef.current = false;
           await broadcastTeamStateChanged(
             supabase,
             teamStateId,
@@ -424,28 +451,44 @@ export default function ManagerScheduleScreen() {
           );
           // Local state already has assignments; avoid full hydrate after every edit.
           suppressHydrateUndoClearRef.current = true;
-          applyLocalScheduleAssignments(toSave, draftToSave);
+          applyLocalScheduleAssignments(toSave, draftToSave, {
+            markDirty: false,
+            pushedUpdatedAt: up.data?.updated_at as string | undefined,
+          });
         }
       } finally {
         setSaving(false);
       }
     },
-    [role, restaurants, session?.user?.id, applyLocalScheduleAssignments]
+    [role, restaurants, session?.user?.id, applyLocalScheduleAssignments, armSaveTimer]
+  );
+
+  useEffect(() => {
+    persistCloudRef.current = persistCloud;
+  }, [persistCloud]);
+
+  /* Leaving the screen inside the debounce window must still save the edit. */
+  useEffect(
+    () => () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      const latestStore = pendingStoreRef.current;
+      if (latestStore) void persistCloudRef.current?.(latestStore, pendingDraftRef.current);
+    },
+    []
   );
 
   const queuePersist = useCallback(
-    (store: AssignmentStore, draftSchedule?: unknown) => {
+    (store: AssignmentStore, draftSchedule?: unknown, opts?: { fromHydrate?: boolean }) => {
       pendingStoreRef.current = store;
+      /* Hydrate-driven saves must not masquerade as manager edits (see hydrate effect). */
+      if (!opts?.fromHydrate) localEditPendingRef.current = true;
       if (draftSchedule !== undefined) pendingDraftRef.current = draftSchedule;
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        saveTimer.current = null;
-        const latestStore = pendingStoreRef.current;
-        if (!latestStore) return;
-        void persistCloud(latestStore, pendingDraftRef.current);
-      }, 3000);
+      armSaveTimer(PERSIST_DEBOUNCE_MS);
     },
-    [persistCloud]
+    [armSaveTimer]
   );
 
   const undoLastChange = useCallback(() => {
@@ -480,8 +523,21 @@ export default function ManagerScheduleScreen() {
     if (rolled.changed && isManagerLikeRole(role)) {
       /* Local commits (incl. delete-slot) update teamState and re-enter here — do not wipe Undo. */
       if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-      applyLocalScheduleAssignments(rolled.store, draftOut);
-      queuePersist(rolled.store, draftOut);
+      /*
+       * Never let hydrate bookkeeping (window roll, migrations) replace the store a manager
+       * edit is waiting to save — that pushed the pre-edit names back over the new ones.
+       */
+      if (!localEditPendingRef.current) {
+        applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
+        queuePersist(rolled.store, draftOut, { fromHydrate: true });
+      }
+    } else if (
+      rolled.draftMetaChanged &&
+      isManagerLikeRole(role) &&
+      !localEditPendingRef.current
+    ) {
+      /* Seed bookkeeping only — keep it in the local cache, never spend a cloud write on it. */
+      applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
     }
     suppressHydrateUndoClearRef.current = false;
   }, [teamState, restaurants, role, queuePersist, applyLocalScheduleAssignments, clearUndoStack]);

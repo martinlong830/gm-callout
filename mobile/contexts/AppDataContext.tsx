@@ -28,12 +28,20 @@ import { invalidateWeekExtrasSliceCache } from '../lib/timecards/weekExtras';
 import {
   fetchTeamStateColumns,
   fetchTeamStateUpdatedAt,
+  LOCAL_SCHEDULE_DIRTY_KEY,
   mergeTeamStatePartial,
 } from '../lib/teamStateColumns';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
 import { isManagerLikeRole } from '../lib/roles';
 import { useAuth } from './AuthContext';
+
+export type ApplyLocalScheduleOpts = {
+  /** `true` = unsaved local edit, `false` = confirmed/remote-sourced, `'keep'` = leave as-is. */
+  markDirty?: boolean | 'keep';
+  /** `updated_at` returned by the upsert that just stored these assignments. */
+  pushedUpdatedAt?: string | null;
+};
 
 type AppDataState = HydrationResult & {
   loading: boolean;
@@ -42,7 +50,8 @@ type AppDataState = HydrationResult & {
   /** Optimistic schedule assignment patch for timecards before cloud refetch completes. */
   applyLocalScheduleAssignments: (
     assignments: AssignmentStore,
-    draftSchedule?: unknown
+    draftSchedule?: unknown,
+    opts?: ApplyLocalScheduleOpts
   ) => void;
   /** Logged-in employee roster row (by auth link or display name). */
   myEmployee: EmployeeRow | null;
@@ -138,16 +147,29 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   }, [runRefetch]);
 
   const applyLocalScheduleAssignments = useCallback(
-    (assignments: AssignmentStore, draftSchedule?: unknown) => {
+    (assignments: AssignmentStore, draftSchedule?: unknown, opts?: ApplyLocalScheduleOpts) => {
       setTeamState((prev: HydrationResult['teamState']) => {
         if (!prev) return prev;
+        const markDirty = opts?.markDirty === undefined ? true : opts.markDirty;
         const next: HydrationResult['teamState'] = {
           ...prev,
           schedule_assignments: JSON.parse(JSON.stringify(assignments)),
-          updated_at: new Date().toISOString(),
         };
         if (draftSchedule !== undefined) {
           next.draft_schedule = JSON.parse(JSON.stringify(draftSchedule));
+        }
+        /*
+         * Adopt the upsert's own updated_at. Without it the cache stays on the last snapshot
+         * read, every later remote row looks newer, and the freshness probe refetches after
+         * every local save — including this device's own broadcast echo.
+         */
+        if (opts?.pushedUpdatedAt) next.updated_at = String(opts.pushedUpdatedAt);
+        if (markDirty === true) {
+          /* Dirty flag — not a fake client updated_at — so remote Manager SoT can still win
+             after save, while in-flight edits are protected from older REST snapshots. */
+          next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
+        } else if (markDirty === false) {
+          delete next[LOCAL_SCHEDULE_DIRTY_KEY];
         }
         return next;
       });
