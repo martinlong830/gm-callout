@@ -2780,7 +2780,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=no-rollback-1';
+      script.src = 'timecards-manager.js?v=clock-store-scope-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -4068,34 +4068,40 @@
     return !!(tipPayrollPushTimer || tipPayrollPushInFlight);
   }
 
+  function teamStateHasDirtyFields() {
+    return !!(
+      scheduleAssignmentsDirty ||
+      scheduleTemplatesDirty ||
+      draftScheduleDirty ||
+      schedulePublishedDirty ||
+      teamStateMetaDirty
+    );
+  }
+
   async function pushTeamStateToSupabase() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
-    if (
-      !scheduleAssignmentsDirty &&
-      !scheduleTemplatesDirty &&
-      !draftScheduleDirty &&
-      !schedulePublishedDirty &&
-      !teamStateMetaDirty
-    ) {
+    /*
+     * If a push is already running, wait for it — then push again when newer edits
+     * landed after dirty was cleared but before the in-flight promise settled.
+     * Returning the same promise alone dropped those edits (flush coalescing race).
+     */
+    if (teamStatePushPromise) {
+      await teamStatePushPromise;
+      if (teamStateHasDirtyFields()) return pushTeamStateToSupabase();
       return;
     }
-    if (teamStatePushPromise) return teamStatePushPromise;
+    if (!teamStateHasDirtyFields()) return;
     teamStatePushPromise = (async function () {
       try {
-        while (
-          scheduleAssignmentsDirty ||
-          scheduleTemplatesDirty ||
-          draftScheduleDirty ||
-          schedulePublishedDirty ||
-          teamStateMetaDirty
-        ) {
+        while (teamStateHasDirtyFields()) {
           await pushTeamStateToSupabaseOnce();
         }
       } finally {
         teamStatePushPromise = null;
       }
     })();
-    return teamStatePushPromise;
+    await teamStatePushPromise;
+    if (teamStateHasDirtyFields()) return pushTeamStateToSupabase();
   }
 
   async function pushTeamStateToSupabaseOnce() {
@@ -4119,21 +4125,31 @@
     try {
       var payload = { id: gmCalloutTeamStateRowId() };
       var pushedFields = [];
+      var pushedAssignJson = null;
+      var pushedTemplatesJson = null;
+      var pushedDraftJson = null;
+      var pushedPublished = false;
+      var pushedMeta = false;
+      var pushedMetaRestaurantId = null;
       if (scheduleAssignmentsDirty) {
         payload.schedule_assignments = loadScheduleAssignmentsStore();
+        pushedAssignJson = JSON.stringify(payload.schedule_assignments);
         pushedFields.push('schedule_assignments');
       }
       if (scheduleTemplatesDirty) {
         var templates = loadScheduleTemplates();
         payload.schedule_templates = Array.isArray(templates) ? templates : [];
+        pushedTemplatesJson = JSON.stringify(payload.schedule_templates);
         pushedFields.push('schedule_templates');
       }
       if (draftScheduleDirty) {
         payload.draft_schedule = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
+        pushedDraftJson = JSON.stringify(payload.draft_schedule);
         pushedFields.push('draft_schedule');
       }
       if (schedulePublishedDirty) {
         payload.schedule_published = schedulePublishedPayload();
+        pushedPublished = true;
         pushedFields.push('schedule_published');
       }
       if (teamStateMetaDirty) {
@@ -4143,6 +4159,8 @@
         payload.current_restaurant_id = currentRestaurantId || 'rp-9';
         payload.callout_history = buildCalloutHistoryPayload();
         payload.timeclock_settings = { auto_clock_out_time: tcSettings.autoClockOutTime || '00:00' };
+        pushedMeta = true;
+        pushedMetaRestaurantId = payload.current_restaurant_id;
         pushedFields.push(
           'messaging_templates',
           'current_restaurant_id',
@@ -4162,20 +4180,37 @@
           teamStateCachedUpdatedAt = String(res.data.updated_at);
         }
         teamStateLastLocalPushAt = Date.now();
-        if (scheduleAssignmentsDirty) {
-          scheduleAssignmentsDirty = false;
-          setScheduleAssignmentsConfirmedJson(JSON.stringify(payload.schedule_assignments));
+        /*
+         * Only clear dirty when local SoT still matches what we just pushed. An edit during
+         * the upsert must keep dirty=true so the while-loop pushes again — otherwise a remote
+         * echo of the older snapshot rolls person assignments back (esp. noticeable on RP2).
+         */
+        if (pushedAssignJson != null) {
+          setScheduleAssignmentsConfirmedJson(pushedAssignJson);
+          scheduleAssignmentsDirty =
+            JSON.stringify(loadScheduleAssignmentsStore()) !== pushedAssignJson;
         }
-        if (scheduleTemplatesDirty) {
-          scheduleTemplatesDirty = false;
-          setScheduleTemplatesConfirmedJson(JSON.stringify(payload.schedule_templates));
+        if (pushedTemplatesJson != null) {
+          setScheduleTemplatesConfirmedJson(pushedTemplatesJson);
+          var liveTpl = loadScheduleTemplates();
+          scheduleTemplatesDirty =
+            JSON.stringify(Array.isArray(liveTpl) ? liveTpl : []) !== pushedTemplatesJson;
         }
-        if (draftScheduleDirty) {
-          draftScheduleDirty = false;
-          setDraftScheduleConfirmedJson(JSON.stringify(payload.draft_schedule));
+        if (pushedDraftJson != null) {
+          setDraftScheduleConfirmedJson(pushedDraftJson);
+          draftScheduleDirty =
+            JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore)) !==
+            pushedDraftJson;
         }
-        if (schedulePublishedDirty) schedulePublishedDirty = false;
-        if (teamStateMetaDirty) teamStateMetaDirty = false;
+        if (pushedPublished) {
+          var livePub = JSON.stringify(schedulePublishedPayload());
+          schedulePublishedDirty = livePub !== JSON.stringify(payload.schedule_published);
+        }
+        if (pushedMeta) {
+          /* Restaurant switch during meta upsert must keep dirty so the new id is pushed. */
+          teamStateMetaDirty =
+            String(currentRestaurantId || 'rp-9') !== String(pushedMetaRestaurantId || '');
+        }
         void broadcastTeamStateChanged(pushedFields);
       }
     } finally {
@@ -5755,32 +5790,17 @@
     return resolveDefaultUnassignedSchedule(r || { id: restaurantId });
   }
 
-  /** One-time wipe of stray 8th Ave shift workers; rp-9 assignments are untouched. */
+  /**
+   * Legacy one-time RP2 wipe — permanently disabled. Clearing rp-8 assignments caused
+   * person names to snap back to sheet defaults after later saves / remote refresh.
+   */
   function resetRp8ScheduleAssignmentsOnce(store) {
-    if (!store || typeof store !== 'object') return { store: store, changed: false };
     try {
-      if (localStorage.getItem(SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY) === '1') {
-        return { store: store, changed: false };
-      }
+      localStorage.setItem(SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY, '1');
     } catch (eFlag) {
       /* ignore */
     }
-    var hadWorkers =
-      store['rp-8'] &&
-      typeof store['rp-8'] === 'object' &&
-      Object.keys(store['rp-8']).some(function (shiftId) {
-        var entry = normalizeScheduleAssignment(store['rp-8'][shiftId]);
-        return (entry.workers || []).some(function (n) {
-          return n && n !== 'Unassigned';
-        });
-      });
-    store['rp-8'] = {};
-    try {
-      localStorage.setItem(SCHEDULE_RP8_ASSIGNMENTS_RESET_KEY, '1');
-    } catch (eSave) {
-      /* ignore */
-    }
-    return { store: store, changed: true, hadWorkers: hadWorkers };
+    return { store: store, changed: false };
   }
 
   /** FOH/BOH/Delivery rows map trIdx → Team page name at that slot (sheet row order). */
@@ -5828,6 +5848,7 @@
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : null;
     SCHEDULE.length = 0;
     var forceUnassigned = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
+    var storedRs = getCurrentRestaurantAssignments();
     ALL_WEEK_DAYS.forEach(function (dayStr, globalDayIdx) {
       var weekIdx = Math.floor(globalDayIdx / 7);
       if (weekOnly != null && weekIdx !== weekOnly) return;
@@ -5854,8 +5875,15 @@
           );
           const pool = namesPoolForScheduleRole(rd.role, currentRestaurantId);
           var basePool = pool.length ? pool : EMPLOYEE_POOLS[rd.role];
+          const shiftId = 'shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx;
           let workers;
           if (forceUnassigned) {
+            workers = ['Unassigned'];
+          } else if (storedRs && storedRs[shiftId] != null) {
+            /* Persisted assignment exists — seed Unassigned; merge applies the real name.
+               Seeding sheet defaults here let later full-saves re-stamp the original person. */
+            workers = ['Unassigned'];
+          } else if (lookupScheduleAssignmentPattern(storedRs, shiftId)) {
             workers = ['Unassigned'];
           } else {
             workers = pickDefaultScheduleWorkers(rd.role, trIdx, basePool, usedToday, seed);
@@ -5865,7 +5893,6 @@
               usedToday[normalizeWorkerKey(chosen)] = true;
             }
           }
-          const shiftId = 'shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx;
 
           SCHEDULE.push({
             id: shiftId,
@@ -6056,6 +6083,16 @@
           if (mig.changed) {
             try {
               localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(mig.store));
+              /* Persist without a dirty bit lets a later remote echo restore pre-prune ghosts.
+                 Managers only — employees cannot push, and a stuck dirty bit would lock merges. */
+              if (
+                GM_SUPABASE_DATA &&
+                window.gmSupabase &&
+                gmCalloutSessionIsManager
+              ) {
+                scheduleAssignmentsDirty = true;
+                scheduleTeamStateDebouncedSync();
+              }
             } catch (eMigSave) {
               /* ignore */
             }
@@ -7891,8 +7928,12 @@
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var rs = store[currentRestaurantId];
-    var existing = lookupScheduleAssignment(rs, shiftId);
-    var entry = existing ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
+    /* Use the direct row only — lookupScheduleAssignment can return the template-week
+       pattern person and would re-stamp the original name onto this shift. */
+    var entry =
+      rs[shiftId] != null
+        ? cloneScheduleAssignment(rs[shiftId])
+        : { workers: ['Unassigned'] };
     if (breakPaid == null) delete entry.breakPaid;
     else entry.breakPaid = !!breakPaid;
     rs[shiftId] = entry;
@@ -7956,6 +7997,9 @@
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var rs = store[currentRestaurantId];
     SCHEDULE.forEach(function (s) {
+      /* rebuildSchedule seeds Unassigned when a store key/pattern exists, then merge
+         applies the real name — so SCHEDULE here is trustworthy for intentional edits
+         (including assigning the sheet-default person back onto a row). */
       rs[s.id] = buildDirectAssignmentEntryFromShiftRow(rs, s);
     });
     /* Do not re-copy current week onto W+1/W+2 on every edit — that stomps manager future-week edits.

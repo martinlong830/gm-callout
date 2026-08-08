@@ -280,23 +280,24 @@
       var scoped = matches.filter(function (s) {
         return shiftRestaurantId(s) === kioskRest;
       });
-      if (scoped.length) return scoped;
+      /* Never attribute a kiosk punch to the other store's schedule row. */
+      return scoped;
     }
     return matches;
   }
 
   /**
-   * Which store a punch row belongs to (schedule link, kiosk attribution, or calendar-day inference).
-   * schedule_shift_id wins when present so editing a punch on a shift-specific row updates that
-   * shift's recorded minutes and pay (kiosk restaurant alone must not orphan hours onto the other store).
+   * Which store a punch row belongs to.
+   * Physical kiosk restaurant wins when set — otherwise a schedule_shift_id for the other
+   * location made someone look clocked-in there while punching at this store.
    */
   function entryRestaurantId(emp, entry) {
     if (!entry || !emp) return 'rp-9';
-    var matches = findScheduleShiftsForEntry(emp, entry);
-    if (matches.length) return preferRestaurantAmongMatches(emp, matches);
     if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
       return entry.clock_restaurant_id;
     }
+    var matches = findScheduleShiftsForEntry(emp, entry);
+    if (matches.length) return preferRestaurantAmongMatches(emp, matches);
     return punchDayRestaurantId(emp, punchDayIso(entry));
   }
 
@@ -2934,10 +2935,17 @@
     return 3;
   }
 
-  function findLatestOpenEntryForEmployee(empId) {
+  function findLatestOpenEntryForEmployee(empId, locationFilter) {
+    var loc = locationFilter != null ? effectiveLocationFilter(locationFilter) : null;
     var latest = null;
     weekEntries.forEach(function (e) {
       if (!e || e.employee_id !== empId || !isEntryOpen(e)) return;
+      if (loc && loc !== 'all') {
+        var emp = d().employees.find(function (x) {
+          return x && x.id === empId;
+        });
+        if (emp && entryRestaurantId(emp, e) !== loc) return;
+      }
       if (!latest || String(e.clock_in_at).localeCompare(String(latest.clock_in_at)) > 0) {
         latest = e;
       }
@@ -2945,17 +2953,18 @@
     return latest;
   }
 
-  function employeeClockStatus(emp) {
-    var open = findLatestOpenEntryForEmployee(emp.id);
+  function employeeClockStatus(emp, locationFilter) {
+    var loc = effectiveLocationFilter(locationFilter);
+    var open = findLatestOpenEntryForEmployee(emp.id, loc);
     if (!open) return 'off_clock';
-    if (timecardsLocationFilter !== 'all' && entryRestaurantId(emp, open) !== timecardsLocationFilter) {
+    if (loc !== 'all' && entryRestaurantId(emp, open) !== loc) {
       return 'off_clock';
     }
     return isOnBreak(open) ? 'on_break' : 'clocked_in';
   }
 
   function employeeClockStatusAllLocations(emp) {
-    var open = findLatestOpenEntryForEmployee(emp.id);
+    var open = findLatestOpenEntryForEmployee(emp.id, 'all');
     if (!open) return 'off_clock';
     return isOnBreak(open) ? 'on_break' : 'clocked_in';
   }
@@ -2997,8 +3006,11 @@
     var agg = aggregateEmployeeWeek(emp, locationFilter);
     var extras = getEmployeeWeekExtras(emp);
     var soh = computeSpreadOfHours(emp, aggLoc);
+    /* Clock status follows the store chip being viewed — never show "Clocked in" for a punch
+       at the other location, even when hours aggregate across both for multi-store staff. */
+    var clockLoc = effectiveLocationFilter(locationFilter);
     var clockStatus =
-      aggLoc === 'all' ? employeeClockStatusAllLocations(emp) : employeeClockStatus(emp);
+      clockLoc === 'all' ? employeeClockStatusAllLocations(emp) : employeeClockStatus(emp, clockLoc);
     var tipPre =
       aggLoc === 'all' && employeeHomeRestaurant(emp) === 'both' ? null : tipSums.dishwasher;
     var row = {
@@ -4227,13 +4239,33 @@
     return d().normNameKey(d().employeeDisplayName(emp)) === d().normNameKey(PAYROLL_SHEET_JUAN_CASH_NAME);
   }
 
-  function employeeTipPointNumber(emp) {
-    if (emp && emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {
-      return Number(emp.tipPoint);
+  /**
+   * Tip points come only from the Team profile (emp.tipPoint or meta.tipPoint).
+   * Never invent points from wage/role — that ignored explicit 0 on Karl/Daniel etc.
+   */
+  function resolveEmployeeTipPoint(emp) {
+    if (!emp) return null;
+    /* Prefer the live Team roster row — full-report cache can hold a stale emp snapshot. */
+    var live = emp;
+    if (emp.id && typeof d().employees !== 'undefined' && Array.isArray(d().employees)) {
+      var found = d().employees.find(function (e) {
+        return e && e.id === emp.id;
+      });
+      if (found) live = found;
     }
-    var s = tipPointForEmployee(emp);
-    var n = parseFloat(String(s));
-    return Number.isNaN(n) ? 0 : n;
+    if (live.tipPoint != null && !Number.isNaN(Number(live.tipPoint))) {
+      return Math.max(0, Number(live.tipPoint));
+    }
+    var meta = live.meta && typeof live.meta === 'object' ? live.meta : null;
+    if (meta && meta.tipPoint != null && !Number.isNaN(Number(meta.tipPoint))) {
+      return Math.max(0, Number(meta.tipPoint));
+    }
+    return null;
+  }
+
+  function employeeTipPointNumber(emp) {
+    var n = resolveEmployeeTipPoint(emp);
+    return n == null ? 0 : n;
   }
 
   var PAYROLL_COLS = 21;
@@ -4874,19 +4906,10 @@
   }
 
   function tipPointForEmployee(emp) {
-    if (emp && emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))) {
-      var n = Number(emp.tipPoint);
-      if (Math.abs(n - Math.round(n)) < 0.01) return String(Math.round(n));
-      return n.toFixed(1);
-    }
-    var rate = employeeHourlyRate(emp);
-    var name = d().normNameKey(d().employeeDisplayName(emp));
-    if (name.indexOf('ong') !== -1 || (rate != null && rate >= 20)) return '5';
-    if (rate != null && rate >= 18) return '4';
-    if (emp.staffType === 'Server') return '1';
-    if (rate != null && rate >= 17) return '3';
-    if (rate != null && rate >= 15) return '2';
-    return '1';
+    var n = resolveEmployeeTipPoint(emp);
+    if (n == null) return '0';
+    if (Math.abs(n - Math.round(n)) < 0.01) return String(Math.round(n));
+    return Number(n).toFixed(1);
   }
 
   function isFrontOfHouseEmp(emp) {
@@ -5332,12 +5355,7 @@
     (employees || []).forEach(function (emp) {
       var meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
       var rate = employeeHourlyRate(emp);
-      var tipPt =
-        emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))
-          ? String(emp.tipPoint)
-          : meta.tipPoint != null && !Number.isNaN(Number(meta.tipPoint))
-            ? String(meta.tipPoint)
-            : '';
+      var tipPt = tipPointForEmployee(emp);
       var cells = [
         String(d().employeeDisplayName(emp)).toUpperCase(),
         meta.position ? String(meta.position) : '',
@@ -5840,7 +5858,12 @@
     var byShiftKey = {};
     shifts.forEach(function (row) {
       var offSchedule = isOffScheduleShiftDayRow(row);
-      var entry = findEntryForShift(emp.id, row.shift.id, row.iso);
+      var entry = findEntryForShift(
+        emp.id,
+        row.shift.id,
+        row.iso,
+        isOffScheduleShiftDayRow(row) ? null : shiftRestaurantId(row.shift)
+      );
       var recordedMins = entry
         ? recordedPaidMinutes(entry, row, emp)
         : offSchedule
@@ -5856,7 +5879,12 @@
 
   function buildShiftStubRow(emp, shiftRow, breakHeader, stubSplits) {
     var names = splitEmployeeName(emp);
-    var entry = findEntryForShift(emp.id, shiftRow.shift.id, shiftRow.iso);
+    var entry = findEntryForShift(
+      emp.id,
+      shiftRow.shift.id,
+      shiftRow.iso,
+      isOffScheduleShiftDayRow(shiftRow) ? null : shiftRestaurantId(shiftRow.shift)
+    );
     var offSchedule = isOffScheduleShiftDayRow(shiftRow);
     var recordedMins = entry
       ? recordedPaidMinutes(entry, shiftRow, emp)
@@ -5889,7 +5917,12 @@
    */
   function payslipShiftRowHasPayableActivity(emp, shiftRow) {
     if (!emp || !shiftRow || !shiftRow.iso) return false;
-    var entry = findEntryForShift(emp.id, shiftRow.shift.id, shiftRow.iso);
+    var entry = findEntryForShift(
+      emp.id,
+      shiftRow.shift.id,
+      shiftRow.iso,
+      isOffScheduleShiftDayRow(shiftRow) ? null : shiftRestaurantId(shiftRow.shift)
+    );
     var recordedMins = entry
       ? recordedPaidMinutes(entry, shiftRow, emp)
       : dailyRecordedMinutesForEmployee(emp, shiftRow.iso);
@@ -8051,12 +8084,7 @@
       emps.forEach(function (emp) {
         var meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
         var rate = employeeHourlyRate(emp);
-        var tipPt =
-          emp.tipPoint != null && !Number.isNaN(Number(emp.tipPoint))
-            ? String(emp.tipPoint)
-            : meta.tipPoint != null && !Number.isNaN(Number(meta.tipPoint))
-              ? String(meta.tipPoint)
-              : '';
+        var tipPt = tipPointForEmployee(emp);
         xlSet(ws, r, 0, String(d().employeeDisplayName(emp)).toUpperCase(), S.cell);
         xlSet(ws, r, 1, meta.position ? String(meta.position) : '', S.cell);
         xlSet(ws, r, 2, meta.hiringDate ? String(meta.hiringDate) : '', S.cell);
@@ -9236,26 +9264,43 @@
   }
 
   function shiftStatusLabelForDay(shift, emp, shiftIso) {
-    var entries = findEntriesForDay(emp.id, shiftIso);
-    var todayIso = isoFromDate(new Date());
-    if (!entries.length) {
-      return shiftIso > todayIso ? 'No punch' : 'No punch';
+    var rest = null;
+    if (shift && !isOffScheduleShiftId(shift.id)) {
+      rest = shiftRestaurantId(shift);
+    } else if (timecardsLocationFilter !== 'all') {
+      rest = timecardsLocationFilter;
     }
-    if (entries.some(function (e) {
-      return isEntryOpen(e);
-    })) {
+    var entries = findEntriesForDay(emp.id, shiftIso).filter(function (e) {
+      if (!rest) return true;
+      return entryRestaurantId(emp, e) === rest;
+    });
+    if (!entries.length) {
+      return 'No punch';
+    }
+    if (
+      entries.some(function (e) {
+        return isEntryOpen(e);
+      })
+    ) {
       return 'Open';
     }
     var sched = scheduledPaidMinutes(shift, emp);
-    var rec = dailyRecordedMinutesForEmployee(emp, shiftIso);
+    var rec = dailyRecordedMinutesForEmployee(emp, shiftIso, rest || undefined);
     if (Math.abs(sched - rec) <= 15) return 'OK';
     return 'Review';
   }
 
   /** Match punch to a specific scheduled shift row (list / status). Never reuse one open punch for every shift. */
-  function findEntryForShift(empId, shiftId, shiftIso) {
+  function findEntryForShift(empId, shiftId, shiftIso, restaurantId) {
+    var emp = d().employees.find(function (e) {
+      return e && e.id === empId;
+    });
+    function matchesRestaurant(e) {
+      if (!restaurantId || restaurantId === 'all' || !emp) return true;
+      return entryRestaurantId(emp, e) === restaurantId;
+    }
     var linked = weekEntries.filter(function (e) {
-      return e.employee_id === empId && e.schedule_shift_id === shiftId;
+      return e.employee_id === empId && e.schedule_shift_id === shiftId && matchesRestaurant(e);
     });
     if (linked.length) {
       var closedLinked = linked.filter(function (e) {
@@ -9270,7 +9315,7 @@
       return linked[linked.length - 1];
     }
     var onDay = weekEntries.filter(function (e) {
-      return e.employee_id === empId && punchDayIso(e) === shiftIso;
+      return e.employee_id === empId && punchDayIso(e) === shiftIso && matchesRestaurant(e);
     });
     if (onDay.length) {
       onDay.sort(function (a, b) {
@@ -9282,10 +9327,16 @@
   }
 
   /** Resolve punch for edit/save (prefer open punch for this employee when ending a shift). */
-  function findEntryForSave(empId, shiftId, shiftIso) {
-    var forShift = findEntryForShift(empId, shiftId, shiftIso);
-    var open = findOpenEntryForEmployee(empId);
+  function findEntryForSave(empId, shiftId, shiftIso, restaurantId) {
+    var forShift = findEntryForShift(empId, shiftId, shiftIso, restaurantId);
+    var emp = d().employees.find(function (e) {
+      return e && e.id === empId;
+    });
+    var open = findLatestOpenEntryForEmployee(empId, restaurantId || 'all');
     if (open) {
+      if (restaurantId && restaurantId !== 'all' && emp && entryRestaurantId(emp, open) !== restaurantId) {
+        return forShift;
+      }
       if (!forShift || forShift.id === open.id) return open;
       if (punchDayIso(open) === shiftIso) return open;
     }
@@ -10049,7 +10100,15 @@
     timecardState.shiftId = shiftRow.shift.id;
     timecardState.shiftRow = shiftRow;
     timecardState.punchesCleared = false;
-    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso);
+    var rowRest = isOffScheduleShiftDayRow(shiftRow)
+      ? timecardsLocationFilter !== 'all'
+        ? timecardsLocationFilter
+        : null
+      : shiftRestaurantId(shiftRow.shift);
+    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso).filter(function (e) {
+      if (!rowRest) return true;
+      return entryRestaurantId(emp, e) === rowRest;
+    });
     timecardState.entryId = pickDefaultEntryIdForDay(dayEntries);
     var s = shiftRow.shift;
     var offSchedule = isOffScheduleShiftDayRow(shiftRow);
@@ -10159,7 +10218,9 @@
     var dayRounded = roundToNearest5Minutes(dayMins);
     var soh = computeSpreadOfHours(emp, rosterAggregationLocationFilter(emp));
     var sohDay = isSoHDateForEmployee(emp, shiftRow.iso);
-    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso);
+    var dayEntries = findEntriesForDay(emp.id, shiftRow.iso).filter(function (e) {
+      return entryRestaurantId(emp, e) === rowRest;
+    });
     var editingEntry = entryById(timecardState.entryId);
     var punchBreakSelectVal = bp()
       ? bp().breakPolicySelectValue(bp().entryBreakPaidOverride(editingEntry))
