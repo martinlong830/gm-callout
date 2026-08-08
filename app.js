@@ -2780,7 +2780,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=dup-shift-1';
+      script.src = 'timecards-manager.js?v=no-rollback-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -3428,6 +3428,8 @@
 
   function applyTimecardTipPayrollFromRemote(row) {
     if (!row || typeof row !== 'object') return false;
+    /* Never clobber in-flight local tip/VL/SL encodes with a concurrent remote snapshot. */
+    if (tipPayrollMergeLocked()) return false;
     var hasTipPool = Object.prototype.hasOwnProperty.call(row, 'timecard_week_tip_pool');
     var hasDishwasher = Object.prototype.hasOwnProperty.call(row, 'timecard_dishwasher_tips');
     var hasWeekExtras = Object.prototype.hasOwnProperty.call(row, 'timecard_week_extras');
@@ -3917,7 +3919,14 @@
    */
   function scheduleAssignmentsRemoteMergeIsStale(remoteSched) {
     if (!remoteSched || typeof remoteSched !== 'object') return false;
-    if (!(scheduleAssignmentsDirty || teamStateSyncTimer || teamStatePushInFlight)) {
+    if (
+      !(
+        scheduleAssignmentsDirty ||
+        draftScheduleDirty ||
+        teamStateSyncTimer ||
+        teamStatePushInFlight
+      )
+    ) {
       return false;
     }
     var local = loadScheduleAssignmentsStore();
@@ -3955,7 +3964,14 @@
   function draftScheduleRemoteMergeIsStale(remoteDr) {
     var remotePayload = draftSchedulePayloadFromRemote(remoteDr);
     if (!remotePayload) return false;
-    if (!(draftScheduleDirty || teamStateSyncTimer || teamStatePushInFlight)) {
+    if (
+      !(
+        draftScheduleDirty ||
+        scheduleAssignmentsDirty ||
+        teamStateSyncTimer ||
+        teamStatePushInFlight
+      )
+    ) {
       return false;
     }
     var localJson = JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore));
@@ -4032,6 +4048,24 @@
 
   function teamStateDraftMergeLocked() {
     return !!(teamStateSyncTimer || teamStatePushInFlight || draftScheduleDirty);
+  }
+
+  /**
+   * Assignments + draft (slot rows / order / times) are one unit. Applying a remote draft
+   * while local assignments are still dirty, then pruning orphans, deleted staffed slots.
+   * Lock both sides whenever either side has unpushed work.
+   */
+  function teamStateScheduleBundleMergeLocked() {
+    return !!(
+      teamStateSyncTimer ||
+      teamStatePushInFlight ||
+      scheduleAssignmentsDirty ||
+      draftScheduleDirty
+    );
+  }
+
+  function tipPayrollMergeLocked() {
+    return !!(tipPayrollPushTimer || tipPayrollPushInFlight);
   }
 
   async function pushTeamStateToSupabase() {
@@ -4167,8 +4201,11 @@
       teamStateCachedUpdatedAt = String(row.updated_at);
     }
 
+    var scheduleBundleLocked = teamStateScheduleBundleMergeLocked();
+    var touchedScheduleBundle = false;
+
     var sched = row.schedule_assignments;
-    if (scheduleAssignmentsStoreIsPopulated(sched) && !teamStateAssignmentMergeLocked()) {
+    if (scheduleAssignmentsStoreIsPopulated(sched) && !scheduleBundleLocked) {
       if (scheduleAssignmentsRemoteMergeIsStale(sched)) {
         if (isMgr) flushTeamStateSyncNow();
       } else {
@@ -4195,6 +4232,7 @@
           }
           localStorage.setItem(SCHEDULE_ASSIGN_KEY, mergedSchedJson);
           setScheduleAssignmentsConfirmedJson(mergedSchedJson);
+          touchedScheduleBundle = true;
           /* Echo of our own push / already-local SoT must not wipe Undo. */
           if (prevConfirmedAssign !== mergedSchedJson && prevLocalAssign !== mergedSchedJson) {
             clearScheduleUndoStack();
@@ -4203,6 +4241,14 @@
           /* ignore */
         }
       }
+    } else if (
+      scheduleAssignmentsStoreIsPopulated(sched) &&
+      scheduleBundleLocked &&
+      isMgr
+    ) {
+      /* Keep local SoT; push so cloud catches up instead of accepting a rollback. */
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
     } else if (isMgr && scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
       if (scheduleAssignmentsDirty) {
         scheduleTeamStateDebouncedSync();
@@ -4236,7 +4282,7 @@
 
     var dr = row.draft_schedule;
     if (dr && typeof dr === 'object') {
-      if (!teamStateDraftMergeLocked()) {
+      if (!scheduleBundleLocked) {
         if (draftScheduleRemoteMergeIsStale(dr)) {
           if (isMgr) {
             absorbUnchangedRemoteSlotOrderFromDraft(dr);
@@ -4298,6 +4344,7 @@
               );
               persistSlotOrderStores({ skipDirty: true });
               setDraftScheduleConfirmedJson(remoteDraftJson);
+              touchedScheduleBundle = true;
               if (remoteDraftPayload.windowMondayIso) {
                 writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
               }
@@ -4315,11 +4362,9 @@
           }
         }
       } else if (isMgr && localDraftScheduleHasContent()) {
-        if (draftScheduleDirty) {
-          absorbUnchangedRemoteSlotOrderFromDraft(dr);
-          scheduleTeamStateDebouncedSync();
-          flushTeamStateSyncNow();
-        }
+        absorbUnchangedRemoteSlotOrderFromDraft(dr);
+        scheduleTeamStateDebouncedSync();
+        flushTeamStateSyncNow();
       }
     }
 
@@ -4386,37 +4431,44 @@
     // Do not push local tip/VL stores when remote columns are empty — that resurrected
     // per-browser localStorage onto shared team_state and made managers diverge.
 
-    try {
-      syncAllAssignmentTimesFromDraft();
-      pruneScheduleAssignmentsInvalidSlots();
-    } catch (_p) {
-      /* ignore */
-    }
-    /* rebuildEmployeeDerivedData already rebuilds SCHEDULE — do not rebuild again. */
-    rebuildEmployeeDerivedData();
-    if (calendarScheduleUiBlocksRender()) {
-      calendarInlineEditDeferredRemoteRefresh = true;
-    } else {
-      deferUiWork(function () {
-        if (calendarScheduleUiBlocksRender()) {
-          calendarInlineEditDeferredRemoteRefresh = true;
-          return;
-        }
-        renderCalendar();
-        if (scheduleBody) renderSchedule();
-        if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
-          window.gmCalloutEmployeeScheduleRefreshUi();
-        }
-        if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
-          renderManagerHomeShifts();
-        }
-      });
+    /*
+     * Only rebuild/prune when this remote row actually changed schedule data AND we are
+     * not holding unpushed local edits. Tip-only refreshes used to flicker the calendar
+     * and prune against a partial draft could delete staffed slots (rollback).
+     */
+    if (touchedScheduleBundle && !scheduleBundleLocked) {
+      try {
+        syncAllAssignmentTimesFromDraft();
+        pruneScheduleAssignmentsInvalidSlots();
+      } catch (_p) {
+        /* ignore */
+      }
+      /* rebuildEmployeeDerivedData already rebuilds SCHEDULE — do not rebuild again. */
+      rebuildEmployeeDerivedData();
+      if (calendarScheduleUiBlocksRender()) {
+        calendarInlineEditDeferredRemoteRefresh = true;
+      } else {
+        deferUiWork(function () {
+          if (calendarScheduleUiBlocksRender()) {
+            calendarInlineEditDeferredRemoteRefresh = true;
+            return;
+          }
+          renderCalendar();
+          if (scheduleBody) renderSchedule();
+          if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
+            window.gmCalloutEmployeeScheduleRefreshUi();
+          }
+          if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
+            renderManagerHomeShifts();
+          }
+        });
+      }
+      notifyTimecardsScheduleChanged();
     }
     if (typeof updateRestaurantSwitcherUI === 'function') updateRestaurantSwitcherUI();
     if (typeof renderEmpRestaurantSwitcher === 'function') renderEmpRestaurantSwitcher();
     if (typeof renderHistory === 'function') renderHistory();
     if (typeof refreshRequestsListIfCallouts === 'function') refreshRequestsListIfCallouts();
-    notifyTimecardsScheduleChanged();
   }
 
   function loadEmployeeSubmittedRequestsArray() {
@@ -8008,7 +8060,10 @@
     if (typeof renderEmpRestaurantSwitcher === 'function') renderEmpRestaurantSwitcher();
     if (gmCalloutSessionIsManager && GM_SUPABASE_DATA && window.gmSupabase) {
       teamStateMetaDirty = true;
-      scheduleTeamStateDebouncedSync();
+      /* Persist before the calendar rebuild so a concurrent remote refresh cannot roll back
+         the store the manager just finished encoding. */
+      flushTipPayrollPushToSupabase();
+      void flushTeamStateSyncNow();
     }
     deferUiWork(function () {
       if (currentRestaurantId !== restaurantId) return;
@@ -9538,18 +9593,21 @@
     setupStaffRequestsRealtimeSubscription();
     if (gmCalloutSessionIsManager) setupEmployeesRealtimeSubscription();
     syncTimeClockEntriesRealtimeForScreen();
-    // Cheap updated_at probe may skip; avoid always re-pulling roster/requests on every tab focus.
-    queueTeamStateRemoteRefresh();
-    // Punches live in time_clock_entries (not team_state). Refetch when Timecards is open so
-    // another manager's edits are not masked by this tab's in-memory weekEntries cache.
-    if (
-      gmCalloutSessionIsManager &&
-      timecardsScreenActive() &&
-      window.gmCalloutTimecards &&
-      typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
-    ) {
-      void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
-    }
+    /* Push local edits first, then pull — never refresh into a dirty browser and risk rollback. */
+    flushTipPayrollPushToSupabase();
+    void Promise.resolve(flushTeamStateSyncNow()).then(function () {
+      queueTeamStateRemoteRefresh();
+      // Punches live in time_clock_entries (not team_state). Refetch when Timecards is open so
+      // another manager's edits are not masked by this tab's in-memory weekEntries cache.
+      if (
+        gmCalloutSessionIsManager &&
+        timecardsScreenActive() &&
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
+      ) {
+        void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
+      }
+    });
     var now = Date.now();
     if (!visibilityRosterRefreshAt || now - visibilityRosterRefreshAt > 60000) {
       visibilityRosterRefreshAt = now;
@@ -16816,6 +16874,7 @@
       syncRealtimeSubscriptionsForVisibility();
       if (document.visibilityState === 'hidden') {
         flushTipPayrollPushToSupabase();
+        void flushTeamStateSyncNow();
         return;
       }
       if (document.visibilityState === 'visible') {
@@ -16829,6 +16888,7 @@
     });
     window.addEventListener('pagehide', function () {
       flushTipPayrollPushToSupabase();
+      void flushTeamStateSyncNow();
     });
   }
 

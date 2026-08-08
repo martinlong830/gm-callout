@@ -56,6 +56,12 @@
   var activeWeekEntriesCacheKey = null;
   var loadWeekEntriesInFlight = null;
   var loadWeekEntriesInFlightKey = null;
+  /** Monotonic fetch id — stale overlapping loads must not overwrite newer saves. */
+  var weekEntriesFetchSeq = 0;
+  /** True while manager_save / delete RPC path is running. */
+  var timeClockSaveInFlight = false;
+  /** Remote punch refresh deferred until save / open form is safe. */
+  var timeClockRemoteRefreshDeferred = false;
   var exportLibsLoadPromise = null;
 
   var ROSTER_SORT_COLS = [
@@ -477,6 +483,10 @@
         saveTimecardsLocationFilter(next);
         invalidateWeekTipPoolCache();
         invalidateFullReportSheetsCache();
+        /* Persist tip/VL/SL for the store just finished before switching views. */
+        if (typeof d().flushTimecardPayrollSync === 'function') {
+          d().flushTimecardPayrollSync();
+        }
         /* Instant chip highlight before roster rebuild. */
         root.querySelectorAll('[data-timecards-location]').forEach(function (b) {
           b.classList.toggle('active', b.getAttribute('data-timecards-location') === next);
@@ -1526,7 +1536,7 @@
     var laborPay =
       rosterRow.regPay != null || rosterRow.otPay != null
         ? (rosterRow.regPay || 0) + (rosterRow.otPay || 0)
-        : null;
+          : null;
     return {
       workMins: rosterRow.totalMins || regMins + otMins,
       regMins: regMins,
@@ -2504,9 +2514,9 @@
     var slice = getWeekExtrasSlice(bounds);
     var row = slice[dayLeaveStorageKey(emp.id, iso)];
     if (!row || row.manual === false) return { vl: 0, sl: 0 };
-    return {
-      vl: Math.max(0, parseFloat(row.vl) || 0),
-      sl: Math.max(0, parseFloat(row.sl) || 0),
+      return {
+        vl: Math.max(0, parseFloat(row.vl) || 0),
+        sl: Math.max(0, parseFloat(row.sl) || 0),
     };
   }
 
@@ -3710,22 +3720,22 @@
 
   function downloadExcelWorkbook(fileBase, suffix, sheets) {
     void ensureExportLibsLoaded().then(function () {
-      var XLSX = global.XLSX;
-      if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
-        alert('Excel export could not load. Check your connection and try again.');
+    var XLSX = global.XLSX;
+    if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
+      alert('Excel export could not load. Check your connection and try again.');
         return;
-      }
-      var wb = XLSX.utils.book_new();
-      sheets.forEach(function (sheet) {
-        var name = String(sheet.name || 'Sheet').slice(0, 31);
-        var ws;
-        if (sheet.worksheet) ws = sheet.worksheet;
-        else if (typeof sheet.buildWorksheet === 'function') ws = sheet.buildWorksheet();
-        else ws = XLSX.utils.aoa_to_sheet(sheet.rows || []);
+    }
+    var wb = XLSX.utils.book_new();
+    sheets.forEach(function (sheet) {
+      var name = String(sheet.name || 'Sheet').slice(0, 31);
+      var ws;
+      if (sheet.worksheet) ws = sheet.worksheet;
+      else if (typeof sheet.buildWorksheet === 'function') ws = sheet.buildWorksheet();
+      else ws = XLSX.utils.aoa_to_sheet(sheet.rows || []);
         xlSanitizeSheetForExport(ws);
-        XLSX.utils.book_append_sheet(wb, ws, name);
-      });
-      XLSX.writeFile(wb, fileBase + suffix + '.xlsx');
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    });
+    XLSX.writeFile(wb, fileBase + suffix + '.xlsx');
     });
     return true;
   }
@@ -4078,7 +4088,7 @@
       .join('');
     ['timecardsPayWeekSelect', 'timecardsEmployeePayWeekSelect'].forEach(function (id) {
       var sel = document.getElementById(id);
-      if (!sel) return;
+    if (!sel) return;
       sel.innerHTML = html;
       sel.value = selectedIso;
     });
@@ -4164,7 +4174,7 @@
         wrap.classList.add('timecards-roster--switching');
       }
       deferUiWork(function () {
-        renderRoster();
+      renderRoster();
         if (wrap) wrap.classList.remove('timecards-roster--switching');
       });
     });
@@ -4289,7 +4299,7 @@
     considerMetrics(bohMetrics);
     return w;
   }
-   var ONGI_MANAGEMENT_GROSS = 1500;
+  var ONGI_MANAGEMENT_GROSS = 1500;
 
   function payrollTipPoolTotals(pool) {
     pool = pool || PAYROLL_TIP_POOL_DEFAULTS;
@@ -5508,7 +5518,7 @@
       ws,
       merges,
       colWidths.map(function (w) {
-        return { wch: w };
+      return { wch: w };
       }),
       null,
       rowHeights
@@ -6239,7 +6249,7 @@
           var hf = parseFloat(String(val));
           if (Number.isNaN(hf)) {
             xlSet(ws, r, DC(i), val, S.tableNum);
-          } else {
+        } else {
             ws[xlEncode(r, DC(i))] = { v: xlHoursNum(hf), t: 'n', z: XL_HOURS_Z, s: S.tableNum };
           }
         } else {
@@ -6497,7 +6507,7 @@
     return xlFinalizeSheet(ws, merges, payslipSheetColWidths(range.e.c), null, rowHeights);
   }
 
-   var SCHEDULE_DAY_COL_START = 2;
+  var SCHEDULE_DAY_COL_START = 2;
   var SCHEDULE_COL_TOTAL_H = 9;
   var SCHEDULE_COL_TOTAL_AFTER = 10;
   var SCHEDULE_COL_COUNT = 11;
@@ -7944,13 +7954,13 @@
       if (ExcelJS && typeof ExcelJS.Workbook === 'function' && wantPtoPhotos) {
         try {
           setFullReportExportProgress('Embedding PTO photos…');
-          var excelWb = new ExcelJS.Workbook();
+      var excelWb = new ExcelJS.Workbook();
           await excelWb.xlsx.load(sanitizedOut);
-          try {
-            await addPtoPhotosToWorksheet(excelWb);
-          } catch (photoErr) {
-            console.warn('PTO photos skipped', photoErr);
-          }
+      try {
+        await addPtoPhotosToWorksheet(excelWb);
+      } catch (photoErr) {
+        console.warn('PTO photos skipped', photoErr);
+      }
           var photoOut = await excelWb.xlsx.writeBuffer();
           out = await mergePtoPhotoZipIntoBase(sanitizedOut, photoOut);
         } catch (excelErr) {
@@ -8356,8 +8366,8 @@
     var paint = function () {
       rosterGrandTotalsPaintScheduled = false;
       if (!wrap.isConnected || !rosterCache) return;
-      var sorted = sortedRosterRows(rosterCache.rows);
-      var totals = computeRosterTotals(sorted);
+    var sorted = sortedRosterRows(rosterCache.rows);
+    var totals = computeRosterTotals(sorted);
       var existing = wrap.querySelector('.timecards-grand-totals');
       if (existing) {
         existing.outerHTML = renderGrandTotalsHtml(totals);
@@ -8854,13 +8864,13 @@
     });
     rows = collapseDuplicateShiftDayRows(rows, emp);
     return rows.sort(function (a, b) {
-      if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
+        if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
       var aOff = isOffScheduleShiftDayRow(a);
       var bOff = isOffScheduleShiftDayRow(b);
       if (aOff && !bOff) return 1;
       if (!aOff && bOff) return -1;
-      return String(a.shift.start).localeCompare(String(b.shift.start));
-    });
+        return String(a.shift.start).localeCompare(String(b.shift.start));
+      });
   }
 
   function normalizeShiftDayHHMM(val) {
@@ -8989,7 +8999,7 @@
     });
     return keep.map(function (g) {
       return g.row;
-    });
+      });
   }
 
   function isEntryOpen(entry) {
@@ -9325,7 +9335,8 @@
     return cacheKey === selectedPayWeekEntriesCacheKey();
   }
 
-  function applyWeekEntriesForCacheKey(cacheKey, entries, schemaCache) {
+  function applyWeekEntriesForCacheKey(cacheKey, entries, schemaCache, fetchSeq) {
+    if (fetchSeq != null && fetchSeq !== weekEntriesFetchSeq) return;
     weekEntriesCacheByKey[cacheKey] = entries.slice();
     if (schemaCache) weekEntriesSchemaCacheByKey[cacheKey] = schemaCache;
     if (!isSelectedPayWeekEntriesCacheKey(cacheKey)) return;
@@ -9336,24 +9347,34 @@
     scheduleCrossRestaurantPunchProcessing();
   }
 
-  async function loadWeekEntries() {
+  /**
+   * @param {{ force?: boolean }} [opts]
+   * force:true starts a new network fetch even if one is in flight (post-save),
+   * so we never adopt a snapshot that began before the write landed.
+   */
+  async function loadWeekEntries(opts) {
     if (!d().gmSupabaseReadyNow()) return { ok: false, reason: 'no_client' };
+    opts = opts || {};
+    var force = !!opts.force;
     var bounds = payWeekBounds();
     var cacheKey = weekExtrasStorageKey(bounds);
-    if (loadWeekEntriesInFlight && loadWeekEntriesInFlightKey === cacheKey) {
+    if (!force && loadWeekEntriesInFlight && loadWeekEntriesInFlightKey === cacheKey) {
       return loadWeekEntriesInFlight;
     }
+    var fetchSeq = ++weekEntriesFetchSeq;
     loadWeekEntriesInFlightKey = cacheKey;
-    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey).finally(function () {
-      if (loadWeekEntriesInFlightKey === cacheKey) {
-        loadWeekEntriesInFlight = null;
-        loadWeekEntriesInFlightKey = null;
+    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq).finally(
+      function () {
+        if (loadWeekEntriesInFlightKey === cacheKey) {
+          loadWeekEntriesInFlight = null;
+          loadWeekEntriesInFlightKey = null;
+        }
       }
-    });
+    );
     return loadWeekEntriesInFlight;
   }
 
-  async function fetchWeekEntriesFromSupabase(bounds, cacheKey) {
+  async function fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq) {
     var sb = global.gmSupabase;
     var session = await ensureSupabaseSession(sb);
     if (!session) return { ok: false, reason: 'no_session' };
@@ -9364,11 +9385,11 @@
 
     async function queryWeekEntries(selectFields) {
       var mainP = sb
-        .from('time_clock_entries')
+      .from('time_clock_entries')
         .select(selectFields)
         .gte('clock_in_at', startIso)
         .lte('clock_in_at', endIso)
-        .order('clock_in_at', { ascending: true });
+      .order('clock_in_at', { ascending: true });
       var openP = sb
         .from('time_clock_entries')
         .select(selectFields)
@@ -9393,6 +9414,9 @@
       openRes = batch.openRes;
     }
     if (res.error) return { ok: false, reason: res.error.message };
+    if (fetchSeq != null && fetchSeq !== weekEntriesFetchSeq) {
+      return { ok: true, skipped: 'stale' };
+    }
     var entries = res.data || [];
     var schemaCache = {
       breakMinutes: !!(entries.length && entries[0].break_minutes !== undefined),
@@ -9404,7 +9428,7 @@
     if (!openRes.error && openRes.data && openRes.data.length) {
       entries = mergeWeekEntriesById(entries, openRes.data);
     }
-    applyWeekEntriesForCacheKey(cacheKey, entries, schemaCache);
+    applyWeekEntriesForCacheKey(cacheKey, entries, schemaCache, fetchSeq);
     return { ok: true };
   }
 
@@ -9613,9 +9637,9 @@
           return d.iso === iso;
         });
         if (!hasRecorded && iso <= todayIso && byDay[iso] && byDay[iso].sched > 0) {
-          needsReview = true;
-        }
-      });
+        needsReview = true;
+      }
+    });
     // Company-wide OT from all stores, then keep buckets for the aggregation scope.
     var otTotals = sumRegOtFromByKey(weekRegOtForEmployee(emp, aggLoc));
     regMins = otTotals.regMins;
@@ -9709,7 +9733,7 @@
         }
         refreshTimecardGrandTotals(emp);
         if (timecardsEmployeeScreenActive()) {
-          renderEmployeeShifts(emp);
+        renderEmployeeShifts(emp);
         }
       }
       inp.addEventListener('change', persist);
@@ -10233,8 +10257,8 @@
         : '<div><dt>' +
           d().escapeHtml(tcT('timecards.hours')) +
           '</dt><dd>' +
-          d().escapeHtml(String(schedHrs) + 'h · paid ' + decimalHoursFromMinutes(schedPaid) + 'h') +
-          '</dd></div>' +
+      d().escapeHtml(String(schedHrs) + 'h · paid ' + decimalHoursFromMinutes(schedPaid) + 'h') +
+      '</dd></div>' +
           '<div><dt>' +
           d().escapeHtml(tcT('timecards.employeeDefault')) +
           '</dt><dd>' +
@@ -10243,10 +10267,10 @@
           '<div><dt>' +
           d().escapeHtml(tcT('timecards.scheduledBreak')) +
           '</dt><dd>' +
-          d().escapeHtml(
+      d().escapeHtml(
             (schedBreak ? schedBreak + ' min · ' : tcT('timecards.none') + ' · ') +
-              (bp() ? bp().formatBreakPolicyLabel(schedBreakPaid) : 'Unpaid')
-          ) +
+          (bp() ? bp().formatBreakPolicyLabel(schedBreakPaid) : 'Unpaid')
+      ) +
           '</dd></div>') +
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
@@ -10776,7 +10800,7 @@
   }
 
   async function finishClearedShiftDaySave(sb, emp, shiftRow, dayLeave, dishwasherTip) {
-    await loadWeekEntries();
+    await loadWeekEntries({ force: true });
     var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow, emp)
       .map(function (e) {
         return e.id;
@@ -10814,7 +10838,7 @@
     timecardState.shiftId = null;
     timecardState.shiftRow = null;
     timecardState.punchesCleared = false;
-    var reloadRes = await loadWeekEntries();
+    var reloadRes = await loadWeekEntries({ force: true });
     if (!reloadRes.ok) {
       setSaveStatus('Punch removed (list may need refresh).', false);
     } else {
@@ -10844,8 +10868,9 @@
     var breakEndIso = readPunchDateTimeField('tcBreakEnd', shiftRow.iso);
     setSaveStatus('Saving…', false);
     if (saveBtn) saveBtn.disabled = true;
+    timeClockSaveInFlight = true;
     try {
-    await loadWeekEntries();
+    await loadWeekEntries({ force: true });
     var editingId = timecardState.entryId;
     var idEl = document.getElementById('tcEditingEntryId');
     if (idEl && idEl.value) editingId = idEl.value;
@@ -10900,7 +10925,7 @@
       }
       setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
       persistShiftDayTipsFromForm(emp, shiftRow);
-      await loadWeekEntries();
+      await loadWeekEntries({ force: true });
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
       openShift(emp, shiftRow);
@@ -11058,7 +11083,7 @@
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
     persistShiftDayTipsFromForm(emp, shiftRow);
-    await loadWeekEntries();
+    await loadWeekEntries({ force: true });
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     openShift(emp, shiftRow);
@@ -11068,7 +11093,9 @@
       alert(errMsg);
       setSaveStatus(errMsg, true);
     } finally {
+      timeClockSaveInFlight = false;
       if (saveBtn) saveBtn.disabled = false;
+      flushDeferredTimeClockRemoteRefresh();
     }
   }
 
@@ -11084,12 +11111,14 @@
       } else {
         d().showScreen(10);
       }
+      flushDeferredTimeClockRemoteRefresh();
       return true;
     }
     if (fromScreen === 11) {
       timecardState.employeeId = null;
       d().showScreen(10);
       renderRoster();
+      flushDeferredTimeClockRemoteRefresh();
       return true;
     }
     return false;
@@ -11215,10 +11244,33 @@
     refreshRosterFromEmployees();
   }
 
+  function shiftDetailFormIsOpen() {
+    return !!(timecardsShiftScreenActive() && document.getElementById('tcClockInDate'));
+  }
+
+  function timeClockRemoteApplyBlocked() {
+    return timeClockSaveInFlight || shiftDetailFormIsOpen();
+  }
+
+  function flushDeferredTimeClockRemoteRefresh() {
+    if (!timeClockRemoteRefreshDeferred) return;
+    if (timeClockRemoteApplyBlocked()) return;
+    timeClockRemoteRefreshDeferred = false;
+    void applyRemoteTimeClockEntries();
+  }
+
   async function applyRemoteTimeClockEntries() {
+    if (timeClockRemoteApplyBlocked()) {
+      timeClockRemoteRefreshDeferred = true;
+      return false;
+    }
     invalidateWeekEntriesCache(payWeekBounds());
-    var res = await loadWeekEntries();
-    if (!res.ok) return false;
+    var res = await loadWeekEntries({ force: true });
+    if (!res.ok || res.skipped === 'stale') return false;
+    if (timeClockRemoteApplyBlocked()) {
+      timeClockRemoteRefreshDeferred = true;
+      return false;
+    }
     markRosterCacheRowsDirty();
     refreshRosterFromEmployees();
     if (timecardState.employeeId && timecardsEmployeeScreenActive()) {
@@ -11227,6 +11279,7 @@
       });
       if (emp) renderEmployeeShifts(emp);
     }
+    /* Never rebuild an open shift form from a remote refresh — that wiped typed hours. */
     return true;
   }
 
