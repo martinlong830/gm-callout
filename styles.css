@@ -2974,6 +2974,32 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
   letter-spacing: 0.01em;
   line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35em;
+}
+
+.schedule-day-totals-hours-net {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: #0f766e;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35em;
+}
+
+.schedule-day-totals-tag {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.72;
 }
 
 .schedule-day-totals-pay {
@@ -2985,6 +3011,25 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-variant-numeric: tabular-nums;
 }
 
+.calendar-row-away-primary {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #9a3412;
+  background: color-mix(in srgb, #fdba74 35%, var(--surface));
+  border: 1px solid color-mix(in srgb, #f97316 40%, transparent);
+  line-height: 1.35;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 640px) {
   .calendar-matrix tfoot.schedule-day-totals td {
     padding: 8px 6px;
@@ -2992,6 +3037,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   .schedule-day-totals-hours {
     font-size: 0.75rem;
+  }
+
+  .schedule-day-totals-hours-net {
+    font-size: 0.6875rem;
   }
 
   .schedule-day-totals-pay {

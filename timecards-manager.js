@@ -51,6 +51,8 @@
   var cachedDishwasherTipsSliceKey = null;
   var cachedPayrollTipDist = null;
   var cachedPayrollTipDistKey = null;
+  var cachedOtherStoreTipDist = null;
+  var cachedOtherStoreTipDistKey = null;
   var weekEntriesCacheByKey = Object.create(null);
   var weekEntriesSchemaCacheByKey = Object.create(null);
   var activeWeekEntriesCacheKey = null;
@@ -2411,9 +2413,20 @@
     return { vl: vlMins / 60, sl: slMins / 60 };
   }
 
+  /** True when a week-level VL/SL override owns totals (positive hours). Zero stubs do not. */
+  function weekLevelLeaveOverrideActive(slice, empId) {
+    if (!slice || !empId) return false;
+    var weekRow = slice[empId];
+    if (!weekRow || !weekRow.manual) return false;
+    var weekVl = Math.max(0, parseFloat(weekRow.vl) || 0);
+    var weekSl = Math.max(0, parseFloat(weekRow.sl) || 0);
+    return weekVl > 0 || weekSl > 0;
+  }
+
   /**
    * Effective VL/SL for a day: per-day week-extras override, else leaveBalance entry,
-   * else approved time-off request. Week-level manual override suppresses auto sources.
+   * else approved time-off request. Positive week-level manual totals suppress auto sources
+   * (so day rows do not double-count); empty week-level stubs do not hide approved leave.
    */
   function getEffectiveDayLeave(emp, iso, bounds) {
     bounds = bounds || payWeekBounds();
@@ -2424,8 +2437,7 @@
     if (slice[key] && slice[key].manual !== false) {
       return manual;
     }
-    var weekRow = slice[emp.id];
-    if (weekRow && weekRow.manual) return { vl: 0, sl: 0 };
+    if (weekLevelLeaveOverrideActive(slice, emp.id)) return { vl: 0, sl: 0 };
     var fromBal = leaveHoursFromBalanceForDay(emp, iso);
     if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
     return leaveHoursFromRequestsForDay(emp, iso, bounds);
@@ -2437,8 +2449,7 @@
     var slice = getWeekExtrasSlice(bounds);
     var key = dayLeaveStorageKey(emp.id, iso);
     if (slice[key] && slice[key].manual !== false) return { vl: 0, sl: 0 };
-    var weekRow = slice[emp.id];
-    if (weekRow && weekRow.manual) return { vl: 0, sl: 0 };
+    if (weekLevelLeaveOverrideActive(slice, emp.id)) return { vl: 0, sl: 0 };
     var fromBal = leaveHoursFromBalanceForDay(emp, iso);
     if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
     return leaveHoursFromRequestsForDay(emp, iso, bounds);
@@ -2543,6 +2554,33 @@
     saveWeekExtrasMap(bounds, slice);
   }
 
+  /**
+   * After time-off approval: drop manual day stubs in the range so leaveBalance /
+   * approved request hours surface on timecards + full report.
+   */
+  function clearDayLeaveOverridesInRange(empId, startIso, endIso, bounds) {
+    if (!empId || !startIso || !endIso || endIso < startIso) return;
+    bounds = bounds || payWeekBounds();
+    var slice = loadWeekExtrasMap(bounds);
+    var changed = false;
+    eachIsoDayInclusive(startIso, endIso, function (iso) {
+      var key = dayLeaveStorageKey(empId, iso);
+      if (!slice[key]) return;
+      delete slice[key];
+      changed = true;
+    });
+    var weekRow = slice[empId];
+    if (weekRow && weekRow.manual) {
+      var wVl = Math.max(0, parseFloat(weekRow.vl) || 0);
+      var wSl = Math.max(0, parseFloat(weekRow.sl) || 0);
+      if (wVl <= 0 && wSl <= 0) {
+        delete slice[empId];
+        changed = true;
+      }
+    }
+    if (changed) saveWeekExtrasMap(bounds, slice);
+  }
+
   function sumManualDayLeaveForEmployee(emp, bounds) {
     bounds = bounds || payWeekBounds();
     if (!emp) return null;
@@ -2571,13 +2609,13 @@
     bounds = bounds || payWeekBounds();
     if (!emp) return { vl: 0, sl: 0, manual: false };
     var slice = getWeekExtrasSlice(bounds);
-    var row = slice[emp.id];
-    if (row && row.manual) {
-      var manualVl = Math.max(0, parseFloat(row.vl) || 0);
-      var manualSl = Math.max(0, parseFloat(row.sl) || 0);
-      if (manualVl > 0 || manualSl > 0) {
-        return { vl: manualVl, sl: manualSl, manual: true };
-      }
+    if (weekLevelLeaveOverrideActive(slice, emp.id)) {
+      var row = slice[emp.id];
+      return {
+        vl: Math.max(0, parseFloat(row.vl) || 0),
+        sl: Math.max(0, parseFloat(row.sl) || 0),
+        manual: true,
+      };
     }
     // Sum effective leave for each pay-week day (manual day keys + leaveBalance + requests).
     var weekStart = isoFromDate(bounds.start);
@@ -4268,7 +4306,7 @@
     return n == null ? 0 : n;
   }
 
-  var PAYROLL_COLS = 21;
+  var PAYROLL_COLS = 22;
   var PAYROLL_COL_GROSS = 8;
   var PAYROLL_COL_SPREAD_HOURS = 9;
   var PAYROLL_COL_SOH_HR = 10;
@@ -4299,9 +4337,10 @@
     'TIP CALCULATION',
     'TIP',
     'NET DELIVERY TIP / RP2',
+    'OTHER STORE TIPS',
     'TOTAL TIPS',
   ];
-  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12];
+  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12, 12];
   var PAYROLL_HEADER_ROW_HPT = 42;
 
   function payrollSpreadHoursCellText(m) {
@@ -4349,10 +4388,30 @@
     };
   }
 
-  function payrollRosterRowTipPoints(row) {
+  /** Sibling store for the active (or given) timecards location filter. */
+  function siblingTimecardsLocationId(locationFilter) {
+    return effectiveLocationFilter(locationFilter) === 'rp-8' ? 'rp-9' : 'rp-8';
+  }
+
+  /** Paid reg+OT minutes at one store (company-wide OT allocation, then location filter). */
+  function tipPaidMinsAtLocation(emp, locationFilter) {
+    if (!emp) return 0;
+    var split = sumRegOtFromByKey(weekRegOtForEmployee(emp, locationFilter));
+    return (split.regMins || 0) + (split.otMins || 0);
+  }
+
+  /**
+   * Tip points for pool split: hours at the tip-pool store × tip point.
+   * Multi-store staff use that store’s hours only (other store share is a separate column).
+   */
+  function payrollRosterRowTipPoints(row, locationFilter) {
     if (!row) return 0;
-    var regH = row.regMins / 60;
-    var otH = row.otMins / 60;
+    var loc = effectiveLocationFilter(locationFilter);
+    if (row.emp && !row.isOngiManagement) {
+      return (tipPaidMinsAtLocation(row.emp, loc) / 60) * employeeTipPointNumber(row.emp);
+    }
+    var regH = (row.regMins || 0) / 60;
+    var otH = (row.otMins || 0) / 60;
     return (regH + otH) * employeeTipPointNumber(row.emp);
   }
 
@@ -4363,22 +4422,36 @@
     });
   }
 
+  /** Every tip-point earner at a store (for sibling-store tipout math). */
+  function buildTipPointRowsForLocation(locationId) {
+    var rows = [];
+    (d().employees || []).forEach(function (emp) {
+      if (!emp || !emp.id) return;
+      var mins = tipPaidMinsAtLocation(emp, locationId);
+      if (mins <= 0) return;
+      var pts = (mins / 60) * employeeTipPointNumber(emp);
+      if (pts <= 0.0001) return;
+      rows.push({ emp: emp, regMins: mins, otMins: 0 });
+    });
+    return rows;
+  }
+
   /** Whole-dollar shares that sum exactly to the distributable tip pool. */
-  function distributePayrollTipPool(poolTotal, rows) {
+  function distributePayrollTipPool(poolTotal, rows, locationFilter) {
     var dist = {};
     if (!rows.length || poolTotal == null || Number.isNaN(poolTotal) || Math.abs(poolTotal) < 0.0001) {
       return dist;
     }
     var sumPts = 0;
     rows.forEach(function (row) {
-      sumPts += payrollRosterRowTipPoints(row);
+      sumPts += payrollRosterRowTipPoints(row, locationFilter);
     });
     if (sumPts <= 0) return dist;
     var totalDollars = Math.round(poolTotal * 100) / 100;
     var rounded = [];
     var roundedSum = 0;
     rows.forEach(function (row) {
-      var pts = payrollRosterRowTipPoints(row);
+      var pts = payrollRosterRowTipPoints(row, locationFilter);
       var exact = (totalDollars * pts) / sumPts;
       var dollars = Math.round(exact);
       rounded.push({ empId: row.emp && row.emp.id, dollars: dollars });
@@ -4396,12 +4469,14 @@
   }
 
   function payrollTipDistributionKey() {
-    var pool = getPayrollTipPoolInputs();
+    var loc = effectiveLocationFilter();
+    var pool = getPayrollTipPoolInputs(undefined, loc);
     var rows = payrollTipEligibleRows();
     return JSON.stringify({
+      loc: loc,
       pool: pool,
       rows: rows.map(function (r) {
-        return [r.emp && r.emp.id, r.regMins, r.otMins];
+        return [r.emp && r.emp.id, tipPaidMinsAtLocation(r.emp, loc)];
       }),
     });
   }
@@ -4409,21 +4484,55 @@
   function invalidatePayrollTipDistCache() {
     cachedPayrollTipDist = null;
     cachedPayrollTipDistKey = null;
+    cachedOtherStoreTipDist = null;
+    cachedOtherStoreTipDistKey = null;
   }
 
   function getPayrollTipDistribution() {
     var key = payrollTipDistributionKey();
     if (cachedPayrollTipDistKey === key && cachedPayrollTipDist) return cachedPayrollTipDist;
-    var totals = payrollTipPoolTotals(getPayrollTipPoolInputs());
-    cachedPayrollTipDist = distributePayrollTipPool(totals.totalTips, payrollTipEligibleRows());
+    var loc = effectiveLocationFilter();
+    var totals = payrollTipPoolTotals(getPayrollTipPoolInputs(undefined, loc));
+    cachedPayrollTipDist = distributePayrollTipPool(totals.totalTips, payrollTipEligibleRows(), loc);
     cachedPayrollTipDistKey = key;
     return cachedPayrollTipDist;
   }
 
-  var PAYROLL_TIP_LABEL_COL = 22;
-  var PAYROLL_TIP_VALUE_COL = 23;
-  var PAYROLL_FEE_PCT_COL = 24;
-  var PAYROLL_FEE_AMT_COL = 25;
+  /**
+   * Full tipout for the sibling store (everyone with tip points there).
+   * Used so multi-store staff on this report still receive their other-store tip share
+   * without embedding the other store’s tip-pool inputs in this workbook.
+   */
+  function getOtherStoreTipDistribution() {
+    var otherLoc = siblingTimecardsLocationId();
+    var pool = getPayrollTipPoolInputs(undefined, otherLoc);
+    var rows = buildTipPointRowsForLocation(otherLoc);
+    var key = JSON.stringify({
+      loc: otherLoc,
+      pool: pool,
+      rows: rows.map(function (r) {
+        return [r.emp && r.emp.id, r.regMins];
+      }),
+    });
+    if (cachedOtherStoreTipDistKey === key && cachedOtherStoreTipDist) return cachedOtherStoreTipDist;
+    var totals = payrollTipPoolTotals(pool);
+    cachedOtherStoreTipDist = distributePayrollTipPool(totals.totalTips, rows, otherLoc);
+    cachedOtherStoreTipDistKey = key;
+    return cachedOtherStoreTipDist;
+  }
+
+  function otherStoreTipAmountForEmployee(emp) {
+    if (!emp || employeeHomeRestaurant(emp) !== 'both') return 0;
+    var dist = getOtherStoreTipDistribution();
+    var amount = dist[emp.id];
+    if (amount == null || Number.isNaN(amount) || amount <= 0) return 0;
+    return amount;
+  }
+
+  var PAYROLL_TIP_LABEL_COL = 23;
+  var PAYROLL_TIP_VALUE_COL = 24;
+  var PAYROLL_FEE_PCT_COL = 25;
+  var PAYROLL_FEE_AMT_COL = 26;
   var PAYROLL_ROW_SQ_INPUTS = 0;
   var PAYROLL_ROW_SQ_FEE = 1;
   var PAYROLL_ROW_SQUARE_INHOUSE = 2;
@@ -4437,12 +4546,15 @@
   var PAYROLL_COL_TIP_CALC = 17;
   var PAYROLL_COL_TIP = 18;
   var PAYROLL_COL_DELIVERY = 19;
-  var PAYROLL_COL_TOTAL_TIPS = 20;
+  var PAYROLL_COL_OTHER_STORE_TIPS = 20;
+  var PAYROLL_COL_TOTAL_TIPS = 21;
 
   function payrollTotalTipsFormula(r) {
     return (
       '=' +
       payrollExcelNumber(r, PAYROLL_COL_TIP) +
+      '+' +
+      payrollExcelNumber(r, PAYROLL_COL_OTHER_STORE_TIPS) +
       '+' +
       payrollExcelNumber(r, PAYROLL_COL_DELIVERY)
     );
@@ -4755,10 +4867,15 @@
     var totalH = regH + otH + vlH + slH;
     var rate = employeeHourlyRate(emp);
     // VL/SL are straight-time add-ons (not in the 40h OT bucket) — include in TOTAL GROSS.
-    var leavePay = (row.vlPay || 0) + (row.slPay || 0);
+    var vlPayAmt =
+      row.vlPay != null ? row.vlPay : vlH > 0 && rate != null ? vlH * rate : 0;
+    var slPayAmt =
+      row.slPay != null ? row.slPay : slH > 0 && rate != null ? slH * rate : 0;
+    var leavePay = (vlPayAmt || 0) + (slPayAmt || 0);
+    var hasLeavePay = (vlH > 0 || slH > 0) && rate != null;
     var gross = isOngi
       ? ONGI_MANAGEMENT_GROSS
-      : row.regPay != null || row.otPay != null || row.vlPay != null || row.slPay != null
+      : row.regPay != null || row.otPay != null || hasLeavePay || row.vlPay != null || row.slPay != null
         ? (row.regPay || 0) + (row.otPay || 0) + leavePay
         : null;
     var sohPay = isOngi ? 0 : row.sohPay != null ? row.sohPay : 0;
@@ -4773,7 +4890,10 @@
     }
     var check =
       grossWithSoh != null ? grossWithSoh + coverage + cash : null;
-    var totalTipPoints = (regH + otH) * tipPt;
+    var tipLoc = effectiveLocationFilter();
+    var tipMins = isOngi ? 0 : tipPaidMinsAtLocation(emp, tipLoc);
+    var totalTipPoints = (tipMins / 60) * tipPt;
+    var otherStoreTips = isOngi ? 0 : otherStoreTipAmountForEmployee(emp);
     return {
       row: row,
       emp: emp,
@@ -4801,6 +4921,7 @@
       dishwasherTipsPay: isOngi
         ? 0
         : sumEmployeeWeekDishwasherTips(row.emp, undefined, 'all'),
+      otherStoreTips: otherStoreTips,
     };
   }
 
@@ -4810,22 +4931,26 @@
   }
 
   function payrollGrandTipPointsFormula(firstRow, lastRow) {
-    var d = xlA1(firstRow, PAYROLL_COL_REG_H) + ':' + xlA1(lastRow, PAYROLL_COL_REG_H);
-    var e = xlA1(firstRow, PAYROLL_COL_OT_H) + ':' + xlA1(lastRow, PAYROLL_COL_OT_H);
-    var c = xlA1(firstRow, PAYROLL_COL_TIP_PT) + ':' + xlA1(lastRow, PAYROLL_COL_TIP_PT);
-    return 'SUMPRODUCT((' + d + '+' + e + ')*' + c + ')';
+    return payrollSumFormula(PAYROLL_COL_TOTAL_TIP_PT, firstRow, lastRow);
   }
 
   function writePayrollEmployeeRow(ws, r, m, S, layout, tipLayout) {
     var tip = payrollTipPoolAddrs();
-    var reg = xlA1(r, PAYROLL_COL_REG_H);
-    var ot = xlA1(r, PAYROLL_COL_OT_H);
-    var tipPt = xlA1(r, PAYROLL_COL_TIP_PT);
+    var tipPtsCell = xlA1(r, PAYROLL_COL_TOTAL_TIP_PT);
     var grandTipPts = xlA1(layout.grandRow, PAYROLL_COL_TOTAL_TIP_PT, { absRow: true });
-    var tipPtsExpr = '(' + reg + '+' + ot + ')*' + tipPt;
-    var tipPtsValue = (m.regH + m.otH) * m.tipPt;
+    var tipPtsValue = m.totalTipPoints || 0;
     var tipShare =
-      'IF(' + tipPtsExpr + '=0,"",' + tip.total + '*' + tipPtsExpr + '/' + grandTipPts + ')';
+      'IF(OR(' +
+      tipPtsCell +
+      '="",' +
+      tipPtsCell +
+      '=0),"",' +
+      tip.total +
+      '*' +
+      tipPtsCell +
+      '/' +
+      grandTipPts +
+      ')';
 
     xlSet(ws, r, 0, String(m.name || '').toUpperCase(), S.cell);
     xlSet(ws, r, 1, m.dept, S.cellCenter);
@@ -4850,13 +4975,28 @@
     xlSetMoney(ws, r, PAYROLL_COL_CASH, m.cash > 0 ? m.cash : null, S.money);
     xlSetFormula(ws, r, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(r), S.money, PAYROLL_MONEY_Z);
 
-    xlSetFormula(ws, r, PAYROLL_COL_TOTAL_TIP_PT, '=IF(' + tipPtsExpr + '=0,"",' + tipPtsExpr + ')', S.num2, '0.00');
+    /* Tip points use this store’s hours only so multi-store staff are not double-counted. */
+    if (tipPtsValue > 0.0001) {
+      xlSet(ws, r, PAYROLL_COL_TOTAL_TIP_PT, payrollHoursNum(tipPtsValue), S.num2);
+    } else {
+      xlSet(ws, r, PAYROLL_COL_TOTAL_TIP_PT, '', S.num2);
+    }
     xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
     xlSetFormula(
       ws,
       r,
       PAYROLL_COL_TIP,
-      '=IF(' + tipPtsExpr + '=0,"",ROUND(' + tip.total + '*' + tipPtsExpr + '/' + grandTipPts + ',0))',
+      '=IF(OR(' +
+        tipPtsCell +
+        '="",' +
+        tipPtsCell +
+        '=0),"",ROUND(' +
+        tip.total +
+        '*' +
+        tipPtsCell +
+        '/' +
+        grandTipPts +
+        ',0))',
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -4868,6 +5008,13 @@
       r,
       PAYROLL_COL_DELIVERY,
       m.dishwasherTipsPay > 0 ? m.dishwasherTipsPay : null,
+      S.money
+    );
+    xlSetMoney(
+      ws,
+      r,
+      PAYROLL_COL_OTHER_STORE_TIPS,
+      m.otherStoreTips > 0 ? m.otherStoreTips : null,
       S.money
     );
     xlSetFormula(ws, r, PAYROLL_COL_TOTAL_TIPS, payrollTotalTipsFormula(r), S.money, PAYROLL_MONEY_Z);
@@ -4883,20 +5030,27 @@
     var last = tipLayout.tipperRows[tipLayout.tipperRows.length - 1];
     var others = tipLayout.tipperRows.slice(0, -1);
     var r = last.row;
-    var reg = xlA1(r, PAYROLL_COL_REG_H);
-    var ot = xlA1(r, PAYROLL_COL_OT_H);
-    var tipPt = xlA1(r, PAYROLL_COL_TIP_PT);
-    var tipPtsExpr = '(' + reg + '+' + ot + ')*' + tipPt;
+    var tipPtsCell = xlA1(r, PAYROLL_COL_TOTAL_TIP_PT);
     var formula;
     if (!others.length) {
-      formula = '=IF(' + tipPtsExpr + '=0,"",' + tip.total + ')';
+      formula =
+        '=IF(OR(' + tipPtsCell + '="",' + tipPtsCell + '=0),"",' + tip.total + ')';
     } else {
       var otherRefs = others
         .map(function (t) {
           return xlA1(t.row, PAYROLL_COL_TIP);
         })
         .join(',');
-      formula = '=IF(' + tipPtsExpr + '=0,"",' + tip.total + '-SUM(' + otherRefs + '))';
+      formula =
+        '=IF(OR(' +
+        tipPtsCell +
+        '="",' +
+        tipPtsCell +
+        '=0),"",' +
+        tip.total +
+        '-SUM(' +
+        otherRefs +
+        '))';
     }
     xlSetFormula(ws, r, PAYROLL_COL_TIP, formula, S.money, PAYROLL_MONEY_Z);
   }
@@ -5169,9 +5323,24 @@
     rows.forEach(function (row) {
       var names = splitEmployeeName(row.emp);
       var leaveMins = ((row.vlHours || 0) + (row.slHours || 0)) * 60;
-      var leavePay = (row.vlPay || 0) + (row.slPay || 0);
+      var rate = employeeHourlyRate(row.emp);
+      var vlPayAmt =
+        row.vlPay != null
+          ? row.vlPay
+          : row.vlHours > 0 && rate != null
+            ? row.vlHours * rate
+            : 0;
+      var slPayAmt =
+        row.slPay != null
+          ? row.slPay
+          : row.slHours > 0 && rate != null
+            ? row.slHours * rate
+            : 0;
+      var leavePay = (vlPayAmt || 0) + (slPayAmt || 0);
+      var hasLeavePay =
+        ((row.vlHours || 0) > 0 || (row.slHours || 0) > 0) && rate != null;
       var laborTotal =
-        row.regPay != null || row.otPay != null || row.vlPay != null || row.slPay != null
+        row.regPay != null || row.otPay != null || hasLeavePay || row.vlPay != null || row.slPay != null
           ? (row.regPay || 0) + (row.otPay || 0) + leavePay
           : null;
       aoa.push([
@@ -5420,8 +5589,9 @@
   function cpaTipsForRow(row) {
     if (!row) return null;
     var pooled = payrollTipAmountForRosterRow(row);
+    var otherStore = otherStoreTipAmountForEmployee(row.emp);
     var delivery = row.dishwasherTipsPay || 0;
-    var total = (pooled || 0) + delivery;
+    var total = (pooled || 0) + otherStore + delivery;
     return total > 0 ? total : null;
   }
 
@@ -5637,6 +5807,14 @@
     xlSetFormula(
       ws,
       r,
+      PAYROLL_COL_OTHER_STORE_TIPS,
+      '=' + payrollSumFormula(PAYROLL_COL_OTHER_STORE_TIPS, sumFirst, sumLast),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
+    xlSetFormula(
+      ws,
+      r,
       PAYROLL_COL_TOTAL_TIPS,
       '=' + payrollSumFormula(PAYROLL_COL_TOTAL_TIPS, sumFirst, sumLast),
       S.money,
@@ -5811,6 +5989,15 @@
       grandRow,
       PAYROLL_COL_DELIVERY,
       '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_DELIVERY, fohTotalRow, bohTotalRow),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_OTHER_STORE_TIPS,
+      '=' +
+        payrollGrandTotalFromSectionsFormula(PAYROLL_COL_OTHER_STORE_TIPS, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -6141,9 +6328,10 @@
   function payrollTotalTipsForRosterRow(rosterRow) {
     var pooled = payrollTipAmountForRosterRow(rosterRow);
     if (!rosterRow || !rosterRow.emp) return pooled;
+    var otherStore = otherStoreTipAmountForEmployee(rosterRow.emp);
     var delivery = sumEmployeeWeekDishwasherTips(rosterRow.emp, undefined, 'all');
     var additionalCash = sumEmployeeWeekAdditionalCashTips(rosterRow.emp);
-    var extra = delivery + additionalCash;
+    var extra = otherStore + delivery + additionalCash;
     if (extra <= 0) return pooled;
     return (pooled || 0) + extra;
   }
@@ -8134,9 +8322,11 @@
     if (opts.forceFresh) {
       invalidatePayWeekScheduleCache();
       invalidateWeekExtrasSliceCache();
+      invalidatePayrollTipDistCache();
       invalidateFullReportSheetsCache();
       rosterCacheRowsDirty = true;
       if (rosterCache) rebuildRosterCacheRows();
+      else if (timecardsModuleScreenActive()) buildRosterCacheFromCurrentWeek();
     }
     var cached = getCachedFullReportSheets();
     if (cached) return cached;
@@ -9778,13 +9968,15 @@
         } else if (field === 'additionalCashTip') {
           setEmployeeDayAdditionalCashTip(emp.id, iso, val);
         } else {
-          var dayLeave = getEmployeeDayLeave(emp, iso);
+          /* Use effective leave for the sibling field so editing VL does not wipe
+             approved/balance SL (and vice versa) that was only shown in the form. */
+          var dayLeave = getEffectiveDayLeave(emp, iso);
           if (field === 'vl') setEmployeeDayLeave(emp.id, iso, val, dayLeave.sl);
           else if (field === 'sl') setEmployeeDayLeave(emp.id, iso, dayLeave.vl, val);
         }
         refreshTimecardGrandTotals(emp);
         if (timecardsEmployeeScreenActive()) {
-        renderEmployeeShifts(emp);
+          renderEmployeeShifts(emp);
         }
       }
       inp.addEventListener('change', persist);
@@ -9800,17 +9992,16 @@
     var summaryMount = document.getElementById('timecardsEmployeeSummary');
     if (!tbody) return;
     var showDishwasherTips = isDeliveryDishwasherStaff(emp);
-    var showLocationCol = employeeHomeRestaurant(emp) === 'both';
-    var colCount = (showDishwasherTips ? 14 : 13) + (showLocationCol ? 1 : 0);
+    var colCount = (showDishwasherTips ? 14 : 13) + 1;
     var theadRow = document.querySelector('#timecardsEmployeeTable thead tr');
     if (theadRow) {
       theadRow.innerHTML =
         '<th scope="col">' +
         d().escapeHtml(tcT('timecards.date')) +
         '</th>' +
-        (showLocationCol
-          ? '<th scope="col">' + d().escapeHtml(tcT('common.location')) + '</th>'
-          : '') +
+        '<th scope="col">' +
+        d().escapeHtml(tcT('common.location')) +
+        '</th>' +
         '<th scope="col">' +
         d().escapeHtml(tcT('timecards.shiftCol')) +
         '</th>' +
@@ -9940,9 +10131,7 @@
         var inOutLabel = formatDayClockInOutLabel(emp, row.iso);
         var when =
           formatShiftListWhenPrefix(row) + formatShiftListTimeLabel(s, offSchedule);
-        var locLabel = showLocationCol
-          ? restaurantShortLabelForId(shiftRowAttributionRestaurant(emp, row))
-          : '';
+        var locLabel = restaurantShortLabelForId(shiftRowAttributionRestaurant(emp, row));
         return (
           '<tr class="timecards-row-clickable" data-timecard-shift-id="' +
           d().escapeHtml(s.id) +
@@ -9950,9 +10139,9 @@
           '<td>' +
           d().escapeHtml(formatPayWeekDateLabel(row.iso)) +
           '</td>' +
-          (showLocationCol
-            ? '<td>' + d().escapeHtml(locLabel) + '</td>'
-            : '') +
+          '<td>' +
+          d().escapeHtml(locLabel) +
+          '</td>' +
           '<td>' +
           d().escapeHtml(when) +
           '</td>' +
@@ -10855,6 +11044,10 @@
   }
 
   function returnToEmployeeShifts(emp) {
+    timecardState.entryId = null;
+    timecardState.shiftId = null;
+    timecardState.shiftRow = null;
+    timecardState.punchesCleared = false;
     renderEmployeeShifts(emp);
     d().setTimecardTitle(11, d().employeeDisplayName(emp));
     d().showScreen(11);
@@ -10989,8 +11182,7 @@
       await loadWeekEntries({ force: true });
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
-      openShift(emp, shiftRow);
-      renderEmployeeShifts(emp);
+      returnToEmployeeShifts(emp);
       return;
     }
     if (!inIso) {
@@ -11147,8 +11339,7 @@
     await loadWeekEntries({ force: true });
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
-    openShift(emp, shiftRow);
-    renderEmployeeShifts(emp);
+    returnToEmployeeShifts(emp);
     } catch (ex) {
       var errMsg = (ex && ex.message) || 'Save failed.';
       alert(errMsg);
@@ -11402,6 +11593,7 @@
     invalidateScheduleCache: invalidatePayWeekScheduleCache,
     invalidateFullReportSheetsCache: invalidateFullReportSheetsCache,
     onScheduleChanged: onScheduleChanged,
+    clearDayLeaveOverridesInRange: clearDayLeaveOverridesInRange,
     applyRemoteTipPayroll: applyRemoteTipPayroll,
     applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
     onTipTakehomePctChanged: onTipTakehomePctChanged,

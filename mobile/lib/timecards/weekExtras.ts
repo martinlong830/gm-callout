@@ -163,9 +163,17 @@ function computeLeaveHoursFromBalance(emp: EmployeeRow, bounds: PayWeekBounds): 
   return { vl, sl, manual: false };
 }
 
+function weekLevelLeaveOverrideActive(slice: WeekExtrasSlice, empId: string): boolean {
+  const weekRow = slice[empId];
+  if (!isDayLeaveRow(weekRow) || !weekRow.manual) return false;
+  const weekVl = Math.max(0, parseFloat(String(weekRow.vl)) || 0);
+  const weekSl = Math.max(0, parseFloat(String(weekRow.sl)) || 0);
+  return weekVl > 0 || weekSl > 0;
+}
+
 /**
  * Effective VL/SL for a day: per-day week-extras, else leaveBalance, else approved requests.
- * Week-level manual override suppresses auto sources for per-day display.
+ * Positive week-level manual totals suppress auto sources; empty stubs do not.
  */
 export function getEffectiveDayLeaveSync(
   emp: EmployeeRow,
@@ -185,8 +193,7 @@ export function getEffectiveDayLeaveSync(
       sl: Math.max(0, parseFloat(String(row.sl)) || 0),
     };
   }
-  const weekRow = slice[emp.id];
-  if (isDayLeaveRow(weekRow) && weekRow.manual) return { vl: 0, sl: 0 };
+  if (weekLevelLeaveOverrideActive(slice, emp.id)) return { vl: 0, sl: 0 };
   const fromBal = leaveHoursFromBalanceForDay(emp, iso);
   if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
   return leaveHoursFromRequestsForDay(emp, displayName, iso, bounds, staffRequests, schedMinsByDay);
@@ -207,8 +214,7 @@ export function getSuggestedDayLeaveSync(
   if (isDayLeaveRow(slice[key]) && (slice[key] as DayLeaveRow).manual !== false) {
     return { vl: 0, sl: 0 };
   }
-  const weekRow = slice[emp.id];
-  if (isDayLeaveRow(weekRow) && weekRow.manual) return { vl: 0, sl: 0 };
+  if (weekLevelLeaveOverrideActive(slice, emp.id)) return { vl: 0, sl: 0 };
   const fromBal = leaveHoursFromBalanceForDay(emp, iso);
   if (fromBal.vl > 0 || fromBal.sl > 0) return fromBal;
   return leaveHoursFromRequestsForDay(emp, displayName, iso, bounds, staffRequests, schedMinsByDay);
@@ -312,13 +318,13 @@ export function getEmployeeWeekExtrasSync(
   schedMinsByDay: Record<string, number>,
   slice: WeekExtrasSlice
 ): WeekExtras {
-  const row = slice[emp.id];
-  if (isDayLeaveRow(row) && row.manual) {
-    const manualVl = Math.max(0, parseFloat(String(row.vl)) || 0);
-    const manualSl = Math.max(0, parseFloat(String(row.sl)) || 0);
-    if (manualVl > 0 || manualSl > 0) {
-      return { vl: manualVl, sl: manualSl, manual: true };
-    }
+  if (weekLevelLeaveOverrideActive(slice, emp.id)) {
+    const row = slice[emp.id] as DayLeaveRow;
+    return {
+      vl: Math.max(0, parseFloat(String(row.vl)) || 0),
+      sl: Math.max(0, parseFloat(String(row.sl)) || 0),
+      manual: true,
+    };
   }
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);

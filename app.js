@@ -1727,6 +1727,12 @@
     }
     return out;
   })();
+  /** Break TIME options in the shift editor (locked). */
+  const SHIFT_DETAIL_BREAK_TIME_PRESETS = ['3:00PM', '3:30PM', '4:00PM', '4:30PM'];
+  /** Office annotation times — locked to 2:00 PM only in the shift editor. */
+  const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
+  const OFFICE_DEFAULT_START_HHMM = '14:00';
+  const OFFICE_DEFAULT_BREAK_TIME = '2:00PM';
   const BREAK_ANNOTATION_TYPE_PRESETS = ['BREAK TIME', 'OFFICE', 'NO BREAK'];
   const TEAM_ROSTER_KITCHEN = [
     'BALTAZAR LUCAS',
@@ -2534,11 +2540,23 @@
       saveEmployees({ singleEmployee: emp });
     }
     if (window.gmCalloutTimecards) {
-      if (typeof window.gmCalloutTimecards.invalidatePayWeekScheduleCache === 'function') {
-        window.gmCalloutTimecards.invalidatePayWeekScheduleCache();
+      if (typeof window.gmCalloutTimecards.clearDayLeaveOverridesInRange === 'function') {
+        window.gmCalloutTimecards.clearDayLeaveOverridesInRange(emp.id, range.start, range.end);
+      }
+      if (typeof window.gmCalloutTimecards.invalidateScheduleCache === 'function') {
+        window.gmCalloutTimecards.invalidateScheduleCache();
+      }
+      if (typeof window.gmCalloutTimecards.onScheduleChanged === 'function') {
+        window.gmCalloutTimecards.onScheduleChanged();
       }
       if (typeof window.gmCalloutTimecards.invalidateFullReportSheetsCache === 'function') {
         window.gmCalloutTimecards.invalidateFullReportSheetsCache();
+      }
+      if (typeof window.gmCalloutTimecards.markRosterCacheRowsDirty === 'function') {
+        window.gmCalloutTimecards.markRosterCacheRowsDirty();
+      }
+      if (typeof window.gmCalloutTimecards.refreshRosterFromEmployees === 'function') {
+        window.gmCalloutTimecards.refreshRosterFromEmployees();
       }
     }
     return { ok: true };
@@ -2780,7 +2798,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=clock-store-scope-1';
+      script.src = 'timecards-manager.js?v=other-store-tips-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -4639,13 +4657,14 @@
 
   /**
    * Per-day staffed totals for the visible week.
-   * Hours = sum of full shift spans (no break subtract) per assigned worker.
-   * Pay = (shiftHours − breakMinutes/60) × hourlyRate — no tips / SoH.
+   * hours = gross shift spans (no break subtract).
+   * paidHours = after unpaid break minutes.
+   * Pay = paidHours × hourlyRate — no tips / SoH.
    */
   function computeScheduleDayTotals(visibleDays) {
     var byDay = {};
     (visibleDays || []).forEach(function (dayStr) {
-      byDay[dayStr] = { hours: 0, pay: 0 };
+      byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0 };
     });
     SCHEDULE.forEach(function (shift) {
       if (!shift || !byDay[shift.day]) return;
@@ -4662,6 +4681,7 @@
       var paidHours = Math.max(0, shiftHours - breakMin / 60);
       workers.forEach(function (wname) {
         byDay[shift.day].hours += shiftHours;
+        byDay[shift.day].paidHours += paidHours;
         var emp = employeeByDisplayName(wname);
         var rate =
           emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
@@ -6575,8 +6595,10 @@
    * Persist one cell's start/end + break (or day-off) from the in-shift editor.
    * Writes draft times and assignment break/timeLabel/hours in one atomic local commit
    * (avoids breakRows scratch + flush-before-times-sync partial persists).
+   * opts.skipUiRefresh — skip calendar paint (caller will rebuild after navigation).
    */
-  function persistSingleShiftSlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff) {
+  function persistSingleShiftSlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff, opts) {
+    opts = opts || {};
     if (!managerCanEditCurrentRestaurant()) return false;
     var wi = scheduleCalendarWeekIndex;
     var rid = currentRestaurantId;
@@ -6635,8 +6657,10 @@
     flushTeamStateSyncNow();
     rebuildEmployeeDerivedData();
     rebuildSchedule();
-    renderCalendar();
-    if (scheduleBody) renderSchedule();
+    if (!opts.skipUiRefresh) {
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+    }
     notifyTimecardsScheduleChanged();
     return true;
   }
@@ -9382,6 +9406,8 @@
   let scheduleAltDragState = null;
   /** Suppress the click that follows an Alt-drag mouseup. */
   let scheduleAltDragSuppressClick = false;
+  /** Last hovered/focused schedule cell (for Option/Alt+Delete without requiring focus). */
+  let schedulePointerSlotEl = null;
   let calendarDragListenersBound = false;
   /** Tear down listeners when closing the calendar cell name editor. */
   let calendarInlineEditCleanup = null;
@@ -10420,15 +10446,26 @@
     if (num === 1) {
       updateRestaurantSwitcherUI();
       updateScheduleWeekNav();
-      deferUiWork(function () {
+      var scrollPending = calendarScrollRestorePending;
+      function refreshScheduleScreenUi() {
         if (currentScreen !== 1) return;
         ensureRollingFutureScheduleWeeks();
         populateScheduleTemplateSelect();
         rebuildSchedule();
         renderCalendar();
         if (scheduleBody) renderSchedule();
-        restoreCalendarScrollAfterShiftEdit();
-      });
+        if (scrollPending) {
+          calendarScrollRestorePending = null;
+          applyCalendarScrollRestore(scrollPending);
+        }
+      }
+      /* Pending scroll from shift editor: rebuild+restore in one turn so the page
+         never paints at scrollTop 0 (no jump-to-top flash). */
+      if (scrollPending) {
+        refreshScheduleScreenUi();
+      } else {
+        deferUiWork(refreshScheduleScreenUi);
+      }
     }
     if (num === 14) {
       deferUiWork(function () {
@@ -10791,6 +10828,20 @@
   function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly, moveFlags) {
     var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
     var selectedLabel = displayScheduleWorkerName(selected);
+    var awayPrimaryHtml = '';
+    if (selected && selected !== 'Unassigned') {
+      var selEmp = employeeByDisplayName(selected);
+      var primaryId = employeePrimaryLocationId(selEmp);
+      if (primaryId && primaryId !== currentRestaurantId) {
+        var primaryLbl = restaurantShortLabel(primaryId);
+        awayPrimaryHtml =
+          '<span class="calendar-row-away-primary" title="' +
+          escapeHtml('Working away from primary store (' + primaryLbl + ')') +
+          '">' +
+          escapeHtml('Primary: ' + primaryLbl) +
+          '</span>';
+      }
+    }
     if (readOnly) {
       return (
         '<td class="time-col calendar-row-person-col">' +
@@ -10798,6 +10849,7 @@
         '<span class="calendar-row-person-text">' +
         escapeHtml(selectedLabel) +
         '</span>' +
+        awayPrimaryHtml +
         '</div>' +
         '</td>'
       );
@@ -10880,6 +10932,7 @@
       '" data-reorder-dir="1" title="Move row down" aria-label="Move row down">↓</button>' +
       '</div>' +
       '</div>' +
+      awayPrimaryHtml +
       '<button type="button" class="calendar-delete-slot-btn" data-delete-slot-role="' +
       escapeHtml(role) +
       '" data-delete-slot-tr="' +
@@ -10995,16 +11048,16 @@
     );
   }
 
-  function endScheduleAltDrag(apply) {
+  function endScheduleAltDrag(apply, singleTarget) {
     var state = scheduleAltDragState;
     scheduleAltDragState = null;
     clearScheduleAltDragUi();
     if (state) scheduleAltDragSuppressClick = true;
     if (!apply || !state || !state.source) return;
     var targets = [];
-    Object.keys(state.targets || {}).forEach(function (key) {
-      targets.push(state.targets[key]);
-    });
+    if (singleTarget && singleTarget.role) {
+      targets.push(singleTarget);
+    }
     if (!targets.length) return;
     applyScheduleAltDragCopy(state.source, targets);
   }
@@ -11319,7 +11372,7 @@
               'Shift: ' + rd.groupLabel + ' on ' + dayStr + ', ' + rpTime + '.';
             const slotTitle = readOnly
               ? ''
-              : ' title="Click to edit times &amp; break · Option/Alt-drag to copy times &amp; break"';
+              : ' title="Click to edit · Option/Alt-drag to copy · Option/Alt+Delete for day off"';
 
             return (
               '<td>' +
@@ -11374,14 +11427,19 @@
         '<td class="time-col calendar-row-person-col schedule-day-totals-corner"></td>' +
         visibleDays
           .map(function (dayStr) {
-            var tot = dayTotals[dayStr] || { hours: 0, pay: 0 };
+            var tot = dayTotals[dayStr] || { hours: 0, paidHours: 0, pay: 0 };
             return (
               '<td>' +
               '<div class="schedule-day-totals-cell">' +
-              '<span class="schedule-day-totals-hours">' +
+              '<span class="schedule-day-totals-hours" title="Gross hours (before break)">' +
               escapeHtml(formatScheduleDayHoursLabel(tot.hours)) +
+              '<span class="schedule-day-totals-tag">gross</span>' +
               '</span>' +
-              '<span class="schedule-day-totals-pay">' +
+              '<span class="schedule-day-totals-hours-net" title="Hours after unpaid break">' +
+              escapeHtml(formatScheduleDayHoursLabel(tot.paidHours)) +
+              '<span class="schedule-day-totals-tag">after break</span>' +
+              '</span>' +
+              '<span class="schedule-day-totals-pay" title="Labor pay (after break)">' +
               escapeHtml(formatScheduleDayPayLabel(tot.pay)) +
               '</span>' +
               '</div>' +
@@ -11921,6 +11979,28 @@
         endScheduleAltDrag(false);
         return;
       }
+      if (
+        e.altKey &&
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !e.metaKey &&
+        !e.ctrlKey
+      ) {
+        var delWrap =
+          (e.target &&
+            e.target.closest &&
+            e.target.closest('.calendar-slot-wrap[data-shiftid]')) ||
+          (schedulePointerSlotEl &&
+          schedulePointerSlotEl.isConnected &&
+          schedulePointerSlotEl.hasAttribute('data-shiftid')
+            ? schedulePointerSlotEl
+            : null);
+        if (delWrap) {
+          e.preventDefault();
+          e.stopPropagation();
+          clearScheduleSlotToDayOff(delWrap);
+          return;
+        }
+      }
       if (e.key !== 'Enter' && e.key !== ' ') return;
       const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid], .calendar-slot-wrap.calendar-slot-empty');
       if (!wrap) return;
@@ -11937,6 +12017,11 @@
       var trIdx = parseInt(wrap.getAttribute('data-tr-idx'), 10);
       var dayStr = wrap.getAttribute('data-day');
       if (role && dayStr && !isNaN(trIdx)) openShiftEditForSlot(role, trIdx, dayStr);
+    });
+
+    calendarGrid.addEventListener('pointerover', function (e) {
+      var wrap = e.target.closest && e.target.closest('.calendar-slot-wrap[data-role]');
+      if (wrap) schedulePointerSlotEl = wrap;
     });
 
     calendarGrid.addEventListener('mousedown', function (e) {
@@ -11963,7 +12048,8 @@
           dayStr: shift.day,
           shiftId: shift.id,
         },
-        targets: {},
+        hoverTarget: null,
+        hoverEl: null,
         moved: false,
         sourceEl: target.el,
       };
@@ -11975,6 +12061,14 @@
     calendarGrid.addEventListener('mousemove', function (e) {
       if (!scheduleAltDragState || !scheduleAltDragState.source) return;
       var target = calendarSlotTargetFromEl(e.target);
+      if (
+        scheduleAltDragState.hoverEl &&
+        (!target || target.el !== scheduleAltDragState.hoverEl)
+      ) {
+        scheduleAltDragState.hoverEl.classList.remove('calendar-slot-alt-target');
+        scheduleAltDragState.hoverEl = null;
+        scheduleAltDragState.hoverTarget = null;
+      }
       if (!target) return;
       var src = scheduleAltDragState.source;
       if (
@@ -11985,29 +12079,71 @@
         return;
       }
       scheduleAltDragState.moved = true;
-      var key = target.role + '|' + target.trIdx + '|' + target.dayStr;
-      if (!scheduleAltDragState.targets[key]) {
-        scheduleAltDragState.targets[key] = {
-          role: target.role,
-          trIdx: target.trIdx,
-          dayStr: target.dayStr,
-          shiftId: target.shiftId,
-        };
-        if (target.el) target.el.classList.add('calendar-slot-alt-target');
+      scheduleAltDragState.hoverTarget = {
+        role: target.role,
+        trIdx: target.trIdx,
+        dayStr: target.dayStr,
+        shiftId: target.shiftId,
+      };
+      if (target.el && target.el !== scheduleAltDragState.hoverEl) {
+        scheduleAltDragState.hoverEl = target.el;
+        target.el.classList.add('calendar-slot-alt-target');
       }
     });
 
-    function onAltDragMouseUp(e) {
+    function onAltDragPointerUp(e) {
       if (!scheduleAltDragState) return;
-      if (e.type === 'mouseup' && e.button !== 0) return;
-      var apply = !!(scheduleAltDragState.moved && Object.keys(scheduleAltDragState.targets).length);
-      endScheduleAltDrag(apply);
+      if (e.button != null && e.button !== 0) return;
+      var state = scheduleAltDragState;
+      var dropTarget = null;
+      if (state.moved) {
+        dropTarget = calendarSlotTargetFromEl(e.target);
+        if (!dropTarget && typeof document.elementFromPoint === 'function') {
+          dropTarget = calendarSlotTargetFromEl(
+            document.elementFromPoint(e.clientX, e.clientY)
+          );
+        }
+        if (!dropTarget && state.hoverTarget) dropTarget = state.hoverTarget;
+        if (dropTarget && state.source) {
+          if (
+            dropTarget.role === state.source.role &&
+            Number(dropTarget.trIdx) === Number(state.source.trIdx) &&
+            dropTarget.dayStr === state.source.dayStr
+          ) {
+            dropTarget = null;
+          }
+        }
+      }
+      endScheduleAltDrag(!!dropTarget, dropTarget);
     }
 
-    document.addEventListener('mouseup', onAltDragMouseUp);
+    if (typeof window.PointerEvent === 'function') {
+      document.addEventListener('pointerup', onAltDragPointerUp);
+    } else {
+      document.addEventListener('mouseup', onAltDragPointerUp);
+    }
     window.addEventListener('blur', function () {
       if (scheduleAltDragState) endScheduleAltDrag(false);
     });
+  }
+
+  /**
+   * Option/Alt + Delete/Backspace: clear the hovered or focused timed shift to day off.
+   */
+  function clearScheduleSlotToDayOff(wrap) {
+    if (!wrap || !managerCanEditCurrentRestaurant()) return false;
+    if (!wrap.getAttribute('data-shiftid')) return false;
+    var role = wrap.getAttribute('data-role');
+    var trIdx = parseInt(wrap.getAttribute('data-tr-idx'), 10);
+    var dayStr = wrap.getAttribute('data-day');
+    if (!role || !dayStr || isNaN(trIdx)) return false;
+    var wk = weekdayKeyFromScheduleDay(dayStr);
+    var di = WEEKDAY_KEYS.indexOf(wk);
+    if (di < 0) return false;
+    captureCalendarScrollForShiftEdit();
+    var ok = persistSingleShiftSlotEdit(role, trIdx, di, null, null, '', true);
+    if (ok) restoreCalendarScrollAfterShiftEdit();
+    return ok;
   }
 
   /** Alphabetical by display name (Team page + leftover schedule/timecard rows). */
@@ -14066,11 +14202,47 @@
 
   function populateShiftDetailBreakTimeOptions(parsed) {
     if (!shiftDetailBreakTime) return;
-    var cur =
-      parsed && parsed.type !== 'NO BREAK'
-        ? breakAnnotationTimeToHHMM(parsed.time || '3:00PM')
-        : breakAnnotationTimeToHHMM('3:00PM');
-    shiftDetailBreakTime.value = cur || '15:00';
+    var type =
+      (shiftDetailBreakType && shiftDetailBreakType.value) ||
+      (parsed && parsed.type) ||
+      'BREAK TIME';
+    var presets =
+      type === 'OFFICE'
+        ? OFFICE_BREAK_TIME_PRESETS.slice()
+        : SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
+    var curLabel = '';
+    if (parsed && parsed.type !== 'NO BREAK') {
+      curLabel = normalizeBreakAnnotationTime(parsed.time || '') || '';
+    }
+    if (type === 'OFFICE') {
+      if (OFFICE_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) curLabel = OFFICE_DEFAULT_BREAK_TIME;
+    } else {
+      if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) curLabel = '3:00PM';
+    }
+    shiftDetailBreakTime.innerHTML = presets
+      .map(function (p) {
+        return (
+          '<option value="' +
+          escapeHtml(p) +
+          '"' +
+          (p === curLabel ? ' selected' : '') +
+          '>' +
+          escapeHtml(p) +
+          '</option>'
+        );
+      })
+      .join('');
+  }
+
+  function applyOfficeShiftDetailDefaults() {
+    if (!shiftDetailBreakType || shiftDetailBreakType.value !== 'OFFICE') return;
+    if (shiftDetailDayOff && shiftDetailDayOff.checked) return;
+    if (shiftDetailStart) shiftDetailStart.value = OFFICE_DEFAULT_START_HHMM;
+    populateShiftDetailBreakTimeOptions({
+      type: 'OFFICE',
+      time: OFFICE_DEFAULT_BREAK_TIME,
+    });
+    updateShiftDetailHoursReadout();
   }
 
   function syncShiftDetailEditorVisibility() {
@@ -14113,25 +14285,52 @@
 
   var calendarScrollRestorePending = null;
 
+  function scheduleScrollRootEl() {
+    return (
+      document.getElementById('screen-schedule') ||
+      document.querySelector('.screen[data-screen="1"]') ||
+      null
+    );
+  }
+
   function captureCalendarScrollForShiftEdit() {
-    if (!calendarGrid) return;
+    var screen = scheduleScrollRootEl();
+    var mainEl = document.querySelector('.main');
     calendarScrollRestorePending = {
-      top: calendarGrid.scrollTop || 0,
-      left: calendarGrid.scrollLeft || 0,
+      gridTop: calendarGrid ? calendarGrid.scrollTop || 0 : 0,
+      gridLeft: calendarGrid ? calendarGrid.scrollLeft || 0 : 0,
+      screenTop: screen ? screen.scrollTop || 0 : 0,
+      screenLeft: screen ? screen.scrollLeft || 0 : 0,
+      mainTop: mainEl ? mainEl.scrollTop || 0 : 0,
+      winX: typeof window.scrollX === 'number' ? window.scrollX : window.pageXOffset || 0,
+      winY: typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset || 0,
     };
+  }
+
+  /** Apply saved schedule scroll immediately (same frame as render — no top flash). */
+  function applyCalendarScrollRestore(saved) {
+    if (!saved) return;
+    if (calendarGrid) {
+      calendarGrid.scrollTop = saved.gridTop;
+      calendarGrid.scrollLeft = saved.gridLeft;
+    }
+    var screen = scheduleScrollRootEl();
+    if (screen) {
+      screen.scrollTop = saved.screenTop;
+      screen.scrollLeft = saved.screenLeft;
+    }
+    var mainEl = document.querySelector('.main');
+    if (mainEl) mainEl.scrollTop = saved.mainTop;
+    if (typeof window.scrollTo === 'function') {
+      window.scrollTo(saved.winX || 0, saved.winY || 0);
+    }
   }
 
   function restoreCalendarScrollAfterShiftEdit() {
     var saved = calendarScrollRestorePending;
-    if (!saved || !calendarGrid) return;
+    if (!saved) return;
     calendarScrollRestorePending = null;
-    var top = saved.top;
-    var left = saved.left;
-    requestAnimationFrame(function () {
-      if (!calendarGrid) return;
-      calendarGrid.scrollTop = top;
-      calendarGrid.scrollLeft = left;
-    });
+    applyCalendarScrollRestore(saved);
   }
 
   function openShiftEditForSlot(role, trIdx, dayStr) {
@@ -14346,6 +14545,14 @@
     }
     if (shiftDetailBreakType) {
       shiftDetailBreakType.addEventListener('change', function () {
+        if (shiftDetailBreakType.value === 'OFFICE') {
+          applyOfficeShiftDetailDefaults();
+        } else {
+          populateShiftDetailBreakTimeOptions({
+            type: shiftDetailBreakType.value,
+            time: (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM',
+          });
+        }
         syncShiftDetailEditorVisibility();
       });
     }
@@ -14374,7 +14581,16 @@
       var start = shiftDetailStart && shiftDetailStart.value;
       var end = shiftDetailEnd && shiftDetailEnd.value;
       var breakType = (shiftDetailBreakType && shiftDetailBreakType.value) || 'BREAK TIME';
-      var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '15:00';
+      var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM';
+      var breakTimeNorm = normalizeBreakAnnotationTime(breakTimeRaw) || '';
+      if (breakType === 'OFFICE' && OFFICE_BREAK_TIME_PRESETS.indexOf(breakTimeNorm) < 0) {
+        breakTimeRaw = OFFICE_DEFAULT_BREAK_TIME;
+      } else if (
+        breakType === 'BREAK TIME' &&
+        SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakTimeNorm) < 0
+      ) {
+        breakTimeRaw = '3:00PM';
+      }
       var breakTime = normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM';
       var breakText = formatBreakAnnotation(breakTime, breakType);
       if (!isDayOff) {
@@ -14389,7 +14605,9 @@
           return;
         }
       }
-      if (!persistSingleShiftSlotEdit(target.role, target.trIdx, di, start, end, breakText, isDayOff)) {
+      if (!persistSingleShiftSlotEdit(target.role, target.trIdx, di, start, end, breakText, isDayOff, {
+        skipUiRefresh: true,
+      })) {
         showScheduleNotice('Could not save shift times.', false);
         return;
       }
@@ -14599,6 +14817,35 @@
         undoScheduleChange();
         ev.preventDefault();
         return;
+      }
+    }
+    if (
+      currentScreen === 1 &&
+      ev.altKey &&
+      !mod &&
+      (ev.key === 'Delete' || ev.key === 'Backspace')
+    ) {
+      var tagDel = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+      var typing =
+        tagDel === 'input' ||
+        tagDel === 'textarea' ||
+        tagDel === 'select' ||
+        (ev.target && ev.target.isContentEditable);
+      if (!typing && managerCanEditCurrentRestaurant()) {
+        var delWrap =
+          (ev.target &&
+            ev.target.closest &&
+            ev.target.closest('.calendar-slot-wrap[data-shiftid]')) ||
+          (schedulePointerSlotEl &&
+          schedulePointerSlotEl.isConnected &&
+          schedulePointerSlotEl.hasAttribute('data-shiftid')
+            ? schedulePointerSlotEl
+            : null);
+        if (delWrap) {
+          ev.preventDefault();
+          clearScheduleSlotToDayOff(delWrap);
+          return;
+        }
       }
     }
     if (ev.key !== 'Escape') return;

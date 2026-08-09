@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=notif-panel-z-1" />
+  <link rel="stylesheet" href="styles.css?v=schedule-ux-1" />
   <script>
     /* Login shell is interactive before deferred app bundles finish loading. */
   </script>
@@ -719,7 +719,7 @@
               </label>
               <label class="shift-detail-field">
                 <span class="shift-detail-field-label"><span data-i18n="schedule.assignedTime">Assigned time</span></span>
-                <input type="time" id="shiftDetailBreakTime" step="60" aria-label="Break time" />
+                <select id="shiftDetailBreakTime" aria-label="Break time"></select>
               </label>
             </div>
           </div>
@@ -3650,7 +3650,7 @@
   <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=schedule-persist-2"></script>
+  <script defer src="app.js?v=office-2pm-only-1"></script>
   <script defer src="employee-app.js?v=admin-notif-1"></script>
   <script defer src="manager-messaging.js?v=admin-notif-1"></script>
   <script defer src="timeclock-schedule-match.js?v=admin-notif-1"></script>

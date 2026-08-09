@@ -1394,20 +1394,29 @@ export function shiftMatchesLocationFilter(
     const leave = getEmployeeDayLeaveSync(emp.id, shiftRow.iso, extrasSlice ?? {});
     if (leave.vl > 0 || leave.sl > 0) return true;
     // Match web getEffectiveDayLeave: raw leaveBalance only when no day/week override.
-    const weekRow = (extrasSlice ?? {})[emp.id];
-    const weekManual =
-      !!weekRow &&
-      typeof weekRow === 'object' &&
-      !Array.isArray(weekRow) &&
-      (weekRow as { manual?: boolean }).manual === true;
-    if (!weekManual) {
-      const dayKey = `${emp.id}@${shiftRow.iso}`;
-      const dayOverride = (extrasSlice ?? {})[dayKey];
-      const blocked =
-        !!dayOverride &&
-        typeof dayOverride === 'object' &&
-        (dayOverride as { manual?: boolean }).manual !== false;
-      if (!blocked) {
+    const dayKey = `${emp.id}@${shiftRow.iso}`;
+    const dayOverride = (extrasSlice ?? {})[dayKey];
+    const blocked =
+      !!dayOverride &&
+      typeof dayOverride === 'object' &&
+      (dayOverride as { manual?: boolean }).manual !== false;
+    if (!blocked) {
+      const weekRow = (extrasSlice ?? {})[emp.id];
+      const weekVl =
+        !!weekRow && typeof weekRow === 'object' && !Array.isArray(weekRow)
+          ? Math.max(0, parseFloat(String((weekRow as { vl?: unknown }).vl)) || 0)
+          : 0;
+      const weekSl =
+        !!weekRow && typeof weekRow === 'object' && !Array.isArray(weekRow)
+          ? Math.max(0, parseFloat(String((weekRow as { sl?: unknown }).sl)) || 0)
+          : 0;
+      const weekManual =
+        !!weekRow &&
+        typeof weekRow === 'object' &&
+        !Array.isArray(weekRow) &&
+        (weekRow as { manual?: boolean }).manual === true &&
+        (weekVl > 0 || weekSl > 0);
+      if (!weekManual) {
         const fromBal = leaveHoursFromBalanceForDay(emp, shiftRow.iso);
         if (fromBal.vl > 0 || fromBal.sl > 0) return true;
       }
