@@ -34,6 +34,7 @@ import {
   type SelectedRestaurant,
 } from '../../../lib/timecards/locationFilter';
 import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
+import { getEmployeeBorrowedRestaurantSync } from '../../../lib/timecards/weekBorrow';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import {
   compareEmployeesByLocationScheduleOrder,
@@ -384,7 +385,11 @@ export default function TimecardsRosterScreen() {
     return built.filter((row) => {
       const emp = employeeById[row.empId];
       if (!emp) return true;
-      return rosterRowVisibleAtLocation(emp, locationFilter);
+      return rosterRowVisibleAtLocation(
+        emp,
+        locationFilter,
+        getEmployeeBorrowedRestaurantSync(emp.id, weekSlices.extras)
+      );
     });
   }, [
     dataReady,

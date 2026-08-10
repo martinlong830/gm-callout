@@ -9,8 +9,15 @@ export type TeamStateBroadcastPayload = {
 const TEAM_STATE_BROADCAST_EVENT = 'team_state_changed';
 const REMOTE_REFRESH_DEBOUNCE_MS = 1200;
 
+/** Ignore own broadcast echo briefly after a local upsert (parity with web). */
+export const TEAM_STATE_SELF_ECHO_IGNORE_MS = 8000;
+
 let sharedChannel: RealtimeChannel | null = null;
 let sharedTeamStateId: string | null = null;
+
+export type TeamStateRemoteChangeMeta = {
+  source?: string;
+};
 
 /**
  * Lightweight team_state sync: broadcast ping (~100 bytes) + debounced REST refetch.
@@ -19,14 +26,14 @@ let sharedTeamStateId: string | null = null;
 export function subscribeTeamState(
   sb: SupabaseClient,
   teamStateId: string,
-  onRemoteChange: (fields?: string[]) => void
+  onRemoteChange: (fields?: string[], meta?: TeamStateRemoteChangeMeta) => void
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const queue = (fields?: string[]) => {
+  const queue = (fields?: string[], meta?: TeamStateRemoteChangeMeta) => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      onRemoteChange(fields);
+      onRemoteChange(fields, meta);
     }, REMOTE_REFRESH_DEBOUNCE_MS);
   };
 
@@ -36,7 +43,9 @@ export function subscribeTeamState(
     })
     .on('broadcast', { event: TEAM_STATE_BROADCAST_EVENT }, ({ payload }) => {
       const p = payload as TeamStateBroadcastPayload | undefined;
-      queue(Array.isArray(p?.fields) ? p.fields : undefined);
+      queue(Array.isArray(p?.fields) ? p.fields : undefined, {
+        source: p?.source ? String(p.source) : undefined,
+      });
     })
     .subscribe();
 

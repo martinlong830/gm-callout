@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { EmployeeRow } from '../employees';
 import type { StaffRequestUi } from '../staffRequests';
 import { isSupabaseConfigured, supabase } from '../supabase';
-import { isoFromDate, weekBoundsStorageKey } from './payWeek';
+import { isoFromDate, payWeekBoundsFromMonday, weekBoundsStorageKey } from './payWeek';
 import { queueTipPayrollPushToSupabase } from './tipPayrollSync';
 import type { PayWeekBounds } from './types';
 import type { WeekExtras } from './types';
@@ -10,9 +10,10 @@ import type { WeekExtras } from './types';
 const TIMECARD_WEEK_EXTRAS_KEY = 'gm-timecard-week-extras-v1';
 const LEAVE_DEFAULT_DAY_MINUTES = 8 * 60;
 
-/** Leave row or scalar extras (coverage compensation uses `acash|empId|iso` → number). */
+/** Leave row or scalar extras (coverage compensation uses `acash|empId|iso` → number;
+ * week borrow uses `borrow|empId` → restaurant id string). */
 export type DayLeaveRow = { vl: number; sl: number; manual?: boolean };
-export type WeekExtrasSlice = Record<string, DayLeaveRow | number>;
+export type WeekExtrasSlice = Record<string, DayLeaveRow | number | string>;
 
 function isDayLeaveRow(val: unknown): val is DayLeaveRow {
   return !!val && typeof val === 'object' && !Array.isArray(val);
@@ -283,6 +284,80 @@ export async function clearEmployeeDayLeave(
   const slice = await loadWeekExtrasMap(bounds);
   delete slice[dayLeaveStorageKey(empId, iso)];
   await saveWeekExtrasMap(bounds, slice);
+}
+
+function mondayDateForIso(iso: string): Date | null {
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function eachIsoDayInclusive(startIso: string, endIso: string, fn: (iso: string) => void) {
+  const cur = new Date(`${startIso}T12:00:00`);
+  const end = new Date(`${endIso}T12:00:00`);
+  if (Number.isNaN(cur.getTime()) || Number.isNaN(end.getTime())) return;
+  while (cur <= end) {
+    const y = cur.getFullYear();
+    const m = String(cur.getMonth() + 1).padStart(2, '0');
+    const d = String(cur.getDate()).padStart(2, '0');
+    fn(`${y}-${m}-${d}`);
+    cur.setDate(cur.getDate() + 1);
+  }
+}
+
+/**
+ * After time-off approval: drop manual day stubs in the range so leaveBalance /
+ * approved request hours surface on timecards.
+ */
+export async function clearDayLeaveOverridesInRange(
+  empId: string,
+  startIso: string,
+  endIso: string,
+  bounds?: PayWeekBounds
+): Promise<void> {
+  if (!empId || !startIso || !endIso || endIso < startIso) return;
+
+  const weekBoundsList: PayWeekBounds[] = [];
+  if (bounds) {
+    weekBoundsList.push(bounds);
+  } else {
+    const startMon = mondayDateForIso(startIso);
+    const endMon = mondayDateForIso(endIso);
+    if (!startMon || !endMon) return;
+    const cur = new Date(startMon);
+    while (cur.getTime() <= endMon.getTime()) {
+      weekBoundsList.push(payWeekBoundsFromMonday(new Date(cur)));
+      cur.setDate(cur.getDate() + 7);
+    }
+  }
+
+  for (const weekBounds of weekBoundsList) {
+    const slice = await loadWeekExtrasMap(weekBounds);
+    let changed = false;
+    eachIsoDayInclusive(startIso, endIso, (iso) => {
+      const key = dayLeaveStorageKey(empId, iso);
+      if (!slice[key]) return;
+      delete slice[key];
+      changed = true;
+    });
+    const weekRow = slice[empId];
+    if (isDayLeaveRow(weekRow) && weekRow.manual) {
+      const wVl = Math.max(0, parseFloat(String(weekRow.vl)) || 0);
+      const wSl = Math.max(0, parseFloat(String(weekRow.sl)) || 0);
+      if (wVl <= 0 && wSl <= 0) {
+        delete slice[empId];
+        changed = true;
+      }
+    }
+    if (changed) {
+      await saveWeekExtrasMap(weekBounds, slice);
+      invalidateWeekExtrasSliceCache(weekBounds);
+    }
+  }
 }
 
 function sumManualDayLeaveForEmployee(

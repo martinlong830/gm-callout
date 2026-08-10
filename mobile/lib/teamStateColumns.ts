@@ -92,15 +92,20 @@ export async function fetchTeamStateColumns(
 /** In-memory only — never upsert to Supabase. Prefer local schedule while a save is pending. */
 export const LOCAL_SCHEDULE_DIRTY_KEY = '__localScheduleDirty';
 
-/** Merge a partial remote row into cached team_state without dropping other columns. */
+/**
+ * Prefer local schedule while dirty, or while a local upsert is still in flight / just
+ * finished (caller passes protectLocal). Parity with web teamStateAssignmentMergeLocked.
+ */
 export function mergeTeamStatePartial(
   prev: Record<string, unknown> | null,
-  partial: Record<string, unknown> | null
+  partial: Record<string, unknown> | null,
+  opts?: { protectLocalSchedule?: boolean }
 ): Record<string, unknown> | null {
   if (!partial) return prev;
   if (!prev) return { ...partial };
   const next: Record<string, unknown> = { ...prev, ...partial };
   const localDirty = prev[LOCAL_SCHEDULE_DIRTY_KEY] === true;
+  const protectLocal = localDirty || !!opts?.protectLocalSchedule;
 
   /*
    * Prefer remote Manager SoT unless this device has unsaved schedule edits.
@@ -113,7 +118,7 @@ export function mergeTeamStatePartial(
    * probes keep working). When dirty, keep BOTH assignments + draft together (never mix
    * stale remote people with local times or the reverse).
    */
-  if (localDirty) {
+  if (protectLocal) {
     if (prev.schedule_assignments != null) {
       next.schedule_assignments = prev.schedule_assignments;
     }
@@ -127,7 +132,7 @@ export function mergeTeamStatePartial(
         next.draft_schedule = prev.draft_schedule;
       }
     }
-    next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
+    if (localDirty) next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
     return next;
   }
 

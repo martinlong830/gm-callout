@@ -5,6 +5,7 @@ import {
   Dimensions,
   FlatList,
   Image,
+  InteractionManager,
   Modal,
   Pressable,
   ScrollView,
@@ -21,6 +22,7 @@ import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   employeeDisplayName,
+  employeePrimaryLocationId,
   normalizeEmployeeStaffType,
   managerCanEditRestaurant,
   managerManagedRestaurantId,
@@ -53,6 +55,7 @@ import {
   buildSchedule,
   buildWeeksFromMonday,
   compactAssignmentsAfterDraftSlotDeletes,
+  computeScheduleDayTotals,
   defaultRestaurants,
   defaultTimesForDraftCell,
   deleteDraftSlotRow,
@@ -66,6 +69,9 @@ import {
   namesForScheduleRowPersonPicker,
   normalizeBreakAnnotationTime,
   normalizeSchedulePublishedMap,
+  OFFICE_BREAK_TIME_PRESETS,
+  OFFICE_DEFAULT_BREAK_TIME,
+  OFFICE_DEFAULT_START_HHMM,
   orderedScheduleSlotIndicesForRole,
   parseBreakAnnotation,
   patchDraftScheduleForWeek,
@@ -76,6 +82,7 @@ import {
   schedulePublishedPayload,
   scheduleRowPrimaryPerson,
   seedDefaultPublishedWeeks,
+  SHIFT_DETAIL_BREAK_TIME_PRESETS,
   slotCountForRole,
   slotCountForRoleWithAssignments,
   STAFF_TYPE_LABELS,
@@ -86,6 +93,13 @@ import {
   type CalendarBodyRow,
   type CalendarCell,
 } from '../../lib/schedule/engine';
+import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
+import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
+import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import {
+  getEmployeeBorrowedRestaurantSync,
+  restaurantShortLabel as borrowRestaurantShortLabel,
+} from '../../lib/timecards/weekBorrow';
 import {
   getCustomSlotOrderForRole,
   mergePendingDraftWithHydrated,
@@ -140,9 +154,18 @@ function toLite(e: EmployeeRow): EmployeeLite {
     displayName: e.displayName,
     staffType: (normalizeEmployeeStaffType(e.staffType) || e.staffType) as RoleKey,
     usualRestaurant: e.usualRestaurant || 'both',
+    hourlyRate: e.hourlyRate,
+    primaryLocationId: employeePrimaryLocationId(e),
     meta: e.meta,
   };
 }
+
+type CopyTimesClip = {
+  start: string;
+  end: string;
+  breakType: BreakAnnotationType;
+  breakTimeLabel: string;
+};
 
 function sectionBg(variant: 'foh' | 'boh' | 'delivery'): string {
   if (variant === 'foh') return '#ecfdf5';
@@ -161,7 +184,7 @@ export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role, session } = useAuth();
   const { t, staffTypeLabel } = useI18n();
-  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee } = useAppData();
+  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee, setSchedulePushInFlight, noteLocalSchedulePush } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
@@ -193,6 +216,7 @@ export default function ManagerScheduleScreen() {
   const [editBreakType, setEditBreakType] = useState<BreakAnnotationType>('BREAK TIME');
   const [editBreakTime, setEditBreakTime] = useState('15:00');
   const [editWorker, setEditWorker] = useState('Unassigned');
+  const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -415,12 +439,16 @@ export default function ManagerScheduleScreen() {
     async (store: AssignmentStore, draftSchedule?: unknown) => {
       if (!supabase || !isManagerLikeRole(role)) return;
       setSaving(true);
+      setSchedulePushInFlight(true);
       try {
         const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
         purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
         const teamStateId = await readStoredTeamStateId();
         const draftToSave =
           draftSchedule !== undefined ? draftSchedule : pendingDraftRef.current;
+        const pushedAssignJson = JSON.stringify(toSave);
+        const pushedDraftJson =
+          draftToSave !== undefined ? JSON.stringify(draftToSave) : null;
         const payload: Record<string, unknown> = {
           id: teamStateId,
           schedule_assignments: toSave,
@@ -440,27 +468,64 @@ export default function ManagerScheduleScreen() {
           /* Stays dirty so remote cannot win; retry or the edit is lost on the next fetch. */
           armSaveTimer(PERSIST_RETRY_MS);
         } else {
-          pendingDraftRef.current = undefined;
-          pendingStoreRef.current = null;
-          localEditPendingRef.current = false;
+          noteLocalSchedulePush();
           await broadcastTeamStateChanged(
             supabase,
             teamStateId,
             fields,
             session?.user?.id
           );
-          // Local state already has assignments; avoid full hydrate after every edit.
+          /*
+           * Only clear dirty/pending when local SoT still matches what we just pushed.
+           * An edit during the upsert must keep dirty=true and re-arm the timer —
+           * otherwise a remote echo of the older snapshot rolls assignments back.
+           */
+          const liveStore = pendingStoreRef.current ?? toSave;
+          const liveDraft =
+            pendingDraftRef.current !== undefined ? pendingDraftRef.current : draftToSave;
+          const assignStillDirty = JSON.stringify(liveStore) !== pushedAssignJson;
+          const draftStillDirty =
+            pushedDraftJson != null && JSON.stringify(liveDraft ?? null) !== pushedDraftJson;
           suppressHydrateUndoClearRef.current = true;
-          applyLocalScheduleAssignments(toSave, draftToSave, {
-            markDirty: false,
-            pushedUpdatedAt: up.data?.updated_at as string | undefined,
-          });
+          if (assignStillDirty || draftStillDirty) {
+            localEditPendingRef.current = true;
+            if (!pendingStoreRef.current) pendingStoreRef.current = liveStore;
+            if (
+              draftStillDirty &&
+              pendingDraftRef.current === undefined &&
+              liveDraft !== undefined
+            ) {
+              pendingDraftRef.current = liveDraft;
+            }
+            applyLocalScheduleAssignments(liveStore, liveDraft, {
+              markDirty: true,
+              pushedUpdatedAt: up.data?.updated_at as string | undefined,
+            });
+            armSaveTimer(100);
+          } else {
+            pendingDraftRef.current = undefined;
+            pendingStoreRef.current = null;
+            localEditPendingRef.current = false;
+            applyLocalScheduleAssignments(toSave, draftToSave, {
+              markDirty: false,
+              pushedUpdatedAt: up.data?.updated_at as string | undefined,
+            });
+          }
         }
       } finally {
+        setSchedulePushInFlight(false);
         setSaving(false);
       }
     },
-    [role, restaurants, session?.user?.id, applyLocalScheduleAssignments, armSaveTimer]
+    [
+      role,
+      restaurants,
+      session?.user?.id,
+      applyLocalScheduleAssignments,
+      armSaveTimer,
+      setSchedulePushInFlight,
+      noteLocalSchedulePush,
+    ]
   );
 
   useEffect(() => {
@@ -504,6 +569,8 @@ export default function ManagerScheduleScreen() {
 
   useEffect(() => {
     const pendingDraft = pendingDraftRef.current;
+    const pendingStore = pendingStoreRef.current;
+    const editPending = localEditPendingRef.current || !!pendingStore;
     const rolled = hydrateScheduleAssignmentsFromTeamState(
       teamState?.schedule_assignments,
       restaurants,
@@ -518,31 +585,63 @@ export default function ManagerScheduleScreen() {
       draftOut = mergePendingDraftWithHydrated(pendingDraft, draftOut);
       pendingDraftRef.current = draftOut;
     }
+    /*
+     * While a manager edit is waiting to save, never paint remote/cache assignments over
+     * the local store — that is the main flash/revert path after person or time edits.
+     */
+    if (editPending) {
+      if (pendingStore) setAssignmentStore(pendingStore);
+      setRolledDraftRaw(draftOut);
+      suppressHydrateUndoClearRef.current = false;
+      return;
+    }
     setAssignmentStore(rolled.store);
     setRolledDraftRaw(draftOut);
     if (rolled.changed && isManagerLikeRole(role)) {
       /* Local commits (incl. delete-slot) update teamState and re-enter here — do not wipe Undo. */
       if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-      /*
-       * Never let hydrate bookkeeping (window roll, migrations) replace the store a manager
-       * edit is waiting to save — that pushed the pre-edit names back over the new ones.
-       */
-      if (!localEditPendingRef.current) {
-        applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
-        queuePersist(rolled.store, draftOut, { fromHydrate: true });
-      }
-    } else if (
-      rolled.draftMetaChanged &&
-      isManagerLikeRole(role) &&
-      !localEditPendingRef.current
-    ) {
+      applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
+      queuePersist(rolled.store, draftOut, { fromHydrate: true });
+    } else if (rolled.draftMetaChanged && isManagerLikeRole(role)) {
       /* Seed bookkeeping only — keep it in the local cache, never spend a cloud write on it. */
       applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
     }
     suppressHydrateUndoClearRef.current = false;
   }, [teamState, restaurants, role, queuePersist, applyLocalScheduleAssignments, clearUndoStack]);
 
-  const lites = useMemo(() => employees.map(toLite), [employees]);
+  const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) {
+      setBorrowByEmpId({});
+      return;
+    }
+    let cancelled = false;
+    const mon = new Date(`${selectedWeekMonday}T12:00:00`);
+    const bounds = getPayWeekBoundsForMonday(mon);
+    void loadWeekExtrasSlice(bounds).then((slice) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const e of employees) {
+        const b = getEmployeeBorrowedRestaurantSync(e.id, slice);
+        if (b) next[e.id] = b;
+      }
+      setBorrowByEmpId(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWeekMonday, employees, teamState?.updated_at]);
+
+  const lites = useMemo(
+    () =>
+      employees.map((e) => {
+        const lite = toLite(e);
+        lite.borrowedRestaurantId = borrowByEmpId[e.id] || null;
+        return lite;
+      }),
+    [employees, borrowByEmpId]
+  );
 
   const schedule = useMemo(
     () =>
@@ -636,10 +735,82 @@ export default function ManagerScheduleScreen() {
     const saved = scheduleScrollRestoreRef.current;
     scheduleScrollRestoreRef.current = null;
     if (!saved) return;
-    requestAnimationFrame(() => {
+    const apply = () => {
       outerScrollRef.current?.scrollTo({ y: saved.y, animated: false });
       dayScrollRef.current?.scrollTo({ x: saved.x, animated: false });
+    };
+    requestAnimationFrame(() => {
+      apply();
+      InteractionManager.runAfterInteractions(() => {
+        requestAnimationFrame(apply);
+      });
     });
+  }
+
+  function breakTimePresetsForType(breakType: BreakAnnotationType): string[] {
+    return breakType === 'OFFICE' ? OFFICE_BREAK_TIME_PRESETS : SHIFT_DETAIL_BREAK_TIME_PRESETS;
+  }
+
+  function clampBreakTimeLabel(breakType: BreakAnnotationType, label: string): string {
+    const norm = normalizeBreakAnnotationTime(label) || '';
+    const presets = breakTimePresetsForType(breakType);
+    if (presets.indexOf(norm) >= 0) return norm;
+    return breakType === 'OFFICE' ? OFFICE_DEFAULT_BREAK_TIME : '3:00PM';
+  }
+
+  function applyBreakTypeChange(breakType: BreakAnnotationType) {
+    setEditBreakType(breakType);
+    if (breakType === 'OFFICE') {
+      setEditStart(OFFICE_DEFAULT_START_HHMM);
+      setEditBreakTime(breakAnnotationTimeToHHMM(OFFICE_DEFAULT_BREAK_TIME) || '14:00');
+      return;
+    }
+    if (breakType === 'NO BREAK') return;
+    const nextLabel = clampBreakTimeLabel('BREAK TIME', normalizeBreakAnnotationTime(editBreakTime) || '3:00PM');
+    setEditBreakTime(breakAnnotationTimeToHHMM(nextLabel) || '15:00');
+  }
+
+  function persistSlotEdit(opts: {
+    role: RoleKey;
+    trIdx: number;
+    dayStr: string;
+    start: string;
+    end: string;
+    isDayOff: boolean;
+    breakText: string | null;
+    workers?: string[] | null;
+  }): boolean {
+    const wk = weekdayKeyFromScheduleDay(opts.dayStr);
+    const di = WEEKDAY_KEYS.indexOf(wk);
+    if (di < 0) return false;
+    const applied = applyShiftSlotEdit({
+      draftRows,
+      store: assignmentStoreRef.current,
+      restaurantId: currentRestaurantId,
+      weekIndex,
+      role: opts.role,
+      trIdx: opts.trIdx,
+      dayInWeek: di,
+      start: opts.start,
+      end: opts.end,
+      isDayOff: opts.isDayOff,
+      breakText: opts.breakText,
+      workers: opts.workers,
+    });
+    if (!applied) return false;
+    pushUndoSnapshot();
+    const draftPayload = patchDraftScheduleForWeek(
+      draftScheduleRawRef.current,
+      weekIndex,
+      currentRestaurantId,
+      applied.draftRows
+    );
+    suppressHydrateUndoClearRef.current = true;
+    setAssignmentStore(applied.store);
+    setRolledDraftRaw(draftPayload);
+    applyLocalScheduleAssignments(applied.store, draftPayload);
+    queuePersist(applied.store, draftPayload);
+    return true;
   }
 
   function openShiftEditor(target: ShiftEditTarget) {
@@ -650,10 +821,22 @@ export default function ManagerScheduleScreen() {
     if (target.shift) {
       const parsed = parseBreakAnnotation(target.shift.redPokeBreak || '');
       setEditDayOff(false);
-      setEditStart(target.shift.start || '10:00');
+      setEditStart(
+        parsed.type === 'OFFICE'
+          ? OFFICE_DEFAULT_START_HHMM
+          : target.shift.start || '10:00'
+      );
       setEditEnd(target.shift.end || '18:00');
       setEditBreakType(parsed.type);
-      setEditBreakTime(breakAnnotationTimeToHHMM(parsed.time || '3:00PM') || '15:00');
+      const breakLabel =
+        parsed.type === 'NO BREAK'
+          ? ''
+          : clampBreakTimeLabel(parsed.type, parsed.time || '3:00PM');
+      setEditBreakTime(
+        parsed.type === 'NO BREAK'
+          ? '15:00'
+          : breakAnnotationTimeToHHMM(breakLabel) || '15:00'
+      );
       const w = (target.shift.workers || []).find((n) => n && n !== 'Unassigned');
       setEditWorker(w || 'Unassigned');
     } else {
@@ -678,57 +861,179 @@ export default function ManagerScheduleScreen() {
     setShiftEditor(target);
   }
 
+  function onCellPress(target: ShiftEditTarget) {
+    if (!scheduleEditable) return;
+    if (copyTimesClip) {
+      pasteCopyTimesOntoCell(target);
+      return;
+    }
+    openShiftEditor(target);
+  }
+
+  function pasteCopyTimesOntoCell(target: ShiftEditTarget) {
+    if (!copyTimesClip || !scheduleEditable) return;
+    captureScheduleScroll();
+    const breakText =
+      copyTimesClip.breakType === 'NO BREAK'
+        ? formatBreakAnnotation('', 'NO BREAK')
+        : formatBreakAnnotation(copyTimesClip.breakTimeLabel, copyTimesClip.breakType);
+    let workers: string[] | null = null;
+    if (target.shift) {
+      const w = (target.shift.workers || []).find((n) => n && n !== 'Unassigned');
+      workers = w ? [w] : ['Unassigned'];
+    } else {
+      const rowPerson = scheduleRowPrimaryPerson(
+        schedule,
+        target.role,
+        target.trIdx,
+        visibleDays,
+        lites,
+        currentRestaurantId,
+        assignmentStoreRef.current,
+        weekIndex
+      );
+      workers =
+        rowPerson && rowPerson !== 'Unassigned' ? [rowPerson] : ['Unassigned'];
+    }
+    const ok = persistSlotEdit({
+      role: target.role,
+      trIdx: target.trIdx,
+      dayStr: target.dayStr,
+      start: copyTimesClip.start,
+      end: copyTimesClip.end,
+      isDayOff: false,
+      breakText,
+      workers,
+    });
+    setCopyTimesClip(null);
+    if (!ok) {
+      Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
+      return;
+    }
+    restoreScheduleScroll();
+  }
+
+  function clearCellToDayOff(target: ShiftEditTarget) {
+    if (!scheduleEditable) return;
+    captureScheduleScroll();
+    const start = target.shift?.start || '10:00';
+    const end = target.shift?.end || '18:00';
+    const ok = persistSlotEdit({
+      role: target.role,
+      trIdx: target.trIdx,
+      dayStr: target.dayStr,
+      start,
+      end,
+      isDayOff: true,
+      breakText: null,
+      workers: null,
+    });
+    if (!ok) {
+      Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
+      return;
+    }
+    restoreScheduleScroll();
+  }
+
+  function onCellLongPress(target: ShiftEditTarget) {
+    if (!scheduleEditable) return;
+    const buttons: {
+      text: string;
+      style?: 'cancel' | 'destructive' | 'default';
+      onPress?: () => void;
+    }[] = [];
+    if (copyTimesClip) {
+      buttons.push({
+        text: t('schedule.pasteTimes'),
+        onPress: () => pasteCopyTimesOntoCell(target),
+      });
+      buttons.push({
+        text: t('schedule.cancelCopy'),
+        onPress: () => setCopyTimesClip(null),
+      });
+    }
+    if (target.shift) {
+      buttons.push({
+        text: t('schedule.copyTimes'),
+        onPress: () => {
+          const parsed = parseBreakAnnotation(target.shift!.redPokeBreak || '');
+          const breakType = parsed.type;
+          const breakTimeLabel =
+            breakType === 'NO BREAK'
+              ? ''
+              : clampBreakTimeLabel(breakType, parsed.time || '3:00PM');
+          setCopyTimesClip({
+            start:
+              breakType === 'OFFICE'
+                ? OFFICE_DEFAULT_START_HHMM
+                : target.shift!.start || '10:00',
+            end: target.shift!.end || '18:00',
+            breakType,
+            breakTimeLabel,
+          });
+        },
+      });
+    }
+    buttons.push({
+      text: t('schedule.markDayOff'),
+      style: 'destructive',
+      onPress: () => clearCellToDayOff(target),
+    });
+    buttons.push({
+      text: t('common.edit'),
+      onPress: () => {
+        setCopyTimesClip(null);
+        openShiftEditor(target);
+      },
+    });
+    buttons.push({ text: t('common.cancel'), style: 'cancel' });
+    Alert.alert(t('schedule.cellActions'), t('schedule.cellActionsHint'), buttons);
+  }
+
   function applyShiftDetailsSave() {
     if (!shiftEditor || !isManagerLikeRole(role) || !scheduleEditable) return;
     const wk = weekdayKeyFromScheduleDay(shiftEditor.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
     if (di < 0) return;
+    let start = editStart;
+    let end = editEnd;
+    let breakType = editBreakType;
+    let breakTimeRaw = editBreakTime;
     if (!editDayOff) {
-      if (!/^\d{1,2}:\d{2}$/.test(editStart.trim()) || !/^\d{1,2}:\d{2}$/.test(editEnd.trim())) {
+      if (breakType === 'OFFICE') {
+        start = OFFICE_DEFAULT_START_HHMM;
+        breakTimeRaw = breakAnnotationTimeToHHMM(OFFICE_DEFAULT_BREAK_TIME) || '14:00';
+      }
+      if (!/^\d{1,2}:\d{2}$/.test(start.trim()) || !/^\d{1,2}:\d{2}$/.test(end.trim())) {
         Alert.alert(t('schedule.invalidTime'), t('schedule.invalidTimeHint'));
         return;
       }
-      if (editBreakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(editBreakTime)) {
+      if (breakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
         Alert.alert(t('schedule.invalidBreakTime'), t('schedule.invalidBreakHint'));
         return;
       }
     }
-    const breakText = formatBreakAnnotation(
-      normalizeBreakAnnotationTime(editBreakTime) || '3:00PM',
-      editBreakType
-    );
+    const breakLabel =
+      breakType === 'NO BREAK'
+        ? ''
+        : clampBreakTimeLabel(breakType, normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM');
+    const breakText = formatBreakAnnotation(breakLabel || '3:00PM', breakType);
     const list =
       editWorker === 'Unassigned' ? ['Unassigned'] : [editWorker].filter(Boolean);
-    const applied = applyShiftSlotEdit({
-      draftRows,
-      store: assignmentStoreRef.current,
-      restaurantId: currentRestaurantId,
-      weekIndex,
+    const ok = persistSlotEdit({
       role: shiftEditor.role,
       trIdx: shiftEditor.trIdx,
-      dayInWeek: di,
-      start: editStart,
-      end: editEnd,
+      dayStr: shiftEditor.dayStr,
+      start,
+      end,
       isDayOff: editDayOff,
       breakText,
       workers: editDayOff ? null : list,
     });
-    if (!applied) {
+    if (!ok) {
       Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
       return;
     }
-    pushUndoSnapshot();
-    const draftPayload = patchDraftScheduleForWeek(
-      draftScheduleRawRef.current,
-      weekIndex,
-      currentRestaurantId,
-      applied.draftRows
-    );
-    suppressHydrateUndoClearRef.current = true;
-    setAssignmentStore(applied.store);
-    setRolledDraftRaw(draftPayload);
-    applyLocalScheduleAssignments(applied.store, draftPayload);
-    queuePersist(applied.store, draftPayload);
     setShiftEditor(null);
     restoreScheduleScroll();
   }
@@ -939,6 +1244,16 @@ export default function ManagerScheduleScreen() {
     return `${redPokeShiftHoursDecimal(editStart, editEnd)} h`;
   }, [editDayOff, editStart, editEnd]);
 
+  const dayTotals = useMemo(
+    () => computeScheduleDayTotals(schedule, visibleDays, lites),
+    [schedule, visibleDays, lites]
+  );
+
+  const breakTimeChipLabels = useMemo(
+    () => breakTimePresetsForType(editBreakType),
+    [editBreakType]
+  );
+
   const modalOpen = !!shiftEditor || !!rowPersonPicker;
 
   return (
@@ -1050,6 +1365,12 @@ export default function ManagerScheduleScreen() {
         {!scheduleEditable ? (
           <Text style={styles.viewOnlyHint}>{t('schedule.viewOnlyOtherStoreHint')}</Text>
         ) : null}
+        {copyTimesClip ? (
+          <Pressable style={styles.copyBanner} onPress={() => setCopyTimesClip(null)}>
+            <Text style={styles.copyBannerText}>{t('schedule.copyModeHint')}</Text>
+            <Text style={styles.copyBannerCancel}>{t('schedule.cancelCopy')}</Text>
+          </Pressable>
+        ) : null}
 
         <View style={styles.legend}>
           <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
@@ -1106,6 +1427,9 @@ export default function ManagerScheduleScreen() {
                   />
                 );
               })}
+              <View style={styles.totalsPersonCell}>
+                <Text style={styles.totalsPersonLabel}>{t('schedule.dayTotals')}</Text>
+              </View>
             </View>
 
             <ScrollView
@@ -1156,9 +1480,28 @@ export default function ManagerScheduleScreen() {
                     row={row}
                     daysWidth={daysWidth}
                     editable={scheduleEditable}
-                    onOpenShift={openShiftEditor}
+                    onOpenShift={onCellPress}
+                    onLongPressShift={onCellLongPress}
                   />
                 ))}
+                <View style={[styles.totalsDays, { width: daysWidth }]}>
+                  {visibleDays.map((dayStr) => {
+                    const tot = dayTotals[dayStr] || { hours: 0, paidHours: 0, pay: 0 };
+                    return (
+                      <View key={`tot-${dayStr}`} style={[styles.totalsCell, { width: CELL_MIN }]}>
+                        <Text style={styles.totalsLine}>
+                          {t('schedule.dayGross')}: {tot.hours.toFixed(1)}h
+                        </Text>
+                        <Text style={styles.totalsLine}>
+                          {t('schedule.dayAfterBreak')}: {tot.paidHours.toFixed(1)}h
+                        </Text>
+                        <Text style={styles.totalsPay}>
+                          {t('schedule.dayPay')}: ${tot.pay.toFixed(0)}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
               </View>
             </ScrollView>
           </View>
@@ -1218,9 +1561,13 @@ export default function ManagerScheduleScreen() {
                       <View style={styles.editField}>
                         <Text style={styles.editFieldLabel}>{t('common.start')}</Text>
                         <TextInput
-                          style={styles.editInput}
+                          style={[
+                            styles.editInput,
+                            editBreakType === 'OFFICE' && styles.editInputLocked,
+                          ]}
                           value={editStart}
                           onChangeText={setEditStart}
+                          editable={editBreakType !== 'OFFICE'}
                           placeholder="10:00"
                           autoCapitalize="none"
                           autoCorrect={false}
@@ -1245,7 +1592,7 @@ export default function ManagerScheduleScreen() {
                       {BREAK_ANNOTATION_TYPE_PRESETS.map((breakType) => (
                         <Pressable
                           key={breakType}
-                          onPress={() => setEditBreakType(breakType)}
+                          onPress={() => applyBreakTypeChange(breakType)}
                           style={[
                             styles.editChip,
                             editBreakType === breakType && styles.editChipActive,
@@ -1267,16 +1614,32 @@ export default function ManagerScheduleScreen() {
                       ))}
                     </View>
                     {editBreakType !== 'NO BREAK' ? (
-                      <View style={[styles.editField, { marginTop: 10 }]}>
+                      <View style={{ marginTop: 10 }}>
                         <Text style={styles.editFieldLabel}>{t('schedule.assignedTime')}</Text>
-                        <TextInput
-                          style={styles.editInput}
-                          value={editBreakTime}
-                          onChangeText={setEditBreakTime}
-                          placeholder="15:00"
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                        />
+                        <View style={styles.chipWrap}>
+                          {breakTimeChipLabels.map((label) => {
+                            const selected =
+                              normalizeBreakAnnotationTime(editBreakTime) === label;
+                            return (
+                              <Pressable
+                                key={label}
+                                onPress={() =>
+                                  setEditBreakTime(breakAnnotationTimeToHHMM(label) || '15:00')
+                                }
+                                style={[styles.editChip, selected && styles.editChipActive]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.editChipText,
+                                    selected && styles.editChipTextActive,
+                                  ]}
+                                >
+                                  {label}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
                       </View>
                     ) : null}
                     <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>{t('common.person')}</Text>
@@ -1403,6 +1766,33 @@ const PersonColRow = memo(function PersonColRow({
   );
   const label =
     selected && selected !== 'Unassigned' ? selected : t('common.unassigned');
+  const selectedLite =
+    selected && selected !== 'Unassigned'
+      ? employees.find(
+          (e) =>
+            (e.displayName || `${e.firstName} ${e.lastName}`.trim()) === selected ||
+            `${e.firstName} ${e.lastName}`.trim() === selected
+        )
+      : null;
+  const awayPrimaryId =
+    selectedLite?.primaryLocationId &&
+    selectedLite.primaryLocationId !== restaurantId
+      ? selectedLite.primaryLocationId
+      : null;
+  const awayPrimaryLabel = awayPrimaryId
+    ? restaurantShortLabelForId(awayPrimaryId)
+    : '';
+  const borrowedFromId =
+    !awayPrimaryLabel &&
+    selectedLite?.borrowedRestaurantId === restaurantId &&
+    selectedLite.usualRestaurant &&
+    selectedLite.usualRestaurant !== 'both' &&
+    selectedLite.usualRestaurant !== restaurantId
+      ? selectedLite.usualRestaurant
+      : null;
+  const borrowedFromLabel = borrowedFromId
+    ? borrowRestaurantShortLabel(borrowedFromId)
+    : '';
 
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
@@ -1417,12 +1807,30 @@ const PersonColRow = memo(function PersonColRow({
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
+            {awayPrimaryLabel ? (
+              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                {t('schedule.primaryStore', { store: awayPrimaryLabel })}
+              </Text>
+            ) : borrowedFromLabel ? (
+              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
+              </Text>
+            ) : null}
           </Pressable>
         ) : (
           <View style={styles.personSelect}>
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
+            {awayPrimaryLabel ? (
+              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                {t('schedule.primaryStore', { store: awayPrimaryLabel })}
+              </Text>
+            ) : borrowedFromLabel ? (
+              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
+              </Text>
+            ) : null}
           </View>
         )}
         {editable ? (
@@ -1467,11 +1875,13 @@ const DayColRow = memo(function DayColRow({
   daysWidth,
   editable,
   onOpenShift,
+  onLongPressShift,
 }: {
   row: CalendarBodyRow;
   daysWidth: number;
   editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
+  onLongPressShift: (t: ShiftEditTarget) => void;
 }) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
@@ -1492,7 +1902,12 @@ const DayColRow = memo(function DayColRow({
     <View style={[styles.dataDays, styles.dataMatrixRow, { width: daysWidth }]}>
       {row.cells.map((cell, ci) => (
         <View key={ci} style={[styles.cell, { width: CELL_MIN }]}>
-          <CalendarCellView cell={cell} editable={editable} onOpenShift={onOpenShift} />
+          <CalendarCellView
+            cell={cell}
+            editable={editable}
+            onOpenShift={onOpenShift}
+            onLongPressShift={onLongPressShift}
+          />
         </View>
       ))}
     </View>
@@ -1503,10 +1918,12 @@ const CalendarCellView = memo(function CalendarCellView({
   cell,
   editable,
   onOpenShift,
+  onLongPressShift,
 }: {
   cell: CalendarCell;
   editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
+  onLongPressShift: (t: ShiftEditTarget) => void;
 }) {
   const { t } = useI18n();
   const dayOffLbl = t('schedule.dayOffLabel');
@@ -1519,20 +1936,30 @@ const CalendarCellView = memo(function CalendarCellView({
       .replace(/\bOFFICE\b/gi, t('schedule.office'));
   };
   if (cell.kind === 'empty') {
+    const target: ShiftEditTarget = {
+      role: cell.role,
+      trIdx: cell.trIdx,
+      dayStr: cell.dayStr,
+    };
     const body = <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>;
     if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
     return (
       <Pressable
         style={styles.cellInnerMuted}
-        onPress={() =>
-          onOpenShift({ role: cell.role, trIdx: cell.trIdx, dayStr: cell.dayStr })
-        }
+        onPress={() => onOpenShift(target)}
+        onLongPress={() => onLongPressShift(target)}
+        delayLongPress={350}
       >
         {body}
       </Pressable>
     );
   }
   if (cell.kind === 'dayoff') {
+    const target: ShiftEditTarget = {
+      role: cell.role,
+      trIdx: cell.trIdx,
+      dayStr: cell.dayStr,
+    };
     const body = (
       <>
         <Text style={styles.slotTime}>{cell.timeLabel}</Text>
@@ -1543,14 +1970,20 @@ const CalendarCellView = memo(function CalendarCellView({
     return (
       <Pressable
         style={styles.cellInnerMuted}
-        onPress={() =>
-          onOpenShift({ role: cell.role, trIdx: cell.trIdx, dayStr: cell.dayStr })
-        }
+        onPress={() => onOpenShift(target)}
+        onLongPress={() => onLongPressShift(target)}
+        delayLongPress={350}
       >
         {body}
       </Pressable>
     );
   }
+  const target: ShiftEditTarget = {
+    role: cell.shift.role,
+    trIdx: cell.shift.trIdx,
+    dayStr: cell.shift.day,
+    shift: cell.shift,
+  };
   const rd = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-kitchen'];
   const filledStyle = [
     styles.cellInner,
@@ -1573,14 +2006,9 @@ const CalendarCellView = memo(function CalendarCellView({
   return (
     <Pressable
       style={filledStyle}
-      onPress={() =>
-        onOpenShift({
-          role: cell.shift.role,
-          trIdx: cell.shift.trIdx,
-          dayStr: cell.shift.day,
-          shift: cell.shift,
-        })
-      }
+      onPress={() => onOpenShift(target)}
+      onLongPress={() => onLongPressShift(target)}
+      delayLongPress={350}
     >
       {filledBody}
     </Pressable>
@@ -1631,6 +2059,22 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     overflow: 'hidden',
   },
+  copyBanner: {
+    marginHorizontal: 12,
+    marginTop: 6,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  copyBannerText: { flex: 1, fontSize: 13, color: '#1e40af', fontWeight: '600' },
+  copyBannerCancel: { fontSize: 13, color: '#c41230', fontWeight: '700' },
   toolbarLabel: { fontSize: 11, fontWeight: '700', color: '#64748b', marginBottom: 6, textTransform: 'uppercase' },
   chipsRow: { flexDirection: 'row', gap: 8, paddingBottom: 4 },
   chip: {
@@ -1729,6 +2173,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   personSelectText: { fontSize: 12, fontWeight: '600', color: '#0f172a' },
+  awayPrimaryBadge: {
+    marginTop: 2,
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#b45309',
+  },
   reorderCol: {
     justifyContent: 'space-between',
     gap: 2,
@@ -1789,6 +2239,37 @@ const styles = StyleSheet.create({
     minHeight: DATA_ROW_MIN_H,
     alignItems: 'stretch',
   },
+  totalsPersonCell: {
+    minHeight: 72,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    justifyContent: 'center',
+  },
+  totalsPersonLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+    textTransform: 'uppercase',
+  },
+  totalsDays: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+  },
+  totalsCell: {
+    minHeight: 72,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    borderRightWidth: 1,
+    borderColor: '#eef2f7',
+    justifyContent: 'center',
+  },
+  totalsLine: { fontSize: 10, color: '#64748b', fontWeight: '600' },
+  totalsPay: { fontSize: 11, color: '#0f172a', fontWeight: '800', marginTop: 2 },
   cell: { minHeight: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
   cellInner: {
     flex: 1,
@@ -1859,6 +2340,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     minWidth: 88,
     height: 44,
+  },
+  editInputLocked: {
+    backgroundColor: '#f1f5f9',
+    color: '#64748b',
   },
   editSep: {
     fontSize: 16,

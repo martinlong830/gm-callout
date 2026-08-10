@@ -3,28 +3,35 @@ import { isCloudEmployeeId } from '../employees';
 import { saveEmployeeRow } from '../employeeSave';
 import { isSupabaseConfigured, supabase } from '../supabase';
 import { isoFromDate } from './payWeek';
+import type { PayWeekBounds } from './types';
 import type { TimeClockEntry } from './types';
 import { addOffScheduleDay, entryHasMeaningfulPunch } from './offScheduleShift';
+import {
+  employeeEligibleForWeekBorrow,
+  setEmployeeBorrowedRestaurant,
+  type BorrowRestaurantId,
+} from './weekBorrow';
+import { employeeHomeRestaurant } from './restaurantAttribution';
 
 function punchDayIsoLocal(entry: TimeClockEntry): string {
   if (!entry?.clock_in_at) return '';
   return isoFromDate(new Date(entry.clock_in_at));
 }
 
-/** Widen team location when punches land at an unassigned store. */
+/** Other-store punch no longer permanently flips Team to both (use week borrow instead). */
 export function shouldExpandEmployeeRestaurantForPunch(
-  emp: EmployeeRow,
+  _emp: EmployeeRow,
   restaurantId: string | null | undefined
 ): boolean {
   if (!restaurantId || (restaurantId !== 'rp-8' && restaurantId !== 'rp-9')) return false;
-  const home = emp.usualRestaurant || 'rp-9';
-  return home !== 'both' && home !== restaurantId;
+  return false;
 }
 
-export function expandEmployeeRestaurantForPunchLocal(emp: EmployeeRow, restaurantId: string): boolean {
-  if (!shouldExpandEmployeeRestaurantForPunch(emp, restaurantId)) return false;
-  emp.usualRestaurant = 'both';
-  return true;
+export function expandEmployeeRestaurantForPunchLocal(
+  _emp: EmployeeRow,
+  _restaurantId: string
+): boolean {
+  return false;
 }
 
 export async function persistExpandedEmployeeRestaurant(
@@ -38,11 +45,12 @@ export async function persistExpandedEmployeeRestaurant(
   return res.ok;
 }
 
-export function applyCrossRestaurantPunchSideEffects(
+export async function applyCrossRestaurantPunchSideEffects(
   entries: TimeClockEntry[],
   employees: EmployeeRow[],
+  bounds: PayWeekBounds,
   onEmployeeExpanded?: (emp: EmployeeRow) => void
-): void {
+): Promise<void> {
   const byId = new Map(employees.map((e) => [e.id, e]));
   for (const entry of entries) {
     if (!entry.employee_id || !entry.clock_in_at) continue;
@@ -52,6 +60,12 @@ export function applyCrossRestaurantPunchSideEffects(
     if (!emp) continue;
     if (expandEmployeeRestaurantForPunchLocal(emp, rest) && onEmployeeExpanded) {
       onEmployeeExpanded(emp);
+    }
+    if (employeeEligibleForWeekBorrow(emp)) {
+      const home = employeeHomeRestaurant(emp);
+      if (home !== rest) {
+        await setEmployeeBorrowedRestaurant(emp.id, bounds, rest as BorrowRestaurantId);
+      }
     }
     const iso = punchDayIsoLocal(entry);
     if (iso && entryHasMeaningfulPunch(entry, iso)) {

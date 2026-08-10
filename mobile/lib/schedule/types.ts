@@ -39,6 +39,10 @@ export type EmployeeLite = {
   displayName?: string;
   staffType: RoleKey;
   usualRestaurant: string;
+  hourlyRate?: number;
+  primaryLocationId?: string | null;
+  /** Pay-week borrow overlay: restaurant this person is borrowed TO. */
+  borrowedRestaurantId?: string | null;
   meta?: { scheduleAliases?: string[]; hiringDate?: string; position?: string };
 };
 

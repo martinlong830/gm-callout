@@ -67,6 +67,10 @@ import {
   formatBreakPolicyLabel,
 } from './breakPolicy';
 import { employeeHomeRestaurant, entryRestaurantId, punchDayRestaurantId, type LocationFilter } from './restaurantAttribution';
+import {
+  employeeUsesSplitOtCaps,
+  getEmployeeBorrowedRestaurantSync,
+} from './weekBorrow';
 
 export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds, EmployeeClockStatus };
 
@@ -275,10 +279,27 @@ export function weekDayRecordedByRestaurantForEmployee(
     });
 }
 
-/** Allocate reg/OT with one company-wide 40h regular cap across all restaurants. */
+/** Allocate reg/OT with one company-wide 40h regular cap across all restaurants.
+ * When `splitByRestaurant` is true (week-borrowed staff), each restaurant gets its own 40h cap.
+ */
 export function weeklyRegOtByRestaurantDay(
-  buckets: Array<{ iso: string; restaurantId: string; recordedMins: number }>
+  buckets: Array<{ iso: string; restaurantId: string; recordedMins: number }>,
+  opts?: { splitByRestaurant?: boolean } | null
 ): Record<string, RegOtMinutes> {
+  if (opts?.splitByRestaurant) {
+    const byRest: Record<string, Array<{ iso: string; restaurantId: string; recordedMins: number }>> =
+      {};
+    for (const b of buckets) {
+      const rid = String(b.restaurantId || '');
+      if (!byRest[rid]) byRest[rid] = [];
+      byRest[rid].push(b);
+    }
+    const out: Record<string, RegOtMinutes> = {};
+    for (const rid of Object.keys(byRest)) {
+      Object.assign(out, weeklyRegOtByRestaurantDay(byRest[rid], null));
+    }
+    return out;
+  }
   const sorted = [...buckets].sort((a, b) => {
     if (a.iso !== b.iso) return a.iso.localeCompare(b.iso);
     return a.restaurantId.localeCompare(b.restaurantId);
@@ -337,10 +358,12 @@ export function weekRegOtAllocatedForEmployee(
   emp: EmployeeRow,
   entries: TimeClockEntry[],
   scheduleCtx: ScheduleContext,
-  locationFilter: LocationFilter = 'all'
+  locationFilter: LocationFilter = 'all',
+  opts?: { splitByRestaurant?: boolean } | null
 ): Record<string, RegOtMinutes> {
   const byKey = weeklyRegOtByRestaurantDay(
-    weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, 'all')
+    weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, 'all'),
+    opts
   );
   return filterRegOtByLocation(byKey, locationFilter);
 }
@@ -423,13 +446,14 @@ export function weekRegOtForShiftRow(
   row: ShiftDayRow,
   entries: TimeClockEntry[],
   scheduleCtx: ScheduleContext,
-  _locationFilter: LocationFilter = 'all'
+  _locationFilter: LocationFilter = 'all',
+  opts?: { splitByRestaurant?: boolean } | null
 ): RegOtMinutes {
   // Always allocate from combined hours across stores, then read this row's restaurant bucket.
   let buckets = weekDayRecordedByRestaurantForEmployee(emp, entries, scheduleCtx, 'all');
   const rest = shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx);
   const key = `${row.iso}\0${rest}`;
-  let byRest = weeklyRegOtByRestaurantDay(buckets);
+  let byRest = weeklyRegOtByRestaurantDay(buckets, opts);
   const hit = byRest[key];
   if (hit && hit.totalMins > 0) return hit;
   const fallbackMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
@@ -437,7 +461,7 @@ export function weekRegOtForShiftRow(
   const hasBucket = buckets.some((b) => b.iso === row.iso && b.restaurantId === rest);
   if (!hasBucket) {
     buckets = buckets.concat([{ iso: row.iso, restaurantId: rest, recordedMins: fallbackMins }]);
-    byRest = weeklyRegOtByRestaurantDay(buckets);
+    byRest = weeklyRegOtByRestaurantDay(buckets, opts);
   }
   return byRest[key] || { regMins: 0, otMins: 0, totalMins: 0 };
 }
@@ -447,9 +471,10 @@ export function shiftPayForShiftRow(
   row: ShiftDayRow,
   entries: TimeClockEntry[],
   scheduleCtx: ScheduleContext,
-  locationFilter: LocationFilter = 'all'
+  locationFilter: LocationFilter = 'all',
+  opts?: { splitByRestaurant?: boolean } | null
 ) {
-  const split = weekRegOtForShiftRow(emp, row, entries, scheduleCtx, locationFilter);
+  const split = weekRegOtForShiftRow(emp, row, entries, scheduleCtx, locationFilter, opts);
   const pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
   return { ...split, ...pay };
 }
@@ -1480,8 +1505,14 @@ export function buildRosterRowSync(
     }
   }
 
+  const otOpts = employeeUsesSplitOtCaps(
+    emp,
+    getEmployeeBorrowedRestaurantSync(emp.id, extrasSlice)
+  )
+    ? { splitByRestaurant: true }
+    : null;
   const otTotals = sumRegOtFromByKey(
-    weekRegOtAllocatedForEmployee(emp, entries, scheduleCtx, aggLoc)
+    weekRegOtAllocatedForEmployee(emp, entries, scheduleCtx, aggLoc, otOpts)
   );
   const regMins = otTotals.regMins;
   const otMins = otTotals.otMins;
@@ -1698,6 +1729,13 @@ export async function buildRosterRow(
     bounds
   );
   const extras = await getEmployeeWeekExtras(emp, name, bounds, staffRequests, schedMinsByDay);
+  const extrasSliceForBorrow = await loadWeekExtrasSlice(bounds);
+  const otOpts = employeeUsesSplitOtCaps(
+    emp,
+    getEmployeeBorrowedRestaurantSync(emp.id, extrasSliceForBorrow)
+  )
+    ? { splitByRestaurant: true }
+    : null;
 
   let schedMins = 0;
   let needsReview = false;
@@ -1716,7 +1754,7 @@ export async function buildRosterRow(
   }
 
   const otTotals = sumRegOtFromByKey(
-    weekRegOtAllocatedForEmployee(emp, entries, scheduleCtx, 'all')
+    weekRegOtAllocatedForEmployee(emp, entries, scheduleCtx, 'all', otOpts)
   );
   const regMins = otTotals.regMins;
   const otMins = otTotals.otMins;

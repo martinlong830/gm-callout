@@ -2798,7 +2798,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=other-store-tips-1';
+      script.src = 'timecards-manager.js?v=week-borrow-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -2840,7 +2840,8 @@
     }
   }
 
-  /** Clock-in at another store: widen team location to both so timecards can show the day. */
+  /** Clock-in at another store: do not permanently flip Team to both.
+   * Timecards visibility for temp coverage uses the week borrow overlay instead. */
   function expandEmployeeRestaurantForPunch(employeeId, restaurantId) {
     if (!employeeId || !restaurantId) return false;
     if (restaurantId !== 'rp-8' && restaurantId !== 'rp-9') return false;
@@ -2850,17 +2851,8 @@
     if (!emp) return false;
     var home = emp.usualRestaurant || 'rp-9';
     if (home === 'both' || home === restaurantId) return false;
-    emp.usualRestaurant = 'both';
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
-    } catch (_locExpand) {
-      /* ignore */
-    }
-    void saveEmployees({ singleEmployee: emp, awaitCloud: true }).then(function (res) {
-      if (res && res.ok) applySavedEmployeeRecord(emp);
-    });
-    if (!window.__gmTimecardsSuppressEmployeeNotify) notifyTimecardsEmployeesChanged();
-    return true;
+    /* Intentionally no longer sets usualRestaurant = 'both'. */
+    return false;
   }
 
   window.gmCalloutExpandEmployeeRestaurantForPunch = expandEmployeeRestaurantForPunch;
@@ -8229,7 +8221,22 @@
     if (!emp) return false;
     var u = emp.usualRestaurant || 'both';
     if (u === 'both') return true;
-    return u === restaurantId;
+    if (u === restaurantId) return true;
+    var tc = window.gmCalloutTimecards;
+    if (tc && typeof tc.getEmployeeBorrowedRestaurant === 'function') {
+      var borrowBounds = null;
+      try {
+        var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+        if (weekMon && typeof tc.payWeekBoundsFromMonday === 'function') {
+          borrowBounds = tc.payWeekBoundsFromMonday(new Date(weekMon + 'T12:00:00'));
+        }
+      } catch (eBorrowBounds) {
+        /* ignore */
+      }
+      var borrowedTo = tc.getEmployeeBorrowedRestaurant(emp.id, borrowBounds);
+      if (borrowedTo && borrowedTo === restaurantId) return true;
+    }
+    return false;
   }
 
   /** Restaurants the signed-in employee may view (Team `usualRestaurant` / both). */
@@ -10840,6 +10847,41 @@
           '">' +
           escapeHtml('Primary: ' + primaryLbl) +
           '</span>';
+      } else if (selEmp) {
+        var homeId = selEmp.usualRestaurant || 'rp-9';
+        var tcBorrow = window.gmCalloutTimecards;
+        var borrowBounds = null;
+        try {
+          var weekMonBorrow = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+          if (
+            weekMonBorrow &&
+            tcBorrow &&
+            typeof tcBorrow.payWeekBoundsFromMonday === 'function'
+          ) {
+            borrowBounds = tcBorrow.payWeekBoundsFromMonday(
+              new Date(weekMonBorrow + 'T12:00:00')
+            );
+          }
+        } catch (eBorrowBadge) {
+          /* ignore */
+        }
+        var borrowedTo =
+          tcBorrow && typeof tcBorrow.getEmployeeBorrowedRestaurant === 'function'
+            ? tcBorrow.getEmployeeBorrowedRestaurant(selEmp.id, borrowBounds)
+            : null;
+        if (
+          borrowedTo === currentRestaurantId &&
+          (homeId === 'rp-8' || homeId === 'rp-9') &&
+          homeId !== currentRestaurantId
+        ) {
+          var homeLbl = restaurantShortLabel(homeId);
+          awayPrimaryHtml =
+            '<span class="calendar-row-away-primary" title="' +
+            escapeHtml('Borrowed from ' + homeLbl + ' this pay week') +
+            '">' +
+            escapeHtml('Borrowed from ' + homeLbl) +
+            '</span>';
+        }
       }
     }
     if (readOnly) {

@@ -669,10 +669,15 @@ function employeeDisplayNameLite(emp: EmployeeLite): string {
   return [f, l].filter(Boolean).join(' ') || 'Unnamed';
 }
 
-function employeeMatchesScheduleRestaurantLite(emp: EmployeeLite, restaurantId: string): boolean {
+function employeeMatchesScheduleRestaurantLite(
+  emp: EmployeeLite,
+  restaurantId: string
+): boolean {
   const u = emp.usualRestaurant || 'both';
   if (u === 'both') return true;
-  return u === restaurantId;
+  if (u === restaurantId) return true;
+  if (emp.borrowedRestaurantId && emp.borrowedRestaurantId === restaurantId) return true;
+  return false;
 }
 
 function employeeByDisplayNameLite(employees: EmployeeLite[], name: string): EmployeeLite | null {
@@ -2308,6 +2313,14 @@ export function purgeDefaultUnassignedRestaurantAssignments(
 export const BREAK_ANNOTATION_TYPE_PRESETS = ['BREAK TIME', 'OFFICE', 'NO BREAK'] as const;
 export type BreakAnnotationType = (typeof BREAK_ANNOTATION_TYPE_PRESETS)[number];
 
+/** Break TIME presets for the shift editor (parity with web). */
+export const SHIFT_DETAIL_BREAK_TIME_PRESETS = ['3:00PM', '3:30PM', '4:00PM', '4:30PM'];
+/** Office annotation is always 2:00 PM (parity with web). */
+export const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
+export const OFFICE_DEFAULT_START_HHMM = '14:00';
+export const OFFICE_DEFAULT_BREAK_TIME = '2:00PM';
+
+/** Wider legacy list; prefer SHIFT_DETAIL / OFFICE presets in the editor. */
 export const BREAK_ANNOTATION_TIME_PRESETS: string[] = (() => {
   const out: string[] = [];
   for (let total = 11 * 60; total <= 19 * 60; total += 30) {
@@ -2677,4 +2690,54 @@ export function shiftIdForDraftSlot(
   const roleIdx = roleIdxForDraftRole(role);
   if (roleIdx < 0) return null;
   return `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`;
+}
+
+function parseBreakMinutesFromScheduleAnnotation(text: string | undefined): number {
+  const s = String(text || '').toLowerCase();
+  const m = s.match(/(\d+)\s*(?:min|minute)/);
+  if (m) return parseInt(m[1], 10) || 0;
+  if (s.includes('break') && !s.includes('no')) return 30;
+  return 0;
+}
+
+export type ScheduleDayTotals = { hours: number; paidHours: number; pay: number };
+
+/**
+ * Footer totals per visible day: gross hours, after-break hours, and base pay
+ * (paidHours × hourlyRate — no tips / SoH). Parity with web `computeScheduleDayTotals`.
+ */
+export function computeScheduleDayTotals(
+  schedule: ScheduleRow[],
+  visibleDays: string[],
+  employees: EmployeeLite[]
+): Record<string, ScheduleDayTotals> {
+  const byDay: Record<string, ScheduleDayTotals> = {};
+  for (const dayStr of visibleDays || []) {
+    byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0 };
+  }
+  for (const shift of schedule || []) {
+    if (!shift || !byDay[shift.day]) continue;
+    const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+      (n) => n && n !== 'Unassigned'
+    );
+    if (!workers.length) continue;
+    const shiftHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
+    if (shiftHours <= 0) continue;
+    const breakText =
+      shift.redPokeBreak ||
+      redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+    const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
+    const paidHours = Math.max(0, shiftHours - breakMin / 60);
+    for (const wname of workers) {
+      byDay[shift.day].hours += shiftHours;
+      byDay[shift.day].paidHours += paidHours;
+      const emp = employeeByDisplayNameLite(employees, wname);
+      const rate =
+        emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
+          ? Number(emp.hourlyRate)
+          : 0;
+      if (rate > 0) byDay[shift.day].pay += paidHours * rate;
+    }
+  }
+  return byDay;
 }

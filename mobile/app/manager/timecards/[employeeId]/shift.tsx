@@ -81,6 +81,10 @@ import {
   makeOffScheduleShiftDayRow,
   scheduleShiftIdForSave,
 } from '../../../../lib/timecards/offScheduleShift';
+import {
+  employeeUsesSplitOtCaps,
+  getEmployeeBorrowedRestaurantSync,
+} from '../../../../lib/timecards/weekBorrow';
 import { supabase } from '../../../../lib/supabase';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -154,6 +158,9 @@ export default function TimecardsShiftScreen() {
   const [coverageText, setCoverageText] = useState('0');
   const [busy, setBusy] = useState(false);
   const [punchesCleared, setPunchesCleared] = useState(false);
+  const [extrasSlice, setExtrasSlice] = useState<
+    Awaited<ReturnType<typeof loadWeekExtrasSlice>>
+  >({});
   const showDishwasherTip = emp ? isDeliveryDishwasherStaff(emp) : false;
 
   const loadDayLeave = useCallback(async () => {
@@ -163,6 +170,7 @@ export default function TimecardsShiftScreen() {
     setSuggestedLeave(null);
     setCoverageText('0');
     const slice = await loadWeekExtrasSlice(bounds);
+    setExtrasSlice(slice);
     const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
     const dayLeave = getEffectiveDayLeaveSync(
       emp,
@@ -425,7 +433,7 @@ export default function TimecardsShiftScreen() {
       }
       setBusy(false);
       await refresh();
-      Alert.alert(t('common.saved'), t('timecards.vlSlSaved'));
+      router.back();
       return;
     }
 
@@ -506,7 +514,7 @@ export default function TimecardsShiftScreen() {
       await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
     }
     await refresh();
-    Alert.alert(t('common.saved'), t('timecards.punchUpdated'));
+    router.back();
   };
 
   if (!emp || !shiftRow) {
@@ -525,7 +533,18 @@ export default function TimecardsShiftScreen() {
     ? dailyRecordedMinutesForEmployeeAtRestaurant(emp, shiftRow.iso, rowRest, previewEntries, scheduleCtx)
     : 0;
   const shiftPay =
-    emp && shiftRow ? shiftPayForShiftRow(emp, shiftRow, previewEntries, scheduleCtx) : null;
+    emp && shiftRow
+      ? shiftPayForShiftRow(
+          emp,
+          shiftRow,
+          previewEntries,
+          scheduleCtx,
+          'all',
+          employeeUsesSplitOtCaps(emp, getEmployeeBorrowedRestaurantSync(emp.id, extrasSlice))
+            ? { splitByRestaurant: true }
+            : null
+        )
+      : null;
   const history = editingEntry ? formatHistoryLines(editingEntry) : [];
 
   return (
@@ -625,10 +644,6 @@ export default function TimecardsShiftScreen() {
         allowClear
         clearLabel={t('timecards.stillClockedIn')}
       />
-
-      <Pressable style={styles.btnSecondary} onPress={clearPunchFields}>
-        <Text style={styles.btnSecondaryText}>{t('timecards.clearPunchTimes')}</Text>
-      </Pressable>
 
       <Pressable style={styles.btnSecondary} onPress={() => setClockOutDate(new Date())}>
         <Text style={styles.btnSecondaryText}>{t('timecards.endPunchNow')}</Text>
@@ -769,6 +784,9 @@ export default function TimecardsShiftScreen() {
         ) : (
           <Text style={styles.btnPrimaryText}>{t('common.save')}</Text>
         )}
+      </Pressable>
+      <Pressable style={styles.btnSecondary} onPress={clearPunchFields}>
+        <Text style={styles.btnSecondaryText}>{t('timecards.clearPunchTimes')}</Text>
       </Pressable>
       <Pressable
         style={styles.btnSecondary}

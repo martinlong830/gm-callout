@@ -1,11 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useAppData } from '../../../contexts/AppDataContext';
 import { useI18n } from '../../../contexts/LocaleContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
-import { employeeDisplayName, employeeIsMultiLocation, type EmployeeRow } from '../../../lib/employees';
+import { employeeDisplayName, type EmployeeRow } from '../../../lib/employees';
 import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
 import { PayWeekPicker } from '../../../components/PayWeekPicker';
 import {
@@ -27,7 +27,10 @@ import {
   type RosterTotals,
   type ShiftDayRow,
 } from '../../../lib/timecards/engine';
-import { restaurantShortLabelForId } from '../../../lib/timecards/restaurantAttribution';
+import {
+  employeeHomeRestaurant,
+  restaurantShortLabelForId,
+} from '../../../lib/timecards/restaurantAttribution';
 import {
   availableOffScheduleDayOptions,
   addOffScheduleDay,
@@ -50,6 +53,13 @@ import {
   loadWeekExtrasSlice,
   type WeekExtrasSlice,
 } from '../../../lib/timecards/weekExtras';
+import {
+  employeeEligibleForWeekBorrow,
+  employeeUsesSplitOtCaps,
+  getEmployeeBorrowedRestaurantSync,
+  setEmployeeBorrowedRestaurant,
+  siblingRestaurantId,
+} from '../../../lib/timecards/weekBorrow';
 import {
   compactShiftTimeLabel,
   formatPayWeekDateLabel,
@@ -140,12 +150,14 @@ export default function TimecardsEmployeeScreen() {
 
   useEffect(() => {
     if (!entries.length || !employees.length) return;
-    let changed = false;
-    applyCrossRestaurantPunchSideEffects(entries, employees, () => {
-      changed = true;
+    let cancelled = false;
+    void applyCrossRestaurantPunchSideEffects(entries, employees, bounds, () => {
+      if (!cancelled) setListVersion((v) => v + 1);
     });
-    if (changed) setListVersion((v) => v + 1);
-  }, [entries, employees]);
+    return () => {
+      cancelled = true;
+    };
+  }, [entries, employees, bounds]);
 
   const addedDayIsos = useMemo(
     () => (emp ? getAddedOffScheduleDays(emp.id) : []),
@@ -195,6 +207,26 @@ export default function TimecardsEmployeeScreen() {
     }
   }, [emp, navigation]);
 
+  const borrowedTo = useMemo(
+    () => (emp ? getEmployeeBorrowedRestaurantSync(emp.id, extrasSlice) : null),
+    [emp, extrasSlice]
+  );
+  const borrowEligible = emp ? employeeEligibleForWeekBorrow(emp) : false;
+  const borrowSibling = borrowEligible ? siblingRestaurantId(employeeHomeRestaurant(emp!)) : null;
+  const splitOtOpts = employeeUsesSplitOtCaps(emp, borrowedTo)
+    ? ({ splitByRestaurant: true } as const)
+    : null;
+
+  const toggleBorrowed = useCallback(
+    async (on: boolean) => {
+      if (!emp || !borrowSibling) return;
+      await setEmployeeBorrowedRestaurant(emp.id, bounds, on ? borrowSibling : null);
+      await loadShiftListData();
+      await loadWeekTotals();
+    },
+    [emp, borrowSibling, bounds, loadShiftListData, loadWeekTotals]
+  );
+
   const openOffScheduleDay = useCallback(
     (iso: string) => {
       if (!emp) return;
@@ -233,6 +265,31 @@ export default function TimecardsEmployeeScreen() {
           onSelect={setPayWeekStartIso}
         />
       </View>
+      {borrowEligible && borrowSibling ? (
+        <View style={styles.borrowBar}>
+          <View style={styles.borrowRow}>
+            <Text style={styles.borrowLabel}>
+              {t('timecards.borrowedToThisWeek', {
+                store: restaurantShortLabelForId(borrowSibling),
+              })}
+            </Text>
+            <Switch
+              value={borrowedTo === borrowSibling}
+              onValueChange={(v) => void toggleBorrowed(v)}
+            />
+          </View>
+          <Text style={styles.borrowHint}>
+            {borrowedTo === borrowSibling
+              ? t('timecards.borrowHintOn', {
+                  home: restaurantShortLabelForId(employeeHomeRestaurant(emp)),
+                  other: restaurantShortLabelForId(borrowSibling),
+                })
+              : t('timecards.borrowHintOff', {
+                  home: restaurantShortLabelForId(employeeHomeRestaurant(emp)),
+                })}
+          </Text>
+        </View>
+      ) : null}
       {weekTotals ? (
         <GrandTotalsSection
           totals={weekTotals}
@@ -286,6 +343,7 @@ export default function TimecardsEmployeeScreen() {
             extrasSlice={extrasSlice}
             dishwasherTipsSlice={dishwasherTipsSlice}
             staffRequests={staffRequests}
+            splitOtOpts={splitOtOpts}
             onRemoved={async () => {
               await refresh();
               await loadShiftListData();
@@ -323,6 +381,7 @@ function ShiftRowCard({
   extrasSlice,
   dishwasherTipsSlice,
   staffRequests,
+  splitOtOpts,
   onRemoved,
   onPress,
 }: {
@@ -335,6 +394,7 @@ function ShiftRowCard({
   extrasSlice: WeekExtrasSlice;
   dishwasherTipsSlice: Record<string, number>;
   staffRequests: import('../../../lib/staffRequests').StaffRequestUi[];
+  splitOtOpts: { splitByRestaurant: true } | null;
   onRemoved: () => Promise<void>;
   onPress: () => void;
 }) {
@@ -344,7 +404,7 @@ function ShiftRowCard({
   const recMins = dailyRecordedMinutesForShiftRow(emp, row, entries, scheduleCtx);
   const breakLabel = formatDayBreakLabel(entries, empId, row.iso);
   const offSchedule = isOffScheduleShiftDayRow(row);
-  const shiftPay = shiftPayForShiftRow(emp, row, entries, scheduleCtx);
+  const shiftPay = shiftPayForShiftRow(emp, row, entries, scheduleCtx, 'all', splitOtOpts);
   const payLabel = formatShiftPayLabel(shiftPay);
   const rateLabel = formatHourlyRateLabel(emp);
   const dateLabel = formatPayWeekDateLabel(row.iso);
@@ -352,10 +412,9 @@ function ShiftRowCard({
   const when =
     (row.isToday ? 'Today · ' : row.isUpcoming ? 'Upcoming · ' : '') + shiftTime;
   const inOutLabel = formatDayClockInOutLabel(entries, empId, row.iso);
-  const showLocation = employeeIsMultiLocation(emp.usualRestaurant);
-  const locationLabel = showLocation
-    ? restaurantShortLabelForId(shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx))
-    : '';
+  const locationLabel = restaurantShortLabelForId(
+    shiftRowAttributionRestaurant(emp, row, entries, scheduleCtx)
+  );
   const dayLeave = getEffectiveDayLeaveSync(
     emp,
     employeeDisplayName(emp),
@@ -421,11 +480,9 @@ function ShiftRowCard({
           <Ionicons name="trash-outline" size={18} color="#94a3b8" />
         </Pressable>
       </View>
-      {showLocation ? (
-        <Text style={styles.shiftMeta}>
-          {t('common.location')} {locationLabel}
-        </Text>
-      ) : null}
+      <Text style={styles.shiftMeta}>
+        {t('common.location')} {locationLabel}
+      </Text>
       <Text style={styles.shiftMeta}>
         {t('timecards.inOut')} {inOutLabel}
       </Text>
@@ -462,6 +519,22 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f4f6f8' },
   content: { padding: 16, paddingBottom: 40 },
   weekPickerWrap: { marginHorizontal: -16, marginBottom: 4 },
+  borrowBar: {
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e6ea',
+    backgroundColor: '#f8fafc',
+  },
+  borrowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  borrowLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: '#0f172a' },
+  borrowHint: { marginTop: 8, fontSize: 12, color: '#64748b', lineHeight: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   sectionHeader: {
     flexDirection: 'row',

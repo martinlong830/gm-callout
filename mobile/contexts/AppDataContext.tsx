@@ -18,7 +18,7 @@ import type { AssignmentStore } from '../lib/schedule/types';
 import { subscribeEmployees } from '../lib/employeesSync';
 import { subscribeStaffRequests } from '../lib/staffRequestsSync';
 import { readStoredTeamStateId } from '../lib/companySession';
-import { subscribeTeamState } from '../lib/teamStateSync';
+import { subscribeTeamState, TEAM_STATE_SELF_ECHO_IGNORE_MS } from '../lib/teamStateSync';
 import {
   applyTipPayrollFromTeamState,
 } from '../lib/timecards/tipPayrollSync';
@@ -53,6 +53,10 @@ type AppDataState = HydrationResult & {
     draftSchedule?: unknown,
     opts?: ApplyLocalScheduleOpts
   ) => void;
+  /** Mark a schedule upsert in flight (blocks self-echo refresh). */
+  setSchedulePushInFlight: (inFlight: boolean) => void;
+  /** Record a successful local schedule push timestamp (self-echo ignore window). */
+  noteLocalSchedulePush: () => void;
   /** Logged-in employee roster row (by auth link or display name). */
   myEmployee: EmployeeRow | null;
 };
@@ -80,6 +84,8 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const teamStateRef = useRef<HydrationResult['teamState']>(null);
   const lastHydrateAtRef = useRef(0);
   const teamStateFieldsPendingRef = useRef<Set<string> | null>(null);
+  const lastLocalSchedulePushAtRef = useRef(0);
+  const schedulePushInFlightRef = useRef(false);
 
   teamStateRef.current = teamState;
 
@@ -124,7 +130,13 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           const remote = data.teamState;
           if (!remote) return null;
           if (!prev) return remote;
-          return mergeTeamStatePartial(prev, remote as Record<string, unknown>) as HydrationResult['teamState'];
+          const protectLocal =
+            schedulePushInFlightRef.current ||
+            Date.now() - lastLocalSchedulePushAtRef.current < TEAM_STATE_SELF_ECHO_IGNORE_MS ||
+            prev[LOCAL_SCHEDULE_DIRTY_KEY] === true;
+          return mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
+            protectLocalSchedule: protectLocal,
+          }) as HydrationResult['teamState'];
         });
         hydratedRef.current = true;
         lastHydrateAtRef.current = Date.now();
@@ -177,9 +189,21 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const setSchedulePushInFlight = useCallback((inFlight: boolean) => {
+    schedulePushInFlightRef.current = inFlight;
+  }, []);
+
+  const noteLocalSchedulePush = useCallback(() => {
+    lastLocalSchedulePushAtRef.current = Date.now();
+  }, []);
+
   const refreshTeamStateSelective = useCallback(
     async (fields?: string[]) => {
       if (!isSupabaseConfigured || !supabase || !session?.user) return;
+      const protectLocal =
+        schedulePushInFlightRef.current ||
+        Date.now() - lastLocalSchedulePushAtRef.current < TEAM_STATE_SELF_ECHO_IGNORE_MS ||
+        teamStateRef.current?.[LOCAL_SCHEDULE_DIRTY_KEY] === true;
       const known = teamStateRef.current?.updated_at
         ? String(teamStateRef.current.updated_at)
         : null;
@@ -193,7 +217,9 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       await applyTipTakehomeFromTeamState(partial);
       invalidateDishwasherTipsSliceCache();
       invalidateWeekExtrasSliceCache();
-      setTeamState((prev) => mergeTeamStatePartial(prev, partial));
+      setTeamState((prev) =>
+        mergeTeamStatePartial(prev, partial, { protectLocalSchedule: protectLocal })
+      );
       lastHydrateAtRef.current = Date.now();
     },
     [session?.user?.id, role]
@@ -264,7 +290,15 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       const teamStateId = await readStoredTeamStateId();
       if (cancelled) return;
-      unsub = subscribeTeamState(supabase, teamStateId, (fields) => {
+      unsub = subscribeTeamState(supabase, teamStateId, (fields, meta) => {
+        const uid = session?.user?.id;
+        if (meta?.source && uid && meta.source === uid) {
+          /* Own push already applied locally; refreshing the echo can roll edits back. */
+          if (schedulePushInFlightRef.current) return;
+          if (Date.now() - lastLocalSchedulePushAtRef.current < TEAM_STATE_SELF_ECHO_IGNORE_MS) {
+            return;
+          }
+        }
         scheduleTeamStateRemoteRefresh(fields);
       });
     })();
@@ -364,9 +398,22 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       error,
       refetch,
       applyLocalScheduleAssignments,
+      setSchedulePushInFlight,
+      noteLocalSchedulePush,
       myEmployee,
     }),
-    [employees, staffRequests, teamState, loading, error, refetch, applyLocalScheduleAssignments, myEmployee]
+    [
+      employees,
+      staffRequests,
+      teamState,
+      loading,
+      error,
+      refetch,
+      applyLocalScheduleAssignments,
+      setSchedulePushInFlight,
+      noteLocalSchedulePush,
+      myEmployee,
+    ]
   );
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;

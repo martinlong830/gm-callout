@@ -21,7 +21,7 @@ import { reassignShiftWorkerInStore } from './shiftSwap';
 import type { OfferedShiftRef, StaffRequestUi } from './staffRequests';
 import { broadcastTeamStateChanged } from './teamStateSync';
 import { scheduledPaidMinutes } from './timecards/engine';
-import { parseTimeoffRequest } from './timecards/weekExtras';
+import { clearDayLeaveOverridesInRange, parseTimeoffRequest } from './timecards/weekExtras';
 
 const LEAVE_DEFAULT_DAY_HOURS = LEAVE_HOURS_PER_DAY;
 
@@ -217,6 +217,12 @@ export async function applyTimeoffApprovalEffects(
   const saved = await saveEmployeeRow(sb, emp);
   if (!saved.ok) {
     return { ok: false, message: saved.message || 'Could not update leave balance.' };
+  }
+
+  try {
+    await clearDayLeaveOverridesInRange(emp.id, range.start, range.end);
+  } catch {
+    /* non-blocking — leaveBalance still drives display */
   }
 
   if (cleared.clearedShiftIds.length) {

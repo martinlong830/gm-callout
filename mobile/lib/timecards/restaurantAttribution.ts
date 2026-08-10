@@ -52,13 +52,18 @@ export function employeeHomeRestaurant(emp: EmployeeRow): string {
  * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
  * UI is per-store only (rp-8 | rp-9); filter 'all' (if used) keeps show-everyone behavior.
  */
-export function rosterRowVisibleAtLocation(emp: EmployeeRow, locationFilter: LocationFilter): boolean {
+export function rosterRowVisibleAtLocation(
+  emp: EmployeeRow,
+  locationFilter: LocationFilter,
+  borrowedTo?: 'rp-8' | 'rp-9' | null
+): boolean {
   if (locationFilter === 'all') return true;
   const home = employeeHomeRestaurant(emp);
   if (home === locationFilter) return true;
   if (home === 'both') {
     return employeePrimaryLocationId(emp) === locationFilter;
   }
+  if (borrowedTo && borrowedTo === locationFilter) return true;
   return false;
 }
 

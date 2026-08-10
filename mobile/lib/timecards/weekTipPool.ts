@@ -8,28 +8,50 @@ import {
 import type { LocationFilter } from './restaurantAttribution';
 import type { PayWeekBounds } from './types';
 
+/** Net keep rates after platform fees. */
+export const TIP_NET_RATE_SQUARE = 0.95;
+export const TIP_NET_RATE_DELIVERY = 0.8;
+
 export const PAYROLL_TIP_POOL_DEFAULTS = {
   cashTip: 0,
-  sqGhDd: 0,
+  /** Square In House tips (gross). */
   squareTips: 0,
-  feePercent: 0.03,
+  /** Square Pick Up tips (gross). */
+  squarePickup: 0,
+  /** DoorDash tips (gross). */
+  doordash: 0,
+  /** Uber Eats tips (gross). */
+  uber: 0,
+  /**
+   * Legacy combined SQ/GH/DD net amount. Used only when platform gross fields are all empty
+   * (weeks entered before per-platform breakdown).
+   */
+  sqGhDd: 0,
 };
 
 export type TipPoolInputs = {
   cashTip: number;
-  sqGhDd: number;
   squareTips: number;
-  feePercent: number;
+  squarePickup: number;
+  doordash: number;
+  uber: number;
+  sqGhDd: number;
   manual?: boolean;
 };
 
 export type TipPoolTotals = {
   cashTip: number;
-  sqGhDd: number;
   squareTips: number;
-  feePercent: number;
-  feeAmount: number;
+  squarePickup: number;
+  doordash: number;
+  uber: number;
+  squarePickupNet: number;
+  doordashNet: number;
+  uberNet: number;
+  /** Square In House net (gross × 0.95). */
   squareInhouse: number;
+  /** Combined SQ Pickup / DD / Uber net (or legacy sqGhDd). */
+  sqGhDd: number;
   totalTips: number;
 };
 
@@ -49,28 +71,37 @@ function sliceFromRecord(slice: unknown): TipPoolInputs | null {
   const s = slice as Record<string, unknown>;
   return {
     cashTip: normalizeMoney(s.cashTip, PAYROLL_TIP_POOL_DEFAULTS.cashTip),
-    sqGhDd: normalizeMoney(s.sqGhDd, PAYROLL_TIP_POOL_DEFAULTS.sqGhDd),
     squareTips: normalizeMoney(s.squareTips, PAYROLL_TIP_POOL_DEFAULTS.squareTips),
-    feePercent:
-      s.feePercent != null && !Number.isNaN(Number(s.feePercent))
-        ? Number(s.feePercent)
-        : PAYROLL_TIP_POOL_DEFAULTS.feePercent,
+    squarePickup: normalizeMoney(s.squarePickup, PAYROLL_TIP_POOL_DEFAULTS.squarePickup),
+    doordash: normalizeMoney(s.doordash, PAYROLL_TIP_POOL_DEFAULTS.doordash),
+    uber: normalizeMoney(s.uber, PAYROLL_TIP_POOL_DEFAULTS.uber),
+    sqGhDd: normalizeMoney(s.sqGhDd, PAYROLL_TIP_POOL_DEFAULTS.sqGhDd),
     manual: !!s.manual,
   };
 }
 
 export function payrollTipPoolTotals(pool: TipPoolInputs): TipPoolTotals {
   const p = pool || PAYROLL_TIP_POOL_DEFAULTS;
-  const feeAmount = Math.round(p.squareTips * p.feePercent * 100) / 100;
-  const squareInhouse = Math.round(p.squareTips * (1 - p.feePercent) * 100) / 100;
-  const totalTips = p.cashTip + p.sqGhDd + squareInhouse;
+  const squareInhouse = Math.round(p.squareTips * TIP_NET_RATE_SQUARE * 100) / 100;
+  const squarePickupNet = Math.round(p.squarePickup * TIP_NET_RATE_SQUARE * 100) / 100;
+  const doordashNet = Math.round(p.doordash * TIP_NET_RATE_DELIVERY * 100) / 100;
+  const uberNet = Math.round(p.uber * TIP_NET_RATE_DELIVERY * 100) / 100;
+  const hasPlatformGross = p.squarePickup > 0 || p.doordash > 0 || p.uber > 0;
+  const sqGhDd = hasPlatformGross
+    ? Math.round((squarePickupNet + doordashNet + uberNet) * 100) / 100
+    : p.sqGhDd;
+  const totalTips = Math.round((p.cashTip + sqGhDd + squareInhouse) * 100) / 100;
   return {
     cashTip: p.cashTip,
-    sqGhDd: p.sqGhDd,
     squareTips: p.squareTips,
-    feePercent: p.feePercent,
-    feeAmount,
+    squarePickup: p.squarePickup,
+    doordash: p.doordash,
+    uber: p.uber,
+    squarePickupNet,
+    doordashNet,
+    uberNet,
     squareInhouse,
+    sqGhDd,
     totalTips,
   };
 }
@@ -111,7 +142,12 @@ export async function saveWeekTipPoolSlice(
     const raw = await AsyncStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     const next = all && typeof all === 'object' ? { ...all } : {};
-    next[tipPoolStorageKey(bounds, locationFilter)] = pool;
+    const totals = payrollTipPoolTotals(pool);
+    next[tipPoolStorageKey(bounds, locationFilter)] = {
+      ...pool,
+      /* Persist computed SQ/GH/DD so older readers still see the combined net. */
+      sqGhDd: totals.sqGhDd,
+    };
     await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(next));
     if (isSupabaseConfigured && supabase) {
       queueTipPayrollPushToSupabase(supabase);

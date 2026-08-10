@@ -92,10 +92,14 @@
   var TIMECARDS_EARLIEST_PAY_WEEK_ISO = '2026-05-18';
   var PAYROLL_TIP_POOL_DEFAULTS = {
     cashTip: 0,
-    sqGhDd: 0,
     squareTips: 0,
-    feePercent: 0.03,
+    squarePickup: 0,
+    doordash: 0,
+    uber: 0,
+    sqGhDd: 0,
   };
+  var TIP_NET_RATE_SQUARE = 0.95;
+  var TIP_NET_RATE_DELIVERY = 0.8;
   var selectedPayWeekStartIso = null;
   var timecardsLocationFilter = 'rp-9';
   var SOH_THRESHOLD_MINUTES = 10 * 60;
@@ -246,6 +250,56 @@
     return null;
   }
 
+  function borrowStorageKey(empId) {
+    return 'borrow|' + String(empId || '');
+  }
+
+  /** Restaurant this single-home employee is borrowed TO for the pay week (or null). */
+  function getEmployeeBorrowedRestaurant(empId, bounds) {
+    if (!empId) return null;
+    var slice = getWeekExtrasSlice(bounds);
+    var raw = slice[borrowStorageKey(empId)];
+    if (raw === 'rp-8' || raw === 'rp-9') return raw;
+    if (raw && typeof raw === 'object' && (raw.restaurantId === 'rp-8' || raw.restaurantId === 'rp-9')) {
+      return raw.restaurantId;
+    }
+    return null;
+  }
+
+  function employeeEligibleForWeekBorrow(emp) {
+    if (!emp) return false;
+    var home = employeeHomeRestaurant(emp);
+    if (home === 'both') return false;
+    return home === 'rp-8' || home === 'rp-9';
+  }
+
+  function employeeUsesSplitOtCaps(emp, bounds) {
+    if (!emp || !employeeEligibleForWeekBorrow(emp)) return false;
+    var borrowedTo = getEmployeeBorrowedRestaurant(emp.id, bounds);
+    if (!borrowedTo) return false;
+    return employeeHomeRestaurant(emp) !== borrowedTo;
+  }
+
+  function siblingRestaurantId(home) {
+    if (home === 'rp-8') return 'rp-9';
+    if (home === 'rp-9') return 'rp-8';
+    return null;
+  }
+
+  function setEmployeeBorrowedRestaurant(empId, restaurantId, bounds) {
+    if (!empId) return;
+    bounds = bounds || payWeekBounds();
+    var slice = loadWeekExtrasMap(bounds);
+    var key = borrowStorageKey(empId);
+    if (!restaurantId || (restaurantId !== 'rp-8' && restaurantId !== 'rp-9')) {
+      delete slice[key];
+    } else {
+      slice[key] = restaurantId;
+    }
+    saveWeekExtrasMap(bounds, slice);
+    invalidatePayrollTipDistCache();
+  }
+
   function effectiveLocationFilter(locationFilter) {
     return locationFilter != null ? locationFilter : timecardsLocationFilter;
   }
@@ -329,6 +383,7 @@
    * Roster / full-report membership for the active store filter.
    * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
    * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
+   * Week-borrowed single-home staff also appear on the borrow store (and still on home).
    * UI is per-store only (rp-8 | rp-9); filter 'all' (if used) keeps show-everyone behavior.
    */
   function employeeVisibleAtCurrentLocation(emp) {
@@ -338,6 +393,8 @@
     if (home === 'both') {
       return employeePrimaryLocationId(emp) === timecardsLocationFilter;
     }
+    var borrowedTo = getEmployeeBorrowedRestaurant(emp && emp.id);
+    if (borrowedTo && borrowedTo === timecardsLocationFilter) return true;
     return false;
   }
 
@@ -1418,8 +1475,26 @@
   /**
    * Allocate reg/OT with one company-wide 40h regular cap across all restaurants
    * (chronological by day, then restaurant id for same-day ties).
+   * When splitByRestaurant is true (week-borrowed staff), each restaurant gets its own 40h cap.
    */
-  function weeklyRegOtByRestaurantDay(buckets) {
+  function weeklyRegOtByRestaurantDay(buckets, opts) {
+    opts = opts || {};
+    if (opts.splitByRestaurant) {
+      var byRest = Object.create(null);
+      (buckets || []).forEach(function (b) {
+        var rid = String(b.restaurantId || '');
+        if (!byRest[rid]) byRest[rid] = [];
+        byRest[rid].push(b);
+      });
+      var splitOut = Object.create(null);
+      Object.keys(byRest).forEach(function (rid) {
+        var partial = weeklyRegOtByRestaurantDay(byRest[rid], null);
+        Object.keys(partial).forEach(function (k) {
+          splitOut[k] = partial[k];
+        });
+      });
+      return splitOut;
+    }
     var sorted = buckets.slice().sort(function (a, b) {
       if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
       return String(a.restaurantId).localeCompare(String(b.restaurantId));
@@ -1476,7 +1551,8 @@
     var buckets = weekDayRecordedByRestaurantForEmployee(emp, 'all');
     var rest = shiftRowAttributionRestaurant(emp, row);
     var key = row.iso + '\0' + rest;
-    var byRest = weeklyRegOtByRestaurantDay(buckets);
+    var otOpts = employeeUsesSplitOtCaps(emp) ? { splitByRestaurant: true } : null;
+    var byRest = weeklyRegOtByRestaurantDay(buckets, otOpts);
     var hit = byRest[key];
     if (hit && hit.totalMins > 0) return hit;
     // Solo scheduled day with stranded punches: count toward this row's restaurant OT bucket.
@@ -1489,7 +1565,7 @@
       buckets = buckets.concat([
         { iso: row.iso, restaurantId: rest, recordedMins: fallbackMins },
       ]);
-      byRest = weeklyRegOtByRestaurantDay(buckets);
+      byRest = weeklyRegOtByRestaurantDay(buckets, otOpts);
     }
     return byRest[key] || { regMins: 0, otMins: 0, totalMins: 0 };
   }
@@ -1514,8 +1590,10 @@
   }
 
   function weekRegOtForEmployee(emp, locationFilter) {
+    var otOpts = employeeUsesSplitOtCaps(emp) ? { splitByRestaurant: true } : null;
     var byKey = weeklyRegOtByRestaurantDay(
-      weekDayRecordedByRestaurantForEmployee(emp, 'all')
+      weekDayRecordedByRestaurantForEmployee(emp, 'all'),
+      otOpts
     );
     return filterRegOtByLocation(byKey, locationFilter);
   }
@@ -2136,18 +2214,26 @@
         slice && slice.cashTip != null ? slice.cashTip : null,
         PAYROLL_TIP_POOL_DEFAULTS.cashTip
       ),
-      sqGhDd: normalizeTipPoolMoney(
-        slice && slice.sqGhDd != null ? slice.sqGhDd : null,
-        PAYROLL_TIP_POOL_DEFAULTS.sqGhDd
-      ),
       squareTips: normalizeTipPoolMoney(
         slice && slice.squareTips != null ? slice.squareTips : null,
         PAYROLL_TIP_POOL_DEFAULTS.squareTips
       ),
-      feePercent:
-        slice && slice.feePercent != null && !Number.isNaN(Number(slice.feePercent))
-          ? Number(slice.feePercent)
-          : PAYROLL_TIP_POOL_DEFAULTS.feePercent,
+      squarePickup: normalizeTipPoolMoney(
+        slice && slice.squarePickup != null ? slice.squarePickup : null,
+        PAYROLL_TIP_POOL_DEFAULTS.squarePickup
+      ),
+      doordash: normalizeTipPoolMoney(
+        slice && slice.doordash != null ? slice.doordash : null,
+        PAYROLL_TIP_POOL_DEFAULTS.doordash
+      ),
+      uber: normalizeTipPoolMoney(
+        slice && slice.uber != null ? slice.uber : null,
+        PAYROLL_TIP_POOL_DEFAULTS.uber
+      ),
+      sqGhDd: normalizeTipPoolMoney(
+        slice && slice.sqGhDd != null ? slice.sqGhDd : null,
+        PAYROLL_TIP_POOL_DEFAULTS.sqGhDd
+      ),
       manual: !!(slice && slice.manual),
     };
     cachedWeekTipPool = out;
@@ -2161,7 +2247,10 @@
       var raw = localStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
       var all = raw ? JSON.parse(raw) : {};
       if (!all || typeof all !== 'object') all = {};
-      all[weekTipPoolStorageKey(bounds, locationFilter)] = pool;
+      var totals = payrollTipPoolTotals(pool);
+      all[weekTipPoolStorageKey(bounds, locationFilter)] = Object.assign({}, pool, {
+        sqGhDd: totals.sqGhDd,
+      });
       localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(all));
       invalidateWeekTipPoolCache();
       if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
@@ -2172,14 +2261,24 @@
 
   function persistTipPoolFromInputs() {
     var cashEl = document.getElementById('tcTipCash');
-    var sqEl = document.getElementById('tcTipSqGhDd');
     var squareEl = document.getElementById('tcTipSquareInHouse');
-    if (!cashEl || !sqEl || !squareEl) return;
+    var pickupEl = document.getElementById('tcTipSquarePickup');
+    var ddEl = document.getElementById('tcTipDoordash');
+    var uberEl = document.getElementById('tcTipUber');
+    if (!cashEl || !squareEl || !pickupEl || !ddEl || !uberEl) return;
+    var squarePickup = normalizeTipPoolMoney(pickupEl.value, 0);
+    var doordash = normalizeTipPoolMoney(ddEl.value, 0);
+    var uber = normalizeTipPoolMoney(uberEl.value, 0);
+    var legacy = getPayrollTipPoolInputs();
+    var sqGhDd =
+      squarePickup > 0 || doordash > 0 || uber > 0 ? 0 : legacy.sqGhDd || 0;
     saveWeekTipPoolSlice(payWeekBounds(), {
       cashTip: normalizeTipPoolMoney(cashEl.value, 0),
-      sqGhDd: normalizeTipPoolMoney(sqEl.value, 0),
       squareTips: normalizeTipPoolMoney(squareEl.value, 0),
-      feePercent: PAYROLL_TIP_POOL_DEFAULTS.feePercent,
+      squarePickup: squarePickup,
+      doordash: doordash,
+      uber: uber,
+      sqGhDd: sqGhDd,
       manual: true,
     });
     updateTipPoolSummaryText();
@@ -2195,61 +2294,71 @@
 
   function readTipPoolFromInputs() {
     var cashEl = document.getElementById('tcTipCash');
-    var sqEl = document.getElementById('tcTipSqGhDd');
     var squareEl = document.getElementById('tcTipSquareInHouse');
-    if (!cashEl || !sqEl || !squareEl) return getPayrollTipPoolInputs();
+    var pickupEl = document.getElementById('tcTipSquarePickup');
+    var ddEl = document.getElementById('tcTipDoordash');
+    var uberEl = document.getElementById('tcTipUber');
+    if (!cashEl || !squareEl || !pickupEl || !ddEl || !uberEl) return getPayrollTipPoolInputs();
     return {
       cashTip: normalizeTipPoolMoney(cashEl.value, 0),
-      sqGhDd: normalizeTipPoolMoney(sqEl.value, 0),
       squareTips: normalizeTipPoolMoney(squareEl.value, 0),
-      feePercent: PAYROLL_TIP_POOL_DEFAULTS.feePercent,
+      squarePickup: normalizeTipPoolMoney(pickupEl.value, 0),
+      doordash: normalizeTipPoolMoney(ddEl.value, 0),
+      uber: normalizeTipPoolMoney(uberEl.value, 0),
+      sqGhDd: 0,
     };
+  }
+
+  function tipPoolSummaryLabel(totals) {
+    return (
+      'Square In House (Net): ' +
+      formatPayAmount(totals.squareInhouse) +
+      ' · SQ/GH/DD (Net): ' +
+      formatPayAmount(totals.sqGhDd) +
+      ' · Total tips: ' +
+      formatPayAmount(totals.totalTips)
+    );
   }
 
   function updateTipPoolSummaryText() {
     var el = document.getElementById('timecardsTipPoolSummary');
     if (!el) return;
-    var totals = payrollTipPoolTotals(readTipPoolFromInputs());
-    el.textContent =
-      'Square In House (Net): ' +
-      formatPayAmount(totals.squareInhouse) +
-      ' · Total tips: ' +
-      formatPayAmount(totals.totalTips);
+    el.textContent = tipPoolSummaryLabel(payrollTipPoolTotals(readTipPoolFromInputs()));
   }
 
   function renderGrandTotalsTipPoolHtml() {
     var pool = getPayrollTipPoolInputs();
     var totals = payrollTipPoolTotals(pool);
+    function tipField(id, label, value, hint) {
+      return (
+        '<label class="timecards-tip-field">' +
+        '<span class="timecards-tip-label">' +
+        d().escapeHtml(label) +
+        '</span>' +
+        (hint
+          ? '<span class="timecards-tip-hint">' + d().escapeHtml(hint) + '</span>'
+          : '') +
+        '<input type="number" class="timecards-tip-input" id="' +
+        id +
+        '" min="0" step="0.01" inputmode="decimal" value="' +
+        d().escapeHtml(String(value)) +
+        '" />' +
+        '</label>'
+      );
+    }
     return (
       '<div class="timecards-grand-totals-tips">' +
       '<h4 class="timecards-grand-totals-tips-title">Tip pool (full payroll report)</h4>' +
+      '<p class="calendar-hint">Enter gross tips per platform. Net amounts auto-calculate for payroll.</p>' +
       '<div class="timecards-grand-totals-tips-grid">' +
-      '<label class="timecards-tip-field">' +
-      '<span class="timecards-tip-label">Square In House Tips</span>' +
-      '<input type="number" class="timecards-tip-input" id="tcTipSquareInHouse" min="0" step="0.01" inputmode="decimal" value="' +
-      d().escapeHtml(String(pool.squareTips)) +
-      '" />' +
-      '</label>' +
-      '<label class="timecards-tip-field">' +
-      '<span class="timecards-tip-label">Cash Tips</span>' +
-      '<input type="number" class="timecards-tip-input" id="tcTipCash" min="0" step="0.01" inputmode="decimal" value="' +
-      d().escapeHtml(String(pool.cashTip)) +
-      '" />' +
-      '</label>' +
-      '<label class="timecards-tip-field">' +
-      '<span class="timecards-tip-label">SQ/GH/DD</span>' +
-      '<input type="number" class="timecards-tip-input" id="tcTipSqGhDd" min="0" step="0.01" inputmode="decimal" value="' +
-      d().escapeHtml(String(pool.sqGhDd)) +
-      '" />' +
-      '</label>' +
+      tipField('tcTipSquareInHouse', 'Square In House Tips', pool.squareTips, 'Net = × 0.95') +
+      tipField('tcTipSquarePickup', 'Square Pick Up Tips', pool.squarePickup, 'Net = × 0.95') +
+      tipField('tcTipDoordash', 'DoorDash Tips', pool.doordash, 'Net = × 0.80') +
+      tipField('tcTipUber', 'Uber Tips', pool.uber, 'Net = × 0.80') +
+      tipField('tcTipCash', 'Cash Tips', pool.cashTip, '') +
       '</div>' +
       '<p class="calendar-hint timecards-tip-pool-summary" id="timecardsTipPoolSummary">' +
-      d().escapeHtml(
-        'Square In House (Net): ' +
-          formatPayAmount(totals.squareInhouse) +
-          ' · Total tips: ' +
-          formatPayAmount(totals.totalTips)
-      ) +
+      d().escapeHtml(tipPoolSummaryLabel(totals)) +
       '</p>' +
       '</div>'
     );
@@ -2775,6 +2884,7 @@
     var summaryMount = document.getElementById('timecardsEmployeeSummary');
     if (summaryMount) {
       summaryMount.innerHTML = renderEmployeeWeekSummary(emp);
+      wireEmployeeBorrowToggle(emp);
     }
     if (!rosterCache && timecardsModuleScreenActive()) {
       buildRosterCacheFromCurrentWeek();
@@ -2956,14 +3066,64 @@
     return formatPayAmount(pay.totalPay);
   }
 
+  function renderEmployeeBorrowToggleHtml(emp) {
+    if (!employeeEligibleForWeekBorrow(emp)) return '';
+    var home = employeeHomeRestaurant(emp);
+    var other = siblingRestaurantId(home);
+    if (!other) return '';
+    var borrowedTo = getEmployeeBorrowedRestaurant(emp.id);
+    var checked = borrowedTo === other;
+    var otherLabel = restaurantShortLabelForId(other);
+    var homeLabel = restaurantShortLabelForId(home);
+    return (
+      '<div class="timecards-borrow-bar" id="timecardsBorrowBar">' +
+      '<label class="timecards-borrow-label">' +
+      '<input type="checkbox" id="tcBorrowThisWeek" ' +
+      (checked ? 'checked ' : '') +
+      '/>' +
+      '<span>Borrowed to <strong>' +
+      d().escapeHtml(otherLabel) +
+      '</strong> this pay week</span>' +
+      '</label>' +
+      '<p class="calendar-hint timecards-borrow-hint">' +
+      (checked
+        ? 'Appears on both ' +
+          d().escapeHtml(homeLabel) +
+          ' and ' +
+          d().escapeHtml(otherLabel) +
+          '. Regular/OT caps are separate per store (40h each).'
+        : 'Home store is ' +
+          d().escapeHtml(homeLabel) +
+          '. Turn on when this person is covering the other location.') +
+      '</p>' +
+      '</div>'
+    );
+  }
+
+  function wireEmployeeBorrowToggle(emp) {
+    var inp = document.getElementById('tcBorrowThisWeek');
+    if (!inp || !emp) return;
+    inp.addEventListener('change', function () {
+      var home = employeeHomeRestaurant(emp);
+      var other = siblingRestaurantId(home);
+      if (!other) return;
+      setEmployeeBorrowedRestaurant(emp.id, inp.checked ? other : null);
+      renderEmployeeShifts(emp);
+      if (timecardsRosterScreenActive()) renderRoster();
+    });
+  }
+
   function renderEmployeeWeekSummary(emp) {
     var row = buildRosterRowData(emp, null, { locationFilter: 'all' });
     var totals = computeRosterTotals([row]);
-    return renderGrandTotalsHtml(totals, {
-      metaText: d().escapeHtml(d().employeeDisplayName(emp)) + ' · week totals',
-      includeTipPool: false,
-      hourlyRateLabel: formatHourlyRateLabel(emp),
-    });
+    return (
+      renderEmployeeBorrowToggleHtml(emp) +
+      renderGrandTotalsHtml(totals, {
+        metaText: d().escapeHtml(d().employeeDisplayName(emp)) + ' · week totals',
+        includeTipPool: false,
+        hourlyRateLabel: formatHourlyRateLabel(emp),
+      })
+    );
   }
 
   function statusSortRank(status) {
@@ -4374,16 +4534,27 @@
 
   function payrollTipPoolTotals(pool) {
     pool = pool || PAYROLL_TIP_POOL_DEFAULTS;
-    var feeAmount = Math.round(pool.squareTips * pool.feePercent * 100) / 100;
-    var squareInhouse = Math.round(pool.squareTips * (1 - pool.feePercent) * 100) / 100;
-    var totalTips = pool.cashTip + pool.sqGhDd + squareInhouse;
+    var squareInhouse = Math.round(pool.squareTips * TIP_NET_RATE_SQUARE * 100) / 100;
+    var squarePickupNet = Math.round((pool.squarePickup || 0) * TIP_NET_RATE_SQUARE * 100) / 100;
+    var doordashNet = Math.round((pool.doordash || 0) * TIP_NET_RATE_DELIVERY * 100) / 100;
+    var uberNet = Math.round((pool.uber || 0) * TIP_NET_RATE_DELIVERY * 100) / 100;
+    var hasPlatformGross =
+      (pool.squarePickup || 0) > 0 || (pool.doordash || 0) > 0 || (pool.uber || 0) > 0;
+    var sqGhDd = hasPlatformGross
+      ? Math.round((squarePickupNet + doordashNet + uberNet) * 100) / 100
+      : pool.sqGhDd || 0;
+    var totalTips = Math.round((pool.cashTip + sqGhDd + squareInhouse) * 100) / 100;
     return {
       cashTip: pool.cashTip,
-      sqGhDd: pool.sqGhDd,
       squareTips: pool.squareTips,
-      feePercent: pool.feePercent,
-      feeAmount: feeAmount,
+      squarePickup: pool.squarePickup || 0,
+      doordash: pool.doordash || 0,
+      uber: pool.uber || 0,
+      squarePickupNet: squarePickupNet,
+      doordashNet: doordashNet,
+      uberNet: uberNet,
       squareInhouse: squareInhouse,
+      sqGhDd: sqGhDd,
       totalTips: totalTips,
     };
   }
@@ -4531,14 +4702,14 @@
 
   var PAYROLL_TIP_LABEL_COL = 23;
   var PAYROLL_TIP_VALUE_COL = 24;
-  var PAYROLL_FEE_PCT_COL = 25;
-  var PAYROLL_FEE_AMT_COL = 26;
-  var PAYROLL_ROW_SQ_INPUTS = 0;
-  var PAYROLL_ROW_SQ_FEE = 1;
-  var PAYROLL_ROW_SQUARE_INHOUSE = 2;
-  var PAYROLL_ROW_CASH_TIP = 3;
-  var PAYROLL_ROW_SQ_GH_DD = 4;
-  var PAYROLL_ROW_TIP_TOTAL = 5;
+  var PAYROLL_ROW_SQ_INHOUSE_GROSS = 0;
+  var PAYROLL_ROW_SQ_PICKUP_GROSS = 1;
+  var PAYROLL_ROW_DOORDASH_GROSS = 2;
+  var PAYROLL_ROW_UBER_GROSS = 3;
+  var PAYROLL_ROW_CASH_TIP = 4;
+  var PAYROLL_ROW_SQUARE_INHOUSE = 5;
+  var PAYROLL_ROW_SQ_GH_DD = 6;
+  var PAYROLL_ROW_TIP_TOTAL = 7;
   var PAYROLL_COL_REG_H = 3;
   var PAYROLL_COL_OT_H = 4;
   var PAYROLL_COL_TIP_PT = 2;
@@ -4754,12 +4925,32 @@
       absRow: true,
     });
     var total = xlA1(PAYROLL_ROW_TIP_TOTAL, PAYROLL_TIP_VALUE_COL, { absCol: true, absRow: true });
-    var squareTips = xlA1(PAYROLL_ROW_SQ_INPUTS, PAYROLL_TIP_VALUE_COL, {
+    var squareInhouseGross = xlA1(PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_VALUE_COL, {
       absCol: true,
       absRow: true,
     });
-    var feePct = xlA1(PAYROLL_ROW_SQ_FEE, PAYROLL_FEE_PCT_COL, { absCol: true, absRow: true });
-    return { cash: cash, sq: sq, inhouse: inhouse, total: total, squareTips: squareTips, feePct: feePct };
+    var squarePickupGross = xlA1(PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_VALUE_COL, {
+      absCol: true,
+      absRow: true,
+    });
+    var doordashGross = xlA1(PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_VALUE_COL, {
+      absCol: true,
+      absRow: true,
+    });
+    var uberGross = xlA1(PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_VALUE_COL, {
+      absCol: true,
+      absRow: true,
+    });
+    return {
+      cash: cash,
+      sq: sq,
+      inhouse: inhouse,
+      total: total,
+      squareInhouseGross: squareInhouseGross,
+      squarePickupGross: squarePickupGross,
+      doordashGross: doordashGross,
+      uberGross: uberGross,
+    };
   }
 
   function writePayrollTipPoolSection(ws, defaults, S) {
@@ -4767,42 +4958,61 @@
     var tip = payrollTipPoolAddrs();
     var lbl = PAYROLL_TIP_LABEL_COL;
     var val = PAYROLL_TIP_VALUE_COL;
-    var feePctCol = PAYROLL_FEE_PCT_COL;
+    var computed = payrollTipPoolTotals(defaults);
 
-    xlSet(ws, PAYROLL_ROW_SQ_INPUTS, lbl, 'Square In House Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_SQ_INPUTS, val, defaults.squareTips, S.money);
+    xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, lbl, 'Square In House Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, val, defaults.squareTips, S.money);
 
-    xlSet(ws, PAYROLL_ROW_SQ_FEE, lbl, 'Square Fee:', S.tipLabel);
-    ws[xlEncode(PAYROLL_ROW_SQ_FEE, feePctCol)] = {
-      v: defaults.feePercent,
-      t: 'n',
-      z: '0%',
-      s: S.tipValue,
-    };
-    xlSetFormula(
-      ws,
-      PAYROLL_ROW_SQ_FEE,
-      val,
-      '=' + tip.squareTips + '*' + tip.feePct,
-      S.money,
-      PAYROLL_MONEY_Z
-    );
+    xlSet(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, lbl, 'Square Pick Up Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, val, defaults.squarePickup || 0, S.money);
+
+    xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, lbl, 'DoorDash Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_DOORDASH_GROSS, val, defaults.doordash || 0, S.money);
+
+    xlSet(ws, PAYROLL_ROW_UBER_GROSS, lbl, 'Uber Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_UBER_GROSS, val, defaults.uber || 0, S.money);
+
+    xlSet(ws, PAYROLL_ROW_CASH_TIP, lbl, 'Cash Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_CASH_TIP, val, defaults.cashTip, S.money);
 
     xlSet(ws, PAYROLL_ROW_SQUARE_INHOUSE, lbl, 'Square In House (Net):', S.tipLabel);
     xlSetFormula(
       ws,
       PAYROLL_ROW_SQUARE_INHOUSE,
       val,
-      '=' + tip.squareTips + '*(1-' + tip.feePct + ')',
+      '=' + tip.squareInhouseGross + '*' + TIP_NET_RATE_SQUARE,
       S.money,
       PAYROLL_MONEY_Z
     );
 
-    xlSet(ws, PAYROLL_ROW_CASH_TIP, lbl, 'Cash Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_CASH_TIP, val, defaults.cashTip, S.money);
-
-    xlSet(ws, PAYROLL_ROW_SQ_GH_DD, lbl, 'SQ/GH/DD:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_SQ_GH_DD, val, defaults.sqGhDd, S.money);
+    xlSet(ws, PAYROLL_ROW_SQ_GH_DD, lbl, 'SQ/GH/DD (Net):', S.tipLabel);
+    xlSetFormula(
+      ws,
+      PAYROLL_ROW_SQ_GH_DD,
+      val,
+      '=' +
+        tip.squarePickupGross +
+        '*' +
+        TIP_NET_RATE_SQUARE +
+        '+' +
+        tip.doordashGross +
+        '*' +
+        TIP_NET_RATE_DELIVERY +
+        '+' +
+        tip.uberGross +
+        '*' +
+        TIP_NET_RATE_DELIVERY,
+      S.money,
+      PAYROLL_MONEY_Z
+    );
+    /* If this week still has legacy combined SQ/GH/DD only, seed the net cell with that value
+       so older weeks export correctly until managers re-enter platforms. */
+    if (
+      !(defaults.squarePickup || defaults.doordash || defaults.uber) &&
+      (defaults.sqGhDd || 0) > 0
+    ) {
+      xlSetMoney(ws, PAYROLL_ROW_SQ_GH_DD, val, computed.sqGhDd, S.money);
+    }
 
     xlSet(ws, PAYROLL_ROW_TIP_TOTAL, lbl, 'Total tips:', S.tipLabel);
     xlSetFormula(
@@ -5860,7 +6070,7 @@
     var tipLayout = { tipperRows: [] };
 
     var colWidths = payrollResolvedColWidths(fohMetrics, bohMetrics);
-    while (colWidths.length <= PAYROLL_FEE_AMT_COL) colWidths.push(12);
+    while (colWidths.length <= PAYROLL_TIP_VALUE_COL) colWidths.push(12);
 
     xlSet(ws, 0, 0, payrollTitleForLocation(), S.title);
     xlMerge(merges, 0, 0, 0, PAYROLL_COLS - 1);
@@ -10048,6 +10258,7 @@
     }
     if (summaryMount) {
       summaryMount.innerHTML = renderEmployeeWeekSummary(emp);
+      wireEmployeeBorrowToggle(emp);
     }
     var rows = buildShiftsForEmployeeInWeek(emp, { personWeekView: true });
     var existingIsos = {};
@@ -10655,7 +10866,6 @@
       renderDateTimeField('Clock out', 'tcClockOut', true) +
       renderDateTimeField('Break start', 'tcBreakStart', true) +
       renderDateTimeField('Break end', 'tcBreakEnd', true) +
-      '<button type="button" class="btn btn-secondary btn-block" id="tcClearPunchFields">Clear punch times</button>' +
       '<button type="button" class="btn btn-secondary btn-block" id="tcEndBreakNow">End break now</button>' +
       renderBreakPolicySelect('tcPunchBreakPaid', 'Break on this punch', punchBreakSelectVal) +
       '<p class="calendar-hint" id="timecardsBreakHint">Paid breaks count toward paid hours; unpaid breaks are deducted.</p>' +
@@ -10664,6 +10874,7 @@
       '<p class="calendar-hint" id="timecardsRecordedPreview"></p>' +
       '<p class="calendar-hint" id="timecardsSaveStatus" hidden></p>' +
       '<button type="submit" class="btn btn-primary btn-block" id="tcSaveTimecardBtn">Save</button>' +
+      '<button type="button" class="btn btn-secondary btn-block" id="tcClearPunchFields">Clear punch times</button>' +
       '<button type="button" class="btn btn-secondary btn-block" id="tcAddPunchBtn">Add another punch</button>' +
       '</form></section>' +
       '<section class="timecards-detail-card">' +
@@ -11414,6 +11625,18 @@
     if (typeof d().expandEmployeeRestaurantForPunch === 'function') {
       d().expandEmployeeRestaurantForPunch(entry.employee_id, rest);
     }
+    var emp =
+      typeof d().employeeById === 'function'
+        ? d().employeeById(entry.employee_id)
+        : (d().employees || []).find(function (e) {
+            return e && e.id === entry.employee_id;
+          });
+    if (emp && employeeEligibleForWeekBorrow(emp)) {
+      var home = employeeHomeRestaurant(emp);
+      if (home !== rest) {
+        setEmployeeBorrowedRestaurant(emp.id, rest);
+      }
+    }
     var iso = punchDayIso(entry);
     if (iso && entryHasMeaningfulPunch(entry, iso)) {
       addOffScheduleDay(entry.employee_id, iso);
@@ -11485,12 +11708,16 @@
     invalidatePayrollTipDistCache();
     var squareEl = document.getElementById('tcTipSquareInHouse');
     var cashEl = document.getElementById('tcTipCash');
-    var sqEl = document.getElementById('tcTipSqGhDd');
-    if (squareEl && cashEl && sqEl) {
+    var pickupEl = document.getElementById('tcTipSquarePickup');
+    var ddEl = document.getElementById('tcTipDoordash');
+    var uberEl = document.getElementById('tcTipUber');
+    if (squareEl && cashEl && pickupEl && ddEl && uberEl) {
       var pool = getPayrollTipPoolInputs();
       squareEl.value = String(pool.squareTips);
       cashEl.value = String(pool.cashTip);
-      sqEl.value = String(pool.sqGhDd);
+      pickupEl.value = String(pool.squarePickup || 0);
+      ddEl.value = String(pool.doordash || 0);
+      uberEl.value = String(pool.uber || 0);
       updateTipPoolSummaryText();
     }
     refreshRosterFromEmployees();
@@ -11598,6 +11825,10 @@
     applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
     onTipTakehomePctChanged: onTipTakehomePctChanged,
     refreshForLocaleChange: refreshForLocaleChange,
+    getEmployeeBorrowedRestaurant: getEmployeeBorrowedRestaurant,
+    setEmployeeBorrowedRestaurant: setEmployeeBorrowedRestaurant,
+    employeeEligibleForWeekBorrow: employeeEligibleForWeekBorrow,
+    payWeekBoundsFromMonday: payWeekBoundsFromMonday,
   };
 
   if (global.__gmTimecardsEnableTestExports) {

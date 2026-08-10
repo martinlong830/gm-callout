@@ -6262,6 +6262,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 @media (min-width: 640px) {
   .timecards-grand-totals-tips-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 960px) {
+  .timecards-grand-totals-tips-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -6270,6 +6276,36 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.timecards-tip-hint {
+  font-size: 0.6875rem;
+  color: var(--muted, #64748b);
+}
+
+.timecards-borrow-bar {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.timecards-borrow-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.875rem;
+  color: var(--text, #0f172a);
+  cursor: pointer;
+}
+
+.timecards-borrow-label input {
+  margin-top: 2px;
+}
+
+.timecards-borrow-hint {
+  margin: 6px 0 0;
 }
 
 .timecards-tip-label {
