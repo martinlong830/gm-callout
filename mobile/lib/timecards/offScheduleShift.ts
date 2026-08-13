@@ -154,6 +154,14 @@ export function collectOffScheduleDayIsos(params: OffScheduleDaySources): string
       }
       continue;
     }
+    if (k.startsWith('miss|')) {
+      const parts = k.split('|');
+      if (parts.length >= 3 && parts[1] === empId) {
+        const hours = extrasSlice![k];
+        if (typeof hours === 'number' && hours > 0) maybeAdd(parts[2]);
+      }
+      continue;
+    }
     const at = k.indexOf('@');
     if (at < 0 || k.slice(0, at) !== empId) continue;
     const row = extrasSlice![k];

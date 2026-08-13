@@ -781,6 +781,11 @@
     return na.localeCompare(nb, undefined, { sensitivity: 'base' });
   }
 
+  function compareEmployeesBySeniority(a, b) {
+    if (d().compareEmployeesBySeniority) return d().compareEmployeesBySeniority(a, b);
+    return compareEmployeesByDisplayName(a, b);
+  }
+
   /** Build name→rank map for one restaurant from pay-week schedule + custom slot order. */
   function buildScheduleVisualRankMapForRestaurant(restaurantId) {
     ensurePayWeekScheduleRows();
@@ -889,8 +894,8 @@
 
   /**
    * Schedule / timecards / full-report order:
-   * single restaurant → that store's slot order; leftovers alphabetical.
-   * `all` → primary store order, then that store's slot order, then alpha leftovers.
+   * single restaurant → that store's slot order; leftovers by manager pin + seniority.
+   * `all` → primary store order, then that store's slot order, then seniority leftovers.
    */
   function compareScheduleOrderRows(a, b) {
     var dept = (a.deptRank || 0) - (b.deptRank || 0);
@@ -913,7 +918,7 @@
     var bOn = rb != null;
     if (aOn && bOn && ra !== rb) return ra - rb;
     if (aOn !== bOn) return aOn ? -1 : 1;
-    return compareEmployeesByDisplayName(a.emp, b.emp);
+    return compareEmployeesBySeniority(a.emp, b.emp);
   }
 
   function scheduleIndexFromRosterSheets(emp) {
@@ -960,6 +965,7 @@
     if ((row.sohCount || 0) > 0 || (row.sohPay || 0) > 0) return true;
     if ((row.dishwasherTipsPay || 0) > 0) return true;
     if ((row.additionalCashTip || 0) > 0) return true;
+    if ((row.missingHours || 0) > 0 || (row.missingPay || 0) > 0) return true;
     if ((row.grandTotalPay || 0) > 0) return true;
     if (row.emp && sumEmployeeWeekEmployeeCash(row.emp) > 0) return true;
     return false;
@@ -2330,14 +2336,20 @@
     var pool = getPayrollTipPoolInputs();
     var totals = payrollTipPoolTotals(pool);
     function tipField(id, label, value, hint) {
+      var hintText = hint != null ? String(hint) : '';
       return (
         '<label class="timecards-tip-field">' +
         '<span class="timecards-tip-label">' +
         d().escapeHtml(label) +
         '</span>' +
-        (hint
-          ? '<span class="timecards-tip-hint">' + d().escapeHtml(hint) + '</span>'
-          : '') +
+        /* Always reserve hint line so Cash Tips lines up with Uber (and peers with net %). */
+        '<span class="timecards-tip-hint' +
+        (hintText ? '' : ' timecards-tip-hint--spacer') +
+        '"' +
+        (hintText ? '' : ' aria-hidden="true"') +
+        '>' +
+        (hintText ? d().escapeHtml(hintText) : '\u00a0') +
+        '</span>' +
         '<input type="number" class="timecards-tip-input" id="' +
         id +
         '" min="0" step="0.01" inputmode="decimal" value="' +
@@ -2832,6 +2844,155 @@
   }
 
   /**
+   * Makeup / missing hours from a prior week (entered on the current pay week).
+   * Stored as miss|empId|iso → hours. Pay factors OT as if hours were added to the
+   * previous pay week's recorded total (40h regular cap). Not shown in UI grand totals.
+   */
+  function missingHoursStorageKey(empId, iso) {
+    return 'miss|' + String(empId || '') + '|' + String(iso || '');
+  }
+
+  function normalizeMissingHours(val) {
+    if (val == null || val === '') return 0;
+    var n = parseFloat(String(val));
+    if (Number.isNaN(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
+  }
+
+  function getEmployeeDayMissingHours(emp, iso, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!emp || !iso) return 0;
+    var slice = getWeekExtrasSlice(bounds);
+    return normalizeMissingHours(slice[missingHoursStorageKey(emp.id, iso)]);
+  }
+
+  function setEmployeeDayMissingHours(empId, iso, hours, bounds) {
+    bounds = bounds || payWeekBounds();
+    if (!empId || !iso) return;
+    var slice = loadWeekExtrasMap(bounds);
+    var key = missingHoursStorageKey(empId, iso);
+    var val = normalizeMissingHours(hours);
+    if (val <= 0) delete slice[key];
+    else slice[key] = val;
+    saveWeekExtrasMap(bounds, slice);
+  }
+
+  function sumEmployeeWeekMissingHours(emp, bounds, precomputed) {
+    if (precomputed && emp && emp.id && precomputed[emp.id] != null) return precomputed[emp.id];
+    bounds = bounds || payWeekBounds();
+    if (!emp) return 0;
+    var slice = getWeekExtrasSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var prefix = 'miss|' + emp.id + '|';
+    var sum = 0;
+    Object.keys(slice).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
+      var iso = k.slice(prefix.length);
+      if (iso < weekStart || iso > weekEnd) return;
+      sum += normalizeMissingHours(slice[k]);
+    });
+    return Math.round(sum * 100) / 100;
+  }
+
+  function buildWeekMissingHoursByEmp(bounds) {
+    bounds = bounds || payWeekBounds();
+    var slice = getWeekExtrasSlice(bounds);
+    var weekStart = isoFromDate(bounds.start);
+    var weekEnd = isoFromDate(bounds.end);
+    var byEmp = Object.create(null);
+    Object.keys(slice).forEach(function (k) {
+      if (k.indexOf('miss|') !== 0) return;
+      var parts = k.split('|');
+      if (parts.length < 3) return;
+      var empId = parts[1];
+      var iso = parts[2];
+      if (!empId || iso < weekStart || iso > weekEnd) return;
+      byEmp[empId] = (byEmp[empId] || 0) + normalizeMissingHours(slice[k]);
+    });
+    Object.keys(byEmp).forEach(function (empId) {
+      byEmp[empId] = Math.round(byEmp[empId] * 100) / 100;
+    });
+    return byEmp;
+  }
+
+  function priorPayWeekBounds(bounds) {
+    bounds = bounds || payWeekBounds();
+    var mon = new Date(bounds.start.getFullYear(), bounds.start.getMonth(), bounds.start.getDate() - 7);
+    return payWeekBoundsFromMonday(mon);
+  }
+
+  /** Recorded paid minutes for an employee from a cached pay-week entries snapshot. */
+  function recordedPaidMinutesFromEntriesList(emp, entries) {
+    if (!emp || !emp.id) return 0;
+    var total = 0;
+    (entries || []).forEach(function (e) {
+      if (!e || e.employee_id !== emp.id || !e.clock_in_at) return;
+      var iso = punchDayIso(e);
+      if (!entryHasMeaningfulPunch(e, iso)) return;
+      total += recordedPaidMinutes(e, null, emp);
+    });
+    return total;
+  }
+
+  var priorWeekRecordedMinsOverrideByEmp = Object.create(null);
+
+  function priorWeekRecordedPaidMinutes(emp, currentBounds) {
+    if (!emp) return 0;
+    if (emp.id && priorWeekRecordedMinsOverrideByEmp[emp.id] != null) {
+      return priorWeekRecordedMinsOverrideByEmp[emp.id];
+    }
+    var priorBounds = priorPayWeekBounds(currentBounds);
+    var cacheKey = weekExtrasStorageKey(priorBounds);
+    var entries = weekEntriesCacheByKey[cacheKey];
+    if (!entries) return 0;
+    return recordedPaidMinutesFromEntriesList(emp, entries);
+  }
+
+  /**
+   * Pay for makeup hours as if they were worked in the prior pay week:
+   * remaining room under the 40h regular cap is straight time; the rest is OT (1.5×).
+   */
+  function computeMissingHoursPay(emp, missingHours, bounds) {
+    var hrs = normalizeMissingHours(missingHours);
+    if (hrs <= 0) {
+      return { hours: 0, regHours: 0, otHours: 0, pay: 0 };
+    }
+    var rate = employeeHourlyRate(emp);
+    var priorMins = priorWeekRecordedPaidMinutes(emp, bounds);
+    var priorH = priorMins / 60;
+    var capH = WEEKLY_REGULAR_CAP_MINUTES / 60;
+    var room = Math.max(0, capH - priorH);
+    var regH = Math.min(hrs, room);
+    var otH = Math.max(0, hrs - regH);
+    if (rate == null) {
+      return { hours: hrs, regHours: regH, otHours: otH, pay: null };
+    }
+    var pay = regH * rate + otH * rate * OT_RATE_MULTIPLIER;
+    return {
+      hours: hrs,
+      regHours: Math.round(regH * 100) / 100,
+      otHours: Math.round(otH * 100) / 100,
+      pay: Math.round(pay * 100) / 100,
+    };
+  }
+
+  /** Prefetch prior pay week punches so missing-hours OT uses real prior totals. */
+  function ensurePriorWeekEntriesCached(currentBounds) {
+    if (!d().gmSupabaseReadyNow()) return Promise.resolve({ ok: false, reason: 'no_client' });
+    var priorBounds = priorPayWeekBounds(currentBounds || payWeekBounds());
+    if (!isPayWeekOnOrAfterEarliest(priorBounds.start)) {
+      return Promise.resolve({ ok: true, skipped: 'before_earliest' });
+    }
+    var cacheKey = weekExtrasStorageKey(priorBounds);
+    if (weekEntriesCacheByKey[cacheKey]) return Promise.resolve({ ok: true, cached: true });
+    var fetchSeq = weekEntriesFetchSeq;
+    return fetchWeekEntriesFromSupabase(priorBounds, cacheKey, fetchSeq).catch(function () {
+      return { ok: false, reason: 'prior_fetch_failed' };
+    });
+  }
+
+  /**
    * Per-employee cash payments (per day). Stored in week-extras as ecash|empId|iso.
    * Flows into the payroll Cash column and check-before-tax total.
    */
@@ -2927,9 +3088,15 @@
     return el ? normalizeDishwasherTipAmount(el.value) : 0;
   }
 
+  function readShiftMissingHoursFromForm() {
+    var el = document.getElementById('tcDayMissingHours');
+    return el ? normalizeMissingHours(el.value) : 0;
+  }
+
   function persistShiftDayTipsFromForm(emp, shiftRow) {
     if (!emp || !shiftRow || !shiftRow.iso) return;
     setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, readShiftAdditionalCashTipFromForm());
+    setEmployeeDayMissingHours(emp.id, shiftRow.iso, readShiftMissingHoursFromForm());
     if (isDeliveryDishwasherStaff(emp)) {
       setEmployeeDayDishwasherTip(
         emp.id,
@@ -3211,6 +3378,8 @@
       clockLoc === 'all' ? employeeClockStatusAllLocations(emp) : employeeClockStatus(emp, clockLoc);
     var tipPre =
       aggLoc === 'all' && employeeHomeRestaurant(emp) === 'both' ? null : tipSums.dishwasher;
+    var missingHours = sumEmployeeWeekMissingHours(emp, undefined, tipSums.missingHours);
+    var missingPayInfo = computeMissingHoursPay(emp, missingHours);
     var row = {
       emp: emp,
       name: d().employeeDisplayName(emp),
@@ -3228,6 +3397,10 @@
       slHours: extras.sl,
       vlPay: leavePayFromHours(emp, extras.vl),
       slPay: leavePayFromHours(emp, extras.sl),
+      missingHours: missingHours,
+      missingPay: missingPayInfo.pay,
+      missingRegHours: missingPayInfo.regHours,
+      missingOtHours: missingPayInfo.otHours,
       sohCount: soh.count,
       sohDates: soh.dates,
       sohDatesLabel: formatSoHDatesList(soh.dates),
@@ -4466,15 +4639,15 @@
     return n == null ? 0 : n;
   }
 
-  var PAYROLL_COLS = 22;
-  var PAYROLL_COL_GROSS = 8;
-  var PAYROLL_COL_SPREAD_HOURS = 9;
-  var PAYROLL_COL_SOH_HR = 10;
-  var PAYROLL_COL_TOTAL_SOH = 11;
-  var PAYROLL_COL_GROSS_WITH_SOH = 12;
-  var PAYROLL_COL_COVERAGE = 13;
-  var PAYROLL_COL_CASH = 14;
-  var PAYROLL_COL_CHECK = 15;
+  var PAYROLL_COLS = 23;
+  var PAYROLL_COL_GROSS = 9;
+  var PAYROLL_COL_SPREAD_HOURS = 10;
+  var PAYROLL_COL_SOH_HR = 11;
+  var PAYROLL_COL_TOTAL_SOH = 12;
+  var PAYROLL_COL_GROSS_WITH_SOH = 13;
+  var PAYROLL_COL_COVERAGE = 14;
+  var PAYROLL_COL_CASH = 15;
+  var PAYROLL_COL_CHECK = 16;
   var PAYROLL_THICK_SPLIT_AFTER = [PAYROLL_COL_GROSS, PAYROLL_COL_GROSS_WITH_SOH];
   var PAYROLL_TABLE_HEADERS = [
     'NAME',
@@ -4483,6 +4656,7 @@
     'REGULAR HOURS',
     'OVERTIME HOURS',
     'VL / SL',
+    'MISSED HOURS',
     'TOTAL HOURS',
     'WAGE',
     'TOTAL GROSS',
@@ -4500,7 +4674,7 @@
     'OTHER STORE TIPS',
     'TOTAL TIPS',
   ];
-  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12, 12];
+  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12, 12];
   var PAYROLL_HEADER_ROW_HPT = 42;
 
   function payrollSpreadHoursCellText(m) {
@@ -4712,13 +4886,16 @@
   var PAYROLL_ROW_TIP_TOTAL = 7;
   var PAYROLL_COL_REG_H = 3;
   var PAYROLL_COL_OT_H = 4;
+  var PAYROLL_COL_VL_SL = 5;
+  var PAYROLL_COL_MISSED_H = 6;
+  var PAYROLL_COL_TOTAL_H = 7;
   var PAYROLL_COL_TIP_PT = 2;
-  var PAYROLL_COL_TOTAL_TIP_PT = 16;
-  var PAYROLL_COL_TIP_CALC = 17;
-  var PAYROLL_COL_TIP = 18;
-  var PAYROLL_COL_DELIVERY = 19;
-  var PAYROLL_COL_OTHER_STORE_TIPS = 20;
-  var PAYROLL_COL_TOTAL_TIPS = 21;
+  var PAYROLL_COL_TOTAL_TIP_PT = 17;
+  var PAYROLL_COL_TIP_CALC = 18;
+  var PAYROLL_COL_TIP = 19;
+  var PAYROLL_COL_DELIVERY = 20;
+  var PAYROLL_COL_OTHER_STORE_TIPS = 21;
+  var PAYROLL_COL_TOTAL_TIPS = 22;
 
   function payrollTotalTipsFormula(r) {
     return (
@@ -4765,6 +4942,7 @@
       'REGULAR HOURS': 'REGULAR\nHOURS',
       'OVERTIME HOURS': 'OVERTIME\nHOURS',
       'TOTAL HOURS': 'TOTAL\nHOURS',
+      'MISSED HOURS': 'MISSED\nHOURS',
       'TOTAL GROSS': 'TOTAL\nGROSS',
       'SPREAD HOURS': 'SPREAD\nHOURS',
       'TOTAL GROSS WITH SOH': 'TOTAL GROSS\nWITH SOH',
@@ -5073,8 +5251,9 @@
     var otH = row.otMins / 60;
     var vlH = row.vlHours || 0;
     var slH = row.slHours || 0;
+    var missedH = isOngi ? 0 : row.missingHours || 0;
     var tipPt = employeeTipPointNumber(emp);
-    var totalH = regH + otH + vlH + slH;
+    var totalH = regH + otH + vlH + slH + missedH;
     var rate = employeeHourlyRate(emp);
     // VL/SL are straight-time add-ons (not in the 40h OT bucket) — include in TOTAL GROSS.
     var vlPayAmt =
@@ -5083,10 +5262,24 @@
       row.slPay != null ? row.slPay : slH > 0 && rate != null ? slH * rate : 0;
     var leavePay = (vlPayAmt || 0) + (slPayAmt || 0);
     var hasLeavePay = (vlH > 0 || slH > 0) && rate != null;
+    var missedPayAmt =
+      row.missingPay != null
+        ? row.missingPay
+        : missedH > 0
+          ? computeMissingHoursPay(emp, missedH).pay
+          : 0;
+    if (missedPayAmt == null) missedPayAmt = 0;
+    var hasMissedPay = missedH > 0 && rate != null;
     var gross = isOngi
       ? ONGI_MANAGEMENT_GROSS
-      : row.regPay != null || row.otPay != null || hasLeavePay || row.vlPay != null || row.slPay != null
-        ? (row.regPay || 0) + (row.otPay || 0) + leavePay
+      : row.regPay != null ||
+          row.otPay != null ||
+          hasLeavePay ||
+          hasMissedPay ||
+          row.vlPay != null ||
+          row.slPay != null ||
+          row.missingPay != null
+        ? (row.regPay || 0) + (row.otPay || 0) + leavePay + (missedPayAmt || 0)
         : null;
     var sohPay = isOngi ? 0 : row.sohPay != null ? row.sohPay : 0;
     var grossWithSoh = isOngi ? ONGI_MANAGEMENT_GROSS : gross != null ? gross + sohPay : null;
@@ -5115,6 +5308,7 @@
       otH: otH,
       vlH: vlH,
       slH: slH,
+      missedH: missedH,
       totalH: totalH,
       rate: rate,
       gross: gross,
@@ -5167,10 +5361,11 @@
     xlSet(ws, r, 2, m.tipPt, S.cellCenter);
     xlSet(ws, r, 3, payrollHoursNum(m.regH), S.num2);
     xlSet(ws, r, 4, payrollHoursNum(m.otH), S.num2);
-    xlSet(ws, r, 5, payrollVlSlLabel(m.vlH, m.slH), S.cellCenter);
-    xlSet(ws, r, 6, payrollHoursNum(m.totalH), S.num2);
-    xlSetMoney(ws, r, 7, m.rate, S.money);
-    xlSetMoney(ws, r, 8, m.gross, S.money);
+    xlSet(ws, r, PAYROLL_COL_VL_SL, payrollVlSlLabel(m.vlH, m.slH), S.cellCenter);
+    xlSet(ws, r, PAYROLL_COL_MISSED_H, payrollHoursNum(m.missedH), S.num2);
+    xlSet(ws, r, PAYROLL_COL_TOTAL_H, payrollHoursNum(m.totalH), S.num2);
+    xlSetMoney(ws, r, 8, m.rate, S.money);
+    xlSetMoney(ws, r, PAYROLL_COL_GROSS, m.gross, S.money);
     xlSet(ws, r, PAYROLL_COL_SPREAD_HOURS, payrollSpreadHoursCellText(m), S.cell);
     xlSetMoney(ws, r, PAYROLL_COL_SOH_HR, m.sohHr, S.money);
     xlSetMoney(
@@ -5367,6 +5562,7 @@
       var tipSums = {
         dishwasher: buildWeekDishwasherTipsByEmp(),
         additionalCash: buildWeekAdditionalCashTipsByEmp(),
+        missingHours: buildWeekMissingHoursByEmp(),
         employeeCash: buildWeekEmployeeCashByEmp(),
       };
       var emps = d().employees.filter(employeeVisibleAtCurrentLocation);
@@ -5582,8 +5778,8 @@
     });
   }
 
-  var CPA_COLS = 15;
-  var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 12, 18, 12, 11, 12, 20, 12];
+  var CPA_COLS = 16;
+  var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 12, 18, 12, 11, 12, 12, 20, 12];
   var CPA_TITLE = '600 BAKERY CAFÉ CORP';
   var CPA_NOTES_MERGE_HEADER = 'NOTES | ADJUSTMENTS HOURLY - PTO - SL';
   var CPA_HEADER_ROW_HPT = 20;
@@ -5600,8 +5796,13 @@
     'SPREAD OF HOUR/S',
     'SOH DATE/S',
     'SOH TOTAL',
+    'MISSED PAY',
     'GROSS PAY',
   ];
+  var CPA_COL_MISSED_PAY = 12;
+  var CPA_COL_GROSS = 13;
+  var CPA_COL_NOTES = 14;
+  var CPA_COL_NOTES_HOURS = 15;
   var XL_CPA_YELLOW = { patternType: 'solid', fgColor: { rgb: 'FFFF00' } };
 
   function cpaMergedColWidth(colWidths, startCol, endCol) {
@@ -5627,9 +5828,9 @@
     CPA_HEAD_LABELS.forEach(function (label, c) {
       w[c] = Math.max(w[c], cpaHeaderWidthUnits(label));
     });
-    cpaEnsureMergedColWidth(w, 12, 13, cpaHeaderWidthUnits(CPA_NOTES_MERGE_HEADER));
-    w[13] = Math.max(w[13], cpaHeaderWidthUnits('NOTES'));
-    w[14] = Math.max(w[14], cpaHeaderWidthUnits('HOURS'));
+    cpaEnsureMergedColWidth(w, CPA_COL_NOTES, CPA_COL_NOTES_HOURS, cpaHeaderWidthUnits(CPA_NOTES_MERGE_HEADER));
+    w[CPA_COL_NOTES] = Math.max(w[CPA_COL_NOTES], cpaHeaderWidthUnits('NOTES'));
+    w[CPA_COL_NOTES_HOURS] = Math.max(w[CPA_COL_NOTES_HOURS], cpaHeaderWidthUnits('HOURS'));
     (employeeRows || []).forEach(function (row, i) {
       var cells = buildCpaEmployeeRow(row, i);
       cells.forEach(function (cell, colIdx) {
@@ -5810,8 +6011,12 @@
     var rate = employeeHourlyRate(row.emp);
     var regH = row.regMins / 60;
     var otH = row.otMins / 60;
-    var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0);
+    var missedH = row.missingHours || 0;
+    var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0) + missedH;
     var tips = cpaTipsForRow(row);
+    var missedPay = row.missingPay != null ? row.missingPay : 0;
+    var gross =
+      (row.grandTotalPay != null ? row.grandTotalPay : 0) + (missedPay || 0);
     return [
       index + 1,
       String(names.first || '').toUpperCase(),
@@ -5827,7 +6032,8 @@
         ? row.sohDatesLabel
         : '-',
       row.sohPay != null && row.sohPay > 0 ? cpaMoneyDisplay(row.sohPay) : '-',
-      cpaMoneyDisplay(row.grandTotalPay),
+      missedPay > 0 ? cpaMoneyDisplay(missedPay) : '-',
+      cpaMoneyDisplay(gross),
       cpaVlSlNotesDisplay(row.vlHours, row.slHours),
       cpaVlSlTotalHoursDisplay(row.vlHours, row.slHours),
     ];
@@ -5838,8 +6044,12 @@
     var rate = employeeHourlyRate(row.emp);
     var regH = row.regMins / 60;
     var otH = row.otMins / 60;
-    var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0);
+    var missedH = row.missingHours || 0;
+    var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0) + missedH;
     var vlSlTotalH = (row.vlHours || 0) + (row.slHours || 0);
+    var missedPay = row.missingPay != null ? row.missingPay : 0;
+    var gross =
+      (row.grandTotalPay != null ? row.grandTotalPay : 0) + (missedPay || 0);
 
     xlSet(ws, r, 0, index + 1, S.cellCenter);
     xlSet(ws, r, 1, String(names.first || '').toUpperCase(), S.cell);
@@ -5866,9 +6076,10 @@
       S.cell
     );
     xlSetMoney(ws, r, 11, row.sohPay != null && row.sohPay > 0 ? row.sohPay : null, S.cellRight);
-    xlSetMoney(ws, r, 12, row.grandTotalPay, S.cellRight);
-    xlSet(ws, r, 13, cpaVlSlNotesDisplay(row.vlHours, row.slHours), S.cell);
-    xlSetHours(ws, r, 14, vlSlTotalH, S.cellRight);
+    xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
+    xlSetMoney(ws, r, CPA_COL_GROSS, gross, S.cellRight);
+    xlSet(ws, r, CPA_COL_NOTES, cpaVlSlNotesDisplay(row.vlHours, row.slHours), S.cell);
+    xlSetHours(ws, r, CPA_COL_NOTES_HOURS, vlSlTotalH, S.cellRight);
   }
 
   function buildCpaWorksheet() {
@@ -5890,14 +6101,14 @@
     CPA_HEAD_LABELS.forEach(function (label, c) {
       xlSet(ws, r, c, label, S.head);
     });
-    xlSet(ws, r, 12, CPA_NOTES_MERGE_HEADER, S.head);
-    xlMerge(merges, r, 12, r, 13);
+    xlSet(ws, r, CPA_COL_NOTES, CPA_NOTES_MERGE_HEADER, S.head);
+    xlMerge(merges, r, CPA_COL_NOTES, r, CPA_COL_NOTES_HOURS);
     r += 1;
 
     xlSet(ws, r, 0, 'EMPLOYEES', S.section);
-    xlMerge(merges, r, 0, r, 12);
-    xlSet(ws, r, 13, 'NOTES', S.section);
-    xlSet(ws, r, 14, 'HOURS', S.section);
+    xlMerge(merges, r, 0, r, CPA_COL_GROSS);
+    xlSet(ws, r, CPA_COL_NOTES, 'NOTES', S.section);
+    xlSet(ws, r, CPA_COL_NOTES_HOURS, 'HOURS', S.section);
     r += 1;
 
     rows.forEach(function (row, i) {
@@ -5954,7 +6165,22 @@
     xlSet(ws, r, 0, 'TOTAL', S.totalLabel);
     xlSetFormula(ws, r, PAYROLL_COL_REG_H, '=' + payrollSumFormula(PAYROLL_COL_REG_H, sumFirst, sumLast), S.num2, '0.00');
     xlSetFormula(ws, r, PAYROLL_COL_OT_H, '=' + payrollSumFormula(PAYROLL_COL_OT_H, sumFirst, sumLast), S.num2, '0.00');
-    xlSetFormula(ws, r, 6, '=' + payrollSumFormula(6, sumFirst, sumLast), S.num2, '0.00');
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_MISSED_H,
+      '=' + payrollSumFormula(PAYROLL_COL_MISSED_H, sumFirst, sumLast),
+      S.num2,
+      '0.00'
+    );
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_TOTAL_H,
+      '=' + payrollSumFormula(PAYROLL_COL_TOTAL_H, sumFirst, sumLast),
+      S.num2,
+      '0.00'
+    );
     xlSetFormula(ws, r, PAYROLL_COL_GROSS, '=' + payrollSumFormula(PAYROLL_COL_GROSS, sumFirst, sumLast), S.money, PAYROLL_MONEY_Z);
     xlSetFormula(
       ws,
@@ -6124,8 +6350,16 @@
     xlSetFormula(
       ws,
       grandRow,
-      6,
-      '=' + payrollGrandTotalFromSectionsFormula(6, fohTotalRow, bohTotalRow),
+      PAYROLL_COL_MISSED_H,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_MISSED_H, fohTotalRow, bohTotalRow),
+      S.num2,
+      '0.00'
+    );
+    xlSetFormula(
+      ws,
+      grandRow,
+      PAYROLL_COL_TOTAL_H,
+      '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_H, fohTotalRow, bohTotalRow),
       S.num2,
       '0.00'
     );
@@ -9096,6 +9330,7 @@
     if (leave.vl > 0 || leave.sl > 0) return true;
     if (dayHasDishwasherTipActivity(empId, iso)) return true;
     if (getEmployeeDayAdditionalCashTip({ id: empId }, iso) > 0) return true;
+    if (getEmployeeDayMissingHours({ id: empId }, iso) > 0) return true;
     return false;
   }
 
@@ -9120,6 +9355,13 @@
         var acashParts = k.split('|');
         if (acashParts.length >= 3 && acashParts[1] === empId) {
           if (normalizeDishwasherTipAmount(extrasSlice[k]) > 0) maybeAdd(acashParts[2]);
+        }
+        return;
+      }
+      if (k.indexOf('miss|') === 0) {
+        var missParts = k.split('|');
+        if (missParts.length >= 3 && missParts[1] === empId) {
+          if (normalizeMissingHours(extrasSlice[k]) > 0) maybeAdd(missParts[2]);
         }
         return;
       }
@@ -9814,14 +10056,17 @@
     }
     var fetchSeq = ++weekEntriesFetchSeq;
     loadWeekEntriesInFlightKey = cacheKey;
-    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq).finally(
-      function () {
+    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq)
+      .then(function (result) {
+        ensurePriorWeekEntriesCached(bounds);
+        return result;
+      })
+      .finally(function () {
         if (loadWeekEntriesInFlightKey === cacheKey) {
           loadWeekEntriesInFlight = null;
           loadWeekEntriesInFlightKey = null;
         }
-      }
-    );
+      });
     return loadWeekEntriesInFlight;
   }
 
@@ -9924,6 +10169,7 @@
     var tipSums = {
       dishwasher: buildWeekDishwasherTipsByEmp(bounds),
       additionalCash: buildWeekAdditionalCashTipsByEmp(bounds),
+      missingHours: buildWeekMissingHoursByEmp(bounds),
     };
     rosterCache = {
       weekLabel: weekLabel,
@@ -10177,6 +10423,8 @@
           }
         } else if (field === 'additionalCashTip') {
           setEmployeeDayAdditionalCashTip(emp.id, iso, val);
+        } else if (field === 'missingHours') {
+          setEmployeeDayMissingHours(emp.id, iso, val);
         } else {
           /* Use effective leave for the sibling field so editing VL does not wipe
              approved/balance SL (and vice versa) that was only shown in the form. */
@@ -10835,6 +11083,16 @@
       '" min="0" step="0.25" value="' +
       d().escapeHtml(String(getEffectiveDayLeave(emp, shiftRow.iso).sl)) +
       '" /></dd></div>' +
+      '<div><dt>Missing hours</dt><dd>' +
+      '<input type="number" class="timecards-extra-input" id="tcDayMissingHours" data-timecard-extra="missingHours" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
+      d().escapeHtml(emp.id) +
+      '" min="0" step="0.25" inputmode="decimal" value="' +
+      d().escapeHtml(String(getEmployeeDayMissingHours(emp, shiftRow.iso))) +
+      '" />' +
+      '<p class="calendar-hint">Makeup hours from a prior week. Pay uses prior-week OT rules (hours past 40h at OT). Shown on full-report Payroll / CPA only.</p>' +
+      '</dd></div>' +
       '<div><dt>Day total (5-min rounded)</dt><dd id="timecardsShiftDayTotalRound">' +
       d().escapeHtml(dayMins ? decimalHoursFromMinutes(dayRounded) + 'h' : '—') +
       '</dd></div>' +
@@ -11289,6 +11547,7 @@
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
     setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, 0);
+    setEmployeeDayMissingHours(emp.id, shiftRow.iso, 0);
     if (isDeliveryDishwasherStaff(emp)) {
       setEmployeeDayDishwasherTip(
         emp.id,
@@ -11348,12 +11607,14 @@
     if (!hasPunch) {
       var dishwasherTip = isDeliveryDishwasherStaff(emp) ? readShiftDishwasherTipFromForm() : 0;
       var additionalCashTip = readShiftAdditionalCashTipFromForm();
+      var missingHours = readShiftMissingHoursFromForm();
       var removingDay =
         timecardState.punchesCleared ||
         (dayLeave.vl <= 0 &&
           dayLeave.sl <= 0 &&
           normalizeDishwasherTipAmount(dishwasherTip) <= 0 &&
-          normalizeDishwasherTipAmount(additionalCashTip) <= 0);
+          normalizeDishwasherTipAmount(additionalCashTip) <= 0 &&
+          normalizeMissingHours(missingHours) <= 0);
       if (removingDay) {
         await finishClearedShiftDaySave(sb, emp, shiftRow, { vl: 0, sl: 0 }, 0);
         return;
@@ -11877,10 +12138,15 @@
       setEmployeeDayLeave: setEmployeeDayLeave,
       ptoBalanceForEmployee: ptoBalanceForEmployee,
       computePayrollRowMetrics: computePayrollRowMetrics,
+      computeMissingHoursPay: computeMissingHoursPay,
       buildLaborExportAoa: buildLaborExportAoa,
       setWeekEntriesForTest: function (entries) {
         weekEntries = Array.isArray(entries) ? entries.slice() : [];
         rebuildWeekEntriesIndex();
+      },
+      setPriorWeekRecordedMinsForTest: function (empId, mins) {
+        if (!empId) return;
+        priorWeekRecordedMinsOverrideByEmp[empId] = Math.max(0, Math.round(Number(mins) || 0));
       },
       setPayWeekBoundsForTest: function (startIso, endIso) {
         if (typeof d().setPayWeekStartIso === 'function') {

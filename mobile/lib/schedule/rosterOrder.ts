@@ -92,6 +92,80 @@ export function compareEmployeesByDisplayName(
   });
 }
 
+/** Parse `meta.hiringDate` (e.g. 3/25/2023 or ISO). Invalid / missing → null. */
+export function parseEmployeeHiringDateMs(emp: SenioritySortable | null | undefined): number | null {
+  const raw =
+    emp && emp.meta && emp.meta.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
+  if (!raw) return null;
+  const mdy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdy) {
+    const month = Number(mdy[1]) - 1;
+    const day = Number(mdy[2]);
+    const year = Number(mdy[3]);
+    const d = new Date(year, month, day);
+    if (d.getFullYear() === year && d.getMonth() === month && d.getDate() === day) {
+      return d.getTime();
+    }
+    return null;
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    const iso = new Date(raw.slice(0, 10) + 'T12:00:00');
+    if (!Number.isNaN(iso.getTime())) return iso.getTime();
+  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function employeeFirstNameSortKey(emp: SenioritySortable | null | undefined): string {
+  const f = String((emp && emp.firstName) || '').trim();
+  if (f) return f;
+  const dn = displayNameSortKey(emp);
+  const parts = dn.split(/\s+/).filter(Boolean);
+  return parts[0] || dn;
+}
+
+/** Normalized `meta.position` (case/whitespace-insensitive). */
+export function normalizeEmployeePosition(emp: SenioritySortable | null | undefined): string {
+  const raw =
+    emp && emp.meta && emp.meta.position != null ? String(emp.meta.position).trim() : '';
+  return raw.replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Pin Store Manager then Kitchen Manager at the top of a role section;
+ * everyone else follows hire-date seniority. When managers are in different
+ * staff_type sections, each pins at the top of their own section only.
+ */
+export function employeeManagerPinRank(emp: SenioritySortable | null | undefined): number {
+  const pos = normalizeEmployeePosition(emp);
+  if (pos === 'store manager') return 0;
+  if (pos === 'kitchen manager') return 1;
+  return 2;
+}
+
+/**
+ * Within a role group: managers first (Store Manager, then Kitchen Manager),
+ * then hire date ascending (most senior first); missing hire date → after dated;
+ * ties / no-date → alphabetical by first name.
+ */
+export function compareEmployeesBySeniority(
+  a: SenioritySortable | null | undefined,
+  b: SenioritySortable | null | undefined
+): number {
+  const pa = employeeManagerPinRank(a);
+  const pb = employeeManagerPinRank(b);
+  if (pa !== pb) return pa - pb;
+  const ta = parseEmployeeHiringDateMs(a);
+  const tb = parseEmployeeHiringDateMs(b);
+  const aHas = ta != null;
+  const bHas = tb != null;
+  if (aHas && bHas && ta !== tb) return ta - tb;
+  if (aHas !== bHas) return aHas ? -1 : 1;
+  return employeeFirstNameSortKey(a).localeCompare(employeeFirstNameSortKey(b), undefined, {
+    sensitivity: 'base',
+  });
+}
+
 /**
  * Home / primary store used when sorting under the `all` location filter.
  * Single-store staff → that store; multi-store → primaryLocationId (default rp-9).
@@ -123,17 +197,17 @@ export function scheduleIndexForEmployee(emp: EmployeeRow): number {
   return 1000 + dept * 100;
 }
 
-/** Role section order (FOH → BOH → Delivery), then alphabetical within section. */
+/** Role section order (FOH → BOH → Delivery), then manager pin + seniority within section. */
 export function compareEmployeesByScheduleOrder(a: EmployeeRow, b: EmployeeRow): number {
   const ra = ROSTER_DEPT_RANK[a.staffType] ?? 99;
   const rb = ROSTER_DEPT_RANK[b.staffType] ?? 99;
   if (ra !== rb) return ra - rb;
-  return compareEmployeesByDisplayName(a, b);
+  return compareEmployeesBySeniority(a, b);
 }
 
 /**
- * Compare by main-schedule visual order when ranks are known; otherwise alphabetical.
- * People not on a schedule slot sort after scheduled people (alpha among leftovers).
+ * Compare by main-schedule visual order when ranks are known; otherwise seniority.
+ * People not on a schedule slot sort after scheduled people (seniority among leftovers).
  * `rankByNameKey` maps normalized display names → visual rank.
  */
 export function compareEmployeesByVisualScheduleOrder(
@@ -151,13 +225,13 @@ export function compareEmployeesByVisualScheduleOrder(
     if (aOn && bOn && ra !== rb) return ra - rb;
     if (aOn !== bOn) return aOn ? -1 : 1;
   }
-  return compareEmployeesByDisplayName(a, b);
+  return compareEmployeesBySeniority(a, b);
 }
 
 /**
  * Timecards / full-report sort for a location filter.
- * Single restaurant → that store's slot order (then alpha leftovers).
- * `all` → primary store order, then that store's slot order, then alpha leftovers.
+ * Single restaurant → that store's slot order (then seniority leftovers).
+ * `all` → primary store order, then that store's slot order, then seniority leftovers.
  */
 export function compareEmployeesByLocationScheduleOrder(
   a: EmployeeRow,

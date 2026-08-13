@@ -4,9 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=week-borrow-1" />
+  <link rel="stylesheet" href="styles.css?v=group-order-7" />
   <script>
-    /* Login shell is interactive before deferred app bundles finish loading. */
+    /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
+    (function () {
+      var p = window.location.pathname || '';
+      if (p === '/' || p === '') {
+        window.location.replace('/home.html' + (window.location.search || '') + (window.location.hash || ''));
+      }
+    })();
   </script>
 </head>
 <body>
@@ -30,9 +36,28 @@
       <div id="landingPanel">
         <p class="login-subtitle" data-i18n="auth.tagline">Staff scheduling for restaurants</p>
         <div class="landing-actions">
-          <button type="button" class="btn btn-primary btn-block login-submit" id="showAccessCodePanelBtn" data-i18n="auth.logIn">Log in</button>
-          <button type="button" class="btn btn-secondary btn-block landing-secondary-btn" id="showCreateCompanyPanelBtn" data-i18n="auth.createCompany">Create company</button>
+          <button
+            type="button"
+            class="btn btn-primary btn-block login-submit"
+            id="showAccessCodePanelBtn"
+            data-i18n="auth.logIn"
+            onclick="if(window.gmCalloutLandingLogIn){window.gmCalloutLandingLogIn();return false;}"
+          >
+            Log in
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary btn-block landing-secondary-btn"
+            id="showCreateCompanyPanelBtn"
+            data-i18n="auth.createCompany"
+            onclick="if(window.gmCalloutLandingCreateCompany){window.gmCalloutLandingCreateCompany();return false;}"
+          >
+            Create company
+          </button>
         </div>
+        <p class="login-footer-actions">
+          <a class="login-link-btn" href="/home.html" id="aboutShiflowLink">About Shiflow</a>
+        </p>
       </div>
       <div id="accessCodePanel" hidden>
         <p class="login-subtitle" data-i18n="auth.enterAccessCode">Enter your company access code</p>
@@ -634,6 +659,16 @@
                 title="Undo last schedule or shift time change"
                data-i18n="schedule.undo" data-i18n-title="schedule.undoTitle">
                 Undo
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary schedule-toolbar-btn"
+                id="scheduleHistoryBtn"
+                title="View saved schedule versions and hard-revert"
+                data-i18n="schedule.history"
+                data-i18n-title="schedule.historyTitle"
+              >
+                History
               </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal" data-i18n="schedule.templates">
                 Templates
@@ -1837,6 +1872,62 @@
 
   </div>
 
+  <div id="scheduleHistoryModal" class="availability-modal" hidden>
+    <div class="availability-modal-backdrop" id="scheduleHistoryModalBackdrop" tabindex="-1"></div>
+    <div
+      class="availability-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="scheduleHistoryModalTitle"
+    >
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="scheduleHistoryModalTitle" data-i18n="schedule.history">
+          History
+        </h2>
+        <button type="button" class="availability-modal-close" id="scheduleHistoryModalClose" data-i18n-aria="common.close" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="calendar-hint" data-i18n="schedule.historyHint">
+        Saved schedule versions. Hard revert restores assignments and shift times for everyone.
+      </p>
+      <div id="scheduleHistoryList" class="schedule-history-list" role="list"></div>
+      <div class="screen-actions" style="margin-top: 12px">
+        <button type="button" class="btn btn-ghost btn-block" id="scheduleHistoryCancel" data-i18n="common.close">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="scheduleBorrowEmployeeModal" class="availability-modal" hidden>
+    <div class="availability-modal-backdrop" id="scheduleBorrowEmployeeModalBackdrop" tabindex="-1"></div>
+    <div
+      class="availability-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="scheduleBorrowEmployeeModalTitle"
+    >
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="scheduleBorrowEmployeeModalTitle" data-i18n="schedule.borrowEmployeeTitle">
+          Borrow employee
+        </h2>
+        <button type="button" class="availability-modal-close" id="scheduleBorrowEmployeeModalClose" data-i18n-aria="common.close" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="calendar-hint" id="scheduleBorrowEmployeeModalHint" data-i18n="schedule.borrowEmployeeHint">
+        Pick anyone with this role from either store. Single-store staff are borrowed for this pay week (separate 40h OT caps per store). Staff assigned to both stores on Team keep shared OT.
+      </p>
+      <div id="scheduleBorrowEmployeeList" class="schedule-borrow-employee-list" role="listbox"></div>
+      <div class="screen-actions" style="margin-top: 12px">
+        <button type="button" class="btn btn-ghost btn-block" id="scheduleBorrowEmployeeCancel" data-i18n="common.cancel">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="schedulePublishNotifyModal" class="availability-modal" hidden>
     <div class="availability-modal-backdrop" id="schedulePublishNotifyModalBackdrop" tabindex="-1"></div>
     <div
@@ -1951,25 +2042,86 @@
   </div>
 
   <script src="/gm-supabase-config.js?v=2"></script>
-  <script src="locales/en.js?v=admin-notif-1"></script>
-  <script src="locales/es.js?v=admin-notif-1"></script>
+  <script src="locales/en.js?v=group-order-2"></script>
+  <script src="locales/es.js?v=group-order-2"></script>
   <script src="i18n.js?v=admin-notif-1"></script>
   <script>
-    /* Login gate opens before heavy app bundles parse (app.js is deferred below). */
+    /* Login gate opens before deferred app bundles finish loading. */
     window.gmCalloutSetLoginGateOpen = function (isOpen) {
       var loginEl = document.getElementById('login-screen');
       if (!loginEl) return;
       if (isOpen) {
         loginEl.hidden = false;
         loginEl.removeAttribute('aria-hidden');
+        /* Never use inert — it leaves a painted gate that ignores all clicks. */
         loginEl.removeAttribute('inert');
+        try {
+          loginEl.style.removeProperty('pointer-events');
+        } catch (_pe) {
+          /* ignore */
+        }
       } else {
         loginEl.hidden = true;
         loginEl.setAttribute('aria-hidden', 'true');
-        loginEl.setAttribute('inert', '');
+        loginEl.removeAttribute('inert');
       }
     };
     window.gmCalloutSetLoginGateOpen(true);
+
+    /* Minimal landing handlers so Log in / Create company work even if the
+       larger auth IIFE is still parsing or failed partway through. */
+    window.gmCalloutLandingLogIn = function () {
+      if (typeof window.gmCalloutShowAccessCodePanel === 'function') {
+        window.gmCalloutShowAccessCodePanel();
+        return;
+      }
+      var landing = document.getElementById('landingPanel');
+      var access = document.getElementById('accessCodePanel');
+      var create = document.getElementById('createCompanyPanel');
+      var loginPanel = document.getElementById('loginPanel');
+      if (landing) landing.hidden = true;
+      if (create) create.hidden = true;
+      if (loginPanel) loginPanel.hidden = true;
+      if (access) access.hidden = false;
+      var input = document.getElementById('accessCodeInput');
+      if (input && typeof input.focus === 'function') {
+        try {
+          input.focus();
+        } catch (_f) {
+          /* ignore */
+        }
+      }
+    };
+    window.gmCalloutLandingCreateCompany = function () {
+      if (typeof window.gmCalloutShowCreateCompanyPanel === 'function') {
+        window.gmCalloutShowCreateCompanyPanel();
+        return;
+      }
+      var landing = document.getElementById('landingPanel');
+      var access = document.getElementById('accessCodePanel');
+      var create = document.getElementById('createCompanyPanel');
+      var loginPanel = document.getElementById('loginPanel');
+      if (landing) landing.hidden = true;
+      if (access) access.hidden = true;
+      if (loginPanel) loginPanel.hidden = true;
+      if (create) create.hidden = false;
+    };
+
+    /* If a prior session left the gate inert/hidden while not authed, recover. */
+    (function recoverLoginGate() {
+      function tick() {
+        if (document.documentElement.classList.contains('authed')) return;
+        var loginEl = document.getElementById('login-screen');
+        if (!loginEl) return;
+        if (loginEl.hasAttribute('inert') || loginEl.hidden) {
+          window.gmCalloutSetLoginGateOpen(true);
+        }
+      }
+      tick();
+      setTimeout(tick, 0);
+      setTimeout(tick, 250);
+      setTimeout(tick, 1000);
+    })();
   </script>
   <script>
     (function () {
@@ -2286,6 +2438,7 @@
 
       window.gmCalloutShowLandingPanel = showLandingPanel;
       window.gmCalloutShowAccessCodePanel = showAccessCodePanel;
+      window.gmCalloutShowCreateCompanyPanel = showCreateCompanyPanelFn;
       window.gmCalloutShowLoginPanel = showLoginPanel;
       window.gmCalloutShowSetupAccessCodePanel = showSetupAccessCodePanel;
 
@@ -2405,11 +2558,20 @@
         if (role === 'employee') root.classList.add('employee-app');
         else if (role === 'timeclock') root.classList.add('timeclock-app');
         else root.classList.add('manager-app');
+        if (!root.classList.contains('authed')) {
+          if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+            window.gmCalloutSetLoginGateOpen(true);
+          }
+          return;
+        }
         if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
           window.gmCalloutSetLoginGateOpen(false);
         }
         var loginEl = document.getElementById('login-screen');
-        if (loginEl) loginEl.hidden = true;
+        if (loginEl) {
+          loginEl.hidden = true;
+          loginEl.removeAttribute('inert');
+        }
       }
 
       async function finishPortalLogin(role, displayName, companyPayload) {
@@ -3513,9 +3675,9 @@
         }
         var bust = String(Date.now());
         try {
-          location.replace('/?signedout=' + bust);
+          location.replace('/app?signedout=' + bust);
         } catch (_nav) {
-          location.href = '/?signedout=' + bust;
+          location.href = '/app?signedout=' + bust;
         }
       }
 
@@ -3650,7 +3812,7 @@
   <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
   <script defer src="employee-leave.js?v=timecards-tips-1"></script>
   <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=week-borrow-1"></script>
+  <script defer src="app.js?v=group-order-6"></script>
   <script defer src="employee-app.js?v=admin-notif-1"></script>
   <script defer src="manager-messaging.js?v=admin-notif-1"></script>
   <script defer src="timeclock-schedule-match.js?v=admin-notif-1"></script>

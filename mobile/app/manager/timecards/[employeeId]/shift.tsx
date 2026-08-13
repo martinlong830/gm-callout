@@ -26,7 +26,9 @@ import {
 } from '../../../../lib/timecards/dishwasherTips';
 import {
   getEmployeeDayAdditionalCashTip,
+  getEmployeeDayMissingHours,
   setEmployeeDayAdditionalCashTip,
+  setEmployeeDayMissingHours,
 } from '../../../../lib/timecards/weekExtras';
 import { deleteTimeClockEntries, saveManagerPunch } from '../../../../lib/timecards/entriesApi';
 import {
@@ -156,6 +158,7 @@ export default function TimecardsShiftScreen() {
   const [suggestedLeave, setSuggestedLeave] = useState<{ vl: number; sl: number } | null>(null);
   const [dishwasherTipText, setDishwasherTipText] = useState('0');
   const [coverageText, setCoverageText] = useState('0');
+  const [missingHoursText, setMissingHoursText] = useState('0');
   const [busy, setBusy] = useState(false);
   const [punchesCleared, setPunchesCleared] = useState(false);
   const [extrasSlice, setExtrasSlice] = useState<
@@ -169,6 +172,7 @@ export default function TimecardsShiftScreen() {
     setSlText('0');
     setSuggestedLeave(null);
     setCoverageText('0');
+    setMissingHoursText('0');
     const slice = await loadWeekExtrasSlice(bounds);
     setExtrasSlice(slice);
     const schedMinsByDay = buildScheduledMinutesByDayForEmployee(emp, teamState, lites, bounds);
@@ -185,6 +189,8 @@ export default function TimecardsShiftScreen() {
     setSlText(String(dayLeave.sl));
     const coverage = await getEmployeeDayAdditionalCashTip(emp.id, iso, bounds);
     setCoverageText(String(coverage));
+    const missing = await getEmployeeDayMissingHours(emp.id, iso, bounds);
+    setMissingHoursText(String(missing));
     const suggested = await getSuggestedDayLeave(
       emp,
       employeeDisplayName(emp),
@@ -353,6 +359,7 @@ export default function TimecardsShiftScreen() {
     setSlText('0');
     setDishwasherTipText('0');
     setCoverageText('0');
+    setMissingHoursText('0');
   }, []);
 
   const finishClearedDaySave = async (_vl: number, _sl: number, _dishwasherTip: number) => {
@@ -378,6 +385,7 @@ export default function TimecardsShiftScreen() {
     const sl = Math.max(0, parseFloat(slText) || 0);
     const dishwasherTip = showDishwasherTip ? Math.max(0, parseFloat(dishwasherTipText) || 0) : 0;
     const coverage = Math.max(0, parseFloat(coverageText) || 0);
+    const missingHours = Math.max(0, parseFloat(missingHoursText) || 0);
     let inIso = dateToIso(clockInDate);
     let outIso =
       clockOutDate && !isMidnightOnShiftDate(clockOutDate, shiftRow.iso)
@@ -399,7 +407,8 @@ export default function TimecardsShiftScreen() {
 
     if (!hasPunchTimes) {
       const removingDay =
-        punchesCleared || (vl <= 0 && sl <= 0 && dishwasherTip <= 0 && coverage <= 0);
+        punchesCleared ||
+        (vl <= 0 && sl <= 0 && dishwasherTip <= 0 && coverage <= 0 && missingHours <= 0);
       if (removingDay) {
         await finishClearedDaySave(0, 0, 0);
         return;
@@ -427,6 +436,7 @@ export default function TimecardsShiftScreen() {
       }
       await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
       await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
+      await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
       if (showDishwasherTip) {
         const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
         await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
@@ -509,6 +519,7 @@ export default function TimecardsShiftScreen() {
     }
     await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
     await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
+    await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
     if (showDishwasherTip) {
       const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
       await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
@@ -729,6 +740,17 @@ export default function TimecardsShiftScreen() {
         style={styles.input}
         value={slText}
         onChangeText={setSlText}
+        keyboardType="decimal-pad"
+      />
+      <Text style={styles.fieldLabel}>Missing hours</Text>
+      <Text style={styles.hint}>
+        Makeup hours from a prior week. Pay uses prior-week OT (hours past 40h at OT rate). Full
+        report Payroll / CPA only — not in on-screen grand totals.
+      </Text>
+      <TextInput
+        style={styles.input}
+        value={missingHoursText}
+        onChangeText={setMissingHoursText}
         keyboardType="decimal-pad"
       />
 

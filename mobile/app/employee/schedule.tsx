@@ -24,6 +24,7 @@ import type { EmployeeLite, RoleKey, ScheduleRow } from '../../lib/schedule/type
 import {
   buildAllWeekDayLabels,
   buildCalendarBody,
+  buildOtherStoreDayLabelMap,
   buildSchedule,
   buildWeeksFromMonday,
   defaultRestaurants,
@@ -41,6 +42,10 @@ import {
   type CalendarCell,
 } from '../../lib/schedule/engine';
 import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
+import {
+  GROUP_ORDER_POTENTIAL_PLATFORMS,
+  getGroupOrderPotentialCell,
+} from '../../lib/schedule/groupOrderPotential';
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
@@ -192,6 +197,28 @@ export default function EmployeeScheduleScreen() {
     [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore]
   );
 
+  const otherStoreDayLabels = useMemo(
+    () =>
+      buildOtherStoreDayLabelMap({
+        visibleDays,
+        weekIndex,
+        draftScheduleRaw,
+        draftRows,
+        restaurants: allRestaurants,
+        assignmentStore,
+        currentRestaurantId,
+      }),
+    [
+      visibleDays,
+      weekIndex,
+      draftScheduleRaw,
+      draftRows,
+      allRestaurants,
+      assignmentStore,
+      currentRestaurantId,
+    ]
+  );
+
   const calendarBody = useMemo(
     () =>
       buildCalendarBody(
@@ -205,11 +232,24 @@ export default function EmployeeScheduleScreen() {
           weekMeta[weekIndex * 7]?.iso || ''
         ),
         assignmentStore,
-        weekIndex
+        weekIndex,
+        otherStoreDayLabels
       ),
-    [schedule, visibleDays, draftRows, lites, currentRestaurantId, draftScheduleRaw, weekMeta, weekIndex, assignmentStore]
+    [
+      schedule,
+      visibleDays,
+      draftRows,
+      lites,
+      currentRestaurantId,
+      draftScheduleRaw,
+      weekMeta,
+      weekIndex,
+      assignmentStore,
+      otherStoreDayLabels,
+    ]
   );
 
+  const selectedWeekMonday = String(weekMeta[weekIndex * 7]?.iso || '').slice(0, 10);
   const daysWidth = useMemo(
     () => Math.max(windowWidth - PERSON_COL - 16, visibleDays.length * CELL_MIN),
     [windowWidth, visibleDays.length]
@@ -323,6 +363,22 @@ export default function EmployeeScheduleScreen() {
                     dayOffLabel={t('schedule.dayOffLabel')}
                   />
                 ))}
+                <View
+                  style={[
+                    styles.personSection,
+                    styles.sectionMatrixRow,
+                    { backgroundColor: '#f8fafc', borderLeftColor: '#64748b' },
+                  ]}
+                >
+                  <Text style={[styles.sectionText, styles.groupOrderSectionTitle]} numberOfLines={2}>
+                    {t('schedule.groupOrderPotential')}
+                  </Text>
+                </View>
+                {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                  <View key={`go-p-${plat.id}`} style={[styles.personCell, styles.dataMatrixRow]}>
+                    <Text style={styles.groupOrderPersonLabel}>{plat.label}</Text>
+                  </View>
+                ))}
               </View>
 
               <ScrollView
@@ -365,6 +421,40 @@ export default function EmployeeScheduleScreen() {
                   </View>
                   {calendarBody.map((row, ri) => (
                     <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} dayOffLabel={t('schedule.dayOffLabel')} />
+                  ))}
+                  <View
+                    style={[
+                      styles.sectionDayFill,
+                      styles.sectionMatrixRow,
+                      { width: daysWidth, backgroundColor: '#f8fafc' },
+                    ]}
+                  />
+                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                    <View
+                      key={`go-d-${plat.id}`}
+                      style={[styles.dataDays, styles.dataMatrixRow, styles.groupOrderDataRow, { width: daysWidth }]}
+                    >
+                      {visibleDays.map((dayStr) => {
+                        const meta = weekMeta.find((m) => m.label === dayStr);
+                        const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                        const stored = getGroupOrderPotentialCell(
+                          draftScheduleRaw,
+                          selectedWeekMonday,
+                          currentRestaurantId,
+                          plat.id,
+                          dayIso
+                        );
+                        const val = stored !== '' ? stored : '0';
+                        return (
+                          <View
+                            key={`${plat.id}-${dayStr}`}
+                            style={[styles.groupOrderCell, { width: CELL_MIN }]}
+                          >
+                            <Text style={styles.groupOrderReadonly}>{val}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
                   ))}
                 </View>
               </ScrollView>
@@ -473,7 +563,14 @@ const CalendarCellView = memo(function CalendarCellView({
   dayOffLabel: string;
 }) {
   if (cell.kind === 'empty') {
-    return <View style={styles.cellInnerMuted} />;
+    if (!cell.otherStoreLabel) return <View style={styles.cellInnerMuted} />;
+    return (
+      <View style={styles.cellInnerMuted}>
+        <Text style={styles.otherStoreLabel} numberOfLines={2}>
+          {cell.otherStoreLabel}
+        </Text>
+      </View>
+    );
   }
   if (cell.kind === 'dayoff') {
     return (
@@ -481,7 +578,13 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.cellTime} numberOfLines={1}>
           {cell.timeLabel}
         </Text>
-        <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
+        {cell.otherStoreLabel ? (
+          <Text style={styles.otherStoreLabel} numberOfLines={2}>
+            {cell.otherStoreLabel}
+          </Text>
+        ) : (
+          <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
+        )}
       </View>
     );
   }
@@ -504,6 +607,11 @@ const CalendarCellView = memo(function CalendarCellView({
       <Text style={styles.cellHours} numberOfLines={1}>
         {cell.hours}h
       </Text>
+      {cell.otherStoreLabel ? (
+        <Text style={styles.otherStoreLabelOnShift} numberOfLines={1}>
+          {cell.otherStoreLabel}
+        </Text>
+      ) : null}
     </View>
   );
 });
@@ -579,7 +687,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     borderLeftWidth: 3,
   },
-  sectionText: { fontSize: 10, fontWeight: '700' },
+  sectionText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  groupOrderSectionTitle: {
+    color: '#334155',
+  },
+  groupOrderPersonLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  groupOrderDataRow: {
+    backgroundColor: '#f8fafc',
+  },
+  groupOrderCell: {
+    padding: 5,
+    justifyContent: 'center',
+    height: DATA_ROW_H,
+  },
+  groupOrderReadonly: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+    textAlign: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+  },
   dataMatrixRow: {
     height: DATA_ROW_H,
     borderBottomWidth: 1,
@@ -639,6 +776,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   cellDayoffLabel: { fontSize: 10, color: '#94a3b8', marginTop: 4, fontWeight: '600' },
+  otherStoreLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9a3412',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  otherStoreLabelOnShift: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#9a3412',
+    marginTop: 2,
+  },
   cellTime: { fontSize: 11, fontWeight: '700' },
   cellBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   cellHours: { fontSize: 10, color: '#334155', marginTop: 2, fontWeight: '600' },

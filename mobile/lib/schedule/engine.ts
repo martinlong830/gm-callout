@@ -14,7 +14,7 @@ import type {
   WeekMeta,
   WeekdayKey,
 } from './types';
-import { compareEmployeesByDisplayName } from './rosterOrder';
+import { compareEmployeesBySeniority } from './rosterOrder';
 import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } from './slotOrder';
 import { normalizeEmployeeStaffType } from '../employees';
 
@@ -659,7 +659,7 @@ export function weekdayKeyFromScheduleDay(dayStr: string): WeekdayKey {
 }
 
 function compareEmployeesByScheduleOrderLite(a: EmployeeLite, b: EmployeeLite): number {
-  return compareEmployeesByDisplayName(a, b);
+  return compareEmployeesBySeniority(a, b);
 }
 
 function employeeDisplayNameLite(emp: EmployeeLite): string {
@@ -669,13 +669,18 @@ function employeeDisplayNameLite(emp: EmployeeLite): string {
   return [f, l].filter(Boolean).join(' ') || 'Unnamed';
 }
 
+/** Team usualRestaurant only (home or both) — used for schedule person dropdowns. */
+function employeeMatchesTeamRestaurantLite(emp: EmployeeLite, restaurantId: string): boolean {
+  const u = emp.usualRestaurant || 'both';
+  if (u === 'both') return true;
+  return u === restaurantId;
+}
+
 function employeeMatchesScheduleRestaurantLite(
   emp: EmployeeLite,
   restaurantId: string
 ): boolean {
-  const u = emp.usualRestaurant || 'both';
-  if (u === 'both') return true;
-  if (u === restaurantId) return true;
+  if (employeeMatchesTeamRestaurantLite(emp, restaurantId)) return true;
   if (emp.borrowedRestaurantId && emp.borrowedRestaurantId === restaurantId) return true;
   return false;
 }
@@ -710,7 +715,7 @@ function employeeAtScheduleSlot(
   if (!employees.length) return null;
   return (
     employees
-      .filter((e) => employeeRoleKey(e) === role && employeeMatchesScheduleRestaurantLite(e, restaurantId))
+      .filter((e) => employeeRoleKey(e) === role && employeeMatchesTeamRestaurantLite(e, restaurantId))
       .sort(compareEmployeesByScheduleOrderLite)[trIdx] || null
   );
 }
@@ -1617,8 +1622,16 @@ export function scheduleWorkerNameKey(name: string): string {
 }
 
 export type CalendarCell =
-  | { kind: 'empty'; role: RoleKey; trIdx: number; dayStr: string }
-  | { kind: 'dayoff'; timeLabel: string; roleLabel: string; dayStr: string; role: RoleKey; trIdx: number }
+  | { kind: 'empty'; role: RoleKey; trIdx: number; dayStr: string; otherStoreLabel?: string }
+  | {
+      kind: 'dayoff';
+      timeLabel: string;
+      roleLabel: string;
+      dayStr: string;
+      role: RoleKey;
+      trIdx: number;
+      otherStoreLabel?: string;
+    }
   | {
       kind: 'shift';
       shift: ScheduleRow;
@@ -1626,7 +1639,85 @@ export type CalendarCell =
       timeLabel: string;
       breakText: string;
       hours: string;
+      otherStoreLabel?: string;
     };
+
+/** Map key for same-day other-store schedule labels (`workerKey\\0dayStr`). */
+export function otherStoreDayLabelKey(workerName: string, dayStr: string): string {
+  return `${normalizeWorkerKey(workerName)}\0${dayStr}`;
+}
+
+/**
+ * For the visible week: staffed timed shifts at restaurants other than `currentRestaurantId`,
+ * keyed by worker + day → short store label(s). Uses assignment store only (not auto-picks).
+ */
+export function buildOtherStoreDayLabelMap(params: {
+  visibleDays: string[];
+  weekIndex: number;
+  draftScheduleRaw?: unknown;
+  draftRows?: DraftGrid;
+  restaurants: Restaurant[];
+  assignmentStore: AssignmentStore;
+  currentRestaurantId: string;
+}): Map<string, string> {
+  const {
+    visibleDays,
+    weekIndex,
+    draftScheduleRaw,
+    draftRows,
+    restaurants,
+    assignmentStore,
+    currentRestaurantId,
+  } = params;
+  const lists = new Map<string, string[]>();
+  const wi = weekIndex != null && !Number.isNaN(weekIndex) ? weekIndex : 0;
+
+  for (const rest of restaurants || []) {
+    if (!rest?.id || rest.id === currentRestaurantId) continue;
+    const label = String(rest.shortLabel || rest.name || '').trim();
+    if (!label) continue;
+    const stored = getCurrentRestaurantAssignments(assignmentStore, rest.id);
+    const weekDraft = draftForWeek(draftScheduleRaw, draftRows, wi, rest.id);
+
+    (visibleDays || []).forEach((dayStr, dayInWeek) => {
+      const wk = weekdayKeyFromScheduleDay(dayStr);
+      const globalDayIdx = wi * 7 + dayInWeek;
+      ROLE_DEFS.forEach((rd, roleIdx) => {
+        const n = slotCountForRole(weekDraft, rd.role);
+        for (let trIdx = 0; trIdx < n; trIdx += 1) {
+          const tr = draftTimeSlotFor(weekDraft, rd.role, wk, trIdx);
+          if (!tr) continue;
+          const shiftId = `shift-${globalDayIdx}-${roleIdx}-${trIdx}`;
+          const entry = lookupScheduleAssignment(stored, shiftId);
+          if (!scheduleAssignmentHasStaffedWorkers(entry)) continue;
+          for (const w of normalizeScheduleAssignment(entry).workers || []) {
+            if (!w || w === 'Unassigned') continue;
+            const key = otherStoreDayLabelKey(w, dayStr);
+            const arr = lists.get(key) || [];
+            if (arr.indexOf(label) === -1) arr.push(label);
+            lists.set(key, arr);
+          }
+        }
+      });
+    });
+  }
+
+  const out = new Map<string, string>();
+  lists.forEach((labels, key) => {
+    if (labels.length) out.set(key, labels.join(' · '));
+  });
+  return out;
+}
+
+function otherStoreLabelFromMap(
+  map: Map<string, string> | null | undefined,
+  workerName: string | null | undefined,
+  dayStr: string
+): string | undefined {
+  if (!map || !workerName || workerName === 'Unassigned') return undefined;
+  const label = map.get(otherStoreDayLabelKey(workerName, dayStr));
+  return label || undefined;
+}
 
 export type CalendarBodyRow =
   | { kind: 'section'; title: string; variant: 'foh' | 'boh' | 'delivery' }
@@ -1641,7 +1732,39 @@ export function namesForScheduleRowPersonPicker(
   const seen: Record<string, boolean> = Object.create(null);
   const out: string[] = [];
   employees
-    .filter((e) => employeeRoleKey(e) === role && employeeMatchesScheduleRestaurantLite(e, restaurantId))
+    .filter((e) => employeeRoleKey(e) === role && employeeMatchesTeamRestaurantLite(e, restaurantId))
+    .sort(compareEmployeesByScheduleOrderLite)
+    .forEach((e) => {
+      const canon = employeeDisplayNameLite(e);
+      if (!canon || canon === 'Unassigned') return;
+      const key = normalizeWorkerKey(canon);
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(canon);
+    });
+  return out;
+}
+
+/** Sentinel option value for “Borrow employee…” in the row person picker. */
+export const SCHEDULE_BORROW_PERSON_VALUE = '__gm_borrow_employee__';
+
+/** Other-store staff for this restaurant (Borrow employee list). */
+export function namesForScheduleBorrowPersonPicker(
+  employees: EmployeeLite[],
+  role: RoleKey,
+  restaurantId: string
+): string[] {
+  const seen: Record<string, boolean> = Object.create(null);
+  const out: string[] = [];
+  employees
+    .filter((e) => {
+      if (employeeRoleKey(e) !== role) return false;
+      /* Already on this store's normal Team picker (home or both). */
+      if (employeeMatchesTeamRestaurantLite(e, restaurantId)) return false;
+      const home = e.usualRestaurant || 'both';
+      if (home === 'both' || home === restaurantId) return false;
+      return home === 'rp-8' || home === 'rp-9';
+    })
     .sort(compareEmployeesByScheduleOrderLite)
     .forEach((e) => {
       const canon = employeeDisplayNameLite(e);
@@ -1728,17 +1851,19 @@ export function scheduleRowPrimaryPerson(
  * Within a role section:
  * - If custom order for this restaurant/role exists (caller should pass the
  *   week-resolved map from `readSlotOrderByRestaurantForWeek`) → that order is SoT
- * - Else stable draft trIdx order (`0..slotN-1`)
+ * - Else natural slot index order (0…n). Managers reorder with ↑/↓; no auto seniority sort.
  * Does not mutate slot indices — display order only.
  */
 export function orderedScheduleSlotIndicesForRole(
-  _schedule: ScheduleRow[],
+  schedule: ScheduleRow[],
   role: RoleKey,
   slotN: number,
-  _visibleDays: string[],
-  _employees: EmployeeLite[],
+  visibleDays: string[],
+  employees: EmployeeLite[],
   restaurantId: string,
-  slotOrderByRestaurant?: SlotOrderByRestaurant | null
+  slotOrderByRestaurant?: SlotOrderByRestaurant | null,
+  assignmentStore?: AssignmentStore | null,
+  weekIndex?: number
 ): number[] {
   const custom = getCustomSlotOrderForRole(slotOrderByRestaurant, restaurantId, role, slotN);
   if (custom) return custom;
@@ -1801,10 +1926,12 @@ export function buildCalendarBody(
   restaurantId = '',
   slotOrderByRestaurant?: SlotOrderByRestaurant | null,
   assignmentStore?: AssignmentStore | null,
-  weekIndex?: number
+  weekIndex?: number,
+  otherStoreDayLabels?: Map<string, string> | null
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
+  const otherMap = otherStoreDayLabels || null;
 
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {
     const rd = ROLE_DEFS.find((r) => r.role === roleKey);
@@ -1834,13 +1961,26 @@ export function buildCalendarBody(
       visibleDays,
       employees,
       restaurantId,
-      slotOrderByRestaurant
+      slotOrderByRestaurant,
+      assignmentStore,
+      weekIndex
     );
     for (let oi = 0; oi < slotOrder.length; oi += 1) {
       const trIdx = slotOrder[oi];
+      const rowPerson = scheduleRowPrimaryPerson(
+        schedule,
+        rd.role,
+        trIdx,
+        visibleDays,
+        employees,
+        restaurantId,
+        assignmentStore,
+        weekIndex
+      );
       const cells: CalendarCell[] = visibleDays.map((dayStr) => {
         const shift = schedule.find((s) => s.day === dayStr && s.role === rd.role && s.trIdx === trIdx);
         if (!shift) {
+          const otherStoreLabel = otherStoreLabelFromMap(otherMap, rowPerson, dayStr);
           const wkOff = weekdayKeyFromScheduleDay(dayStr);
           const trOff = draftTimeSlotFor(draftRows, rd.role, wkOff, trIdx);
           if (trOff) {
@@ -1852,11 +1992,16 @@ export function buildCalendarBody(
               dayStr,
               role: rd.role,
               trIdx,
+              otherStoreLabel,
             };
           }
-          return { kind: 'empty', role: rd.role, trIdx, dayStr };
+          return { kind: 'empty', role: rd.role, trIdx, dayStr, otherStoreLabel };
         }
         const workers = shift.workers || [shift.worker].filter(Boolean);
+        const staffed = workers.filter((n) => n && n !== 'Unassigned');
+        const otherStoreLabel =
+          otherStoreLabelFromMap(otherMap, staffed[0] || rowPerson, dayStr) ||
+          otherStoreLabelFromMap(otherMap, rowPerson, dayStr);
         const rpTime = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
         const rpBreak =
           shift.redPokeBreak || redPokeBreakAnnotation(shift.start, shift.end, rd.role, dayStr);
@@ -1871,6 +2016,7 @@ export function buildCalendarBody(
           timeLabel: rpTime,
           breakText: rpBreak,
           hours: rpHrs,
+          otherStoreLabel,
         };
       });
       if (cells.length !== colCount) {
@@ -1915,7 +2061,9 @@ export function employeeScheduleVisualRankMap(
       visibleDays,
       employees,
       restaurantId,
-      slotOrderByRestaurant
+      slotOrderByRestaurant,
+      assignmentStore,
+      weekIndex
     );
     for (let oi = 0; oi < slotOrder.length; oi += 1) {
       const trIdx = slotOrder[oi];
@@ -2702,6 +2850,8 @@ function parseBreakMinutesFromScheduleAnnotation(text: string | undefined): numb
 
 export type ScheduleDayTotals = { hours: number; paidHours: number; pay: number };
 
+export type ScheduleRowWeekTotals = { hours: number; paidHours: number };
+
 /**
  * Footer totals per visible day: gross hours, after-break hours, and base pay
  * (paidHours × hourlyRate — no tips / SoH). Parity with web `computeScheduleDayTotals`.
@@ -2740,4 +2890,34 @@ export function computeScheduleDayTotals(
     }
   }
   return byDay;
+}
+
+/** Week totals for one calendar row (role + trIdx) across visible days. */
+export function computeScheduleRowWeekTotals(
+  schedule: ScheduleRow[],
+  role: RoleKey,
+  trIdx: number,
+  visibleDays: string[]
+): ScheduleRowWeekTotals {
+  let hours = 0;
+  let paidHours = 0;
+  for (const dayStr of visibleDays || []) {
+    const shift = (schedule || []).find(
+      (s) => s.day === dayStr && s.role === role && s.trIdx === trIdx
+    );
+    if (!shift) continue;
+    const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+      (n) => n && n !== 'Unassigned'
+    );
+    if (!workers.length) continue;
+    const shiftHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
+    if (shiftHours <= 0) continue;
+    const breakText =
+      shift.redPokeBreak ||
+      redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+    const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
+    hours += shiftHours;
+    paidHours += Math.max(0, shiftHours - breakMin / 60);
+  }
+  return { hours, paidHours };
 }

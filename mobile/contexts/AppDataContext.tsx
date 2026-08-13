@@ -20,6 +20,10 @@ import { subscribeStaffRequests } from '../lib/staffRequestsSync';
 import { readStoredTeamStateId } from '../lib/companySession';
 import { subscribeTeamState, TEAM_STATE_SELF_ECHO_IGNORE_MS } from '../lib/teamStateSync';
 import {
+  hashScheduleBundle,
+  SCHEDULE_CONTENT_GUARD_MS,
+} from '../lib/schedule/scheduleRevisions';
+import {
   applyTipPayrollFromTeamState,
 } from '../lib/timecards/tipPayrollSync';
 import { applyTipTakehomeFromTeamState } from '../lib/timecards/tipTakehome';
@@ -55,8 +59,8 @@ type AppDataState = HydrationResult & {
   ) => void;
   /** Mark a schedule upsert in flight (blocks self-echo refresh). */
   setSchedulePushInFlight: (inFlight: boolean) => void;
-  /** Record a successful local schedule push timestamp (self-echo ignore window). */
-  noteLocalSchedulePush: () => void;
+  /** Record a successful local schedule push (self-echo ignore + stale-remote refuse). */
+  noteLocalSchedulePush: (opts?: { hash?: string; updatedAt?: string }) => void;
   /** Logged-in employee roster row (by auth link or display name). */
   myEmployee: EmployeeRow | null;
 };
@@ -85,9 +89,42 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const lastHydrateAtRef = useRef(0);
   const teamStateFieldsPendingRef = useRef<Set<string> | null>(null);
   const lastLocalSchedulePushAtRef = useRef(0);
+  const lastLocalSchedulePushHashRef = useRef<string | null>(null);
+  const lastLocalSchedulePushUpdatedAtRef = useRef<string | null>(null);
   const schedulePushInFlightRef = useRef(false);
 
   teamStateRef.current = teamState;
+
+  const shouldProtectLocalSchedule = useCallback(
+    (prev: HydrationResult['teamState'] | null, remote?: Record<string, unknown> | null) => {
+      if (schedulePushInFlightRef.current) return true;
+      if (prev?.[LOCAL_SCHEDULE_DIRTY_KEY] === true) return true;
+      const elapsed = Date.now() - lastLocalSchedulePushAtRef.current;
+      if (elapsed < TEAM_STATE_SELF_ECHO_IGNORE_MS) return true;
+      const lastAt = lastLocalSchedulePushUpdatedAtRef.current;
+      const remoteAt = remote?.updated_at != null ? String(remote.updated_at) : null;
+      /* Never paint an older cloud snapshot over a newer local push. */
+      if (lastAt && remoteAt && remoteAt < lastAt) return true;
+      if (
+        lastLocalSchedulePushHashRef.current &&
+        elapsed < SCHEDULE_CONTENT_GUARD_MS &&
+        remote
+      ) {
+        const remoteHash = hashScheduleBundle(
+          remote.schedule_assignments,
+          remote.draft_schedule
+        );
+        if (
+          remoteHash !== lastLocalSchedulePushHashRef.current &&
+          (!remoteAt || !lastAt || remoteAt <= lastAt)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    },
+    []
+  );
 
   const runRefetch = useCallback(
     async (opts?: { showLoading?: boolean }) => {
@@ -130,12 +167,11 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           const remote = data.teamState;
           if (!remote) return null;
           if (!prev) return remote;
-          const protectLocal =
-            schedulePushInFlightRef.current ||
-            Date.now() - lastLocalSchedulePushAtRef.current < TEAM_STATE_SELF_ECHO_IGNORE_MS ||
-            prev[LOCAL_SCHEDULE_DIRTY_KEY] === true;
           return mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
-            protectLocalSchedule: protectLocal,
+            protectLocalSchedule: shouldProtectLocalSchedule(
+              prev,
+              remote as Record<string, unknown>
+            ),
           }) as HydrationResult['teamState'];
         });
         hydratedRef.current = true;
@@ -151,7 +187,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [session?.user?.id, role]
+    [session?.user?.id, role, shouldProtectLocalSchedule]
   );
 
   const refetch = useCallback(async (opts?: { silent?: boolean }) => {
@@ -193,17 +229,18 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     schedulePushInFlightRef.current = inFlight;
   }, []);
 
-  const noteLocalSchedulePush = useCallback(() => {
-    lastLocalSchedulePushAtRef.current = Date.now();
-  }, []);
+  const noteLocalSchedulePush = useCallback(
+    (opts?: { hash?: string; updatedAt?: string }) => {
+      lastLocalSchedulePushAtRef.current = Date.now();
+      if (opts?.hash) lastLocalSchedulePushHashRef.current = opts.hash;
+      if (opts?.updatedAt) lastLocalSchedulePushUpdatedAtRef.current = String(opts.updatedAt);
+    },
+    []
+  );
 
   const refreshTeamStateSelective = useCallback(
     async (fields?: string[]) => {
       if (!isSupabaseConfigured || !supabase || !session?.user) return;
-      const protectLocal =
-        schedulePushInFlightRef.current ||
-        Date.now() - lastLocalSchedulePushAtRef.current < TEAM_STATE_SELF_ECHO_IGNORE_MS ||
-        teamStateRef.current?.[LOCAL_SCHEDULE_DIRTY_KEY] === true;
       const known = teamStateRef.current?.updated_at
         ? String(teamStateRef.current.updated_at)
         : null;
@@ -218,11 +255,13 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       invalidateDishwasherTipsSliceCache();
       invalidateWeekExtrasSliceCache();
       setTeamState((prev) =>
-        mergeTeamStatePartial(prev, partial, { protectLocalSchedule: protectLocal })
+        mergeTeamStatePartial(prev, partial, {
+          protectLocalSchedule: shouldProtectLocalSchedule(prev, partial),
+        })
       );
       lastHydrateAtRef.current = Date.now();
     },
-    [session?.user?.id, role]
+    [session?.user?.id, role, shouldProtectLocalSchedule]
   );
 
   const scheduleTeamStateRemoteRefresh = useCallback(

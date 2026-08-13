@@ -518,6 +518,72 @@ export function sumEmployeeWeekAdditionalCashTipsSync(
   return Math.round(sum * 100) / 100;
 }
 
+/** Makeup / missing hours from a prior week (`miss|empId|iso` → hours). */
+export function missingHoursStorageKey(empId: string, iso: string): string {
+  return `miss|${String(empId || '')}|${String(iso || '')}`;
+}
+
+function normalizeMissingHours(val: unknown): number {
+  if (val == null || val === '') return 0;
+  const n = parseFloat(String(val));
+  if (Number.isNaN(n) || n < 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+export function getEmployeeDayMissingHoursSync(
+  empId: string,
+  iso: string,
+  slice: WeekExtrasSlice
+): number {
+  if (!empId || !iso) return 0;
+  return normalizeMissingHours(slice[missingHoursStorageKey(empId, iso)]);
+}
+
+export async function getEmployeeDayMissingHours(
+  empId: string,
+  iso: string,
+  bounds: PayWeekBounds
+): Promise<number> {
+  const slice = await loadWeekExtrasMap(bounds);
+  return getEmployeeDayMissingHoursSync(empId, iso, slice);
+}
+
+export async function setEmployeeDayMissingHours(
+  empId: string,
+  iso: string,
+  hours: number,
+  bounds: PayWeekBounds
+): Promise<void> {
+  if (!empId || !iso) return;
+  const slice = await loadWeekExtrasMap(bounds);
+  const key = missingHoursStorageKey(empId, iso);
+  const val = normalizeMissingHours(hours);
+  if (val <= 0) delete slice[key];
+  else slice[key] = val;
+  await saveWeekExtrasMap(bounds, slice);
+}
+
+export function sumEmployeeWeekMissingHoursSync(
+  empId: string,
+  bounds: PayWeekBounds,
+  slice: WeekExtrasSlice,
+  precomputed?: Record<string, number>
+): number {
+  if (precomputed && empId && precomputed[empId] != null) return precomputed[empId];
+  if (!empId) return 0;
+  const weekStart = isoFromDate(bounds.start);
+  const weekEnd = isoFromDate(bounds.end);
+  const prefix = `miss|${empId}|`;
+  let sum = 0;
+  for (const k of Object.keys(slice)) {
+    if (!k.startsWith(prefix)) continue;
+    const iso = k.slice(prefix.length);
+    if (iso < weekStart || iso > weekEnd) continue;
+    sum += normalizeMissingHours(slice[k]);
+  }
+  return Math.round(sum * 100) / 100;
+}
+
 function normNameKey(name: string): string {
   return String(name || '')
     .trim()

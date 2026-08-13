@@ -35,6 +35,14 @@ import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
 import { isManagerLikeRole } from '../../lib/roles';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
+import {
+  fetchScheduleRevision,
+  formatScheduleRevisionLabel,
+  hashScheduleBundle,
+  insertScheduleRevision,
+  listScheduleRevisions,
+  type ScheduleRevisionRow,
+} from '../../lib/schedule/scheduleRevisions';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
 import type {
@@ -52,10 +60,11 @@ import {
   BREAK_ANNOTATION_TYPE_PRESETS,
   buildAllWeekDayLabels,
   buildCalendarBody,
+  buildOtherStoreDayLabelMap,
   buildSchedule,
   buildWeeksFromMonday,
   compactAssignmentsAfterDraftSlotDeletes,
-  computeScheduleDayTotals,
+  computeScheduleRowWeekTotals,
   defaultRestaurants,
   defaultTimesForDraftCell,
   deleteDraftSlotRow,
@@ -67,6 +76,8 @@ import {
   isScheduleWeekPublished,
   loadDraftFromTeamState,
   namesForScheduleRowPersonPicker,
+  namesForScheduleBorrowPersonPicker,
+  SCHEDULE_BORROW_PERSON_VALUE,
   normalizeBreakAnnotationTime,
   normalizeSchedulePublishedMap,
   OFFICE_BREAK_TIME_PRESETS,
@@ -99,6 +110,9 @@ import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
 import {
   getEmployeeBorrowedRestaurantSync,
   restaurantShortLabel as borrowRestaurantShortLabel,
+  employeeEligibleForWeekBorrow,
+  setEmployeeBorrowedRestaurant,
+  type BorrowRestaurantId,
 } from '../../lib/timecards/weekBorrow';
 import {
   getCustomSlotOrderForRole,
@@ -109,11 +123,18 @@ import {
   patchSlotOrderInDraftSchedule,
   readSlotOrderByRestaurantForWeek,
 } from '../../lib/schedule/slotOrder';
+import {
+  getGroupOrderPotentialCell,
+  GROUP_ORDER_POTENTIAL_PLATFORMS,
+  patchGroupOrderPotentialInDraft,
+} from '../../lib/schedule/groupOrderPotential';
 
 /** Wide enough for a single-line slot time (e.g. 10:00 AM – 7:30 PM) in the cell header. */
 const CELL_MIN = 158;
 /** Sticky Person column — parity with web `.calendar-row-person-col`. */
 const PERSON_COL = 132;
+/** Right-rail per-person week hours (scrolls with days). */
+const SIDE_TOTALS_W = 68;
 /**
  * Fixed height for role section bars (person sticky + day fill).
  * Same parent row owns both sides — height cannot diverge.
@@ -218,9 +239,14 @@ export default function ManagerScheduleScreen() {
   const [editWorker, setEditWorker] = useState('Unassigned');
   const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
+  const [rowPersonBorrowMode, setRowPersonBorrowMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [undoDepth, setUndoDepth] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<ScheduleRevisionRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Keeps a pending draft payload across debounced assignment saves (e.g. Monday window roll). */
   const pendingDraftRef = useRef<unknown>(undefined);
@@ -468,7 +494,14 @@ export default function ManagerScheduleScreen() {
           /* Stays dirty so remote cannot win; retry or the edit is lost on the next fetch. */
           armSaveTimer(PERSIST_RETRY_MS);
         } else {
-          noteLocalSchedulePush();
+          const pushedUpdatedAt =
+            up.data?.updated_at != null ? String(up.data.updated_at) : undefined;
+          const draftForHash =
+            draftToSave !== undefined
+              ? draftToSave
+              : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+          const pushHash = hashScheduleBundle(toSave, draftForHash);
+          noteLocalSchedulePush({ hash: pushHash, updatedAt: pushedUpdatedAt });
           await broadcastTeamStateChanged(
             supabase,
             teamStateId,
@@ -499,7 +532,7 @@ export default function ManagerScheduleScreen() {
             }
             applyLocalScheduleAssignments(liveStore, liveDraft, {
               markDirty: true,
-              pushedUpdatedAt: up.data?.updated_at as string | undefined,
+              pushedUpdatedAt,
             });
             armSaveTimer(100);
           } else {
@@ -508,8 +541,18 @@ export default function ManagerScheduleScreen() {
             localEditPendingRef.current = false;
             applyLocalScheduleAssignments(toSave, draftToSave, {
               markDirty: false,
-              pushedUpdatedAt: up.data?.updated_at as string | undefined,
+              pushedUpdatedAt,
             });
+            if (draftToSave !== undefined) {
+              void insertScheduleRevision(supabase, {
+                teamStateId,
+                userId: session?.user?.id,
+                source: 'persist',
+                assignments: toSave,
+                draft: draftToSave,
+                published: teamState?.schedule_published ?? null,
+              });
+            }
           }
         }
       } finally {
@@ -521,6 +564,8 @@ export default function ManagerScheduleScreen() {
       role,
       restaurants,
       session?.user?.id,
+      teamState?.draft_schedule,
+      teamState?.schedule_published,
       applyLocalScheduleAssignments,
       armSaveTimer,
       setSchedulePushInFlight,
@@ -550,7 +595,16 @@ export default function ManagerScheduleScreen() {
       pendingStoreRef.current = store;
       /* Hydrate-driven saves must not masquerade as manager edits (see hydrate effect). */
       if (!opts?.fromHydrate) localEditPendingRef.current = true;
-      if (draftSchedule !== undefined) pendingDraftRef.current = draftSchedule;
+      if (draftSchedule !== undefined) {
+        pendingDraftRef.current = draftSchedule;
+      } else if (pendingDraftRef.current === undefined) {
+        /*
+         * Person-only edits used to leave pendingDraft empty, so hydrate could paint a
+         * stale remote draft (times/rows) over the live grid while assignments stayed local.
+         */
+        const liveDraft = draftScheduleRawRef.current;
+        if (liveDraft != null) pendingDraftRef.current = liveDraft;
+      }
       armSaveTimer(PERSIST_DEBOUNCE_MS);
     },
     [armSaveTimer]
@@ -566,6 +620,100 @@ export default function ManagerScheduleScreen() {
     applyLocalScheduleAssignments(snap.assignmentStore, snap.draftScheduleRaw);
     queuePersist(snap.assignmentStore, snap.draftScheduleRaw);
   }, [applyLocalScheduleAssignments, queuePersist]);
+
+  const openScheduleHistory = useCallback(async () => {
+    const sb = supabase;
+    if (!sb || !isManagerLikeRole(role)) return;
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    try {
+      const teamStateId = await readStoredTeamStateId();
+      const res = await listScheduleRevisions(sb, teamStateId, 40);
+      if (!res.ok) {
+        Alert.alert(t('schedule.historyFailed'), res.error || t('schedule.couldNotSave'));
+        setHistoryRows([]);
+        return;
+      }
+      setHistoryRows(res.rows);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [role, t]);
+
+  const hardRevertToRevision = useCallback(
+    (revisionId: string) => {
+      if (!supabase || !isManagerLikeRole(role) || !scheduleEditable) return;
+      Alert.alert(t('schedule.hardRevertTitle'), t('schedule.hardRevertBody'), [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('schedule.hardRevertConfirm'),
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const sb = supabase;
+              if (!sb) return;
+              setHistoryBusyId(revisionId);
+              try {
+                const teamStateId = await readStoredTeamStateId();
+                const curAssign = assignmentStoreRef.current;
+                const curDraft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+                await insertScheduleRevision(sb, {
+                  teamStateId,
+                  userId: session?.user?.id,
+                  source: 'pre_revert',
+                  assignments: curAssign,
+                  draft: curDraft,
+                  published: teamState?.schedule_published ?? null,
+                  label: formatScheduleRevisionLabel('pre_revert'),
+                  dedupe: false,
+                });
+                const fetched = await fetchScheduleRevision(sb, revisionId);
+                if (!fetched.ok || !fetched.row) {
+                  Alert.alert(t('schedule.historyFailed'), fetched.error || t('schedule.couldNotSave'));
+                  return;
+                }
+                const nextAssign = (fetched.row.schedule_assignments || {}) as AssignmentStore;
+                const nextDraft = fetched.row.draft_schedule ?? {};
+                pushUndoSnapshot();
+                suppressHydrateUndoClearRef.current = true;
+                setAssignmentStore(nextAssign);
+                setRolledDraftRaw(nextDraft);
+                applyLocalScheduleAssignments(nextAssign, nextDraft, { markDirty: true });
+                pendingStoreRef.current = nextAssign;
+                pendingDraftRef.current = nextDraft;
+                localEditPendingRef.current = true;
+                await persistCloud(nextAssign, nextDraft);
+                await insertScheduleRevision(sb, {
+                  teamStateId,
+                  userId: session?.user?.id,
+                  source: 'hard_revert',
+                  assignments: nextAssign,
+                  draft: nextDraft,
+                  published: teamState?.schedule_published ?? null,
+                  dedupe: false,
+                });
+                setHistoryOpen(false);
+                Alert.alert(t('schedule.hardRevertDone'), t('schedule.hardRevertDoneBody'));
+              } finally {
+                setHistoryBusyId(null);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [
+      role,
+      scheduleEditable,
+      t,
+      session?.user?.id,
+      teamState?.draft_schedule,
+      teamState?.schedule_published,
+      applyLocalScheduleAssignments,
+      pushUndoSnapshot,
+      persistCloud,
+    ]
+  );
 
   useEffect(() => {
     const pendingDraft = pendingDraftRef.current;
@@ -656,6 +804,28 @@ export default function ManagerScheduleScreen() {
     [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
   );
 
+  const otherStoreDayLabels = useMemo(
+    () =>
+      buildOtherStoreDayLabelMap({
+        visibleDays,
+        weekIndex,
+        draftScheduleRaw,
+        draftRows,
+        restaurants,
+        assignmentStore,
+        currentRestaurantId,
+      }),
+    [
+      visibleDays,
+      weekIndex,
+      draftScheduleRaw,
+      draftRows,
+      restaurants,
+      assignmentStore,
+      currentRestaurantId,
+    ]
+  );
+
   const calendarBody = useMemo(
     () =>
       buildCalendarBody(
@@ -666,7 +836,8 @@ export default function ManagerScheduleScreen() {
         currentRestaurantId,
         slotOrderByRestaurant,
         assignmentStore,
-        weekIndex
+        weekIndex,
+        otherStoreDayLabels
       ),
     [
       schedule,
@@ -677,6 +848,7 @@ export default function ManagerScheduleScreen() {
       slotOrderByRestaurant,
       assignmentStore,
       weekIndex,
+      otherStoreDayLabels,
     ]
   );
 
@@ -698,7 +870,9 @@ export default function ManagerScheduleScreen() {
         visibleDays,
         lites,
         currentRestaurantId,
-        slotOrderByRestaurant
+        slotOrderByRestaurant,
+        assignmentStore,
+        weekIndex
       );
       order.forEach((trIdx, pos) => {
         flags.set(`${roleKey}:${trIdx}`, {
@@ -1159,7 +1333,9 @@ export default function ManagerScheduleScreen() {
         visibleDays,
         lites,
         currentRestaurantId,
-        null
+        null,
+        assignmentStore,
+        weekIndex
       );
     const nextOrder = moveTrIdxInSlotOrder(baseOrder, trIdx, direction);
     if (!nextOrder) return;
@@ -1177,8 +1353,32 @@ export default function ManagerScheduleScreen() {
     queuePersist(assignmentStoreRef.current, draftPayload);
   }
 
-  function applyRowPersonChoice(target: RowPersonTarget, workerName: string) {
+  async function ensureWeekBorrowForEmployee(emp: EmployeeRow | null | undefined) {
+    if (!emp || !employeeEligibleForWeekBorrow(emp)) return;
+    const home = emp.usualRestaurant || 'both';
+    if (home === 'both' || home === currentRestaurantId) return;
+    if (currentRestaurantId !== 'rp-8' && currentRestaurantId !== 'rp-9') return;
+    if (home !== 'rp-8' && home !== 'rp-9') return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) return;
+    const bounds = getPayWeekBoundsForMonday(new Date(`${selectedWeekMonday}T12:00:00`));
+    await setEmployeeBorrowedRestaurant(
+      emp.id,
+      bounds,
+      currentRestaurantId as BorrowRestaurantId
+    );
+    setBorrowByEmpId((prev) => ({ ...prev, [emp.id]: currentRestaurantId }));
+  }
+
+  async function applyRowPersonChoice(target: RowPersonTarget, workerName: string) {
     if (!scheduleEditable) return;
+    if (workerName === SCHEDULE_BORROW_PERSON_VALUE) {
+      setRowPersonBorrowMode(true);
+      return;
+    }
+    if (rowPersonBorrowMode && workerName !== 'Unassigned') {
+      const emp = employees.find((e) => employeeDisplayName(e) === workerName) || null;
+      await ensureWeekBorrowForEmployee(emp);
+    }
     const next = assignPersonToScheduleRow(
       assignmentStore,
       schedule,
@@ -1191,6 +1391,7 @@ export default function ManagerScheduleScreen() {
       weekIndex
     );
     if (next === assignmentStore) {
+      setRowPersonBorrowMode(false);
       setRowPersonPicker(null);
       return;
     }
@@ -1199,11 +1400,19 @@ export default function ManagerScheduleScreen() {
     setAssignmentStore(next);
     applyLocalScheduleAssignments(next);
     queuePersist(next);
+    setRowPersonBorrowMode(false);
     setRowPersonPicker(null);
   }
 
   const rowPickerNames = useMemo(() => {
     if (!rowPersonPicker) return [] as string[];
+    if (rowPersonBorrowMode) {
+      return namesForScheduleBorrowPersonPicker(
+        lites,
+        rowPersonPicker.role,
+        currentRestaurantId
+      );
+    }
     const selected = scheduleRowPrimaryPerson(
       schedule,
       rowPersonPicker.role,
@@ -1215,13 +1424,32 @@ export default function ManagerScheduleScreen() {
       weekIndex
     );
     const pool = namesForScheduleRowPersonPicker(lites, rowPersonPicker.role, currentRestaurantId);
-    if (selected && selected !== 'Unassigned') {
-      const selKey = selected.trim().toLowerCase();
-      const inPool = pool.some((n) => n.trim().toLowerCase() === selKey);
-      if (!inPool) return ['Unassigned', selected, ...pool];
-    }
-    return ['Unassigned', ...pool];
-  }, [rowPersonPicker, schedule, visibleDays, lites, currentRestaurantId, assignmentStore, weekIndex]);
+    const base =
+      selected && selected !== 'Unassigned'
+        ? (() => {
+            const selKey = selected.trim().toLowerCase();
+            const inPool = pool.some((n) => n.trim().toLowerCase() === selKey);
+            return inPool
+              ? (['Unassigned', ...pool] as string[])
+              : (['Unassigned', selected, ...pool] as string[]);
+          })()
+        : (['Unassigned', ...pool] as string[]);
+    const borrowPool = namesForScheduleBorrowPersonPicker(
+      lites,
+      rowPersonPicker.role,
+      currentRestaurantId
+    );
+    return borrowPool.length ? [...base, SCHEDULE_BORROW_PERSON_VALUE] : base;
+  }, [
+    rowPersonPicker,
+    rowPersonBorrowMode,
+    schedule,
+    visibleDays,
+    lites,
+    currentRestaurantId,
+    assignmentStore,
+    weekIndex,
+  ]);
 
   const shiftPickerNames = useMemo(() => {
     if (!shiftEditor) return [] as string[];
@@ -1244,10 +1472,17 @@ export default function ManagerScheduleScreen() {
     return `${redPokeShiftHoursDecimal(editStart, editEnd)} h`;
   }, [editDayOff, editStart, editEnd]);
 
-  const dayTotals = useMemo(
-    () => computeScheduleDayTotals(schedule, visibleDays, lites),
-    [schedule, visibleDays, lites]
-  );
+  const rowWeekTotals = useMemo(() => {
+    const map = new Map<string, { hours: number; paidHours: number }>();
+    for (const row of calendarBody) {
+      if (row.kind !== 'cells') continue;
+      map.set(
+        `${row.role}:${row.trIdx}`,
+        computeScheduleRowWeekTotals(schedule, row.role, row.trIdx, visibleDays)
+      );
+    }
+    return map;
+  }, [calendarBody, schedule, visibleDays]);
 
   const breakTimeChipLabels = useMemo(
     () => breakTimePresetsForType(editBreakType),
@@ -1321,6 +1556,16 @@ export default function ManagerScheduleScreen() {
                 <Text style={[styles.undoBtnText, undoDepth === 0 && styles.undoBtnTextDisabled]}>
                   {t('schedule.undo')}
                 </Text>
+              </Pressable>
+            ) : null}
+            {isManagerLikeRole(role) && scheduleEditable ? (
+              <Pressable
+                onPress={() => void openScheduleHistory()}
+                style={styles.undoBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('schedule.history')}
+              >
+                <Text style={styles.undoBtnText}>{t('schedule.history')}</Text>
               </Pressable>
             ) : null}
           </View>
@@ -1418,7 +1663,10 @@ export default function ManagerScheduleScreen() {
                     assignmentStore={assignmentStore}
                     weekIndex={weekIndex}
                     editable={scheduleEditable}
-                    onOpenRowPerson={setRowPersonPicker}
+                    onOpenRowPerson={(t) => {
+                      setRowPersonBorrowMode(false);
+                      setRowPersonPicker(t);
+                    }}
                     onAddSlot={addSlotForRole}
                     onDeleteSlot={deleteSlotForRole}
                     onMoveRow={moveScheduleRow}
@@ -1427,9 +1675,22 @@ export default function ManagerScheduleScreen() {
                   />
                 );
               })}
-              <View style={styles.totalsPersonCell}>
-                <Text style={styles.totalsPersonLabel}>{t('schedule.dayTotals')}</Text>
+              <View
+                style={[
+                  styles.personSection,
+                  styles.sectionMatrixRow,
+                  { backgroundColor: '#f8fafc', borderLeftColor: '#64748b' },
+                ]}
+              >
+                <Text style={[styles.sectionText, styles.groupOrderSectionTitle]} numberOfLines={2}>
+                  {t('schedule.groupOrderPotential')}
+                </Text>
               </View>
+              {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                <View key={`go-p-${plat.id}`} style={[styles.personCell, styles.dataMatrixRow]}>
+                  <Text style={styles.groupOrderPersonLabel}>{plat.label}</Text>
+                </View>
+              ))}
             </View>
 
             <ScrollView
@@ -1445,74 +1706,220 @@ export default function ManagerScheduleScreen() {
               }}
               scrollEventThrottle={16}
             >
-              <View style={{ width: daysWidth }}>
-                <View style={styles.headerDays}>
-                  {visibleDays.map((dayStr) => {
-                    const meta = weekMeta.find((m) => m.label === dayStr);
-                    const parts = dayStr.split(' ');
-                    const dow = parts[0] || '';
-                    const rest = parts.slice(1).join(' ');
-                    return (
-                      <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
-                        <Text style={styles.thFull}>
-                          {t(
-                            (
-                              {
-                                MONDAY: 'days.monday',
-                                TUESDAY: 'days.tuesday',
-                                WEDNESDAY: 'days.wednesday',
-                                THURSDAY: 'days.thursday',
-                                FRIDAY: 'days.friday',
-                                SATURDAY: 'days.saturday',
-                                SUNDAY: 'days.sunday',
-                              } as Record<string, string>
-                            )[meta?.dayNameUpper || dow.toUpperCase()] || 'days.monday'
-                          )}
-                        </Text>
-                        <Text style={styles.thSub}>{rest}</Text>
-                      </View>
-                    );
-                  })}
-                </View>
-                {calendarBody.map((row, ri) => (
-                  <DayColRow
-                    key={`d-${ri}`}
-                    row={row}
-                    daysWidth={daysWidth}
-                    editable={scheduleEditable}
-                    onOpenShift={onCellPress}
-                    onLongPressShift={onCellLongPress}
+              <View style={{ flexDirection: 'row' }}>
+                <View style={{ width: daysWidth }}>
+                  <View style={styles.headerDays}>
+                    {visibleDays.map((dayStr) => {
+                      const meta = weekMeta.find((m) => m.label === dayStr);
+                      const parts = dayStr.split(' ');
+                      const dow = parts[0] || '';
+                      const rest = parts.slice(1).join(' ');
+                      return (
+                        <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                          <Text style={styles.thFull}>
+                            {t(
+                              (
+                                {
+                                  MONDAY: 'days.monday',
+                                  TUESDAY: 'days.tuesday',
+                                  WEDNESDAY: 'days.wednesday',
+                                  THURSDAY: 'days.thursday',
+                                  FRIDAY: 'days.friday',
+                                  SATURDAY: 'days.saturday',
+                                  SUNDAY: 'days.sunday',
+                                } as Record<string, string>
+                              )[meta?.dayNameUpper || dow.toUpperCase()] || 'days.monday'
+                            )}
+                          </Text>
+                          <Text style={styles.thSub}>{rest}</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                  {calendarBody.map((row, ri) => (
+                    <DayColRow
+                      key={`d-${ri}`}
+                      row={row}
+                      daysWidth={daysWidth}
+                      editable={scheduleEditable}
+                      onOpenShift={onCellPress}
+                      onLongPressShift={onCellLongPress}
+                      onMarkDayOff={clearCellToDayOff}
+                    />
+                  ))}
+                  <View
+                    style={[
+                      styles.sectionDayFill,
+                      styles.sectionMatrixRow,
+                      {
+                        width: daysWidth,
+                        backgroundColor: '#f8fafc',
+                      },
+                    ]}
                   />
-                ))}
-                <View style={[styles.totalsDays, { width: daysWidth }]}>
-                  {visibleDays.map((dayStr) => {
-                    const tot = dayTotals[dayStr] || { hours: 0, paidHours: 0, pay: 0 };
-                    return (
-                      <View key={`tot-${dayStr}`} style={[styles.totalsCell, { width: CELL_MIN }]}>
-                        <Text style={styles.totalsLine}>
-                          {t('schedule.dayGross')}: {tot.hours.toFixed(1)}h
-                        </Text>
-                        <Text style={styles.totalsLine}>
-                          {t('schedule.dayAfterBreak')}: {tot.paidHours.toFixed(1)}h
-                        </Text>
-                        <Text style={styles.totalsPay}>
-                          {t('schedule.dayPay')}: ${tot.pay.toFixed(0)}
-                        </Text>
-                      </View>
-                    );
-                  })}
+                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                    <View
+                      key={`go-d-${plat.id}`}
+                      style={[styles.dataDays, styles.dataMatrixRow, styles.groupOrderDataRow, { width: daysWidth }]}
+                    >
+                      {visibleDays.map((dayStr) => {
+                        const meta = weekMeta.find((m) => m.label === dayStr);
+                        const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                        const stored = getGroupOrderPotentialCell(
+                          draftScheduleRaw,
+                          selectedWeekMonday,
+                          currentRestaurantId,
+                          plat.id,
+                          dayIso
+                        );
+                        const val = stored !== '' ? stored : '0';
+                        return (
+                          <View
+                            key={`${plat.id}-${dayStr}`}
+                            style={[styles.groupOrderCell, { width: CELL_MIN }]}
+                          >
+                            {scheduleEditable ? (
+                              <TextInput
+                                key={`${plat.id}-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${val}`}
+                                style={styles.groupOrderInput}
+                                defaultValue={val}
+                                placeholder="0"
+                                placeholderTextColor="#94a3b8"
+                                keyboardType="decimal-pad"
+                                onEndEditing={(e) => {
+                                  const text = e.nativeEvent.text;
+                                  if (text === stored || (text === '0' && stored === '')) return;
+                                  const next = patchGroupOrderPotentialInDraft(
+                                    draftScheduleRawRef.current ?? draftScheduleRaw,
+                                    selectedWeekMonday,
+                                    currentRestaurantId,
+                                    plat.id,
+                                    dayIso,
+                                    text
+                                  );
+                                  pushUndoSnapshot();
+                                  suppressHydrateUndoClearRef.current = true;
+                                  setRolledDraftRaw(next);
+                                  applyLocalScheduleAssignments(assignmentStoreRef.current, next);
+                                  queuePersist(assignmentStoreRef.current, next);
+                                }}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+                            ) : (
+                              <Text style={styles.groupOrderReadonly}>{val}</Text>
+                            )}
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ))}
                 </View>
+                {scheduleEditable ? (
+                  <View style={[styles.sideTotals, { width: SIDE_TOTALS_W }]}>
+                    <View style={styles.personTotalsTh}>
+                      <Text style={styles.sideTotalsTitle}>{t('schedule.personTotals')}</Text>
+                      <Text style={styles.thSub}>{t('schedule.personTotalsSub')}</Text>
+                    </View>
+                    {calendarBody.map((row, ri) => {
+                      if (row.kind === 'section') {
+                        return (
+                          <View
+                            key={`pt-s-${ri}`}
+                            style={[
+                              styles.personTotalsSection,
+                              {
+                                height: SECTION_ROW_H + SECTION_GAP_BELOW,
+                                backgroundColor: sectionBg(row.variant),
+                              },
+                            ]}
+                          />
+                        );
+                      }
+                      const tot = rowWeekTotals.get(`${row.role}:${row.trIdx}`) || {
+                        hours: 0,
+                        paidHours: 0,
+                      };
+                      return (
+                        <View key={`pt-${ri}`} style={styles.personTotalsCell}>
+                          <Text style={styles.sideTotalsGross}>{tot.hours.toFixed(1)}h</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
+                          <Text style={styles.sideTotalsNet}>{tot.paidHours.toFixed(1)}h</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
+                        </View>
+                      );
+                    })}
+                    <View
+                      style={[
+                        styles.personTotalsSection,
+                        {
+                          height: SECTION_ROW_H + SECTION_GAP_BELOW,
+                          backgroundColor: '#f8fafc',
+                        },
+                      ]}
+                    />
+                    {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                      <View
+                        key={`pt-go-${plat.id}`}
+                        style={[styles.personTotalsCell, styles.groupOrderDataRow, { opacity: 0 }]}
+                      />
+                    ))}
+                  </View>
+                ) : null}
               </View>
             </ScrollView>
           </View>
         </View>
       </ScrollView>
 
+      <Modal visible={historyOpen} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setHistoryOpen(false)}>
+          <Pressable style={[styles.modalPanel, styles.modalPanelTall]} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>{t('schedule.history')}</Text>
+            <Text style={styles.modalSub}>{t('schedule.historyHint')}</Text>
+            {historyLoading ? (
+              <ActivityIndicator style={{ marginTop: 20 }} />
+            ) : !historyRows.length ? (
+              <Text style={styles.modalSub}>{t('schedule.historyEmpty')}</Text>
+            ) : (
+              <FlatList
+                data={historyRows}
+                keyExtractor={(item) => item.id}
+                style={styles.modalList}
+                renderItem={({ item }) => (
+                  <View style={styles.historyRow}>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text style={styles.modalRowText} numberOfLines={2}>
+                        {item.label || formatScheduleRevisionLabel(item.source, new Date(item.created_at))}
+                      </Text>
+                      <Text style={styles.historyMeta}>{item.source}</Text>
+                    </View>
+                    <Pressable
+                      style={[styles.historyRevertBtn, historyBusyId === item.id && styles.publishBtnDisabled]}
+                      disabled={!!historyBusyId}
+                      onPress={() => hardRevertToRevision(item.id)}
+                    >
+                      <Text style={styles.historyRevertBtnText}>
+                        {historyBusyId === item.id ? t('common.publishing') : t('schedule.hardRevert')}
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
+              />
+            )}
+            <Pressable style={styles.undoBtn} onPress={() => setHistoryOpen(false)}>
+              <Text style={styles.undoBtnText}>{t('common.close')}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal visible={modalOpen} animationType="slide" transparent>
         <Pressable
           style={styles.modalBackdrop}
           onPress={() => {
             setShiftEditor(null);
+            setRowPersonBorrowMode(false);
             setRowPersonPicker(null);
             restoreScheduleScroll();
           }}
@@ -1520,12 +1927,18 @@ export default function ManagerScheduleScreen() {
           <Pressable style={[styles.modalPanel, shiftEditor && styles.modalPanelTall]} onPress={(e) => e.stopPropagation()}>
             {rowPersonPicker ? (
               <>
-                <Text style={styles.modalTitle}>{t('schedule.assignRowPerson')}</Text>
-                <Text style={styles.modalSub} numberOfLines={3}>
-                  {t('schedule.assignRowSub', {
-                    role: staffTypeLabel(rowPersonPicker.role),
-                    n: rowPersonPicker.trIdx + 1,
-                  })}
+                <Text style={styles.modalTitle}>
+                  {rowPersonBorrowMode
+                    ? t('schedule.borrowEmployeeTitle')
+                    : t('schedule.assignRowPerson')}
+                </Text>
+                <Text style={styles.modalSub} numberOfLines={4}>
+                  {rowPersonBorrowMode
+                    ? t('schedule.borrowEmployeeHint')
+                    : t('schedule.assignRowSub', {
+                        role: staffTypeLabel(rowPersonPicker.role),
+                        n: rowPersonPicker.trIdx + 1,
+                      })}
                 </Text>
                 <FlatList
                   data={rowPickerNames}
@@ -1534,9 +1947,13 @@ export default function ManagerScheduleScreen() {
                   renderItem={({ item }) => (
                     <Pressable
                       style={styles.modalRow}
-                      onPress={() => applyRowPersonChoice(rowPersonPicker, item)}
+                      onPress={() => void applyRowPersonChoice(rowPersonPicker, item)}
                     >
-                      <Text style={styles.modalRowText}>{item}</Text>
+                      <Text style={styles.modalRowText}>
+                        {item === SCHEDULE_BORROW_PERSON_VALUE
+                          ? t('schedule.borrowEmployee')
+                          : item}
+                      </Text>
                     </Pressable>
                   )}
                 />
@@ -1672,6 +2089,7 @@ export default function ManagerScheduleScreen() {
               style={styles.modalCancel}
               onPress={() => {
                 setShiftEditor(null);
+                setRowPersonBorrowMode(false);
                 setRowPersonPicker(null);
                 restoreScheduleScroll();
               }}
@@ -1876,12 +2294,14 @@ const DayColRow = memo(function DayColRow({
   editable,
   onOpenShift,
   onLongPressShift,
+  onMarkDayOff,
 }: {
   row: CalendarBodyRow;
   daysWidth: number;
   editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
   onLongPressShift: (t: ShiftEditTarget) => void;
+  onMarkDayOff: (t: ShiftEditTarget) => void;
 }) {
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
@@ -1907,6 +2327,7 @@ const DayColRow = memo(function DayColRow({
             editable={editable}
             onOpenShift={onOpenShift}
             onLongPressShift={onLongPressShift}
+            onMarkDayOff={onMarkDayOff}
           />
         </View>
       ))}
@@ -1919,11 +2340,13 @@ const CalendarCellView = memo(function CalendarCellView({
   editable,
   onOpenShift,
   onLongPressShift,
+  onMarkDayOff,
 }: {
   cell: CalendarCell;
   editable: boolean;
   onOpenShift: (t: ShiftEditTarget) => void;
   onLongPressShift: (t: ShiftEditTarget) => void;
+  onMarkDayOff: (t: ShiftEditTarget) => void;
 }) {
   const { t } = useI18n();
   const dayOffLbl = t('schedule.dayOffLabel');
@@ -1941,7 +2364,13 @@ const CalendarCellView = memo(function CalendarCellView({
       trIdx: cell.trIdx,
       dayStr: cell.dayStr,
     };
-    const body = <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>;
+    const body = cell.otherStoreLabel ? (
+      <Text style={styles.otherStoreLabel} numberOfLines={2}>
+        {cell.otherStoreLabel}
+      </Text>
+    ) : (
+      <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
+    );
     if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
     return (
       <Pressable
@@ -1963,7 +2392,13 @@ const CalendarCellView = memo(function CalendarCellView({
     const body = (
       <>
         <Text style={styles.slotTime}>{cell.timeLabel}</Text>
-        <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
+        {cell.otherStoreLabel ? (
+          <Text style={styles.otherStoreLabel} numberOfLines={2}>
+            {cell.otherStoreLabel}
+          </Text>
+        ) : (
+          <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
+        )}
       </>
     );
     if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
@@ -2000,18 +2435,35 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
       ) : null}
       <Text style={styles.slotHours}>{cell.hours}h</Text>
+      {cell.otherStoreLabel ? (
+        <Text style={styles.otherStoreLabelOnShift} numberOfLines={1}>
+          {cell.otherStoreLabel}
+        </Text>
+      ) : null}
     </>
   );
   if (!editable) return <View style={filledStyle}>{filledBody}</View>;
   return (
-    <Pressable
-      style={filledStyle}
-      onPress={() => onOpenShift(target)}
-      onLongPress={() => onLongPressShift(target)}
-      delayLongPress={350}
-    >
-      {filledBody}
-    </Pressable>
+    <View style={filledStyle}>
+      <Pressable
+        style={styles.cellDayOffBtn}
+        onPress={() => onMarkDayOff(target)}
+        accessibilityRole="button"
+        accessibilityLabel={t('schedule.markDayOff')}
+        hitSlop={4}
+      >
+        <Text style={styles.cellDayOffBtnText}>×</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => onOpenShift(target)}
+        onLongPress={() => onLongPressShift(target)}
+        delayLongPress={350}
+        accessibilityRole="button"
+        accessibilityLabel={t('common.edit')}
+      >
+        {filledBody}
+      </Pressable>
+    </View>
   );
 });
 
@@ -2044,6 +2496,22 @@ const styles = StyleSheet.create({
   undoBtnDisabled: { opacity: 0.45 },
   undoBtnText: { color: '#334155', fontWeight: '700', fontSize: 14 },
   undoBtnTextDisabled: { color: '#94a3b8' },
+  historyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+  },
+  historyMeta: { fontSize: 11, color: '#94a3b8', textTransform: 'uppercase' },
+  historyRevertBtn: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  historyRevertBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   locRow: { paddingHorizontal: 12, marginTop: 6 },
   locRowContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   locChipsScroll: { flex: 1 },
@@ -2233,43 +2701,87 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
     lineHeight: 13,
+    textTransform: 'uppercase',
   },
   dataDays: {
     flexDirection: 'row',
     minHeight: DATA_ROW_MIN_H,
     alignItems: 'stretch',
   },
-  totalsPersonCell: {
-    minHeight: 72,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-    borderTopWidth: 1,
+  sideTotals: {
+    flexShrink: 0,
+    paddingHorizontal: 4,
+    borderLeftWidth: 1,
     borderColor: '#e2e8f0',
     backgroundColor: '#f8fafc',
-    justifyContent: 'center',
   },
-  totalsPersonLabel: {
-    fontSize: 11,
+  personTotalsTh: {
+    height: HEADER_ROW_H,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderColor: '#e2e8f0',
+    justifyContent: 'flex-end',
+  },
+  personTotalsSection: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+  },
+  groupOrderSectionTitle: {
+    color: '#334155',
+  },
+  groupOrderPersonLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  groupOrderDataRow: {
+    backgroundColor: '#f8fafc',
+  },
+  groupOrderCell: {
+    padding: 5,
+    justifyContent: 'center',
+    minHeight: DATA_ROW_MIN_H,
+  },
+  groupOrderInput: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    backgroundColor: '#fff',
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+    textAlign: 'center',
+  },
+  groupOrderReadonly: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+    textAlign: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+  },
+  personTotalsCell: {
+    minHeight: DATA_ROW_MIN_H,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#eef2f7',
+    justifyContent: 'center',
+    gap: 1,
+  },
+  sideTotalsTitle: {
+    fontSize: 10,
     fontWeight: '800',
     color: '#475569',
     textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
-  totalsDays: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderColor: '#e2e8f0',
-    backgroundColor: '#f8fafc',
-  },
-  totalsCell: {
-    minHeight: 72,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-    borderRightWidth: 1,
-    borderColor: '#eef2f7',
-    justifyContent: 'center',
-  },
-  totalsLine: { fontSize: 10, color: '#64748b', fontWeight: '600' },
-  totalsPay: { fontSize: 11, color: '#0f172a', fontWeight: '800', marginTop: 2 },
+  sideTotalsGross: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
+  sideTotalsNet: { fontSize: 11, fontWeight: '700', color: '#0f766e', marginTop: 4 },
+  sideTotalsTag: { fontSize: 10, fontWeight: '500', color: '#64748b' },
   cell: { minHeight: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
   cellInner: {
     flex: 1,
@@ -2278,13 +2790,40 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingVertical: 6,
     paddingHorizontal: 6,
+    position: 'relative',
   },
   cellInnerMuted: { flex: 1, opacity: 0.85, justifyContent: 'center' },
   slotTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
   slotBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   slotHours: { fontSize: 11, fontWeight: '700', color: '#334155', marginTop: 1 },
+  cellDayOffBtn: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    zIndex: 2,
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.75)',
+  },
+  cellDayOffBtnText: { fontSize: 16, fontWeight: '700', color: '#94a3b8', lineHeight: 18 },
   dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 6 },
   dayoffSmall: { fontSize: 11, fontWeight: '700', color: '#cbd5e1', textAlign: 'center' },
+  otherStoreLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9a3412',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  otherStoreLabelOnShift: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#9a3412',
+    marginTop: 2,
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',

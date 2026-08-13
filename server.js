@@ -181,6 +181,7 @@ Object.keys(exportVendorBundles).forEach(function (fileName) {
 /** HTML/CSS/app bundles — avoid stale UI after deploy (tip pool inputs, etc.). */
 const NO_CACHE_ASSET = new Set([
   "index.html",
+  "home.html",
   "styles.css",
   "app.js",
   "timecards-manager.js",
@@ -201,6 +202,19 @@ app.use((req, res, next) => {
     res.setHeader("Expires", "0");
   }
   next();
+});
+
+function sendHomeHtml(_req, res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.sendFile(path.join(__dirname, "home.html"));
+}
+
+/** Marketing homepage — login SPA stays at /app (and /index.html). */
+app.get(["/", "/home"], sendHomeHtml);
+
+app.get("/app", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 app.get("/support.html", (_req, res) => {
@@ -238,7 +252,7 @@ app.get("/support.html", (_req, res) => {
   res.type("html").send(withContact);
 });
 
-app.use(express.static(__dirname));
+app.use(express.static(__dirname, { index: false }));
 
 function createTwilioClient() {
   if (!TWILIO_ACCOUNT_SID) {
@@ -920,7 +934,11 @@ app.post("/api/voice/call", async (req, res) => {
   });
 });
 
-app.get("*", (_req, res) => {
+app.get("*", (req, res) => {
+  const p = String(req.path || "").split("?")[0];
+  if (p === "/" || p === "/home" || p === "/home.html") {
+    return sendHomeHtml(req, res);
+  }
   res.sendFile(path.join(__dirname, "index.html"));
 });
 

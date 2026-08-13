@@ -968,6 +968,73 @@ await verifyPayslipPatchedExport();
   console.log('OK: Payroll/Labor include VL/SL straight-time pay (Bernabe-style $655.50)');
 }
 
+/* Missing hours: payroll MISSED HOURS + OT-aware missed pay into TOTAL GROSS. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  const emp = {
+    id: 'e-miss',
+    firstName: 'MISS',
+    lastName: 'HOURS',
+    staffType: 'Kitchen',
+    hourlyRate: 19,
+    tipPoint: 0,
+  };
+  T.setPriorWeekRecordedMinsForTest(emp.id, 37 * 60);
+  const info = T.computeMissingHoursPay(emp, 6);
+  const expectedMissPay = 3 * 19 + 3 * 19 * 1.5; // 142.5
+  if (Math.abs((info.pay || 0) - expectedMissPay) > 0.01) {
+    throw new Error(
+      'Missing hours OT pay expected ' +
+        expectedMissPay +
+        ', got ' +
+        info.pay +
+        ' (reg=' +
+        info.regHours +
+        ' ot=' +
+        info.otHours +
+        ')'
+    );
+  }
+  const missMetrics = T.computePayrollRowMetrics({
+    emp: emp,
+    name: 'MISS HOURS',
+    regMins: 20 * 60,
+    otMins: 0,
+    totalMins: 20 * 60,
+    vlHours: 0,
+    slHours: 0,
+    missingHours: 6,
+    missingPay: info.pay,
+    regPay: 20 * 19,
+    otPay: 0,
+    vlPay: 0,
+    slPay: 0,
+    sohCount: 0,
+    sohPay: null,
+    sohDatesLabel: '—',
+    additionalCashTip: 0,
+    dishwasherTipsPay: 0,
+    grandTotalPay: 20 * 19,
+  });
+  const expectedMissGross = 20 * 19 + expectedMissPay;
+  if (Math.abs(missMetrics.gross - expectedMissGross) > 0.01) {
+    throw new Error(
+      'Payroll TOTAL GROSS must include missed pay (expected ' +
+        expectedMissGross +
+        ', got ' +
+        missMetrics.gross +
+        ')'
+    );
+  }
+  if (Math.abs(missMetrics.totalH - 26) > 0.01) {
+    throw new Error('Payroll TOTAL HOURS should include missed hours, got ' + missMetrics.totalH);
+  }
+  if (Math.abs(missMetrics.missedH - 6) > 0.01) {
+    throw new Error('Payroll MISSED HOURS column missing, got ' + missMetrics.missedH);
+  }
+  console.log('OK: Payroll includes missed hours/pay with OT factoring');
+}
+
 /* forceFresh: Employee Information + PTO rebuild from live employees / week extras. */
 {
   const leaveCode = fs.readFileSync(path.join(ROOT, 'employee-leave.js'), 'utf8');

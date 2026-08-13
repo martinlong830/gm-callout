@@ -40,7 +40,8 @@
   --app-nav-row-h: 3rem;
   --app-top-total-h: calc(var(--app-header-row-h) + var(--app-nav-row-h));
   --shift-edit-chrome: calc(var(--app-top-total-h) + var(--space-main) + var(--safe-bottom));
-  /* Person / Mon–Sun thead height — role section sticky top sits just below it */
+  /* Person / Mon–Sun thead height — role section sticky top sits just below it.
+     JS syncs this to the measured thead after each calendar render. */
   --calendar-thead-h: 3.75rem;
 }
 
@@ -209,7 +210,8 @@ html.authed .login-screen {
 .login-screen {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  /* Above notifications (200) and any app chrome so landing buttons stay clickable. */
+  z-index: 10000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -224,8 +226,28 @@ html.authed .login-screen {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   touch-action: manipulation;
+  pointer-events: auto !important;
   /* Force light form controls so password bullets stay dark under OS dark mode. */
   color-scheme: light;
+}
+
+/* display:flex above must not override [hidden] — otherwise the gate can stay
+   visible but non-interactive when a concurrent auth restore races sign-out. */
+.login-screen[hidden] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+html:not(.authed) .login-screen:not([hidden]) {
+  pointer-events: auto !important;
+}
+
+html:not(.authed) .login-screen:not([hidden]) .btn,
+html:not(.authed) .login-screen:not([hidden]) .login-link-btn,
+html:not(.authed) .login-screen:not([hidden]) .landing-secondary-btn {
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 1;
 }
 
 /* Create account: grey band above the card (class toggled in index.html) */
@@ -2249,10 +2271,11 @@ html.authed .header-signout-btn {
 }
 
 .calendar-section-actions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 10px;
+  margin-left: 0;
+  margin-top: 6px;
   vertical-align: middle;
 }
 
@@ -2534,9 +2557,101 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 /* Wide schedule matrix scrolls inside the card (phones). */
 #calendarGrid {
   max-width: 100%;
-  overflow-x: auto;
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
+  overscroll-behavior: contain;
+}
+
+/* Legacy layout wrapper (no longer used for side day-totals rail). */
+.schedule-calendar-layout {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+
+.schedule-calendar-main {
+  min-width: 0;
+  width: 100%;
+}
+
+.schedule-side-totals {
+  display: none;
+}
+
+/* Per-person week hours column (scrolls with day columns). */
+.calendar-matrix .calendar-person-totals-col {
+  width: 5rem;
+  min-width: 5rem;
+  max-width: 5rem;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--surface) 94%, var(--primary) 6%);
+  border-left: 1px solid var(--border);
+  vertical-align: middle;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.calendar-matrix thead th.calendar-person-totals-col {
+  vertical-align: bottom;
+}
+
+.calendar-matrix .calendar-person-totals-col--section {
+  /* Let FOH/BOH/Delivery/group-order section strip colors paint through. */
+  border-left-color: transparent;
+  padding: 10px 12px;
+  vertical-align: middle;
+  line-height: 1.25;
+}
+
+/* Totals column rides with the sticky section bar while scrolling vertically. */
+.calendar-matrix .calendar-group-row td.calendar-person-totals-col--section {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: 0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+#calendarGrid .calendar-matrix .calendar-group-row td.calendar-person-totals-col--section,
+#empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-person-totals-col--section {
+  top: var(--calendar-thead-h);
+}
+
+.calendar-person-totals-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+  min-width: 0;
+}
+
+/* Match shift tile `.calendar-slot-rp-time` / `.calendar-slot-rp-hours`. */
+.calendar-person-totals-cell .schedule-day-totals-hours {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.calendar-person-totals-cell .schedule-day-totals-hours-net {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #0f766e;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.calendar-person-totals-cell .schedule-day-totals-tag {
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  opacity: 0.85;
+  color: var(--text-muted);
 }
 
 .schedule-toolbar-compact {
@@ -2762,7 +2877,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-matrix--redpoke .calendar-section-foh td,
 .calendar-matrix--redpoke .calendar-section-delivery td,
-.calendar-matrix--redpoke .calendar-section-boh td {
+.calendar-matrix--redpoke .calendar-section-boh td,
+.calendar-matrix--redpoke .calendar-section-group-order td {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.75rem;
@@ -2775,7 +2891,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-matrix--redpoke .calendar-section-foh td.calendar-group-label {
-  border-left: 3px solid #047857;
+  border-left: none;
 }
 
 .calendar-matrix--redpoke .calendar-section-boh td {
@@ -2784,7 +2900,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-matrix--redpoke .calendar-section-boh td.calendar-group-label {
-  border-left: 3px solid #92400e;
+  border-left: none;
 }
 
 .calendar-matrix--redpoke .calendar-section-delivery td {
@@ -2793,7 +2909,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-matrix--redpoke .calendar-section-delivery td.calendar-group-label {
-  border-left: 3px solid #1d4ed8;
+  border-left: none;
+}
+
+.calendar-matrix--redpoke .calendar-section-group-order td {
+  color: #334155;
+  background: color-mix(in srgb, #f8fafc 88%, #fff);
+  border-top: none;
+}
+
+.calendar-matrix--redpoke .calendar-section-group-order td.calendar-group-label {
+  border-left: none;
+  font-weight: 600;
 }
 
 .calendar-slot-rp {
@@ -2906,8 +3033,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
-.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
-.calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
+.calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
   width: auto;
   min-width: 11rem;
   box-sizing: border-box;
@@ -2915,8 +3041,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 @media (max-width: 1023px) {
   .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
-  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
-  .calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
     min-width: clamp(11rem, 42vw, 14.5rem);
   }
 }
@@ -2937,6 +3062,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   position: sticky;
   top: 0;
   z-index: 4;
+  box-sizing: border-box;
   box-shadow: 0 1px 0 var(--border);
 }
 
@@ -2945,27 +3071,89 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   z-index: 6;
 }
 
-/* Sticky per-day hours/pay summary — stays visible while the grid scrolls. */
+/* Legacy bottom footer totals (removed from main schedule; kept harmless if present). */
 .calendar-matrix tfoot.schedule-day-totals {
-  position: sticky;
-  bottom: 0;
-  z-index: 3;
+  display: none;
 }
 
-.calendar-matrix tfoot.schedule-day-totals td {
+.calendar-group-order-row td {
+  background: color-mix(in srgb, #f8fafc 55%, #fff);
+}
+
+.calendar-group-order-row:nth-child(even) td {
+  background: color-mix(in srgb, #f1f5f9 40%, #fff);
+}
+
+.calendar-group-order-label {
   vertical-align: middle;
-  padding: 10px 10px;
-  background: color-mix(in srgb, var(--surface) 92%, var(--primary) 8%);
-  border-bottom: none;
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -6px 14px rgba(15, 23, 42, 0.06);
 }
 
-.schedule-day-totals-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.calendar-group-order-label-text {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text, #0f172a);
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  padding: 2px 0;
+}
+
+.calendar-group-order-cell {
+  padding: 6px 5px !important;
+  vertical-align: middle;
+}
+
+.calendar-group-order-input {
+  display: block;
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 6px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text, #0f172a);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-align: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.calendar-group-order-input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.calendar-group-order-input:hover {
+  border-color: #94a3b8;
+}
+
+.calendar-group-order-input:focus {
+  outline: none;
+  border-color: #64748b;
+  background: #f8fafc;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.18);
+}
+
+.calendar-group-order-readonly {
+  min-height: 1.75rem;
+  padding: 7px 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--text, #0f172a);
+  border-radius: 6px;
+  background: color-mix(in srgb, #fff 70%, #f1f5f9);
+}
+
+.calendar-group-order-totals-spacer {
+  background: transparent !important;
 }
 
 .schedule-day-totals-hours {
@@ -3002,15 +3190,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   opacity: 0.72;
 }
 
-.schedule-day-totals-pay {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--primary);
-  letter-spacing: 0.01em;
-  line-height: 1.25;
-  font-variant-numeric: tabular-nums;
-}
-
 .calendar-row-away-primary {
   display: inline-block;
   margin-top: 4px;
@@ -3031,10 +3210,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 @media (max-width: 640px) {
-  .calendar-matrix tfoot.schedule-day-totals td {
-    padding: 8px 6px;
-  }
-
   .schedule-day-totals-hours {
     font-size: 0.75rem;
   }
@@ -3043,8 +3218,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     font-size: 0.6875rem;
   }
 
-  .schedule-day-totals-pay {
-    font-size: 0.6875rem;
+  .calendar-matrix .calendar-person-totals-col {
+    width: 4.75rem;
+    min-width: 4.75rem;
+    max-width: 4.75rem;
   }
 }
 
@@ -3057,29 +3234,23 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: var(--surface);
   position: sticky;
   left: 0;
-  z-index: 2;
+  z-index: 5;
   vertical-align: middle;
   box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35);
 }
 
-/* Person column: keep sticky chrome visible; never clip the row <select>.
-   No tinted background, heavy border, or edge shade — matches day cells. */
-.calendar-matrix .calendar-row-person-col {
+/* Data-row Person cells only: overflow visible so the <select> isn’t clipped.
+   Do NOT set this on section labels — overflow:visible breaks sticky left. */
+.calendar-matrix tbody tr.calendar-data-row > td.calendar-row-person-col {
   overflow: visible;
-  box-shadow: none;
+  background: var(--surface);
 }
 
 .calendar-matrix thead th.calendar-row-person-col {
-  z-index: 4;
+  z-index: 7;
   vertical-align: bottom;
   color: var(--text);
   letter-spacing: 0.04em;
-}
-
-.calendar-matrix tfoot.schedule-day-totals td.calendar-row-person-col {
-  z-index: 4;
-  overflow: hidden;
-  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35), 0 -6px 14px rgba(15, 23, 42, 0.06);
 }
 
 .calendar-row-person {
@@ -3215,6 +3386,37 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-slot-wrap.calendar-slot-compact {
   min-height: 5rem;
+  position: relative;
+}
+
+.calendar-slot-dayoff-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, #fff 75%, transparent);
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.calendar-slot-dayoff-btn:hover,
+.calendar-slot-dayoff-btn:focus-visible {
+  color: #0f172a;
+  border-color: #cbd5e1;
+  background: #fff;
+  outline: none;
 }
 
 .calendar-slot-wrap:not(.calendar-slot-empty) {
@@ -3426,13 +3628,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 /* Role section labels: sticky left (with Person col) + sticky top while the grid scrolls. */
 .calendar-matrix .calendar-group-row td.calendar-group-label {
+  position: sticky;
+  left: 0;
   top: 0;
-  z-index: 3;
-  /* nowrap keeps Person/Mon heights locked; wrapping in the narrow sticky col was a drift source. */
-  white-space: nowrap;
+  z-index: 6;
+  overflow: hidden;
+  /* Allow Add slot under the title so it isn’t clipped in the sticky col. */
+  white-space: normal;
   line-height: 1.25;
   vertical-align: middle;
-  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35), 0 2px 8px -4px rgba(15, 23, 42, 0.18);
 }
 
 .calendar-matrix .calendar-group-row td.calendar-group-fill {
@@ -3448,10 +3652,45 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 /* Sit role section bars under the sticky Person/day thead (not on top of it). */
 #calendarGrid .calendar-matrix .calendar-group-row td.calendar-group-label,
-#empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-group-label,
+#empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-group-label {
+  position: sticky;
+  left: 0;
+  top: var(--calendar-thead-h);
+  z-index: 6;
+}
+
 #calendarGrid .calendar-matrix .calendar-group-row td.calendar-group-fill,
 #empCalendarGrid .calendar-matrix .calendar-group-row td.calendar-group-fill {
   top: var(--calendar-thead-h);
+}
+
+/* Colored left bar stays on the sticky label (inset shadow, not a scrolling border). */
+.calendar-matrix--redpoke .calendar-section-foh td.calendar-group-label {
+  box-shadow:
+    inset 3px 0 0 #047857,
+    4px 0 10px -8px rgba(15, 23, 42, 0.35),
+    0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+.calendar-matrix--redpoke .calendar-section-boh td.calendar-group-label {
+  box-shadow:
+    inset 3px 0 0 #92400e,
+    4px 0 10px -8px rgba(15, 23, 42, 0.35),
+    0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+.calendar-matrix--redpoke .calendar-section-delivery td.calendar-group-label {
+  box-shadow:
+    inset 3px 0 0 #1d4ed8,
+    4px 0 10px -8px rgba(15, 23, 42, 0.35),
+    0 2px 8px -4px rgba(15, 23, 42, 0.18);
+}
+
+.calendar-matrix--redpoke .calendar-section-group-order td.calendar-group-label {
+  box-shadow:
+    inset 3px 0 0 #64748b,
+    4px 0 10px -8px rgba(15, 23, 42, 0.35),
+    0 2px 8px -4px rgba(15, 23, 42, 0.18);
 }
 
 .calendar-slot-wrap.calendar-slot-empty {
@@ -3508,6 +3747,33 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text-muted);
 }
 
+.calendar-slot-other-store {
+  margin-top: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: #9a3412;
+  background: color-mix(in srgb, #fdba74 35%, var(--surface));
+  border: 1px solid color-mix(in srgb, #f97316 40%, transparent);
+  line-height: 1.35;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-slot-empty .calendar-slot-other-store {
+  margin-top: auto;
+}
+
+.calendar-slot-rp .calendar-slot-other-store {
+  margin-top: 3px;
+  align-self: stretch;
+}
+
 .calendar-slot-wrap.calendar-slot-empty:hover,
 .calendar-slot-wrap.calendar-slot-empty:focus-visible {
   outline: none;
@@ -3525,7 +3791,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   html.authed.manager-app .app {
     display: flex;
     flex-direction: column;
-    min-height: 100dvh;
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
   }
 
   html.authed.manager-app .main {
@@ -3533,6 +3801,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   #screen-schedule.active {
@@ -3540,6 +3809,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden;
   }
 
   #screen-schedule .calendar-table-wrap {
@@ -3555,13 +3825,17 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     border-right: none;
     padding: 12px var(--space-main) 16px;
     box-sizing: border-box;
+    overflow: hidden;
   }
 
+  /* min-height:0 is required — a floor like 72vh let the grid grow with the
+     table so overflow:auto never created a vertical scrollport. */
   #screen-schedule #calendarGrid {
-    flex: 1;
-    min-height: min(72vh, calc(100dvh - 220px));
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col),
@@ -3570,8 +3844,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   .calendar-matrix.calendar-matrix--redpoke thead th:not(.time-col):not(.calendar-row-person-col),
-  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col),
-  .calendar-matrix.calendar-matrix--redpoke tfoot.schedule-day-totals td:not(.time-col):not(.calendar-row-person-col) {
+  .calendar-matrix.calendar-matrix--redpoke tbody tr:not(.calendar-group-row) td:not(.time-col):not(.calendar-row-person-col) {
     min-width: 11rem;
     width: auto;
   }
@@ -6280,7 +6553,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-tip-hint {
   font-size: 0.6875rem;
+  line-height: 1.2;
+  min-height: 1.2em;
   color: var(--muted, #64748b);
+}
+
+.timecards-tip-hint--spacer {
+  visibility: hidden;
+  user-select: none;
 }
 
 .timecards-borrow-bar {
@@ -6306,6 +6586,94 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .timecards-borrow-hint {
   margin: 6px 0 0;
+}
+
+.schedule-history-list {
+  max-height: min(50vh, 360px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.schedule-borrow-employee-list {
+  max-height: min(50vh, 360px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.schedule-borrow-employee-btn {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.schedule-borrow-employee-btn:hover,
+.schedule-borrow-employee-btn:focus-visible {
+  border-color: var(--accent, #2563eb);
+  outline: none;
+}
+
+.schedule-borrow-employee-name {
+  font-weight: 600;
+  min-width: 0;
+}
+
+.schedule-borrow-employee-meta {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  color: var(--muted, #64748b);
+}
+
+.schedule-borrow-employee-empty {
+  padding: 12px;
+  color: var(--muted, #64748b);
+  font-size: 0.875rem;
+}
+
+.schedule-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.schedule-history-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.schedule-history-row-label {
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.schedule-history-row-source {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
 }
 
 .timecards-tip-label {
