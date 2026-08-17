@@ -92,21 +92,61 @@
     }
   }
 
+  function ensureLocaleDictLoaded(lang) {
+    return new Promise(function (resolve) {
+      if (lang !== 'es') {
+        resolve();
+        return;
+      }
+      if (global.GM_I18N_ES && typeof global.GM_I18N_ES === 'object') {
+        resolve();
+        return;
+      }
+      var existing = document.querySelector('script[data-gm-locale-es]');
+      if (existing) {
+        existing.addEventListener('load', function () {
+          resolve();
+        });
+        existing.addEventListener('error', function () {
+          resolve();
+        });
+        return;
+      }
+      var s = document.createElement('script');
+      s.src = 'locales/es.js?v=perf-1';
+      s.setAttribute('data-gm-locale-es', '1');
+      s.onload = function () {
+        resolve();
+      };
+      s.onerror = function () {
+        resolve();
+      };
+      document.head.appendChild(s);
+    });
+  }
+
   function setLocale(lang, opts) {
     var next = lang === 'es' ? 'es' : 'en';
     var silent = opts && opts.silent;
-    locale = next;
-    writeStored(next);
-    try {
-      document.documentElement.lang = next === 'es' ? 'es' : 'en';
-    } catch (e) {}
-    applyDomI18n(document);
-    if (!silent) refreshDynamicUi();
-    listeners.forEach(function (fn) {
+    function apply() {
+      locale = next;
+      writeStored(next);
       try {
-        fn(next);
+        document.documentElement.lang = next === 'es' ? 'es' : 'en';
       } catch (e) {}
-    });
+      applyDomI18n(document);
+      if (!silent) refreshDynamicUi();
+      listeners.forEach(function (fn) {
+        try {
+          fn(next);
+        } catch (e) {}
+      });
+    }
+    if (next === 'es') {
+      ensureLocaleDictLoaded('es').then(apply);
+      return next;
+    }
+    apply();
     return next;
   }
 
@@ -224,11 +264,18 @@
     try {
       document.documentElement.lang = locale === 'es' ? 'es' : 'en';
     } catch (e) {}
-    ensureLoginToggle();
-    ensureHeaderToggles();
-    ensureAccountLanguageRow();
-    applyDomI18n(document);
-    bindToggleRoot(document);
+    function finish() {
+      ensureLoginToggle();
+      ensureHeaderToggles();
+      ensureAccountLanguageRow();
+      applyDomI18n(document);
+      bindToggleRoot(document);
+    }
+    if (locale === 'es') {
+      ensureLocaleDictLoaded('es').then(finish);
+      return;
+    }
+    finish();
   }
 
   if (document.readyState === 'loading') {

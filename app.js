@@ -3020,7 +3020,7 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=missing-hours-1';
+      script.src = 'timecards-manager.js?v=perf-1';
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -18146,7 +18146,15 @@
     } else if (opts.navigateToSchedule) {
       showScreen(1);
     }
-    void ensureTimecardsManagerLoaded().catch(function () {});
+    /* Prefetch timecards after idle — keep first schedule paint snappy (~427KB). */
+    function prefetchTimecardsWhenIdle() {
+      void ensureTimecardsManagerLoaded().catch(function () {});
+    }
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(prefetchTimecardsWhenIdle, { timeout: 12000 });
+    } else {
+      setTimeout(prefetchTimecardsWhenIdle, 5000);
+    }
     if (
       window.gmCalloutNotificationsCenter &&
       typeof window.gmCalloutNotificationsCenter.start === 'function'

@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=group-order-7" />
+  <link rel="stylesheet" href="styles.css?v=perf-1" />
+  <link rel="preload" href="app.js?v=perf-1" as="script" />
+  <link rel="preload" href="/vendor/supabase-js.js" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
     (function () {
@@ -2042,9 +2044,22 @@
   </div>
 
   <script src="/gm-supabase-config.js?v=2"></script>
-  <script src="locales/en.js?v=group-order-2"></script>
-  <script src="locales/es.js?v=group-order-2"></script>
-  <script src="i18n.js?v=admin-notif-1"></script>
+  <script src="locales/en.js?v=perf-1"></script>
+  <script src="i18n.js?v=perf-1"></script>
+  <script>
+    /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
+    (function () {
+      try {
+        var loc = localStorage.getItem('gm-callout-locale-v1') || '';
+        if (loc !== 'es') return;
+      } catch (_e) {
+        return;
+      }
+      var s = document.createElement('script');
+      s.src = 'locales/es.js?v=perf-1';
+      document.head.appendChild(s);
+    })();
+  </script>
   <script>
     /* Login gate opens before deferred app bundles finish loading. */
     window.gmCalloutSetLoginGateOpen = function (isOpen) {
@@ -3810,15 +3825,37 @@
   </script>
   <script defer src="/vendor/supabase-js.js"></script>
   <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
-  <script defer src="employee-leave.js?v=timecards-tips-1"></script>
-  <script defer src="break-policy.js?v=timecards-tips-1"></script>
-  <script defer src="app.js?v=group-order-6"></script>
-  <script defer src="employee-app.js?v=admin-notif-1"></script>
-  <script defer src="manager-messaging.js?v=admin-notif-1"></script>
-  <script defer src="timeclock-schedule-match.js?v=admin-notif-1"></script>
-  <script defer src="timeclock-app.js?v=admin-notif-1"></script>
-  <script defer src="portal-auth-client.js?v=admin-notif-1"></script>
-  <script defer src="notifications-center.js?v=notif-route-1"></script>
-  <script defer src="login-timeclock.js?v=admin-notif-1"></script>
+  <script defer src="employee-leave.js?v=perf-1"></script>
+  <script defer src="break-policy.js?v=perf-1"></script>
+  <script defer src="portal-auth-client.js?v=perf-1"></script>
+  <script defer src="app.js?v=perf-1"></script>
+  <script defer src="employee-app.js?v=perf-1"></script>
+  <script defer src="notifications-center.js?v=perf-1"></script>
+  <script defer src="login-timeclock.js?v=perf-1"></script>
+  <script>
+    /* Heavier role modules after first paint (schedule/login stay responsive). */
+    (function () {
+      var secondary = [
+        'manager-messaging.js?v=perf-1',
+        'timeclock-schedule-match.js?v=perf-1',
+        'timeclock-app.js?v=perf-1',
+      ];
+      function loadSecondary() {
+        secondary.forEach(function (src) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.async = true;
+          document.body.appendChild(s);
+        });
+      }
+      if (document.readyState === 'complete') {
+        setTimeout(loadSecondary, 0);
+      } else {
+        window.addEventListener('load', function () {
+          setTimeout(loadSecondary, 0);
+        });
+      }
+    })();
+  </script>
 </body>
 </html>

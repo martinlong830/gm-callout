@@ -6,6 +6,7 @@ const http = require("http");
 const https = require("https");
 const path = require("path");
 const express = require("express");
+const compression = require("compression");
 const dotenv = require("dotenv");
 const twilio = require("twilio");
 
@@ -16,6 +17,16 @@ if (typeof dns.setDefaultResultOrder === "function") {
 }
 
 const app = express();
+/** Gzip/brotli-capable clients: cuts ~675KB app.js / CSS payloads dramatically. */
+app.use(
+  compression({
+    threshold: 1024,
+    filter: function (req, res) {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 
 function stripEnv(value) {
   if (value == null || value === "") return "";
@@ -178,10 +189,16 @@ Object.keys(exportVendorBundles).forEach(function (fileName) {
   });
 });
 
-/** HTML/CSS/app bundles — avoid stale UI after deploy (tip pool inputs, etc.). */
-const NO_CACHE_ASSET = new Set([
+/** HTML only — JS/CSS use ?v= cache-bust and can be cached aggressively. */
+const NO_CACHE_HTML = new Set([
   "index.html",
   "home.html",
+  "support.html",
+  "privacy.html",
+]);
+
+/** Fingerprinted static bundles (query ?v=… changes on deploy). */
+const LONG_CACHE_ASSETS = new Set([
   "styles.css",
   "app.js",
   "timecards-manager.js",
@@ -189,17 +206,28 @@ const NO_CACHE_ASSET = new Set([
   "timeclock-app.js",
   "break-policy.js",
   "employee-leave.js",
-  "support.html",
-  "privacy.html",
   "portal-auth-client.js",
+  "employee-app.js",
+  "manager-messaging.js",
+  "notifications-center.js",
+  "login-timeclock.js",
+  "i18n.js",
+  "en.js",
+  "es.js",
+  "gm-supabase-init.js",
+  "gm-supabase-config.js",
 ]);
 
 app.use((req, res, next) => {
-  const base = path.basename(req.path.split("?")[0] || "");
-  if (NO_CACHE_ASSET.has(base)) {
+  const base = path.basename((req.path || "").split("?")[0] || "");
+  const versioned = /[?&]v=/.test(req.url || "");
+  if (NO_CACHE_HTML.has(base)) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+  } else if (versioned && LONG_CACHE_ASSETS.has(base)) {
+    /* Immutable while the ?v= fingerprint stays the same — avoids re-downloading ~1MB every visit. */
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   }
   next();
 });

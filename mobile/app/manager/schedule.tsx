@@ -15,9 +15,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import {
@@ -201,6 +202,11 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
   return '#92400e';
 }
 
+/** Keep schedule tab usable if a render throw escapes (admin cold-starts here). */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
+
 export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role, session } = useAuth();
@@ -237,6 +243,7 @@ export default function ManagerScheduleScreen() {
   const [editBreakType, setEditBreakType] = useState<BreakAnnotationType>('BREAK TIME');
   const [editBreakTime, setEditBreakTime] = useState('15:00');
   const [editWorker, setEditWorker] = useState('Unassigned');
+  const [shiftPersonBorrowMode, setShiftPersonBorrowMode] = useState(false);
   const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
   const [rowPersonBorrowMode, setRowPersonBorrowMode] = useState(false);
@@ -333,6 +340,16 @@ export default function ManagerScheduleScreen() {
             ['schedule_published'],
             session?.user?.id
           );
+          /* Snapshot publish in revision history (matches web). */
+          void insertScheduleRevision(supabase, {
+            teamStateId,
+            userId: session?.user?.id,
+            source: 'publish',
+            assignments: assignmentStoreRef.current,
+            draft: draftScheduleRawRef.current ?? {},
+            published: payload,
+            dedupe: false,
+          });
           const notify = await portalNotifySchedulePublished({
             weekMondayIso: selectedWeekMonday,
             weekRangeLabel: selectedWeekRange,
@@ -543,16 +560,18 @@ export default function ManagerScheduleScreen() {
               markDirty: false,
               pushedUpdatedAt,
             });
-            if (draftToSave !== undefined) {
-              void insertScheduleRevision(supabase, {
-                teamStateId,
-                userId: session?.user?.id,
-                source: 'persist',
-                assignments: toSave,
-                draft: draftToSave,
-                published: teamState?.schedule_published ?? null,
-              });
-            }
+            /* Always snapshot after a clean sync (assignments and/or draft) — matches web. */
+            void insertScheduleRevision(supabase, {
+              teamStateId,
+              userId: session?.user?.id,
+              source: 'persist',
+              assignments: toSave,
+              draft:
+                draftToSave !== undefined
+                  ? draftToSave
+                  : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {},
+              published: teamState?.schedule_published ?? null,
+            });
           }
         }
       } finally {
@@ -682,6 +701,7 @@ export default function ManagerScheduleScreen() {
                 pendingStoreRef.current = nextAssign;
                 pendingDraftRef.current = nextDraft;
                 localEditPendingRef.current = true;
+                /* Match web: restore assignments + draft only; leave published weeks as-is. */
                 await persistCloud(nextAssign, nextDraft);
                 await insertScheduleRevision(sb, {
                   teamStateId,
@@ -694,6 +714,7 @@ export default function ManagerScheduleScreen() {
                 });
                 setHistoryOpen(false);
                 Alert.alert(t('schedule.hardRevertDone'), t('schedule.hardRevertDoneBody'));
+                await refetch({ silent: true });
               } finally {
                 setHistoryBusyId(null);
               }
@@ -791,22 +812,25 @@ export default function ManagerScheduleScreen() {
     [employees, borrowByEmpId]
   );
 
-  const schedule = useMemo(
-    () =>
-      buildSchedule({
+  const schedule = useMemo(() => {
+    try {
+      return buildSchedule({
         allWeekDays,
         draftScheduleRaw,
         employees: lites,
         restaurants,
         currentRestaurantId,
         assignmentStore,
-      }),
-    [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]
-  );
+      });
+    } catch (err) {
+      console.warn('buildSchedule', err);
+      return [] as ScheduleRow[];
+    }
+  }, [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]);
 
-  const otherStoreDayLabels = useMemo(
-    () =>
-      buildOtherStoreDayLabelMap({
+  const otherStoreDayLabels = useMemo(() => {
+    try {
+      return buildOtherStoreDayLabelMap({
         visibleDays,
         weekIndex,
         draftScheduleRaw,
@@ -814,21 +838,24 @@ export default function ManagerScheduleScreen() {
         restaurants,
         assignmentStore,
         currentRestaurantId,
-      }),
-    [
-      visibleDays,
-      weekIndex,
-      draftScheduleRaw,
-      draftRows,
-      restaurants,
-      assignmentStore,
-      currentRestaurantId,
-    ]
-  );
+      });
+    } catch (err) {
+      console.warn('buildOtherStoreDayLabelMap', err);
+      return new Map<string, string>();
+    }
+  }, [
+    visibleDays,
+    weekIndex,
+    draftScheduleRaw,
+    draftRows,
+    restaurants,
+    assignmentStore,
+    currentRestaurantId,
+  ]);
 
-  const calendarBody = useMemo(
-    () =>
-      buildCalendarBody(
+  const calendarBody = useMemo(() => {
+    try {
+      return buildCalendarBody(
         schedule,
         visibleDays,
         draftRows,
@@ -838,19 +865,22 @@ export default function ManagerScheduleScreen() {
         assignmentStore,
         weekIndex,
         otherStoreDayLabels
-      ),
-    [
-      schedule,
-      visibleDays,
-      draftRows,
-      lites,
-      currentRestaurantId,
-      slotOrderByRestaurant,
-      assignmentStore,
-      weekIndex,
-      otherStoreDayLabels,
-    ]
-  );
+      );
+    } catch (err) {
+      console.warn('buildCalendarBody', err);
+      return [] as CalendarBodyRow[];
+    }
+  }, [
+    schedule,
+    visibleDays,
+    draftRows,
+    lites,
+    currentRestaurantId,
+    slotOrderByRestaurant,
+    assignmentStore,
+    weekIndex,
+    otherStoreDayLabels,
+  ]);
 
   /** Display position within role section → enable ↑/↓. */
   const slotMoveFlags = useMemo(() => {
@@ -990,6 +1020,7 @@ export default function ManagerScheduleScreen() {
   function openShiftEditor(target: ShiftEditTarget) {
     if (!scheduleEditable) return;
     captureScheduleScroll();
+    setShiftPersonBorrowMode(false);
     const wk = weekdayKeyFromScheduleDay(target.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
     if (target.shift) {
@@ -1166,6 +1197,10 @@ export default function ManagerScheduleScreen() {
 
   function applyShiftDetailsSave() {
     if (!shiftEditor || !isManagerLikeRole(role) || !scheduleEditable) return;
+    if (editWorker === SCHEDULE_BORROW_PERSON_VALUE) {
+      setShiftPersonBorrowMode(true);
+      return;
+    }
     const wk = weekdayKeyFromScheduleDay(shiftEditor.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
     if (di < 0) return;
@@ -1194,22 +1229,29 @@ export default function ManagerScheduleScreen() {
     const breakText = formatBreakAnnotation(breakLabel || '3:00PM', breakType);
     const list =
       editWorker === 'Unassigned' ? ['Unassigned'] : [editWorker].filter(Boolean);
-    const ok = persistSlotEdit({
-      role: shiftEditor.role,
-      trIdx: shiftEditor.trIdx,
-      dayStr: shiftEditor.dayStr,
-      start,
-      end,
-      isDayOff: editDayOff,
-      breakText,
-      workers: editDayOff ? null : list,
-    });
-    if (!ok) {
-      Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
-      return;
-    }
-    setShiftEditor(null);
-    restoreScheduleScroll();
+    void (async () => {
+      if (!editDayOff && editWorker !== 'Unassigned') {
+        const emp = employees.find((e) => employeeDisplayName(e) === editWorker) || null;
+        await ensureWeekBorrowForEmployee(emp);
+      }
+      const ok = persistSlotEdit({
+        role: shiftEditor.role,
+        trIdx: shiftEditor.trIdx,
+        dayStr: shiftEditor.dayStr,
+        start,
+        end,
+        isDayOff: editDayOff,
+        breakText,
+        workers: editDayOff ? null : list,
+      });
+      if (!ok) {
+        Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
+        return;
+      }
+      setShiftPersonBorrowMode(false);
+      setShiftEditor(null);
+      restoreScheduleScroll();
+    })();
   }
 
   function addSlotForRole(roleKey: RoleKey) {
@@ -1453,18 +1495,28 @@ export default function ManagerScheduleScreen() {
 
   const shiftPickerNames = useMemo(() => {
     if (!shiftEditor) return [] as string[];
-    const names = employees
-      .filter((e) => {
-        const st = normalizeEmployeeStaffType(e.staffType) || e.staffType;
-        if (st !== shiftEditor.role) return false;
-        const u = e.usualRestaurant || 'both';
-        if (u === 'both') return true;
-        return u === currentRestaurantId;
-      })
-      .map(employeeDisplayName)
-      .filter(Boolean);
-    return ['Unassigned', ...names];
-  }, [shiftEditor, employees, currentRestaurantId]);
+    if (shiftPersonBorrowMode) {
+      return namesForScheduleBorrowPersonPicker(lites, shiftEditor.role, currentRestaurantId);
+    }
+    const pool = namesForScheduleRowPersonPicker(lites, shiftEditor.role, currentRestaurantId);
+    const selected = editWorker && editWorker !== 'Unassigned' ? editWorker : '';
+    const base =
+      selected && selected !== SCHEDULE_BORROW_PERSON_VALUE
+        ? (() => {
+            const selKey = selected.trim().toLowerCase();
+            const inPool = pool.some((n) => n.trim().toLowerCase() === selKey);
+            return inPool
+              ? (['Unassigned', ...pool] as string[])
+              : (['Unassigned', selected, ...pool] as string[]);
+          })()
+        : (['Unassigned', ...pool] as string[]);
+    const borrowPool = namesForScheduleBorrowPersonPicker(
+      lites,
+      shiftEditor.role,
+      currentRestaurantId
+    );
+    return borrowPool.length ? [...base, SCHEDULE_BORROW_PERSON_VALUE] : base;
+  }, [shiftEditor, shiftPersonBorrowMode, lites, currentRestaurantId, editWorker]);
 
   const editHoursLabel = useMemo(() => {
     if (editDayOff) return '';
@@ -1919,6 +1971,7 @@ export default function ManagerScheduleScreen() {
           style={styles.modalBackdrop}
           onPress={() => {
             setShiftEditor(null);
+            setShiftPersonBorrowMode(false);
             setRowPersonBorrowMode(false);
             setRowPersonPicker(null);
             restoreScheduleScroll();
@@ -2059,21 +2112,56 @@ export default function ManagerScheduleScreen() {
                         </View>
                       </View>
                     ) : null}
-                    <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>{t('common.person')}</Text>
+                    <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>
+                      {shiftPersonBorrowMode
+                        ? t('schedule.borrowEmployeeTitle')
+                        : t('common.person')}
+                    </Text>
+                    {shiftPersonBorrowMode ? (
+                      <Text style={styles.modalSub} numberOfLines={3}>
+                        {t('schedule.borrowEmployeeHint')}
+                      </Text>
+                    ) : null}
+                    {shiftPersonBorrowMode ? (
+                      <Pressable
+                        style={[styles.editChip, { marginBottom: 8, alignSelf: 'flex-start' }]}
+                        onPress={() => setShiftPersonBorrowMode(false)}
+                      >
+                        <Text style={styles.editChipText}>{t('common.back')}</Text>
+                      </Pressable>
+                    ) : null}
                     <View style={styles.chipWrap}>
-                      {shiftPickerNames.slice(0, 12).map((name) => (
+                      {shiftPickerNames.map((name) => (
                         <Pressable
                           key={name}
-                          onPress={() => setEditWorker(name)}
-                          style={[styles.editChip, editWorker === name && styles.editChipActive]}
+                          onPress={() => {
+                            if (name === SCHEDULE_BORROW_PERSON_VALUE) {
+                              setShiftPersonBorrowMode(true);
+                              return;
+                            }
+                            setEditWorker(name);
+                            if (shiftPersonBorrowMode) setShiftPersonBorrowMode(false);
+                          }}
+                          style={[
+                            styles.editChip,
+                            editWorker === name &&
+                              name !== SCHEDULE_BORROW_PERSON_VALUE &&
+                              styles.editChipActive,
+                          ]}
                         >
                           <Text
                             style={[
                               styles.editChipText,
-                              editWorker === name && styles.editChipTextActive,
+                              editWorker === name &&
+                                name !== SCHEDULE_BORROW_PERSON_VALUE &&
+                                styles.editChipTextActive,
                             ]}
                           >
-                            {name}
+                            {name === SCHEDULE_BORROW_PERSON_VALUE
+                              ? t('schedule.borrowEmployee')
+                              : name === 'Unassigned'
+                                ? t('common.unassigned')
+                                : name}
                           </Text>
                         </Pressable>
                       ))}
@@ -2089,6 +2177,7 @@ export default function ManagerScheduleScreen() {
               style={styles.modalCancel}
               onPress={() => {
                 setShiftEditor(null);
+                setShiftPersonBorrowMode(false);
                 setRowPersonBorrowMode(false);
                 setRowPersonPicker(null);
                 restoreScheduleScroll();
@@ -2136,12 +2225,13 @@ const PersonColRow = memo(function PersonColRow({
   canMoveUp,
   canMoveDown,
 }: PersonColRowProps) {
-  const { t } = useI18n();
+  const { t, staffTypeLabel } = useI18n();
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
     const addRole: RoleKey =
       row.variant === 'foh' ? 'Bartender' : row.variant === 'delivery' ? 'Server' : 'Kitchen';
+    const sectionTitle = staffTypeLabel(addRole);
     return (
       <View
         style={[
@@ -2154,14 +2244,14 @@ const PersonColRow = memo(function PersonColRow({
         ]}
       >
         <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
-          {row.title}
+          {sectionTitle}
         </Text>
         {editable ? (
           <Pressable
             onPress={() => onAddSlot(addRole)}
             style={styles.addSlotBtn}
             accessibilityRole="button"
-            accessibilityLabel={`${t('schedule.addSlot')} · ${row.title}`}
+            accessibilityLabel={`${t('schedule.addSlot')} · ${sectionTitle}`}
           >
             <Text style={styles.addSlotBtnText}>{t('schedule.addSlot')}</Text>
           </Pressable>

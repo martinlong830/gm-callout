@@ -9,15 +9,16 @@ import { LocaleProvider } from '../contexts/LocaleContext';
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <RootErrorBoundary>
-        <LocaleProvider>
+      {/* Locale outside the root boundary so fallback UI can still translate. */}
+      <LocaleProvider>
+        <RootErrorBoundary>
           <AuthProvider>
             <AppDataProvider>
               <Stack screenOptions={{ headerShown: false }} />
             </AppDataProvider>
           </AuthProvider>
-        </LocaleProvider>
-      </RootErrorBoundary>
+        </RootErrorBoundary>
+      </LocaleProvider>
     </GestureHandlerRootView>
   );
 }

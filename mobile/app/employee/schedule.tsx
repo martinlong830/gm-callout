@@ -8,9 +8,10 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useI18n } from '../../contexts/LocaleContext';
 import {
@@ -20,13 +21,14 @@ import {
   type EmployeeRow,
 } from '../../lib/employees';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
-import type { EmployeeLite, RoleKey, ScheduleRow } from '../../lib/schedule/types';
+import type { AssignmentStore, EmployeeLite, RoleKey, ScheduleRow } from '../../lib/schedule/types';
 import {
   buildAllWeekDayLabels,
   buildCalendarBody,
   buildOtherStoreDayLabelMap,
   buildSchedule,
   buildWeeksFromMonday,
+  computeScheduleRowWeekTotals,
   defaultRestaurants,
   getScheduleAnchorMondayDate,
   getVisibleWeekDays,
@@ -49,6 +51,7 @@ import {
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
+const SIDE_TOTALS_W = 68;
 /**
  * Fixed heights — Person sticky + day columns are separate trees, so minHeight
  * lets shift cells grow while name cells stay short (misalignment when scrolling).
@@ -88,6 +91,10 @@ function sectionFg(variant: 'foh' | 'boh' | 'delivery'): string {
 }
 
 /** Read-only master schedule for employees — same SoT as manager, no editing. */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
+
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
@@ -184,22 +191,25 @@ export default function EmployeeScheduleScreen() {
 
   const lites = useMemo(() => employees.map(toLite), [employees]);
 
-  const schedule = useMemo(
-    () =>
-      buildSchedule({
+  const schedule = useMemo(() => {
+    try {
+      return buildSchedule({
         allWeekDays,
         draftScheduleRaw,
         employees: lites,
         restaurants: allRestaurants,
         currentRestaurantId,
         assignmentStore,
-      }),
-    [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore]
-  );
+      });
+    } catch (err) {
+      console.warn('buildSchedule', err);
+      return [] as ScheduleRow[];
+    }
+  }, [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore]);
 
-  const otherStoreDayLabels = useMemo(
-    () =>
-      buildOtherStoreDayLabelMap({
+  const otherStoreDayLabels = useMemo(() => {
+    try {
+      return buildOtherStoreDayLabelMap({
         visibleDays,
         weekIndex,
         draftScheduleRaw,
@@ -207,21 +217,24 @@ export default function EmployeeScheduleScreen() {
         restaurants: allRestaurants,
         assignmentStore,
         currentRestaurantId,
-      }),
-    [
-      visibleDays,
-      weekIndex,
-      draftScheduleRaw,
-      draftRows,
-      allRestaurants,
-      assignmentStore,
-      currentRestaurantId,
-    ]
-  );
+      });
+    } catch (err) {
+      console.warn('buildOtherStoreDayLabelMap', err);
+      return new Map<string, string>();
+    }
+  }, [
+    visibleDays,
+    weekIndex,
+    draftScheduleRaw,
+    draftRows,
+    allRestaurants,
+    assignmentStore,
+    currentRestaurantId,
+  ]);
 
-  const calendarBody = useMemo(
-    () =>
-      buildCalendarBody(
+  const calendarBody = useMemo(() => {
+    try {
+      return buildCalendarBody(
         schedule,
         visibleDays,
         draftRows,
@@ -234,26 +247,45 @@ export default function EmployeeScheduleScreen() {
         assignmentStore,
         weekIndex,
         otherStoreDayLabels
-      ),
-    [
-      schedule,
-      visibleDays,
-      draftRows,
-      lites,
-      currentRestaurantId,
-      draftScheduleRaw,
-      weekMeta,
-      weekIndex,
-      assignmentStore,
-      otherStoreDayLabels,
-    ]
-  );
+      );
+    } catch (err) {
+      console.warn('buildCalendarBody', err);
+      return [] as CalendarBodyRow[];
+    }
+  }, [
+    schedule,
+    visibleDays,
+    draftRows,
+    lites,
+    currentRestaurantId,
+    draftScheduleRaw,
+    weekMeta,
+    weekIndex,
+    assignmentStore,
+    otherStoreDayLabels,
+  ]);
 
   const selectedWeekMonday = String(weekMeta[weekIndex * 7]?.iso || '').slice(0, 10);
   const daysWidth = useMemo(
-    () => Math.max(windowWidth - PERSON_COL - 16, visibleDays.length * CELL_MIN),
+    () =>
+      Math.max(
+        windowWidth - PERSON_COL - SIDE_TOTALS_W - 16,
+        visibleDays.length * CELL_MIN
+      ),
     [windowWidth, visibleDays.length]
   );
+
+  const rowWeekTotals = useMemo(() => {
+    const map = new Map<string, { hours: number; paidHours: number }>();
+    for (const row of calendarBody) {
+      if (row.kind !== 'cells') continue;
+      map.set(
+        `${row.role}:${row.trIdx}`,
+        computeScheduleRowWeekTotals(schedule, row.role, row.trIdx, visibleDays)
+      );
+    }
+    return map;
+  }, [calendarBody, schedule, visibleDays]);
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
@@ -359,6 +391,8 @@ export default function EmployeeScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
+                    assignmentStore={assignmentStore}
+                    weekIndex={weekIndex}
                     unassignedLabel={t('common.unassigned')}
                     dayOffLabel={t('schedule.dayOffLabel')}
                   />
@@ -457,6 +491,55 @@ export default function EmployeeScheduleScreen() {
                     </View>
                   ))}
                 </View>
+                <View style={[styles.sideTotals, { width: SIDE_TOTALS_W }]}>
+                  <View style={styles.personTotalsTh}>
+                    <Text style={styles.sideTotalsTitle}>{t('schedule.personTotals')}</Text>
+                    <Text style={styles.thSub}>{t('schedule.personTotalsSub')}</Text>
+                  </View>
+                  {calendarBody.map((row, ri) => {
+                    if (row.kind === 'section') {
+                      return (
+                        <View
+                          key={`pt-s-${ri}`}
+                          style={[
+                            styles.personTotalsSection,
+                            {
+                              height: SECTION_ROW_H + SECTION_GAP_BELOW,
+                              backgroundColor: sectionBg(row.variant),
+                            },
+                          ]}
+                        />
+                      );
+                    }
+                    const tot = rowWeekTotals.get(`${row.role}:${row.trIdx}`) || {
+                      hours: 0,
+                      paidHours: 0,
+                    };
+                    return (
+                      <View key={`pt-${ri}`} style={styles.personTotalsCell}>
+                        <Text style={styles.sideTotalsGross}>{tot.hours.toFixed(1)}h</Text>
+                        <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
+                        <Text style={styles.sideTotalsNet}>{tot.paidHours.toFixed(1)}h</Text>
+                        <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
+                      </View>
+                    );
+                  })}
+                  <View
+                    style={[
+                      styles.personTotalsSection,
+                      {
+                        height: SECTION_ROW_H + SECTION_GAP_BELOW,
+                        backgroundColor: '#f8fafc',
+                      },
+                    ]}
+                  />
+                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                    <View
+                      key={`pt-go-${plat.id}`}
+                      style={[styles.personTotalsCell, styles.groupOrderDataRow, { opacity: 0 }]}
+                    />
+                  ))}
+                </View>
               </ScrollView>
             </View>
           </View>
@@ -472,6 +555,8 @@ type PersonColRowProps = {
   visibleDays: string[];
   employees: EmployeeLite[];
   restaurantId: string;
+  assignmentStore?: AssignmentStore | null;
+  weekIndex?: number;
   unassignedLabel: string;
   dayOffLabel: string;
 };
@@ -482,11 +567,16 @@ const PersonColRow = memo(function PersonColRow({
   visibleDays,
   employees,
   restaurantId,
+  assignmentStore,
+  weekIndex,
   unassignedLabel,
 }: PersonColRowProps) {
+  const { staffTypeLabel } = useI18n();
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
+    const sectionRole: RoleKey =
+      row.variant === 'foh' ? 'Bartender' : row.variant === 'delivery' ? 'Server' : 'Kitchen';
     return (
       <View
         style={[
@@ -496,7 +586,7 @@ const PersonColRow = memo(function PersonColRow({
         ]}
       >
         <Text style={[styles.sectionText, { color: fg }]} numberOfLines={2}>
-          {row.title}
+          {staffTypeLabel(sectionRole)}
         </Text>
       </View>
     );
@@ -508,7 +598,9 @@ const PersonColRow = memo(function PersonColRow({
     row.trIdx,
     visibleDays,
     employees,
-    restaurantId
+    restaurantId,
+    assignmentStore,
+    weekIndex
   );
   const label = selected && selected !== 'Unassigned' ? selected : unassignedLabel;
   return (
@@ -669,6 +761,36 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     backgroundColor: '#fff',
   },
+  sideTotals: {
+    flexShrink: 0,
+    paddingHorizontal: 4,
+    borderLeftWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+  },
+  personTotalsTh: {
+    height: HEADER_ROW_H,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderColor: '#e2e8f0',
+    justifyContent: 'flex-end',
+  },
+  personTotalsSection: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+  },
+  personTotalsCell: {
+    height: DATA_ROW_H,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f2f4',
+  },
+  sideTotalsTitle: { fontSize: 11, fontWeight: '800', color: '#0f172a' },
+  sideTotalsGross: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
+  sideTotalsNet: { fontSize: 12, fontWeight: '600', color: '#334155' },
+  sideTotalsTag: { fontSize: 9, color: '#64748b', marginBottom: 2 },
   personTh: {
     height: HEADER_ROW_H,
     justifyContent: 'center',

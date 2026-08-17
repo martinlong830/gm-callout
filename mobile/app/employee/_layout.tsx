@@ -1,10 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Redirect, Tabs } from 'expo-router';
+import { Redirect, Tabs, type ErrorBoundaryProps } from 'expo-router';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect } from 'react';
 import { Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { LanguageToggle } from '../../components/LanguageToggle';
 import { NotificationBellButton } from '../../components/NotificationBellButton';
+import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
 
@@ -47,6 +48,10 @@ function HeaderActions({ onSignOut }: { onSignOut: () => void }) {
       )}
     </View>
   );
+}
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
 }
 
 export default function EmployeeLayout() {

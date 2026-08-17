@@ -1,8 +1,14 @@
 import { Redirect } from 'expo-router';
+import type { ErrorBoundaryProps } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
+import { RouteErrorFallback } from '../components/RouteErrorFallback';
 import { useAuth } from '../contexts/AuthContext';
 import { isAdminRole, isManagerLikeRole } from '../lib/roles';
 import { isSupabaseConfigured } from '../lib/supabase';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
 
 export default function Index() {
   const { session, role, loading } = useAuth();

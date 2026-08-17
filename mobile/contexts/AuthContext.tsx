@@ -110,28 +110,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     let cancelled = false;
     (async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (cancelled) return;
-      if (error && isInvalidAuthTokenError(error.message)) {
-        await clearLocalAuthSession();
-        await applySession(null);
-        if (!cancelled) setLoading(false);
-        return;
-      }
-      const sess = data.session ?? null;
-      if (sess) {
-        // Validate with Auth server so a stale refresh token cannot linger.
-        const { error: userErr } = await supabase.auth.getUser();
+      try {
+        const { data, error } = await supabase.auth.getSession();
         if (cancelled) return;
-        if (userErr && isInvalidAuthTokenError(userErr.message)) {
+        if (error && isInvalidAuthTokenError(error.message)) {
           await clearLocalAuthSession();
           await applySession(null);
           if (!cancelled) setLoading(false);
           return;
         }
+        const sess = data.session ?? null;
+        if (sess) {
+          // Validate with Auth server so a stale refresh token cannot linger.
+          const { error: userErr } = await supabase.auth.getUser();
+          if (cancelled) return;
+          if (userErr && isInvalidAuthTokenError(userErr.message)) {
+            await clearLocalAuthSession();
+            await applySession(null);
+            if (!cancelled) setLoading(false);
+            return;
+          }
+        }
+        if (!cancelled) await applySession(sess);
+      } catch (err) {
+        console.warn('auth bootstrap', err);
+        if (!cancelled) await applySession(null);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      if (!cancelled) await applySession(sess);
-      if (!cancelled) setLoading(false);
     })();
     const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       if (signInInFlightRef.current) return;
@@ -139,7 +145,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         void clearLocalAuthSession().then(() => applySession(null));
         return;
       }
-      void applySession(sess);
+      void applySession(sess).catch((err) => console.warn('auth state change', err));
     });
     return () => {
       cancelled = true;

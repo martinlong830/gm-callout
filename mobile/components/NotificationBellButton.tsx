@@ -57,6 +57,8 @@ export function NotificationBellButton() {
     try {
       const res = await fetchAppNotifications(supabase, userId);
       if (res.ok) setItems(res.rows);
+    } catch (err) {
+      console.warn('fetchAppNotifications', err);
     } finally {
       setLoading(false);
     }

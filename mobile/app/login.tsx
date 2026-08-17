@@ -1,4 +1,4 @@
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -15,6 +15,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
+import { RouteErrorFallback } from '../components/RouteErrorFallback';
 import { useAuth } from '../contexts/AuthContext';
 import { useI18n } from '../contexts/LocaleContext';
 import { LanguageToggle } from '../components/LanguageToggle';
@@ -38,6 +39,10 @@ import {
 } from '../lib/portalAuth';
 import { friendlyAuthTokenMessage, isInvalidAuthTokenError } from '../lib/authErrors';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <RouteErrorFallback error={error} retry={retry} />;
+}
 
 type Panel =
   | 'landing'
