@@ -150,8 +150,8 @@ const supabaseUmdPath = path.join(
 );
 
 app.get("/vendor/supabase-js.js", (req, res) => {
-  res.setHeader("Cache-Control", "public, max-age=86400");
-  res.sendFile(supabaseUmdPath, { etag: false, lastModified: false }, (err) => {
+  res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+  res.sendFile(supabaseUmdPath, { etag: true, lastModified: true }, (err) => {
     if (err) {
       if (res.headersSent) return;
       res
@@ -176,8 +176,8 @@ const exportVendorBundles = {
 
 Object.keys(exportVendorBundles).forEach(function (fileName) {
   app.get("/vendor/" + fileName, function (req, res) {
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.sendFile(exportVendorBundles[fileName], { etag: false, lastModified: false }, function (err) {
+    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    res.sendFile(exportVendorBundles[fileName], { etag: true, lastModified: true }, function (err) {
       if (err) {
         if (res.headersSent) return;
         res
@@ -228,6 +228,9 @@ app.use((req, res, next) => {
   } else if (versioned && LONG_CACHE_ASSETS.has(base)) {
     /* Immutable while the ?v= fingerprint stays the same — avoids re-downloading ~1MB every visit. */
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  } else if (/\.(?:png|jpe?g|gif|webp|svg|ico|woff2?)$/i.test(base)) {
+    /* Photos / icons change rarely; allow short CDN-friendly cache. */
+    res.setHeader("Cache-Control", "public, max-age=604800");
   }
   next();
 });
@@ -280,7 +283,21 @@ app.get("/support.html", (_req, res) => {
   res.type("html").send(withContact);
 });
 
-app.use(express.static(__dirname, { index: false }));
+app.use(
+  express.static(__dirname, {
+    index: false,
+    etag: true,
+    lastModified: true,
+    /* Cache-Control is set by the middleware above for versioned / image assets. */
+    setHeaders: function (res, filePath) {
+      if (/\.(?:png|jpe?g|gif|webp|svg|ico|woff2?)$/i.test(filePath)) {
+        if (!res.getHeader("Cache-Control")) {
+          res.setHeader("Cache-Control", "public, max-age=604800");
+        }
+      }
+    },
+  })
+);
 
 function createTwilioClient() {
   if (!TWILIO_ACCOUNT_SID) {

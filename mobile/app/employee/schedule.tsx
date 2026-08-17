@@ -36,6 +36,7 @@ import {
   isScheduleWeekIndexPublished,
   loadDraftFromTeamState,
   normalizeSchedulePublishedMap,
+  displayBreakAnnotation,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   scheduleRowPrimaryPerson,
@@ -654,6 +655,7 @@ const CalendarCellView = memo(function CalendarCellView({
   cell: CalendarCell;
   dayOffLabel: string;
 }) {
+  const { t } = useI18n();
   if (cell.kind === 'empty') {
     if (!cell.otherStoreLabel) return <View style={styles.cellInnerMuted} />;
     return (
@@ -681,6 +683,11 @@ const CalendarCellView = memo(function CalendarCellView({
     );
   }
   const pill = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-server'];
+  const breakLabel = displayBreakAnnotation(cell.breakText || '', {
+    noBreak: t('schedule.noBreak'),
+    breakTime: t('schedule.breakTime'),
+    office: t('schedule.office'),
+  });
   return (
     <View
       style={[
@@ -691,16 +698,16 @@ const CalendarCellView = memo(function CalendarCellView({
       <Text style={[styles.cellTime, { color: pill.fg }]} numberOfLines={1}>
         {cell.timeLabel}
       </Text>
-      {cell.breakText ? (
+      {breakLabel ? (
         <Text style={styles.cellBreak} numberOfLines={1}>
-          {cell.breakText}
+          {breakLabel}
         </Text>
       ) : null}
       <Text style={styles.cellHours} numberOfLines={1}>
         {cell.hours}h
       </Text>
       {cell.otherStoreLabel ? (
-        <Text style={styles.otherStoreLabelOnShift} numberOfLines={1}>
+        <Text style={styles.otherStoreLabel} numberOfLines={2}>
           {cell.otherStoreLabel}
         </Text>
       ) : null}

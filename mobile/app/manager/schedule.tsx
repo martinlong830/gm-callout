@@ -86,9 +86,11 @@ import {
   OFFICE_DEFAULT_START_HHMM,
   orderedScheduleSlotIndicesForRole,
   parseBreakAnnotation,
+  displayBreakAnnotation,
   patchDraftScheduleForWeek,
   purgeDefaultUnassignedRestaurantAssignments,
   redPokeShiftHoursDecimal,
+  restoreFohTemplateWeekBreaks,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   schedulePublishedPayload,
@@ -764,19 +766,45 @@ export default function ManagerScheduleScreen() {
       suppressHydrateUndoClearRef.current = false;
       return;
     }
-    setAssignmentStore(rolled.store);
+    let nextStore = rolled.store;
+    let fohChanged = false;
+    if (isManagerLikeRole(role) && scheduleEditable) {
+      const foh = restoreFohTemplateWeekBreaks(
+        nextStore,
+        employees.map(toLite),
+        currentRestaurantId,
+        SCHEDULE_TEMPLATE_WEEK_INDEX
+      );
+      if (foh.changed) {
+        nextStore = foh.store;
+        fohChanged = true;
+      }
+    }
+    setAssignmentStore(nextStore);
     setRolledDraftRaw(draftOut);
-    if (rolled.changed && isManagerLikeRole(role)) {
+    if ((rolled.changed || fohChanged) && isManagerLikeRole(role)) {
       /* Local commits (incl. delete-slot) update teamState and re-enter here — do not wipe Undo. */
       if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-      applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
-      queuePersist(rolled.store, draftOut, { fromHydrate: true });
+      applyLocalScheduleAssignments(nextStore, draftOut, {
+        markDirty: fohChanged ? true : 'keep',
+      });
+      queuePersist(nextStore, draftOut, { fromHydrate: !fohChanged });
     } else if (rolled.draftMetaChanged && isManagerLikeRole(role)) {
       /* Seed bookkeeping only — keep it in the local cache, never spend a cloud write on it. */
-      applyLocalScheduleAssignments(rolled.store, draftOut, { markDirty: 'keep' });
+      applyLocalScheduleAssignments(nextStore, draftOut, { markDirty: 'keep' });
     }
     suppressHydrateUndoClearRef.current = false;
-  }, [teamState, restaurants, role, queuePersist, applyLocalScheduleAssignments, clearUndoStack]);
+  }, [
+    teamState,
+    restaurants,
+    role,
+    scheduleEditable,
+    currentRestaurantId,
+    employees,
+    queuePersist,
+    applyLocalScheduleAssignments,
+    clearUndoStack,
+  ]);
 
   const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
 
@@ -951,14 +979,23 @@ export default function ManagerScheduleScreen() {
     });
   }
 
-  function breakTimePresetsForType(breakType: BreakAnnotationType): string[] {
-    return breakType === 'OFFICE' ? OFFICE_BREAK_TIME_PRESETS : SHIFT_DETAIL_BREAK_TIME_PRESETS;
+  function breakTimePresetsForType(
+    breakType: BreakAnnotationType,
+    currentLabel?: string
+  ): string[] {
+    const base =
+      breakType === 'OFFICE' ? OFFICE_BREAK_TIME_PRESETS : SHIFT_DETAIL_BREAK_TIME_PRESETS;
+    const norm = normalizeBreakAnnotationTime(currentLabel || '') || '';
+    /* Keep web draft-modal times (11:00AM–7:00PM) selectable so open/save does not rewrite them. */
+    if (norm && breakType !== 'NO BREAK' && base.indexOf(norm) < 0) {
+      return [...base, norm];
+    }
+    return base;
   }
 
   function clampBreakTimeLabel(breakType: BreakAnnotationType, label: string): string {
     const norm = normalizeBreakAnnotationTime(label) || '';
-    const presets = breakTimePresetsForType(breakType);
-    if (presets.indexOf(norm) >= 0) return norm;
+    if (norm) return norm;
     return breakType === 'OFFICE' ? OFFICE_DEFAULT_BREAK_TIME : '3:00PM';
   }
 
@@ -1537,8 +1574,8 @@ export default function ManagerScheduleScreen() {
   }, [calendarBody, schedule, visibleDays]);
 
   const breakTimeChipLabels = useMemo(
-    () => breakTimePresetsForType(editBreakType),
-    [editBreakType]
+    () => breakTimePresetsForType(editBreakType, normalizeBreakAnnotationTime(editBreakTime) || ''),
+    [editBreakType, editBreakTime]
   );
 
   const modalOpen = !!shiftEditor || !!rowPersonPicker;
@@ -2440,14 +2477,12 @@ const CalendarCellView = memo(function CalendarCellView({
 }) {
   const { t } = useI18n();
   const dayOffLbl = t('schedule.dayOffLabel');
-  const breakDisplay = (raw: string) => {
-    const s = String(raw || '').trim();
-    if (!s) return '';
-    if (/no\s*break/i.test(s)) return `(${t('schedule.noBreak')})`;
-    return s
-      .replace(/\bBREAK\s*TIME\b/gi, t('schedule.breakTime'))
-      .replace(/\bOFFICE\b/gi, t('schedule.office'));
-  };
+  const breakDisplay = (raw: string) =>
+    displayBreakAnnotation(raw, {
+      noBreak: t('schedule.noBreak'),
+      breakTime: t('schedule.breakTime'),
+      office: t('schedule.office'),
+    });
   if (cell.kind === 'empty') {
     const target: ShiftEditTarget = {
       role: cell.role,

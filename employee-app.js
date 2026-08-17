@@ -1303,9 +1303,14 @@
 
   window.gmCalloutEmployeeBootstrap = init;
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
+  /* Do not auto-boot on manager/login visits — index loads this module only for employees. */
+  function maybeAutoInit() {
+    if (!document.documentElement.classList.contains('employee-app')) return;
     init();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', maybeAutoInit);
+  } else {
+    maybeAutoInit();
   }
 })();

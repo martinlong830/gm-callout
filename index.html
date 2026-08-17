@@ -4,9 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-1" />
-  <link rel="preload" href="app.js?v=perf-1" as="script" />
-  <link rel="preload" href="/vendor/supabase-js.js" as="script" />
+  <link rel="stylesheet" href="styles.css?v=perf-2" />
+  <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
+  <link rel="prefetch" href="app.js?v=perf-2" as="script" />
+  <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
     (function () {
@@ -15,6 +16,55 @@
         window.location.replace('/home.html' + (window.location.search || '') + (window.location.hash || ''));
       }
     })();
+  </script>
+  <script>
+    window.__GM_ASSET_V = 'perf-2';
+    window.gmLoadScript = function (src, opts) {
+      opts = opts || {};
+      var bare = String(src || '').split('?')[0];
+      var withV =
+        String(src || '').indexOf('?') >= 0
+          ? String(src)
+          : bare + '?v=' + encodeURIComponent(window.__GM_ASSET_V || '1');
+      var existing = document.querySelector('script[data-gm-src="' + bare + '"]');
+      if (existing) {
+        return new Promise(function (resolve, reject) {
+          if (existing.getAttribute('data-gm-loaded') === '1') {
+            resolve();
+            return;
+          }
+          existing.addEventListener('load', function () {
+            resolve();
+          });
+          existing.addEventListener('error', function () {
+            reject(new Error('Failed to load ' + bare));
+          });
+        });
+      }
+      return new Promise(function (resolve, reject) {
+        var s = document.createElement('script');
+        s.src = withV;
+        s.async = opts.async !== false;
+        s.dataset.gmSrc = bare;
+        s.onload = function () {
+          s.setAttribute('data-gm-loaded', '1');
+          resolve();
+        };
+        s.onerror = function () {
+          reject(new Error('Failed to load ' + bare));
+        };
+        (document.body || document.head).appendChild(s);
+      });
+    };
+    window.gmLoadScripts = function (list) {
+      var chain = Promise.resolve();
+      (list || []).forEach(function (src) {
+        chain = chain.then(function () {
+          return window.gmLoadScript(src);
+        });
+      });
+      return chain;
+    };
   </script>
 </head>
 <body>
@@ -2044,8 +2094,29 @@
   </div>
 
   <script src="/gm-supabase-config.js?v=2"></script>
-  <script src="locales/en.js?v=perf-1"></script>
-  <script src="i18n.js?v=perf-1"></script>
+  <script>
+    /* Warm TLS to Supabase as soon as URL is known (config is tiny / no-store). */
+    (function () {
+      try {
+        var u = window.__GM_SUPABASE_URL__ || '';
+        if (!u) return;
+        var origin = new URL(u).origin;
+        var link = document.createElement('link');
+        link.rel = 'preconnect';
+        link.href = origin;
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+        var dns = document.createElement('link');
+        dns.rel = 'dns-prefetch';
+        dns.href = origin;
+        document.head.appendChild(dns);
+      } catch (_e) {
+        /* ignore */
+      }
+    })();
+  </script>
+  <script src="locales/en.js?v=perf-2"></script>
+  <script src="i18n.js?v=perf-2"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
     (function () {
@@ -2056,7 +2127,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-1';
+      s.src = 'locales/es.js?v=perf-2';
       document.head.appendChild(s);
     })();
   </script>
@@ -2609,15 +2680,28 @@
           }
           if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
             window.gmCalloutManagerMessagingBootstrap();
+          } else if (typeof window.gmCalloutEnsureManagerMessaging === 'function') {
+            void window.gmCalloutEnsureManagerMessaging().then(function () {
+              if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                window.gmCalloutManagerMessagingBootstrap();
+              }
+            });
           }
           if (typeof window.gmCalloutManagerBootstrap === 'function') {
             window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
           }
-          if (
-            window.gmCalloutNotificationsCenter &&
-            typeof window.gmCalloutNotificationsCenter.start === 'function'
-          ) {
-            void window.gmCalloutNotificationsCenter.start();
+          var startNotifs = function () {
+            if (
+              window.gmCalloutNotificationsCenter &&
+              typeof window.gmCalloutNotificationsCenter.start === 'function'
+            ) {
+              void window.gmCalloutNotificationsCenter.start();
+            }
+          };
+          if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
+            void window.gmCalloutEnsureNotificationsCenter().then(startNotifs);
+          } else {
+            startNotifs();
           }
           return;
         }
@@ -2636,14 +2720,28 @@
               /* ignore */
             }
           }
+          if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
+            try {
+              await window.gmCalloutEnsureEmployeeApp();
+            } catch (_ea) {
+              /* ignore */
+            }
+          }
           if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
             window.gmCalloutEmployeeBootstrap();
           }
-          if (
-            window.gmCalloutNotificationsCenter &&
-            typeof window.gmCalloutNotificationsCenter.start === 'function'
-          ) {
-            void window.gmCalloutNotificationsCenter.start();
+          var startEmpNotifs = function () {
+            if (
+              window.gmCalloutNotificationsCenter &&
+              typeof window.gmCalloutNotificationsCenter.start === 'function'
+            ) {
+              void window.gmCalloutNotificationsCenter.start();
+            }
+          };
+          if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
+            void window.gmCalloutEnsureNotificationsCenter().then(startEmpNotifs);
+          } else {
+            startEmpNotifs();
           }
           return;
         }
@@ -3823,38 +3921,90 @@
       }
     })();
   </script>
-  <script defer src="/vendor/supabase-js.js"></script>
-  <script defer src="gm-supabase-init.js?v=setup-access-code-session-1"></script>
-  <script defer src="employee-leave.js?v=perf-1"></script>
-  <script defer src="break-policy.js?v=perf-1"></script>
-  <script defer src="portal-auth-client.js?v=perf-1"></script>
-  <script defer src="app.js?v=perf-1"></script>
-  <script defer src="employee-app.js?v=perf-1"></script>
-  <script defer src="notifications-center.js?v=perf-1"></script>
-  <script defer src="login-timeclock.js?v=perf-1"></script>
+  <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
+  <script defer src="gm-supabase-init.js?v=perf-2"></script>
+  <script defer src="employee-leave.js?v=perf-2"></script>
+  <script defer src="break-policy.js?v=perf-2"></script>
+  <script defer src="portal-auth-client.js?v=perf-2"></script>
+  <script defer src="login-timeclock.js?v=perf-2"></script>
+  <script defer src="app.js?v=perf-2"></script>
   <script>
-    /* Heavier role modules after first paint (schedule/login stay responsive). */
+    /*
+     * Role / feature modules after first paint:
+     * - managers skip employee-app (~46KB)
+     * - notifications + messaging load when needed / idle
+     * - timeclock kiosk modules stay off the schedule path
+     */
     (function () {
-      var secondary = [
-        'manager-messaging.js?v=perf-1',
-        'timeclock-schedule-match.js?v=perf-1',
-        'timeclock-app.js?v=perf-1',
-      ];
-      function loadSecondary() {
-        secondary.forEach(function (src) {
-          var s = document.createElement('script');
-          s.src = src;
-          s.async = true;
-          document.body.appendChild(s);
+      function afterPaint(fn) {
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(fn, { timeout: 4000 });
+        } else {
+          setTimeout(fn, 1200);
+        }
+      }
+      function loadOptionalBundles() {
+        var root = document.documentElement;
+        var isEmp = root.classList.contains('employee-app');
+        var isMgr = root.classList.contains('manager-app');
+        var isTc = root.classList.contains('timeclock-app');
+        var load = window.gmLoadScript;
+        if (typeof load !== 'function') return;
+        if (isEmp) {
+          void load('employee-app.js').then(function () {
+            if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+              window.gmCalloutEmployeeBootstrap();
+            }
+          });
+          void load('notifications-center.js');
+          return;
+        }
+        if (isMgr) {
+          void load('notifications-center.js');
+          afterPaint(function () {
+            void load('manager-messaging.js');
+          });
+          return;
+        }
+        if (isTc) {
+          afterPaint(function () {
+            void window.gmLoadScripts([
+              'timeclock-schedule-match.js',
+              'timeclock-app.js',
+            ]);
+          });
+          return;
+        }
+        /* Logged-out: warm only tiny auth helpers already on critical path. */
+        afterPaint(function () {
+          /* Prefetch manager messaging so post-login Messages opens faster. */
+          try {
+            var l = document.createElement('link');
+            l.rel = 'prefetch';
+            l.href = 'manager-messaging.js?v=' + encodeURIComponent(window.__GM_ASSET_V || '1');
+            l.as = 'script';
+            document.head.appendChild(l);
+          } catch (_e) {
+            /* ignore */
+          }
         });
       }
       if (document.readyState === 'complete') {
-        setTimeout(loadSecondary, 0);
+        afterPaint(loadOptionalBundles);
       } else {
         window.addEventListener('load', function () {
-          setTimeout(loadSecondary, 0);
+          afterPaint(loadOptionalBundles);
         });
       }
+      window.gmCalloutEnsureNotificationsCenter = function () {
+        return window.gmLoadScript('notifications-center.js');
+      };
+      window.gmCalloutEnsureEmployeeApp = function () {
+        return window.gmLoadScript('employee-app.js');
+      };
+      window.gmCalloutEnsureManagerMessaging = function () {
+        return window.gmLoadScript('manager-messaging.js');
+      };
     })();
   </script>
 </body>

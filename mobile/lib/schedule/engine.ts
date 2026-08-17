@@ -85,6 +85,53 @@ export const TEAM_ROSTER_SERVER = [
   'ABEL LUJAN',
 ];
 
+/**
+ * Mon–Sun break annotations per FOH (Bartender) row — matches web `FOH_TEMPLATE_WEEK_BREAKS`
+ * and `scripts/seed-foh-week-schedule.js`. null = day off.
+ */
+export const FOH_TEMPLATE_WEEK_BREAKS: (string | null)[][] = [
+  ['(2:00PM OFFICE)', '(2:00PM OFFICE)', '(2:00PM OFFICE)', '(2:00PM OFFICE)', null, null, null],
+  [
+    null,
+    '(3:00PM BREAK TIME)',
+    '(3:00PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    null,
+    '(3:30PM BREAK TIME)',
+  ],
+  [
+    '(3:00PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    null,
+    '(NO BREAK TIME)',
+    '(3:00PM BREAK TIME)',
+    null,
+  ],
+  [
+    null,
+    '(3:00PM BREAK TIME)',
+    '(3:00PM BREAK TIME)',
+    '(3:00PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    '(3:30PM BREAK TIME)',
+    null,
+  ],
+  [
+    '(3:30PM BREAK TIME)',
+    null,
+    null,
+    null,
+    '(NO BREAK TIME)',
+    null,
+    '(3:00PM BREAK TIME)',
+  ],
+];
+
+/** ROLE_DEFS index for Bartender — used in shift-*-{roleIdx}-* ids. */
+export const BARTENDER_ROLE_IDX = 1;
+
 export const DEFAULT_DRAFT_SCHEDULE_ROWS: DraftGrid = {
   Bartender: [
     [
@@ -256,6 +303,62 @@ export function redPokeBreakAnnotation(trStart: string, trEnd: string, role: str
     '(3:00PM BREAK TIME)',
   ];
   return opts[seed % opts.length];
+}
+
+/** Single source of truth: assignment store (with template inherit) then hash placeholder. */
+export function resolveScheduleBreakAnnotation(
+  stored: Record<string, ScheduleAssignmentEntry>,
+  shiftId: string,
+  start: string,
+  end: string,
+  role: string,
+  dayStr: string
+): string {
+  const entry = lookupScheduleAssignment(stored, shiftId);
+  if (entry?.break) return entry.break;
+  return redPokeBreakAnnotation(start, end, role, dayStr);
+}
+
+/**
+ * Seed FOH (Bartender) template-week breaks to match the Red Poke sheet / web.
+ * Only writes when the stored break differs; returns whether anything changed.
+ */
+export function restoreFohTemplateWeekBreaks(
+  store: AssignmentStore,
+  employees: EmployeeLite[],
+  restaurantId: string,
+  weekIndex: number = SCHEDULE_TEMPLATE_WEEK_INDEX
+): { store: AssignmentStore; changed: boolean } {
+  if (!restaurantId || !teamIncludesLegacyRedPokeRoster(employees)) {
+    return { store, changed: false };
+  }
+  const wi =
+    weekIndex >= 0 && weekIndex < SCHEDULE_VIEW_WEEK_COUNT
+      ? weekIndex
+      : SCHEDULE_TEMPLATE_WEEK_INDEX;
+  const next = JSON.parse(JSON.stringify(store || {})) as AssignmentStore;
+  if (!next[restaurantId]) next[restaurantId] = {};
+  const rs = next[restaurantId];
+  const weekStart = wi * 7;
+  let changed = false;
+  FOH_TEMPLATE_WEEK_BREAKS.forEach((weekBreaks, trIdx) => {
+    weekBreaks.forEach((brk, dayInWeek) => {
+      if (!brk) return;
+      const shiftId = `shift-${weekStart + dayInWeek}-${BARTENDER_ROLE_IDX}-${trIdx}`;
+      let rosterName =
+        scheduleRowRosterDefault(employees, 'Bartender', trIdx, restaurantId) || 'Unassigned';
+      rosterName =
+        canonicalScheduleWorkerNameLite(employees, rosterName, restaurantId) || rosterName;
+      const entry = normalizeScheduleAssignment(rs[shiftId] || { workers: [rosterName] });
+      if (!scheduleAssignmentHasStaffedWorkers(entry)) entry.workers = [rosterName];
+      if (entry.break !== brk) {
+        entry.break = brk;
+        rs[shiftId] = entry;
+        changed = true;
+      }
+    });
+  });
+  return { store: changed ? next : store, changed };
 }
 
 export function makeTimeSlot(start: string, end: string) {
@@ -1474,11 +1577,14 @@ function applyScheduleAssignmentsMerge(
       s.redPokeHours = slotHours;
       return;
     }
-    if (entry.break) {
-      s.redPokeBreak = entry.break;
-    } else {
-      s.redPokeBreak = redPokeBreakAnnotation(s.start, s.end, s.role, s.day);
-    }
+    s.redPokeBreak = resolveScheduleBreakAnnotation(
+      stored,
+      s.id,
+      s.start,
+      s.end,
+      s.role,
+      s.day
+    );
     if (entry.breakPaid === true || entry.breakPaid === false) {
       s.breakPaid = !!entry.breakPaid;
     } else {
@@ -2545,6 +2651,29 @@ export function parseBreakAnnotation(text: string): {
   if (/office/i.test(s)) return { time: '2:00PM', type: 'OFFICE', raw: s };
   if (/break/i.test(s)) return { time: '3:00PM', type: 'BREAK TIME', raw: s };
   return { time: '3:00PM', type: 'BREAK TIME', raw: s };
+}
+
+/** Localized break tile text; storage stays English via formatBreakAnnotation. */
+export function displayBreakAnnotation(
+  raw: string,
+  labels: { noBreak: string; breakTime: string; office: string }
+): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const parsed = parseBreakAnnotation(s);
+  if (parsed.type === 'NO BREAK' || /no\s*break/i.test(s)) {
+    return `(${labels.noBreak})`;
+  }
+  if (parsed.time && parsed.type) {
+    const typeLabel =
+      parsed.type === 'OFFICE'
+        ? labels.office
+        : parsed.type === 'BREAK TIME'
+          ? labels.breakTime
+          : parsed.type;
+    return `(${parsed.time} ${typeLabel})`;
+  }
+  return s;
 }
 
 function makeNullDraftWeekRow(): Array<[string, string] | null> {

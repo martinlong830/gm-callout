@@ -3020,7 +3020,11 @@
     if (timecardsManagerLoadPromise) return timecardsManagerLoadPromise;
     timecardsManagerLoadPromise = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'timecards-manager.js?v=perf-1';
+      script.src =
+        'timecards-manager.js?v=' +
+        encodeURIComponent(
+          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-2'
+        );
       script.async = true;
       script.onload = function () {
         if (typeof window.__gmCalloutTimecardsInitPending === 'function') {
@@ -18146,20 +18150,41 @@
     } else if (opts.navigateToSchedule) {
       showScreen(1);
     }
-    /* Prefetch timecards after idle — keep first schedule paint snappy (~427KB). */
+    /* Prefetch timecards only after idle — keep first schedule paint snappy (~427KB). */
     function prefetchTimecardsWhenIdle() {
       void ensureTimecardsManagerLoaded().catch(function () {});
     }
-    if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(prefetchTimecardsWhenIdle, { timeout: 12000 });
-    } else {
-      setTimeout(prefetchTimecardsWhenIdle, 5000);
+    function armTimecardsPrefetch() {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(prefetchTimecardsWhenIdle, { timeout: 45000 });
+      } else {
+        setTimeout(prefetchTimecardsWhenIdle, 20000);
+      }
     }
-    if (
-      window.gmCalloutNotificationsCenter &&
-      typeof window.gmCalloutNotificationsCenter.start === 'function'
-    ) {
-      void window.gmCalloutNotificationsCenter.start();
+    armTimecardsPrefetch();
+    var timecardsNav = document.querySelector('.top-nav .nav-item[data-goto="10"]');
+    if (timecardsNav && !timecardsNav.__gmPrefetchBound) {
+      timecardsNav.__gmPrefetchBound = true;
+      timecardsNav.addEventListener(
+        'pointerenter',
+        function () {
+          void ensureTimecardsManagerLoaded().catch(function () {});
+        },
+        { once: true, passive: true }
+      );
+    }
+    function startNotificationsIfPossible() {
+      if (
+        window.gmCalloutNotificationsCenter &&
+        typeof window.gmCalloutNotificationsCenter.start === 'function'
+      ) {
+        void window.gmCalloutNotificationsCenter.start();
+      }
+    }
+    if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
+      void window.gmCalloutEnsureNotificationsCenter().then(startNotificationsIfPossible);
+    } else {
+      startNotificationsIfPossible();
     }
   };
   if (typeof window.dispatchEvent === 'function') {
@@ -18245,11 +18270,44 @@
             gmCalloutManagerBootstrap();
             if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
               window.gmCalloutManagerMessagingBootstrap();
+            } else if (typeof window.gmCalloutEnsureManagerMessaging === 'function') {
+              void window.gmCalloutEnsureManagerMessaging().then(function () {
+                if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                  window.gmCalloutManagerMessagingBootstrap();
+                }
+              });
+            }
+            if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
+              void window.gmCalloutEnsureNotificationsCenter().then(function () {
+                if (
+                  window.gmCalloutNotificationsCenter &&
+                  typeof window.gmCalloutNotificationsCenter.start === 'function'
+                ) {
+                  void window.gmCalloutNotificationsCenter.start();
+                }
+              });
             }
           }
           if (document.documentElement.classList.contains('employee-app')) {
-            if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-              window.gmCalloutEmployeeBootstrap();
+            var bootEmp = function () {
+              if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                window.gmCalloutEmployeeBootstrap();
+              }
+            };
+            if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
+              void window.gmCalloutEnsureEmployeeApp().then(bootEmp);
+            } else {
+              bootEmp();
+            }
+            if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
+              void window.gmCalloutEnsureNotificationsCenter().then(function () {
+                if (
+                  window.gmCalloutNotificationsCenter &&
+                  typeof window.gmCalloutNotificationsCenter.start === 'function'
+                ) {
+                  void window.gmCalloutNotificationsCenter.start();
+                }
+              });
             }
           }
           if (typeof window.gmCalloutPromptRecoveryEmailIfNeeded === 'function') {
@@ -18334,11 +18392,24 @@
                 if (document.documentElement.classList.contains('manager-app')) {
                   if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
                     window.gmCalloutManagerMessagingBootstrap();
+                  } else if (typeof window.gmCalloutEnsureManagerMessaging === 'function') {
+                    void window.gmCalloutEnsureManagerMessaging().then(function () {
+                      if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
+                        window.gmCalloutManagerMessagingBootstrap();
+                      }
+                    });
                   }
                 }
                 if (document.documentElement.classList.contains('employee-app')) {
-                  if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-                    window.gmCalloutEmployeeBootstrap();
+                  var bootEmpAuth = function () {
+                    if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                      window.gmCalloutEmployeeBootstrap();
+                    }
+                  };
+                  if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
+                    void window.gmCalloutEnsureEmployeeApp().then(bootEmpAuth);
+                  } else {
+                    bootEmpAuth();
                   }
                 }
               });

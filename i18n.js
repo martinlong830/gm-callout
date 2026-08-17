@@ -113,7 +113,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-1';
+      s.src = 'locales/es.js?v=perf-2';
       s.setAttribute('data-gm-locale-es', '1');
       s.onload = function () {
         resolve();

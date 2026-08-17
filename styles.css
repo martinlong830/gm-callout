@@ -3804,6 +3804,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     overflow: hidden;
   }
 
+  /*
+   * Viewport-locked .main needs an inner scrollport for every screen.
+   * Schedule overrides to overflow:hidden so only #calendarGrid scrolls.
+   */
+  html.authed.manager-app .main > .screen.active {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
   #screen-schedule.active {
     flex: 1;
     display: flex;
