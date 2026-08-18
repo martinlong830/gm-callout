@@ -225,6 +225,25 @@ export function filterRestaurantsForUsualLocation<T extends { id: string }>(
   return allowed.length ? allowed : restaurants;
 }
 
+/**
+ * Employee schedule switcher: home/both stores plus the pay-week borrow store
+ * (web `employeeMatchesScheduleRestaurant` includes week-borrow).
+ */
+export function filterRestaurantsForEmployeeSchedule<T extends { id: string }>(
+  restaurants: T[],
+  usualRestaurant: string | null | undefined,
+  borrowedRestaurantId?: string | null
+): T[] {
+  const usual = filterRestaurantsForUsualLocation(restaurants, usualRestaurant);
+  const extraId =
+    borrowedRestaurantId === 'rp-8' || borrowedRestaurantId === 'rp-9'
+      ? borrowedRestaurantId
+      : null;
+  if (!extraId || usual.some((r) => r.id === extraId)) return usual;
+  const extra = restaurants.find((r) => r.id === extraId);
+  return extra ? [...usual, extra] : usual;
+}
+
 /** Canonical primary store id for multi-location staff (`meta.primaryLocationId`). */
 export function employeePrimaryLocationId(emp: EmployeeRow | null | undefined): string | null {
   if (!emp || !employeeIsMultiLocation(emp.usualRestaurant)) return null;

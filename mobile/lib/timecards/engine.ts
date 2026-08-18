@@ -103,7 +103,14 @@ export function formatHourlyRateLabel(emp: EmployeeRow): string {
   return `${formatPayAmount(r)}/hr`;
 }
 
-function parseScheduledHoursDecimal(shift: WorkerShiftRow): number {
+export function formatOtHourlyRateLabel(emp: EmployeeRow): string {
+  if (emp.hourlyRate == null || Number.isNaN(Number(emp.hourlyRate))) return '—';
+  const r = Number(emp.hourlyRate);
+  if (r < 0) return '—';
+  return `${formatPayAmount(r * OT_RATE_MULTIPLIER)}/hr`;
+}
+
+export function parseScheduledHoursDecimal(shift: WorkerShiftRow): number {
   if (shift.redPokeHours != null && shift.redPokeHours !== '') {
     return parseFloat(String(shift.redPokeHours)) || 0;
   }
@@ -1299,6 +1306,20 @@ export function computeSpreadOfHours(
   return { count, dates, pay, hasRate: true };
 }
 
+export function isSoHDateForEmployee(
+  emp: EmployeeRow,
+  iso: string,
+  entries: TimeClockEntry[],
+  options?: Parameters<typeof computeSpreadOfHours>[2]
+): boolean {
+  if (!iso) return false;
+  return computeSpreadOfHours(emp, entries, options).dates.indexOf(iso) !== -1;
+}
+
+export function sohPremiumPayAmount(): number {
+  return SOH_PAY_HOURS * getSohRate();
+}
+
 export function formatSoHDatesList(dates: string[]): string {
   if (!dates.length) return '—';
   return dates
@@ -1338,6 +1359,23 @@ function rosterGrandTotalPay(row: {
     (row.sohPay || 0) +
     (row.dishwasherTipsPay || 0) +
     (row.additionalCashTip || 0)
+  );
+}
+
+/** Roster hours cell: regular + OT + VL + SL (matches web `rosterGrandTotalMinutes`). */
+export function rosterGrandTotalMinutes(row: {
+  totalMins?: number;
+  regMins?: number;
+  otMins?: number;
+  vlHours?: number;
+  slHours?: number;
+}): number {
+  const worked =
+    row.totalMins != null ? row.totalMins : (row.regMins || 0) + (row.otMins || 0);
+  return (
+    worked +
+    Math.round((row.vlHours || 0) * 60) +
+    Math.round((row.slHours || 0) * 60)
   );
 }
 

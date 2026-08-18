@@ -23,6 +23,7 @@ import {
   computeRosterTotals,
   decimalHoursFromMinutes,
   formatPayAmount,
+  rosterGrandTotalMinutes,
   type RosterRow,
 } from '../../../lib/timecards/engine';
 import { loadDishwasherTipsSlice } from '../../../lib/timecards/dishwasherTips';
@@ -125,11 +126,17 @@ const RosterRowCard = memo(function RosterRowCard({
           <Text style={styles.statHours}>{decimalHoursFromMinutes(row.schedMins)}h</Text>
         </View>
         <HoursPayStat label={t('timecards.regular')} mins={row.regMins} pay={row.regPay} />
-        <HoursPayStat label={t('timecards.ot')} mins={row.otMins} pay={row.otPay} />
+        <HoursPayStat label={t('timecards.overtime')} mins={row.otMins} pay={row.otPay} />
         <View style={styles.statRow}>
-          <Text style={styles.statLabel}>{t('timecards.vlSl')}</Text>
+          <Text style={styles.statLabel}>{t('timecards.vlHrs')}</Text>
           <Text style={styles.statHours}>
-            {row.vlHours.toFixed(1)}h / {row.slHours.toFixed(1)}h
+            {row.vlHours > 0 ? `${row.vlHours.toFixed(1)}h` : '—'}
+          </Text>
+        </View>
+        <View style={styles.statRow}>
+          <Text style={styles.statLabel}>{t('timecards.slHrs')}</Text>
+          <Text style={styles.statHours}>
+            {row.slHours > 0 ? `${row.slHours.toFixed(1)}h` : '—'}
           </Text>
         </View>
         <View style={styles.statRow}>
@@ -141,22 +148,16 @@ const RosterRowCard = memo(function RosterRowCard({
             <Text style={styles.statPay}>{formatPayAmount(row.sohPay)}</Text>
           ) : null}
         </View>
-        {row.dishwasherTipsPay > 0 ? (
-          <View style={styles.statRow}>
-            <Text style={styles.statLabel}>{t('timecards.netDishwasherTips')}</Text>
-            <Text style={styles.statPay}>{formatPayAmount(row.dishwasherTipsPay)}</Text>
-          </View>
-        ) : null}
-        {row.additionalCashTip > 0 ? (
-          <View style={styles.statRow}>
-            <Text style={styles.statLabel}>{t('timecards.coverageCompensation')}</Text>
-            <Text style={styles.statPay}>{formatPayAmount(row.additionalCashTip)}</Text>
-          </View>
-        ) : null}
+        <View style={styles.statRow}>
+          <Text style={styles.statLabel}>{t('timecards.coverageCompensation')}</Text>
+          <Text style={styles.statPay}>
+            {row.additionalCashTip > 0 ? formatPayAmount(row.additionalCashTip) : '—'}
+          </Text>
+        </View>
         <View style={[styles.statRow, styles.totalRow]}>
           <Text style={styles.totalLabel}>{t('timecards.total')}</Text>
           <Text style={styles.totalHours}>
-            {decimalHoursFromMinutes(row.regMins + row.otMins)}h
+            {decimalHoursFromMinutes(rosterGrandTotalMinutes(row))}h
           </Text>
           <Text style={styles.totalPay}>{formatPayAmount(row.grandTotalPay)}</Text>
         </View>
@@ -602,7 +603,7 @@ export default function TimecardsRosterScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f4f6f8' },
+  screen: { flex: 1, minHeight: 0, backgroundColor: '#f4f6f8' },
   scrollContent: { paddingBottom: 32 },
   locationSection: { paddingHorizontal: 16, paddingBottom: 8, paddingTop: 4 },
   locationLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginBottom: 6 },

@@ -35,6 +35,8 @@
   --space-main: 24px;
   --space-block: 20px;
   --space-tight: 12px;
+  --page-pad-left: max(var(--space-main), env(safe-area-inset-left, 0px));
+  --page-pad-right: max(var(--space-main), env(safe-area-inset-right, 0px));
   /* Fixed-height sticky chrome (must match .app-top grid rows + main top padding) */
   --app-header-row-h: 3.5rem;
   --app-nav-row-h: 3rem;
@@ -48,13 +50,6 @@
 html {
   font-size: 16px;
   -webkit-text-size-adjust: 100%;
-}
-
-@media (min-width: 900px) {
-  html {
-    /* Avoid content width jumping when only some screens scroll (e.g. History vs Schedule). */
-    scrollbar-gutter: stable;
-  }
 }
 
 body {
@@ -1803,8 +1798,6 @@ html.authed .header-signout-btn {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  padding-left: env(safe-area-inset-left, 0px);
-  padding-right: env(safe-area-inset-right, 0px);
   box-sizing: border-box;
 }
 
@@ -1815,7 +1808,9 @@ html.authed .header-signout-btn {
   gap: 14px;
   min-height: 0;
   height: 100%;
-  padding: 0 var(--space-main);
+  padding: 0;
+  padding-left: var(--page-pad-left);
+  padding-right: var(--page-pad-right);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   box-sizing: border-box;
@@ -1874,7 +1869,9 @@ html.authed .header-signout-btn {
   gap: 0;
   min-height: 0;
   height: 100%;
-  padding: 0 var(--space-main);
+  padding: 0;
+  padding-left: var(--page-pad-left);
+  padding-right: var(--page-pad-right);
   background: var(--surface);
   box-sizing: border-box;
 }
@@ -2421,8 +2418,8 @@ html.authed .header-signout-btn {
 .main {
   padding: var(--space-main);
   padding-bottom: calc(var(--space-main) + 16px);
-  padding-left: max(var(--space-main), env(safe-area-inset-left, 0px));
-  padding-right: max(var(--space-main), env(safe-area-inset-right, 0px));
+  padding-left: var(--page-pad-left);
+  padding-right: var(--page-pad-right);
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
@@ -2554,6 +2551,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   box-sizing: border-box;
 }
 
+/* Schedule card: no extra side padding — .main already matches header insets. */
+#screen-schedule .calendar-table-wrap,
+#empScreenSchedule .calendar-table-wrap {
+  padding-left: 0;
+  padding-right: 0;
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+}
+
 /* Wide schedule matrix scrolls inside the card (phones). */
 #calendarGrid {
   max-width: 100%;
@@ -2607,7 +2614,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .calendar-matrix .calendar-group-row td.calendar-person-totals-col--section {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 3;
   box-shadow: 0 2px 8px -4px rgba(15, 23, 42, 0.18);
 }
 
@@ -3246,6 +3253,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: var(--surface);
 }
 
+/* Keep shift tiles (and their ×) under sticky FOH/BOH/Delivery bars. */
+#calendarGrid .calendar-matrix tbody tr.calendar-data-row > td:not(.calendar-row-person-col),
+#empCalendarGrid .calendar-matrix tbody tr.calendar-data-row > td:not(.calendar-row-person-col) {
+  position: relative;
+  z-index: 0;
+}
+
 .calendar-matrix thead th.calendar-row-person-col {
   z-index: 7;
   vertical-align: bottom;
@@ -3393,7 +3407,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   position: absolute;
   top: 2px;
   right: 2px;
-  z-index: 1;
+  z-index: 0;
   margin: 0;
   padding: 0;
   width: 1.25rem;
@@ -3642,7 +3656,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 .calendar-matrix .calendar-group-row td.calendar-group-fill {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 3;
   /* Must match .calendar-group-row td padding — padding:0 made sticky fill paint shorter than the label. */
   padding: 10px 12px;
   vertical-align: middle;
@@ -3829,13 +3843,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     min-height: 0;
     display: flex;
     flex-direction: column;
-    width: calc(100% + 2 * var(--space-main));
-    margin-left: calc(-1 * var(--space-main));
-    margin-right: calc(-1 * var(--space-main));
+    width: 100%;
+    margin-left: 0;
+    margin-right: 0;
     border-radius: 0;
     border-left: none;
     border-right: none;
-    padding: 12px var(--space-main) 16px;
+    padding: 12px 0 0;
     box-sizing: border-box;
     overflow: hidden;
   }

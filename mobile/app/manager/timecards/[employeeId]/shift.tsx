@@ -54,10 +54,16 @@ import {
   formatBreakRangeLabel,
   formatHistoryLines,
   formatHourlyRateLabel,
+  formatOtHourlyRateLabel,
   formatPayAmount,
   formatPunchClock,
   formatShiftPayLabel,
+  formatSoHDatesList,
   isEntryOpen,
+  isSoHDateForEmployee,
+  parseScheduledHoursDecimal,
+  sohPremiumPayAmount,
+  computeSpreadOfHours,
   normalizePunchTimesForShift,
   parseBreakMinutesFromAnnotation,
   punchDayIso,
@@ -83,10 +89,8 @@ import {
   makeOffScheduleShiftDayRow,
   scheduleShiftIdForSave,
 } from '../../../../lib/timecards/offScheduleShift';
-import {
-  employeeUsesSplitOtCaps,
-  getEmployeeBorrowedRestaurantSync,
-} from '../../../../lib/timecards/weekBorrow';
+import { employeeUsesSplitOtCaps, getEmployeeBorrowedRestaurantSync } from '../../../../lib/timecards/weekBorrow';
+import { entryRestaurantId } from '../../../../lib/timecards/restaurantAttribution';
 import { supabase } from '../../../../lib/supabase';
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -143,10 +147,13 @@ export default function TimecardsShiftScreen() {
     return null;
   }, [emp, weekShifts, shiftId, iso]);
 
-  const dayEntries = useMemo(
-    () => (emp && iso ? findEntriesForDay(entries, emp.id, iso) : []),
-    [emp, entries, iso]
-  );
+  const dayEntries = useMemo(() => {
+    if (!emp || !iso) return [];
+    const all = findEntriesForDay(entries, emp.id, iso);
+    if (!shiftRow) return all;
+    const rowRest = shiftRowAttributionRestaurant(emp, shiftRow, entries, scheduleCtx);
+    return all.filter((e) => entryRestaurantId(emp, e, entries, scheduleCtx) === rowRest);
+  }, [emp, entries, iso, shiftRow, scheduleCtx]);
 
   const [entryId, setEntryId] = useState<string | null>(null);
   const [clockInDate, setClockInDate] = useState<Date | null>(null);
@@ -557,6 +564,9 @@ export default function TimecardsShiftScreen() {
         )
       : null;
   const history = editingEntry ? formatHistoryLines(editingEntry) : [];
+  const sohWeek = computeSpreadOfHours(emp, previewEntries, { bounds, scheduleCtx });
+  const sohDay = isSoHDateForEmployee(emp, iso || '', previewEntries, { bounds, scheduleCtx });
+  const schedHrs = parseScheduledHoursDecimal(s);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -570,13 +580,29 @@ export default function TimecardsShiftScreen() {
             ? t('timecards.offScheduleSuffix')
             : ` · ${s.timeLabel || redPokeShiftTimeLabel(s.start, s.end)}`}
         </Text>
-        {!offSchedule ? (
+        {s.restaurantName ? (
           <Text style={styles.line}>
-            {t('timecards.paidBreakLine', {
-              paid: decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)),
-              break: schedBreak ? `${schedBreak} min` : t('timecards.breakNone'),
-            })}
+            {t('common.location')} {s.restaurantName}
           </Text>
+        ) : null}
+        {!offSchedule ? (
+          <>
+            <Text style={styles.line}>
+              {t('timecards.hoursLine', {
+                gross: String(schedHrs),
+                paid: decimalHoursFromMinutes(scheduledPaidMinutes(s, emp)),
+              })}
+            </Text>
+            <Text style={styles.line}>
+              {t('timecards.employeeDefault')}{' '}
+              {formatBreakPolicyLabel(employeeBreakPolicy(emp) === 'paid')}
+            </Text>
+            <Text style={styles.line}>
+              {t('timecards.scheduledBreak')}{' '}
+              {schedBreak ? `${schedBreak} min · ` : `${t('timecards.none')} · `}
+              {formatBreakPolicyLabel(resolveBreakPaid({ shift: s, emp }))}
+            </Text>
+          </>
         ) : (
           <Text style={styles.line}>{t('timecards.noScheduledShift')}</Text>
         )}
@@ -602,10 +628,20 @@ export default function TimecardsShiftScreen() {
             pay: formatPayAmount(shiftPay?.otPay),
           })}
         </Text>
+        <Text style={styles.line}>
+          {t('timecards.regularPayRate')} {formatHourlyRateLabel(emp)}
+        </Text>
+        <Text style={styles.line}>
+          {t('timecards.otPayRate')} {formatOtHourlyRateLabel(emp)}
+        </Text>
         <Text style={styles.lineStrong}>
           {t('timecards.shiftTotal', { total: shiftPay ? formatShiftPayLabel(shiftPay) : '—' })}
         </Text>
-        <Text style={styles.line}>{t('timecards.payHr')} {formatHourlyRateLabel(emp)}</Text>
+        {emp && iso && sohDay ? (
+          <Text style={styles.line}>
+            {t('timecards.sohPremium')} {formatPayAmount(sohPremiumPayAmount())}
+          </Text>
+        ) : null}
       </View>
 
       <Text style={styles.sectionTitle}>{t('timecards.punchesThisDay')}</Text>
@@ -753,6 +789,15 @@ export default function TimecardsShiftScreen() {
         onChangeText={setMissingHoursText}
         keyboardType="decimal-pad"
       />
+      <Text style={styles.line}>
+        {t('timecards.sohThisDay')} {sohDay ? t('timecards.sohYes') : t('timecards.sohNo')}
+      </Text>
+      <Text style={styles.line}>
+        {t('timecards.sohDates')} {formatSoHDatesList(sohWeek.dates)}
+      </Text>
+      <Text style={styles.line}>
+        {t('timecards.sohPayWeek')} {sohWeek.hasRate ? formatPayAmount(sohWeek.pay) : '—'}
+      </Text>
 
       {showDishwasherTip ? (
         <>
@@ -822,7 +867,7 @@ export default function TimecardsShiftScreen() {
 
       {history.length ? (
         <>
-          <Text style={styles.sectionTitle}>Edit history</Text>
+          <Text style={styles.sectionTitle}>{t('timecards.editHistory')}</Text>
           {history.map((h, i) => (
             <View key={i} style={styles.histBlock}>
               {h.when ? <Text style={styles.histWhen}>{h.when}</Text> : null}
@@ -834,7 +879,12 @@ export default function TimecardsShiftScreen() {
             </View>
           ))}
         </>
-      ) : null}
+      ) : (
+        <>
+          <Text style={styles.sectionTitle}>{t('timecards.editHistory')}</Text>
+          <Text style={styles.hint}>{t('timecards.editHistoryEmpty')}</Text>
+        </>
+      )}
     </ScrollView>
   );
 }

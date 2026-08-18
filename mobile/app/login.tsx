@@ -558,13 +558,21 @@ export default function LoginScreen() {
   const portalOk = isPortalAuthConfigured();
   const supabaseOk = isSupabaseConfigured;
 
+  const centerShortPanel = panel === 'landing' || panel === 'pending';
+
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={[styles.scroll, centerShortPanel && styles.scrollCenter]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        >
           <View style={styles.card}>
             <View style={styles.langRow}>
               <LanguageToggle variant="compact" />
@@ -1058,6 +1066,9 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 20,
     paddingBottom: 40,
+  },
+  /** Only for short panels — `justifyContent: 'center'` on a tall form blocks scrolling. */
+  scrollCenter: {
     justifyContent: 'center',
   },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#e8eef5' },

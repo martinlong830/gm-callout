@@ -186,7 +186,7 @@ export default function ManagerHome() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f4f6f8' },
+  screen: { flex: 1, minHeight: 0, backgroundColor: '#f4f6f8' },
   content: { padding: 16, paddingBottom: 32 },
   h1: { fontSize: 22, fontWeight: '700', color: '#111' },
   sub: { fontSize: 15, color: '#555', marginTop: 4, marginBottom: 16 },

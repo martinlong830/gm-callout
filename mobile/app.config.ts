@@ -83,6 +83,7 @@ const config: ExpoConfig = {
       backgroundColor: '#1e3a5f',
     },
     edgeToEdgeEnabled: true,
+    softwareKeyboardLayoutMode: 'resize',
     // Android 13+ runtime permission; also declared by expo-notifications, kept explicit.
     permissions: ['POST_NOTIFICATIONS', 'RECEIVE_BOOT_COMPLETED'],
   },

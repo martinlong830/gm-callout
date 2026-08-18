@@ -15,7 +15,8 @@ import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useI18n } from '../../contexts/LocaleContext';
 import {
-  filterRestaurantsForUsualLocation,
+  employeePrimaryLocationId,
+  filterRestaurantsForEmployeeSchedule,
   managerScheduleMainRestaurantId,
   orderRestaurantsMainFirst,
   type EmployeeRow,
@@ -37,6 +38,7 @@ import {
   loadDraftFromTeamState,
   normalizeSchedulePublishedMap,
   displayBreakAnnotation,
+  formatScheduleDayHoursLabel,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   scheduleRowPrimaryPerson,
@@ -49,6 +51,13 @@ import {
   GROUP_ORDER_POTENTIAL_PLATFORMS,
   getGroupOrderPotentialCell,
 } from '../../lib/schedule/groupOrderPotential';
+import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
+import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
+import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import {
+  getEmployeeBorrowedRestaurantSync,
+  restaurantShortLabel as borrowRestaurantShortLabel,
+} from '../../lib/timecards/weekBorrow';
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
@@ -68,6 +77,12 @@ const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-bartender': { bg: '#ecfdf5', fg: '#047857', border: '#a7f3d0' },
 };
 
+function pillForRole(role: RoleKey) {
+  if (role === 'Bartender') return ROLE_PILL['role-bartender'];
+  if (role === 'Server') return ROLE_PILL['role-server'];
+  return ROLE_PILL['role-kitchen'];
+}
+
 function toLite(e: EmployeeRow): EmployeeLite {
   return {
     firstName: e.firstName,
@@ -75,6 +90,7 @@ function toLite(e: EmployeeRow): EmployeeLite {
     displayName: e.displayName,
     staffType: e.staffType as RoleKey,
     usualRestaurant: e.usualRestaurant || 'both',
+    primaryLocationId: employeePrimaryLocationId(e),
     meta: e.meta,
   };
 }
@@ -104,22 +120,59 @@ export default function EmployeeScheduleScreen() {
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const allRestaurants = useMemo(() => defaultRestaurants(), []);
-  /**
-   * Team `usualRestaurant`: single store → that store only; `both` → all.
-   * Main/primary store stays leftmost (same helper as manager schedule pills).
-   */
-  const restaurants = useMemo(() => {
-    const visible = filterRestaurantsForUsualLocation(
-      allRestaurants,
-      myEmployee?.usualRestaurant
-    );
-    return orderRestaurantsMainFirst(visible, managerScheduleMainRestaurantId(myEmployee));
-  }, [allRestaurants, myEmployee]);
+  const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
   const [currentRestaurantId, setCurrentRestaurantId] = useState(
     () => defaultRestaurants()[0]?.id ?? 'rp-9'
   );
   const dayScrollRef = useRef<ScrollView | null>(null);
   const didInitRestaurantRef = useRef(false);
+
+  const weekMeta = useMemo(
+    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
+    []
+  );
+  const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
+  const visibleDays = useMemo(
+    () => getVisibleWeekDays(allWeekDays, weekIndex),
+    [allWeekDays, weekIndex]
+  );
+  const selectedWeekMonday = String(weekMeta[weekIndex * 7]?.iso || '').slice(0, 10);
+
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) {
+      setBorrowByEmpId({});
+      return;
+    }
+    let cancelled = false;
+    const mon = new Date(`${selectedWeekMonday}T12:00:00`);
+    const bounds = getPayWeekBoundsForMonday(mon);
+    void loadWeekExtrasSlice(bounds).then((slice) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const e of employees) {
+        const b = getEmployeeBorrowedRestaurantSync(e.id, slice);
+        if (b) next[e.id] = b;
+      }
+      setBorrowByEmpId(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWeekMonday, employees, teamState?.updated_at]);
+
+  /**
+   * Team `usualRestaurant` plus pay-week borrow store (web employee switcher).
+   * Main/primary store stays leftmost.
+   */
+  const restaurants = useMemo(() => {
+    const borrowed = myEmployee?.id ? borrowByEmpId[myEmployee.id] : null;
+    const visible = filterRestaurantsForEmployeeSchedule(
+      allRestaurants,
+      myEmployee?.usualRestaurant,
+      borrowed
+    );
+    return orderRestaurantsMainFirst(visible, managerScheduleMainRestaurantId(myEmployee));
+  }, [allRestaurants, myEmployee, borrowByEmpId]);
 
   useEffect(() => {
     if (!restaurants.length) return;
@@ -137,16 +190,6 @@ export default function EmployeeScheduleScreen() {
       (main && restaurants.find((r) => r.id === main)?.id) || restaurants[0]?.id;
     if (next) setCurrentRestaurantId(next);
   }, [restaurants, currentRestaurantId, myEmployee]);
-
-  const weekMeta = useMemo(
-    () => buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate()),
-    []
-  );
-  const allWeekDays = useMemo(() => buildAllWeekDayLabels(weekMeta), [weekMeta]);
-  const visibleDays = useMemo(
-    () => getVisibleWeekDays(allWeekDays, weekIndex),
-    [allWeekDays, weekIndex]
-  );
 
   useEffect(() => {
     const iso = String(params.weekMondayIso || '')
@@ -190,7 +233,15 @@ export default function EmployeeScheduleScreen() {
     dayScrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [weekIndex, currentRestaurantId]);
 
-  const lites = useMemo(() => employees.map(toLite), [employees]);
+  const lites = useMemo(
+    () =>
+      employees.map((e) => {
+        const lite = toLite(e);
+        lite.borrowedRestaurantId = borrowByEmpId[e.id] || null;
+        return lite;
+      }),
+    [employees, borrowByEmpId]
+  );
 
   const schedule = useMemo(() => {
     try {
@@ -266,7 +317,6 @@ export default function EmployeeScheduleScreen() {
     otherStoreDayLabels,
   ]);
 
-  const selectedWeekMonday = String(weekMeta[weekIndex * 7]?.iso || '').slice(0, 10);
   const daysWidth = useMemo(
     () =>
       Math.max(
@@ -325,15 +375,14 @@ export default function EmployeeScheduleScreen() {
                 style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
               >
                 <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
-                  {r.shortLabel || r.name}
+                  {r.name}
                 </Text>
               </Pressable>
             ))}
           </ScrollView>
         </View>
 
-        {weekPublished ? (
-          <View style={styles.legend}>
+        <View style={styles.legend}>
             <View style={[styles.legendPill, { borderColor: ROLE_PILL['role-bartender'].border }]}>
               <Text style={[styles.legendTxt, { color: ROLE_PILL['role-bartender'].fg }]}>
                 {staffTypeLabel('Bartender')}
@@ -350,7 +399,6 @@ export default function EmployeeScheduleScreen() {
               </Text>
             </View>
           </View>
-        ) : null}
       </View>
 
       {!weekPublished ? (
@@ -464,10 +512,16 @@ export default function EmployeeScheduleScreen() {
                       { width: daysWidth, backgroundColor: '#f8fafc' },
                     ]}
                   />
-                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat, gi) => (
                     <View
                       key={`go-d-${plat.id}`}
-                      style={[styles.dataDays, styles.dataMatrixRow, styles.groupOrderDataRow, { width: daysWidth }]}
+                      style={[
+                        styles.dataDays,
+                        styles.dataMatrixRow,
+                        styles.groupOrderDataRow,
+                        gi % 2 === 1 && styles.groupOrderDataRowAlt,
+                        { width: daysWidth },
+                      ]}
                     >
                       {visibleDays.map((dayStr) => {
                         const meta = weekMeta.find((m) => m.label === dayStr);
@@ -518,9 +572,9 @@ export default function EmployeeScheduleScreen() {
                     };
                     return (
                       <View key={`pt-${ri}`} style={styles.personTotalsCell}>
-                        <Text style={styles.sideTotalsGross}>{tot.hours.toFixed(1)}h</Text>
+                        <Text style={styles.sideTotalsGross}>{formatScheduleDayHoursLabel(tot.hours)}</Text>
                         <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
-                        <Text style={styles.sideTotalsNet}>{tot.paidHours.toFixed(1)}h</Text>
+                        <Text style={styles.sideTotalsNet}>{formatScheduleDayHoursLabel(tot.paidHours)}</Text>
                         <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
                       </View>
                     );
@@ -572,7 +626,7 @@ const PersonColRow = memo(function PersonColRow({
   weekIndex,
   unassignedLabel,
 }: PersonColRowProps) {
-  const { staffTypeLabel } = useI18n();
+  const { t, staffTypeLabel } = useI18n();
   if (row.kind === 'section') {
     const bg = sectionBg(row.variant);
     const fg = sectionFg(row.variant);
@@ -604,12 +658,48 @@ const PersonColRow = memo(function PersonColRow({
     weekIndex
   );
   const label = selected && selected !== 'Unassigned' ? selected : unassignedLabel;
+  const selectedLite =
+    selected && selected !== 'Unassigned'
+      ? employees.find(
+          (e) =>
+            (e.displayName || `${e.firstName} ${e.lastName}`.trim()) === selected ||
+            `${e.firstName} ${e.lastName}`.trim() === selected
+        )
+      : null;
+  const awayPrimaryId =
+    selectedLite?.primaryLocationId &&
+    selectedLite.primaryLocationId !== restaurantId
+      ? selectedLite.primaryLocationId
+      : null;
+  const awayPrimaryLabel = awayPrimaryId
+    ? restaurantShortLabelForId(awayPrimaryId)
+    : '';
+  const borrowedFromId =
+    !awayPrimaryLabel &&
+    selectedLite?.borrowedRestaurantId === restaurantId &&
+    selectedLite.usualRestaurant &&
+    selectedLite.usualRestaurant !== 'both' &&
+    selectedLite.usualRestaurant !== restaurantId
+      ? selectedLite.usualRestaurant
+      : null;
+  const borrowedFromLabel = borrowedFromId
+    ? borrowRestaurantShortLabel(borrowedFromId)
+    : '';
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
       <View style={styles.personReadonly}>
         <Text style={styles.personSelectText} numberOfLines={2} ellipsizeMode="tail">
           {label}
         </Text>
+        {awayPrimaryLabel ? (
+          <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+            {t('schedule.primaryStore', { store: awayPrimaryLabel })}
+          </Text>
+        ) : borrowedFromLabel ? (
+          <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+            {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
+          </Text>
+        ) : null}
       </View>
     </View>
   );
@@ -656,26 +746,56 @@ const CalendarCellView = memo(function CalendarCellView({
   dayOffLabel: string;
 }) {
   const { t } = useI18n();
+  const otherStoreBadge = (label: string) => (
+    <View style={styles.otherStorePill}>
+      <Text style={styles.otherStorePillText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
   if (cell.kind === 'empty') {
-    if (!cell.otherStoreLabel) return <View style={styles.cellInnerMuted} />;
+    const pill = pillForRole(cell.role);
+    const body = cell.otherStoreLabel ? (
+      otherStoreBadge(cell.otherStoreLabel)
+    ) : (
+      <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
+    );
     return (
-      <View style={styles.cellInnerMuted}>
-        <Text style={styles.otherStoreLabel} numberOfLines={2}>
-          {cell.otherStoreLabel}
-        </Text>
+      <View
+        style={[
+          styles.cellInnerEmpty,
+          {
+            backgroundColor: pill.bg,
+            borderColor: pill.border,
+            borderLeftColor: pill.fg,
+          },
+        ]}
+      >
+        {body}
       </View>
     );
   }
   if (cell.kind === 'dayoff') {
+    const pill = pillForRole(cell.role);
     return (
-      <View style={styles.cellInnerMuted}>
-        <Text style={styles.cellTime} numberOfLines={1}>
-          {cell.timeLabel}
-        </Text>
-        {cell.otherStoreLabel ? (
-          <Text style={styles.otherStoreLabel} numberOfLines={2}>
-            {cell.otherStoreLabel}
+      <View
+        style={[
+          styles.cellInnerEmpty,
+          styles.cellInnerEmptyTimed,
+          {
+            backgroundColor: pill.bg,
+            borderColor: pill.border,
+            borderLeftColor: pill.fg,
+          },
+        ]}
+      >
+        <View style={styles.dayoffTimeBlock}>
+          <Text style={styles.cellTimeMuted} numberOfLines={1}>
+            {cell.timeLabel}
           </Text>
+        </View>
+        {cell.otherStoreLabel ? (
+          otherStoreBadge(cell.otherStoreLabel)
         ) : (
           <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
         )}
@@ -695,7 +815,7 @@ const CalendarCellView = memo(function CalendarCellView({
         { borderColor: pill.border, backgroundColor: pill.bg, borderLeftColor: pill.fg },
       ]}
     >
-      <Text style={[styles.cellTime, { color: pill.fg }]} numberOfLines={1}>
+      <Text style={styles.cellTime} numberOfLines={1}>
         {cell.timeLabel}
       </Text>
       {breakLabel ? (
@@ -703,20 +823,18 @@ const CalendarCellView = memo(function CalendarCellView({
           {breakLabel}
         </Text>
       ) : null}
-      <Text style={styles.cellHours} numberOfLines={1}>
-        {cell.hours}h
-      </Text>
-      {cell.otherStoreLabel ? (
-        <Text style={styles.otherStoreLabel} numberOfLines={2}>
-          {cell.otherStoreLabel}
+      {cell.hours ? (
+        <Text style={styles.cellHours} numberOfLines={1}>
+          {cell.hours}
         </Text>
       ) : null}
+      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
     </View>
   );
 });
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f4f6f8' },
+  screen: { flex: 1, minHeight: 0, backgroundColor: '#f4f6f8' },
   chrome: { flexShrink: 0, backgroundColor: '#f4f6f8', zIndex: 2 },
   brandRow: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   brandLogo: { width: 72, height: 72, resizeMode: 'contain' },
@@ -759,10 +877,11 @@ const styles = StyleSheet.create({
   muted: { paddingHorizontal: 16, color: '#888', marginBottom: 8 },
   gridScroll: { flex: 1, minHeight: 0 },
   gridScrollContent: { flexGrow: 1, paddingBottom: 24 },
-  matrix: { paddingHorizontal: 8 },
+  matrix: { paddingHorizontal: 8, alignSelf: 'stretch', width: '100%' },
   matrixInner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    width: '100%',
   },
   personCol: {
     flexShrink: 0,
@@ -833,6 +952,9 @@ const styles = StyleSheet.create({
   groupOrderDataRow: {
     backgroundColor: '#f8fafc',
   },
+  groupOrderDataRowAlt: {
+    backgroundColor: '#eef2f6',
+  },
   groupOrderCell: {
     padding: 5,
     justifyContent: 'center',
@@ -863,6 +985,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
   },
   personSelectText: { fontSize: 12, fontWeight: '600', color: '#111' },
+  awayPrimaryBadge: {
+    marginTop: 2,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748b',
+  },
   dayLane: { flex: 1 },
   dayLaneContent: { flexGrow: 1 },
   headerDays: { flexDirection: 'row', height: HEADER_ROW_H },
@@ -897,28 +1025,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     overflow: 'hidden',
   },
-  cellInnerMuted: {
+  cellInnerEmpty: {
     flex: 1,
     justifyContent: 'center',
-    backgroundColor: '#fafafa',
-    borderRadius: 4,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingVertical: 6,
     paddingHorizontal: 6,
   },
-  cellDayoffLabel: { fontSize: 10, color: '#94a3b8', marginTop: 4, fontWeight: '600' },
-  otherStoreLabel: {
+  cellInnerEmptyTimed: {
+    justifyContent: 'flex-start',
+  },
+  cellTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
+  cellTimeMuted: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+  dayoffTimeBlock: {
+    marginBottom: 4,
+    paddingBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#cbd5e1',
+  },
+  cellDayoffLabel: { fontSize: 10, color: '#64748b', marginTop: 4, fontWeight: '700' },
+  otherStorePill: {
+    marginTop: 4,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#ffedd5',
+    borderWidth: 1,
+    borderColor: '#fdba74',
+    alignSelf: 'stretch',
+  },
+  otherStorePillText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#9a3412',
     textAlign: 'center',
-    marginTop: 4,
   },
-  otherStoreLabelOnShift: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: '#9a3412',
-    marginTop: 2,
-  },
-  cellTime: { fontSize: 11, fontWeight: '700' },
   cellBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   cellHours: { fontSize: 10, color: '#334155', marginTop: 2, fontWeight: '600' },
 });

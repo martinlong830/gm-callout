@@ -90,6 +90,7 @@ import {
   patchDraftScheduleForWeek,
   purgeDefaultUnassignedRestaurantAssignments,
   redPokeShiftHoursDecimal,
+  formatScheduleDayHoursLabel,
   restoreFohTemplateWeekBreaks,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
@@ -154,6 +155,31 @@ const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-server': { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
   'role-bartender': { bg: '#ecfdf5', fg: '#047857', border: '#a7f3d0' },
 };
+
+function pillForRole(role: RoleKey) {
+  if (role === 'Bartender') return ROLE_PILL['role-bartender'];
+  if (role === 'Server') return ROLE_PILL['role-server'];
+  return ROLE_PILL['role-kitchen'];
+}
+
+function liteByScheduleName(employees: EmployeeLite[], name: string): EmployeeLite | undefined {
+  if (!name || name === 'Unassigned') return undefined;
+  return employees.find(
+    (e) =>
+      (e.displayName || `${e.firstName} ${e.lastName}`.trim()) === name ||
+      `${e.firstName} ${e.lastName}`.trim() === name
+  );
+}
+
+function borrowHomeMeta(
+  emp: EmployeeLite | undefined,
+  t: (key: string, vars?: Record<string, string | number>) => string
+): string {
+  if (!emp) return '';
+  const home = emp.usualRestaurant || 'both';
+  if (home === 'both') return t('schedule.borrowHomeBoth');
+  return t('schedule.borrowHomeStore', { store: restaurantShortLabelForId(home) });
+}
 
 type RowPersonTarget = { role: RoleKey; trIdx: number };
 type ShiftEditTarget = {
@@ -1513,12 +1539,7 @@ export default function ManagerScheduleScreen() {
               : (['Unassigned', selected, ...pool] as string[]);
           })()
         : (['Unassigned', ...pool] as string[]);
-    const borrowPool = namesForScheduleBorrowPersonPicker(
-      lites,
-      rowPersonPicker.role,
-      currentRestaurantId
-    );
-    return borrowPool.length ? [...base, SCHEDULE_BORROW_PERSON_VALUE] : base;
+    return [...base, SCHEDULE_BORROW_PERSON_VALUE];
   }, [
     rowPersonPicker,
     rowPersonBorrowMode,
@@ -1582,18 +1603,8 @@ export default function ManagerScheduleScreen() {
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
-      <ScrollView
-        ref={outerScrollRef}
-        style={styles.outerScroll}
-        contentContainerStyle={styles.outerScrollContent}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator
-        onScroll={(e) => {
-          outerScrollYRef.current = e.nativeEvent.contentOffset.y;
-        }}
-        scrollEventThrottle={16}
-      >
+      {/* Frozen chrome — week / location / legend stay put (matrix scrolls below), matching web. */}
+      <View style={styles.chrome}>
         <View style={styles.brandRow}>
           <Image
             source={require('../../assets/red-poke-logo.png')}
@@ -1676,7 +1687,7 @@ export default function ManagerScheduleScreen() {
                   style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
                 >
                   <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
-                    {r.shortLabel || r.name}
+                    {r.name}
                   </Text>
                 </Pressable>
               ))}
@@ -1723,12 +1734,25 @@ export default function ManagerScheduleScreen() {
             </Text>
           </View>
         </View>
+      </View>
 
-        {/*
-          Sticky Person column + ONE horizontal ScrollView for all day columns.
-          Avoids N-scroll sync (programmatic scrollTo + onScroll) which fights
-          the user gesture and causes horizontal flicker.
-        */}
+      {/*
+        Sticky Person column + ONE horizontal ScrollView for all day columns.
+        Avoids N-scroll sync (programmatic scrollTo + onScroll) which fights
+        the user gesture and causes horizontal flicker.
+      */}
+      <ScrollView
+        ref={outerScrollRef}
+        style={styles.gridScroll}
+        contentContainerStyle={styles.gridScrollContent}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        onScroll={(e) => {
+          outerScrollYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
+      >
         <View style={styles.matrix}>
           <View style={styles.matrixInner}>
             <View style={[styles.personCol, { width: PERSON_COL }]}>
@@ -1846,10 +1870,16 @@ export default function ManagerScheduleScreen() {
                       },
                     ]}
                   />
-                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
+                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat, gi) => (
                     <View
                       key={`go-d-${plat.id}`}
-                      style={[styles.dataDays, styles.dataMatrixRow, styles.groupOrderDataRow, { width: daysWidth }]}
+                      style={[
+                        styles.dataDays,
+                        styles.dataMatrixRow,
+                        styles.groupOrderDataRow,
+                        gi % 2 === 1 && styles.groupOrderDataRowAlt,
+                        { width: daysWidth },
+                      ]}
                     >
                       {visibleDays.map((dayStr) => {
                         const meta = weekMeta.find((m) => m.label === dayStr);
@@ -1875,6 +1905,7 @@ export default function ManagerScheduleScreen() {
                                 placeholder="0"
                                 placeholderTextColor="#94a3b8"
                                 keyboardType="decimal-pad"
+                                selectTextOnFocus
                                 onEndEditing={(e) => {
                                   const text = e.nativeEvent.text;
                                   if (text === stored || (text === '0' && stored === '')) return;
@@ -1931,9 +1962,9 @@ export default function ManagerScheduleScreen() {
                       };
                       return (
                         <View key={`pt-${ri}`} style={styles.personTotalsCell}>
-                          <Text style={styles.sideTotalsGross}>{tot.hours.toFixed(1)}h</Text>
+                          <Text style={styles.sideTotalsGross}>{formatScheduleDayHoursLabel(tot.hours)}</Text>
                           <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
-                          <Text style={styles.sideTotalsNet}>{tot.paidHours.toFixed(1)}h</Text>
+                          <Text style={styles.sideTotalsNet}>{formatScheduleDayHoursLabel(tot.paidHours)}</Text>
                           <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
                         </View>
                       );
@@ -2034,18 +2065,29 @@ export default function ManagerScheduleScreen() {
                   data={rowPickerNames}
                   keyExtractor={(item) => item}
                   style={styles.modalList}
-                  renderItem={({ item }) => (
+                  ListEmptyComponent={
+                    rowPersonBorrowMode ? (
+                      <Text style={styles.modalSub}>{t('schedule.borrowEmpty')}</Text>
+                    ) : null
+                  }
+                  renderItem={({ item }) => {
+                    const isSentinel = item === SCHEDULE_BORROW_PERSON_VALUE;
+                    const meta =
+                      rowPersonBorrowMode && !isSentinel
+                        ? borrowHomeMeta(liteByScheduleName(lites, item), t)
+                        : '';
+                    return (
                     <Pressable
                       style={styles.modalRow}
                       onPress={() => void applyRowPersonChoice(rowPersonPicker, item)}
                     >
                       <Text style={styles.modalRowText}>
-                        {item === SCHEDULE_BORROW_PERSON_VALUE
-                          ? t('schedule.borrowEmployee')
-                          : item}
+                        {isSentinel ? t('schedule.borrowEmployee') : item}
                       </Text>
+                      {meta ? <Text style={styles.modalRowMeta}>{meta}</Text> : null}
                     </Pressable>
-                  )}
+                    );
+                  }}
                 />
               </>
             ) : shiftEditor ? (
@@ -2483,23 +2525,37 @@ const CalendarCellView = memo(function CalendarCellView({
       breakTime: t('schedule.breakTime'),
       office: t('schedule.office'),
     });
+  const otherStoreBadge = (label: string, onShift?: boolean) => (
+    <View style={[styles.otherStorePill, onShift && styles.otherStorePillOnShift]}>
+      <Text style={styles.otherStorePillText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
   if (cell.kind === 'empty') {
     const target: ShiftEditTarget = {
       role: cell.role,
       trIdx: cell.trIdx,
       dayStr: cell.dayStr,
     };
+    const pill = pillForRole(cell.role);
+    const emptyStyle = [
+      styles.cellInnerEmpty,
+      {
+        backgroundColor: pill.bg,
+        borderColor: pill.border,
+        borderLeftColor: pill.fg,
+      },
+    ];
     const body = cell.otherStoreLabel ? (
-      <Text style={styles.otherStoreLabel} numberOfLines={2}>
-        {cell.otherStoreLabel}
-      </Text>
+      otherStoreBadge(cell.otherStoreLabel)
     ) : (
       <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
     );
-    if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
+    if (!editable) return <View style={emptyStyle}>{body}</View>;
     return (
       <Pressable
-        style={styles.cellInnerMuted}
+        style={emptyStyle}
         onPress={() => onOpenShift(target)}
         onLongPress={() => onLongPressShift(target)}
         delayLongPress={350}
@@ -2514,22 +2570,32 @@ const CalendarCellView = memo(function CalendarCellView({
       trIdx: cell.trIdx,
       dayStr: cell.dayStr,
     };
+    const pill = pillForRole(cell.role);
+    const emptyStyle = [
+      styles.cellInnerEmpty,
+      styles.cellInnerEmptyTimed,
+      {
+        backgroundColor: pill.bg,
+        borderColor: pill.border,
+        borderLeftColor: pill.fg,
+      },
+    ];
     const body = (
       <>
-        <Text style={styles.slotTime}>{cell.timeLabel}</Text>
+        <View style={styles.dayoffTimeBlock}>
+          <Text style={styles.slotTimeMuted}>{cell.timeLabel}</Text>
+        </View>
         {cell.otherStoreLabel ? (
-          <Text style={styles.otherStoreLabel} numberOfLines={2}>
-            {cell.otherStoreLabel}
-          </Text>
+          otherStoreBadge(cell.otherStoreLabel)
         ) : (
           <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
         )}
       </>
     );
-    if (!editable) return <View style={styles.cellInnerMuted}>{body}</View>;
+    if (!editable) return <View style={emptyStyle}>{body}</View>;
     return (
       <Pressable
-        style={styles.cellInnerMuted}
+        style={emptyStyle}
         onPress={() => onOpenShift(target)}
         onLongPress={() => onLongPressShift(target)}
         delayLongPress={350}
@@ -2559,12 +2625,8 @@ const CalendarCellView = memo(function CalendarCellView({
       {cell.breakText ? (
         <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
       ) : null}
-      <Text style={styles.slotHours}>{cell.hours}h</Text>
-      {cell.otherStoreLabel ? (
-        <Text style={styles.otherStoreLabelOnShift} numberOfLines={1}>
-          {cell.otherStoreLabel}
-        </Text>
-      ) : null}
+      {cell.hours ? <Text style={styles.slotHours}>{cell.hours}</Text> : null}
+      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel, true) : null}
     </>
   );
   if (!editable) return <View style={filledStyle}>{filledBody}</View>;
@@ -2593,9 +2655,10 @@ const CalendarCellView = memo(function CalendarCellView({
 });
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f8fafc' },
-  outerScroll: { flex: 1 },
-  outerScrollContent: { flexGrow: 1, paddingBottom: 12 },
+  screen: { flex: 1, minHeight: 0, backgroundColor: '#f8fafc' },
+  chrome: { flexShrink: 0, backgroundColor: '#f8fafc', zIndex: 2 },
+  gridScroll: { flex: 1, minHeight: 0 },
+  gridScrollContent: { flexGrow: 1, paddingBottom: 12 },
   brandRow: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
   brandLogo: { width: 52, height: 52, resizeMode: 'contain' },
   toolbar: { paddingHorizontal: 12, paddingTop: 8 },
@@ -2687,10 +2750,11 @@ const styles = StyleSheet.create({
   syncHint: { fontSize: 13, color: '#64748b' },
   refreshBtn: { paddingVertical: 4 },
   refreshTxt: { fontSize: 14, color: '#c41230', fontWeight: '700' },
-  matrix: { paddingLeft: 4, paddingBottom: 16 },
+  matrix: { paddingLeft: 4, paddingBottom: 16, alignSelf: 'stretch', width: '100%' },
   matrixInner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    width: '100%',
   },
   personCol: {
     flexShrink: 0,
@@ -2863,6 +2927,9 @@ const styles = StyleSheet.create({
   groupOrderDataRow: {
     backgroundColor: '#f8fafc',
   },
+  groupOrderDataRowAlt: {
+    backgroundColor: '#eef2f6',
+  },
   groupOrderCell: {
     padding: 5,
     justifyContent: 'center',
@@ -2917,8 +2984,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     position: 'relative',
   },
-  cellInnerMuted: { flex: 1, opacity: 0.85, justifyContent: 'center' },
+  cellInnerEmpty: {
+    flex: 1,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+  },
+  cellInnerEmptyTimed: {
+    justifyContent: 'flex-start',
+  },
   slotTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
+  slotTimeMuted: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+  dayoffTimeBlock: {
+    marginBottom: 4,
+    paddingBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#cbd5e1',
+  },
   slotBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   slotHours: { fontSize: 11, fontWeight: '700', color: '#334155', marginTop: 1 },
   cellDayOffBtn: {
@@ -2936,18 +3021,24 @@ const styles = StyleSheet.create({
   cellDayOffBtnText: { fontSize: 16, fontWeight: '700', color: '#94a3b8', lineHeight: 18 },
   dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 6 },
   dayoffSmall: { fontSize: 11, fontWeight: '700', color: '#cbd5e1', textAlign: 'center' },
-  otherStoreLabel: {
+  otherStorePill: {
+    marginTop: 4,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#ffedd5',
+    borderWidth: 1,
+    borderColor: '#fdba74',
+    alignSelf: 'stretch',
+  },
+  otherStorePillOnShift: {
+    marginTop: 3,
+  },
+  otherStorePillText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#9a3412',
     textAlign: 'center',
-    marginTop: 4,
-  },
-  otherStoreLabelOnShift: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: '#9a3412',
-    marginTop: 2,
   },
   modalBackdrop: {
     flex: 1,
@@ -2967,6 +3058,7 @@ const styles = StyleSheet.create({
   modalList: { maxHeight: 280 },
   modalRow: { paddingVertical: 14, borderBottomWidth: 1, borderColor: '#f1f5f9' },
   modalRowText: { fontSize: 16, color: '#0f172a' },
+  modalRowMeta: { fontSize: 12, color: '#64748b', marginTop: 2 },
   modalCancel: { marginTop: 12, paddingVertical: 12, alignItems: 'center' },
   modalCancelText: { fontSize: 16, color: '#c41230', fontWeight: '700' },
   editRow: {

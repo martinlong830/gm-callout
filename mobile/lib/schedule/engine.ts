@@ -282,6 +282,14 @@ export function redPokeShiftHoursDecimal(start: string, end: string): string {
   return (Math.round(h * 10) / 10).toFixed(1);
 }
 
+/** Person-column / day-totals hours: `9h` or `9.5h` (matches web `formatScheduleDayHoursLabel`). */
+export function formatScheduleDayHoursLabel(hours: number): string {
+  const h = Math.round((Number(hours) || 0) * 10) / 10;
+  if (!h) return '0h';
+  if (Number.isInteger(h)) return `${h}h`;
+  return `${h.toFixed(1)}h`;
+}
+
 export function hashString(str: string): number {
   let h = 2166136261;
   for (let i = 0; i < str.length; i += 1) {

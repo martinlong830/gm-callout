@@ -21,6 +21,7 @@ import {
   formatHourlyRateLabel,
   formatPayAmount,
   formatShiftPayLabel,
+  computeSpreadOfHours,
   scheduledPaidMinutes,
   shiftPayForShiftRow,
   shiftRowAttributionRestaurant,
@@ -211,6 +212,12 @@ export default function TimecardsEmployeeScreen() {
     () => (emp ? getEmployeeBorrowedRestaurantSync(emp.id, extrasSlice) : null),
     [emp, extrasSlice]
   );
+  const sohDateSet = useMemo(() => {
+    if (!emp) return new Set<string>();
+    return new Set(
+      computeSpreadOfHours(emp, entries, { bounds, scheduleCtx, locationFilter: 'all' }).dates
+    );
+  }, [emp, entries, bounds, scheduleCtx]);
   const borrowEligible = emp ? employeeEligibleForWeekBorrow(emp) : false;
   const borrowSibling = borrowEligible ? siblingRestaurantId(employeeHomeRestaurant(emp!)) : null;
   const splitOtOpts = employeeUsesSplitOtCaps(emp, borrowedTo)
@@ -344,6 +351,7 @@ export default function TimecardsEmployeeScreen() {
             dishwasherTipsSlice={dishwasherTipsSlice}
             staffRequests={staffRequests}
             splitOtOpts={splitOtOpts}
+            sohDay={sohDateSet.has(row.iso)}
             onRemoved={async () => {
               await refresh();
               await loadShiftListData();
@@ -382,6 +390,7 @@ function ShiftRowCard({
   dishwasherTipsSlice,
   staffRequests,
   splitOtOpts,
+  sohDay,
   onRemoved,
   onPress,
 }: {
@@ -395,6 +404,7 @@ function ShiftRowCard({
   dishwasherTipsSlice: Record<string, number>;
   staffRequests: import('../../../lib/staffRequests').StaffRequestUi[];
   splitOtOpts: { splitByRestaurant: true } | null;
+  sohDay: boolean;
   onRemoved: () => Promise<void>;
   onPress: () => void;
 }) {
@@ -495,7 +505,12 @@ function ShiftRowCard({
         {t('timecards.break')} {breakLabel}
       </Text>
       <Text style={styles.shiftMeta}>
-        VL {formatDayLeaveHoursLabel(dayLeave.vl)} · SL {formatDayLeaveHoursLabel(dayLeave.sl)}
+        {t('timecards.dayTotal', { total: formatRecordedHoursLabel(recMins) })}
+        {sohDay ? ` · ${t('timecards.soh')}` : ''}
+      </Text>
+      <Text style={styles.shiftMeta}>
+        {t('timecards.vlHrs')} {formatDayLeaveHoursLabel(dayLeave.vl)} · {t('timecards.slHrs')}{' '}
+        {formatDayLeaveHoursLabel(dayLeave.sl)}
       </Text>
       {showDishwasherTips ? (
         <Text style={styles.shiftMeta}>
@@ -503,11 +518,9 @@ function ShiftRowCard({
           {dayDishwasherTipNet > 0 ? formatPayAmount(dayDishwasherTipNet) : '—'}
         </Text>
       ) : null}
-      {dayCoverage > 0 ? (
-        <Text style={styles.shiftMeta}>
-          {t('timecards.coverage')} {formatPayAmount(dayCoverage)}
-        </Text>
-      ) : null}
+      <Text style={styles.shiftMeta}>
+        {t('timecards.coverage')} {dayCoverage > 0 ? formatPayAmount(dayCoverage) : '—'}
+      </Text>
       <Text style={styles.shiftPay}>
         {t('timecards.pay')} {payLabel} · {t('timecards.payHr')} {rateLabel}
       </Text>
