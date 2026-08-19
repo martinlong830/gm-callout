@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -114,7 +113,6 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
   const { t, staffTypeLabel } = useI18n();
   const { myEmployee, employees, teamState, loading } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
@@ -317,14 +315,7 @@ export default function EmployeeScheduleScreen() {
     otherStoreDayLabels,
   ]);
 
-  const daysWidth = useMemo(
-    () =>
-      Math.max(
-        windowWidth - PERSON_COL - SIDE_TOTALS_W - 16,
-        visibleDays.length * CELL_MIN
-      ),
-    [windowWidth, visibleDays.length]
-  );
+  const daysWidth = visibleDays.length * CELL_MIN;
 
   const rowWeekTotals = useMemo(() => {
     const map = new Map<string, { hours: number; paidHours: number }>();
@@ -340,7 +331,13 @@ export default function EmployeeScheduleScreen() {
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
-      {/* Frozen chrome — week / location / legend stay put (grid scrolls below). */}
+      <ScrollView
+        style={styles.gridScroll}
+        contentContainerStyle={styles.gridScrollContent}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+        keyboardShouldPersistTaps="handled"
+      >
       <View style={styles.chrome}>
         <View style={styles.brandRow}>
           <Image
@@ -411,21 +408,17 @@ export default function EmployeeScheduleScreen() {
           </Text>
         </View>
       ) : (
-        /*
-         * Same scroll model as manager schedule: one vertical ScrollView for the
-         * whole matrix (Person + day headers travel with rows). Nested horizontal
-         * ScrollView only for day columns. Fixed DATA_ROW_H keeps Person/day rows level.
-         */
-        <ScrollView
-          style={styles.gridScroll}
-          contentContainerStyle={styles.gridScrollContent}
-          nestedScrollEnabled
-          showsVerticalScrollIndicator
-          keyboardShouldPersistTaps="handled"
-        >
+        <>
           {loading && !teamState ? <Text style={styles.muted}>{t('schedule.loadingSchedule')}</Text> : null}
 
           <View style={styles.matrix}>
+            <ScrollView
+              ref={dayScrollRef}
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+            >
             <View style={styles.matrixInner}>
               <View style={[styles.personCol, { width: PERSON_COL }]}>
                 <View style={styles.personTh}>
@@ -464,15 +457,6 @@ export default function EmployeeScheduleScreen() {
                 ))}
               </View>
 
-              <ScrollView
-                ref={dayScrollRef}
-                horizontal
-                nestedScrollEnabled
-                showsHorizontalScrollIndicator
-                style={styles.dayLane}
-                contentContainerStyle={styles.dayLaneContent}
-                keyboardShouldPersistTaps="handled"
-              >
                 <View style={{ width: daysWidth }}>
                   <View style={styles.headerDays}>
                     {visibleDays.map((dayStr) => {
@@ -595,11 +579,12 @@ export default function EmployeeScheduleScreen() {
                     />
                   ))}
                 </View>
-              </ScrollView>
             </View>
+            </ScrollView>
           </View>
-        </ScrollView>
+        </>
       )}
+      </ScrollView>
     </View>
   );
 }
@@ -835,7 +820,7 @@ const CalendarCellView = memo(function CalendarCellView({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, minHeight: 0, backgroundColor: '#f4f6f8' },
-  chrome: { flexShrink: 0, backgroundColor: '#f4f6f8', zIndex: 2 },
+  chrome: { flexShrink: 0, backgroundColor: '#f4f6f8' },
   brandRow: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   brandLogo: { width: 72, height: 72, resizeMode: 'contain' },
   hint: { paddingHorizontal: 16, color: '#64748b', fontSize: 13, marginBottom: 8 },
@@ -881,7 +866,6 @@ const styles = StyleSheet.create({
   matrixInner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    width: '100%',
   },
   personCol: {
     flexShrink: 0,
@@ -991,8 +975,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#64748b',
   },
-  dayLane: { flex: 1 },
-  dayLaneContent: { flexGrow: 1 },
   headerDays: { flexDirection: 'row', height: HEADER_ROW_H },
   th: {
     height: HEADER_ROW_H,

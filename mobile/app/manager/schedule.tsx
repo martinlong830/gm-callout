@@ -977,10 +977,7 @@ export default function ManagerScheduleScreen() {
     weekIndex,
   ]);
 
-  const daysWidth = Math.max(
-    Dimensions.get('window').width - PERSON_COL - 16,
-    visibleDays.length * CELL_MIN
-  );
+  const daysWidth = visibleDays.length * CELL_MIN;
 
   function captureScheduleScroll() {
     scheduleScrollRestoreRef.current = {
@@ -1603,7 +1600,18 @@ export default function ManagerScheduleScreen() {
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
-      {/* Frozen chrome — week / location / legend stay put (matrix scrolls below), matching web. */}
+      <ScrollView
+        ref={outerScrollRef}
+        style={styles.gridScroll}
+        contentContainerStyle={styles.gridScrollContent}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        onScroll={(e) => {
+          outerScrollYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
+      >
       <View style={styles.chrome}>
         <View style={styles.brandRow}>
           <Image
@@ -1736,24 +1744,18 @@ export default function ManagerScheduleScreen() {
         </View>
       </View>
 
-      {/*
-        Sticky Person column + ONE horizontal ScrollView for all day columns.
-        Avoids N-scroll sync (programmatic scrollTo + onScroll) which fights
-        the user gesture and causes horizontal flicker.
-      */}
-      <ScrollView
-        ref={outerScrollRef}
-        style={styles.gridScroll}
-        contentContainerStyle={styles.gridScrollContent}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator
-        onScroll={(e) => {
-          outerScrollYRef.current = e.nativeEvent.contentOffset.y;
-        }}
-        scrollEventThrottle={16}
-      >
         <View style={styles.matrix}>
+          <ScrollView
+            ref={dayScrollRef}
+            horizontal
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator
+            keyboardShouldPersistTaps="handled"
+            onScroll={(e) => {
+              dayScrollXRef.current = e.nativeEvent.contentOffset.x;
+            }}
+            scrollEventThrottle={16}
+          >
           <View style={styles.matrixInner}>
             <View style={[styles.personCol, { width: PERSON_COL }]}>
               <View style={styles.personTh}>
@@ -1806,20 +1808,6 @@ export default function ManagerScheduleScreen() {
               ))}
             </View>
 
-            <ScrollView
-              ref={dayScrollRef}
-              horizontal
-              nestedScrollEnabled
-              showsHorizontalScrollIndicator
-              style={styles.dayLane}
-              contentContainerStyle={styles.dayLaneContent}
-              keyboardShouldPersistTaps="handled"
-              onScroll={(e) => {
-                dayScrollXRef.current = e.nativeEvent.contentOffset.x;
-              }}
-              scrollEventThrottle={16}
-            >
-              <View style={{ flexDirection: 'row' }}>
                 <View style={{ width: daysWidth }}>
                   <View style={styles.headerDays}>
                     {visibleDays.map((dayStr) => {
@@ -1986,9 +1974,8 @@ export default function ManagerScheduleScreen() {
                     ))}
                   </View>
                 ) : null}
-              </View>
-            </ScrollView>
           </View>
+            </ScrollView>
         </View>
       </ScrollView>
 
@@ -2656,7 +2643,7 @@ const CalendarCellView = memo(function CalendarCellView({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, minHeight: 0, backgroundColor: '#f8fafc' },
-  chrome: { flexShrink: 0, backgroundColor: '#f8fafc', zIndex: 2 },
+  chrome: { flexShrink: 0, backgroundColor: '#f8fafc' },
   gridScroll: { flex: 1, minHeight: 0 },
   gridScrollContent: { flexGrow: 1, paddingBottom: 12 },
   brandRow: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
@@ -2754,11 +2741,9 @@ const styles = StyleSheet.create({
   matrixInner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    width: '100%',
   },
   personCol: {
     flexShrink: 0,
-    zIndex: 1,
     backgroundColor: '#f8fafc',
   },
   sectionMatrixRow: {
@@ -2769,12 +2754,6 @@ const styles = StyleSheet.create({
     borderColor: '#eef2f7',
     backgroundColor: '#fff',
     minHeight: DATA_ROW_MIN_H,
-  },
-  dayLane: {
-    flex: 1,
-  },
-  dayLaneContent: {
-    flexGrow: 1,
   },
   personTh: {
     height: HEADER_ROW_H,
