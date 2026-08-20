@@ -3023,7 +3023,7 @@
       script.src =
         'timecards-manager.js?v=' +
         encodeURIComponent(
-          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-3'
+          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-4'
         );
       script.async = true;
       script.onload = function () {

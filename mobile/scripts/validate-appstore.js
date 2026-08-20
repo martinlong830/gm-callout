@@ -49,6 +49,12 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+if (!fs.existsSync(path.join(root, 'google-services.json'))) {
+  console.warn(
+    '⚠ Missing google-services.json — Android push registration will fail until you add it (see google-services.json.example and docs/PLAY_STORE.md)'
+  );
+} else pass('google-services.json (Android FCM)');
+
 console.log('');
 if (ok) {
   console.log('Ready for EAS setup. See docs/APP_STORE.md and docs/PLAY_STORE.md');

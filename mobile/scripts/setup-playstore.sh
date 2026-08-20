@@ -48,6 +48,16 @@ if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
+echo "==> Firebase google-services.json (Android push tokens)"
+if [[ ! -f google-services.json ]]; then
+  echo "  Download from Firebase Console → Project settings → Your apps → Android (com.shiflow.app)"
+  echo "  Save as: mobile/google-services.json (see google-services.json.example)"
+  echo "  Also upload FCM V1 service account: npx eas credentials -p android"
+else
+  echo "  ✓ google-services.json found"
+fi
+
+echo ""
 echo "==> Google Play service account (for eas submit)"
 if [[ ! -f google-play-service-account.json ]]; then
   echo "  Place JSON key at: mobile/google-play-service-account.json"

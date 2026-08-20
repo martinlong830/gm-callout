@@ -809,6 +809,15 @@ function humanizePushDeliveryErrors(errors) {
   if (/MismatchSenderId|InvalidApnsCredential/i.test(joined)) {
     return "Push credentials mismatch (" + joined + "). Re-upload FCM (Android) or APNs key (iOS) in EAS.";
   }
+  if (/DeveloperError/i.test(joined)) {
+    return (
+      "Google FCM rejected delivery (" +
+      joined +
+      "). Expo is still using the wrong Android key. FCM V1 must be the Firebase " +
+      "firebase-adminsdk JSON for project shiflow-55318 — not shiflow-play-upload@avid-task-311120. " +
+      "Upload it at expo.dev → gm-callout → Credentials → Android → FCM V1, then Register and test again."
+    );
+  }
   return "Push was sent but not delivered: " + joined;
 }
 
@@ -1550,10 +1559,6 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!["manager", "employee", "timeclock"].includes(role)) {
         return res.status(400).json({ ok: false, message: "Invalid account type." });
       }
-      if ((role === "manager" || role === "timeclock") && accessCode !== PORTAL_ACCESS_CODE) {
-        return res.status(403).json({ ok: false, message: "Access code is incorrect." });
-      }
-
       const loginNameNorm = normalizeLoginName(loginName);
       const ALLOWED_MANAGER_NAMES = new Set(["martin long", "ongi management"]);
       if (role === "manager" && !ALLOWED_MANAGER_NAMES.has(loginNameNorm)) {
@@ -1572,6 +1577,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         else if (co.notFound) {
           return res.status(400).json({ ok: false, message: "Company access code is incorrect." });
         }
+      }
+      /* Managers/timeclock: require a valid company access code (or legacy redpoke). */
+      if ((role === "manager" || role === "timeclock") && !companyId) {
+        return res.status(403).json({ ok: false, message: "Access code is incorrect." });
       }
       if (role === "employee" && !companyId) {
         return res.status(400).json({
@@ -1594,7 +1603,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         String(body.displayName || "").trim() || loginName;
       const internalEmail = makeInternalEmail();
       const recoveryEmailRaw = String(body.recoveryEmail || "").trim();
-      if (!recoveryEmailRaw) {
+      /* Time clock tablets are shared devices — no recovery email (UI says none required). */
+      if (!recoveryEmailRaw && role !== "timeclock") {
         return res.status(400).json({ ok: false, message: "Recovery email is required." });
       }
 
@@ -1645,13 +1655,15 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         staff_type: staffTypeParsed,
       };
       if (companyId) profilePatch.company_id = companyId;
-      const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
-      if (saved.error) {
-        await admin.auth.admin.deleteUser(userId);
-        return res.status(400).json({ ok: false, message: saved.error });
+      if (recoveryEmailRaw) {
+        const saved = await saveRecoveryEmail(userId, recoveryEmailRaw);
+        if (saved.error) {
+          await admin.auth.admin.deleteUser(userId);
+          return res.status(400).json({ ok: false, message: saved.error });
+        }
+        profilePatch.recovery_email = saved.recoveryEmail;
+        profilePatch.recovery_email_norm = saved.recoveryEmail;
       }
-      profilePatch.recovery_email = saved.recoveryEmail;
-      profilePatch.recovery_email_norm = saved.recoveryEmail;
       await admin.from("profiles").update(profilePatch).eq("id", userId);
 
       let rosterEmployeeId = null;

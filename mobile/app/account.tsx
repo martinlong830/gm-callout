@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LanguageToggle } from '../components/LanguageToggle';
+import { BrandLogoHeader } from '../components/BrandLogoHeader';
 import { useAuth } from '../contexts/AuthContext';
 import { useI18n } from '../contexts/LocaleContext';
 import { storeCompanySession } from '../lib/companySession';
@@ -54,9 +55,18 @@ export default function AccountScreen() {
 
   const pushMessageForReason = useCallback(
     (reason?: string) => {
+      if (!reason) return t('account.pushFailed');
       if (reason === 'permission_denied') return t('account.pushDenied');
       if (reason === 'not_a_device') return t('account.pushNotDevice');
       if (reason === 'expo_go') return t('account.pushExpoGo');
+      if (reason === 'fcm_not_configured') return t('account.pushFcmNotConfigured');
+      if (reason === 'network_error') return t('account.pushNetworkError');
+      if (reason === 'missing_project_id') return t('account.pushMissingProjectId');
+      if (reason === 'notifications_unavailable') return t('account.pushNotAvailable');
+      // Portal API or native error text — show directly when informative.
+      if (reason.length > 24 || /[.!?]/.test(reason) || reason.includes(' ')) {
+        return reason;
+      }
       return t('account.pushFailed');
     },
     [t]
@@ -186,6 +196,12 @@ export default function AccountScreen() {
     Alert.alert(t('common.saved'), loginRes.message || res.message);
   }
 
+  async function onSignOutPress() {
+    setMessage(null);
+    await signOut();
+    router.replace('/login');
+  }
+
   function onStartDelete() {
     setMessage(null);
     setDeleteConfirm('');
@@ -215,13 +231,14 @@ export default function AccountScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <View style={styles.topBar}>
+        <BrandLogoHeader />
+        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
+          <Text style={styles.back}>← {t('common.back')}</Text>
+        </Pressable>
+      </View>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <View style={styles.headerRow}>
-            <Pressable onPress={() => router.back()} hitSlop={8}>
-              <Text style={styles.back}>← {t('common.back')}</Text>
-            </Pressable>
-          </View>
           <LanguageToggle variant="full" />
           <Text style={styles.title}>{t('title.account')}</Text>
           <Text style={styles.subtitle}>
@@ -348,6 +365,16 @@ export default function AccountScreen() {
                 <Text style={styles.supportHint}>{t('account.supportHint')}</Text>
               </View>
 
+              <Pressable
+                style={styles.buttonSignOut}
+                onPress={() => void onSignOutPress()}
+                disabled={busy || deleting || pushBusy || pushTestBusy}
+                accessibilityRole="button"
+                accessibilityLabel={t('common.signOut')}
+              >
+                <Text style={styles.buttonSignOutText}>{t('common.signOut')}</Text>
+              </Pressable>
+
               <View style={styles.deleteBlock}>
                 <Text style={styles.deleteTitle}>{t('account.deleteTitle')}</Text>
                 <Text style={styles.deleteHint}>{t('account.deleteHint')}</Text>
@@ -410,7 +437,17 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   scroll: { padding: 20, paddingBottom: 40 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  headerRow: { marginBottom: 8 },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e6ea',
+    backgroundColor: '#f4f6f8',
+  },
+  backBtn: { paddingVertical: 4, paddingHorizontal: 4 },
   back: { color: '#1e3a5f', fontWeight: '600', fontSize: 16 },
   title: { fontSize: 22, fontWeight: '700', color: '#111', marginBottom: 8 },
   subtitle: { fontSize: 15, color: '#555', marginBottom: 20, lineHeight: 22 },
@@ -475,6 +512,15 @@ const styles = StyleSheet.create({
   },
   supportLink: { color: '#1e3a5f', fontSize: 16, fontWeight: '600' },
   supportHint: { color: '#64748b', fontSize: 13, marginTop: 4, lineHeight: 18 },
+  buttonSignOut: {
+    borderWidth: 1,
+    borderColor: '#c41230',
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  buttonSignOutText: { color: '#c41230', fontSize: 16, fontWeight: '600' },
   deleteBlock: {
     marginTop: 24,
     paddingTop: 18,

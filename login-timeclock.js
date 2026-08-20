@@ -176,6 +176,18 @@
       /* ignore */
     }
     applyTimeclockShell();
+    /* Scripts are lazy; bootstrap may not exist until ensure loads them. */
+    if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+      try {
+        await window.gmCalloutEnsureTimeclockApp();
+      } catch (ex) {
+        console.warn('timeclock ensure', ex);
+        showTcLoginError(
+          (ex && ex.message) || 'Could not load the time clock screen. Refresh and try again.'
+        );
+      }
+      return;
+    }
     if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
       window.gmCalloutTimeclockBootstrap();
     }
@@ -324,7 +336,11 @@
         .maybeSingle();
       if (prof.data && prof.data.role === 'timeclock') {
         applyTimeclockShell();
-        if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+        if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+          void window.gmCalloutEnsureTimeclockApp().catch(function (ex) {
+            console.warn('timeclock restore ensure', ex);
+          });
+        } else if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
           window.gmCalloutTimeclockBootstrap();
         }
       }

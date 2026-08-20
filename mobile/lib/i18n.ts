@@ -193,6 +193,11 @@ const EN: Dict = {
   'account.pushNotRegistered': 'This phone is not registered for lock-screen alerts yet.',
   'account.pushTest': 'Send test alert to this phone',
   'account.pushTestSent': 'Test alert sent. Background the app and check your lock screen.',
+  'account.pushFcmNotConfigured':
+    'Android push needs google-services.json from Firebase baked into the app. Download it for com.shiflow.app, place it at mobile/google-services.json, run a new Play build, then register again.',
+  'account.pushNetworkError': 'Could not reach the server. Check your connection and try again.',
+  'account.pushMissingProjectId': 'App build is missing the Expo project id for push. Install the latest Play internal build.',
+  'account.pushNotAvailable': 'Notifications are not available on this device build.',
 
   'schedule.publishNotify': 'Publish / Notify',
   'schedule.publishNotifyAdmins': 'Publish / notify admin accounts',
@@ -892,6 +897,12 @@ const ES: Dict = {
   'account.pushNotRegistered': 'Este teléfono aún no está registrado para alertas en pantalla de bloqueo.',
   'account.pushTest': 'Enviar alerta de prueba a este teléfono',
   'account.pushTestSent': 'Alerta de prueba enviada. Pon la app en segundo plano y revisa la pantalla de bloqueo.',
+  'account.pushFcmNotConfigured':
+    'Las alertas Android necesitan google-services.json de Firebase en la app. Descárgalo para com.shiflow.app, colócalo en mobile/google-services.json, genera un nuevo build de Play y vuelve a registrar.',
+  'account.pushNetworkError': 'No se pudo conectar al servidor. Revisa tu conexión e inténtalo de nuevo.',
+  'account.pushMissingProjectId':
+    'Al build le falta el id de proyecto Expo para push. Instala el build interno más reciente de Play.',
+  'account.pushNotAvailable': 'Las notificaciones no están disponibles en este build del dispositivo.',
 
   'schedule.publishNotify': 'Publicar / Avisar',
   'schedule.publishNotifyAdmins': 'Publicar / avisar a cuentas admin',

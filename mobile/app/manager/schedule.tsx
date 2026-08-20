@@ -4,7 +4,6 @@ import {
   Alert,
   Dimensions,
   FlatList,
-  Image,
   InteractionManager,
   Modal,
   Pressable,
@@ -1613,14 +1612,6 @@ export default function ManagerScheduleScreen() {
         scrollEventThrottle={16}
       >
       <View style={styles.chrome}>
-        <View style={styles.brandRow}>
-          <Image
-            source={require('../../assets/red-poke-logo.png')}
-            style={styles.brandLogo}
-            accessibilityLabel="Red Poke"
-          />
-        </View>
-
         <View style={styles.toolbar}>
           <Text style={styles.toolbarLabel}>{t('common.week')}</Text>
           <ScheduleWeekPicker
@@ -2646,8 +2637,6 @@ const styles = StyleSheet.create({
   chrome: { flexShrink: 0, backgroundColor: '#f8fafc' },
   gridScroll: { flex: 1, minHeight: 0 },
   gridScrollContent: { flexGrow: 1, paddingBottom: 12 },
-  brandRow: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
-  brandLogo: { width: 52, height: 52, resizeMode: 'contain' },
   toolbar: { paddingHorizontal: 12, paddingTop: 8 },
   toolbarActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, gap: 8 },
   publishBtn: {

@@ -1,4 +1,6 @@
 import type { ExpoConfig } from 'expo/config';
+import fs from 'fs';
+import path from 'path';
 
 /**
  * iOS bundle ID — must match the app you create in App Store Connect.
@@ -6,6 +8,8 @@ import type { ExpoConfig } from 'expo/config';
  */
 const IOS_BUNDLE_ID = 'com.shiflow.app';
 const ANDROID_PACKAGE = 'com.shiflow.app';
+const GOOGLE_SERVICES_FILE = './google-services.json';
+const hasGoogleServices = fs.existsSync(path.join(__dirname, GOOGLE_SERVICES_FILE));
 
 const config: ExpoConfig = {
   name: 'Shiflow',
@@ -78,6 +82,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: ANDROID_PACKAGE,
+    ...(hasGoogleServices ? { googleServicesFile: GOOGLE_SERVICES_FILE } : {}),
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#1e3a5f',

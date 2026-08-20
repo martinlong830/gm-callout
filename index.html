@@ -6,7 +6,7 @@
   <title>Shiflow</title>
   <link rel="stylesheet" href="styles.css?v=perf-6" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-3" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-4" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-3';
+    window.__GM_ASSET_V = 'perf-4';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -3926,8 +3926,8 @@
   <script defer src="employee-leave.js?v=perf-2"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
   <script defer src="portal-auth-client.js?v=perf-2"></script>
-  <script defer src="login-timeclock.js?v=perf-2"></script>
-  <script defer src="app.js?v=perf-3"></script>
+  <script defer src="login-timeclock.js?v=perf-4"></script>
+  <script defer src="app.js?v=perf-4"></script>
   <script>
     /*
      * Role / feature modules after first paint:
@@ -3967,12 +3967,7 @@
           return;
         }
         if (isTc) {
-          afterPaint(function () {
-            void window.gmLoadScripts([
-              'timeclock-schedule-match.js',
-              'timeclock-app.js',
-            ]);
-          });
+          void window.gmCalloutEnsureTimeclockApp();
           return;
         }
         /* Logged-out: warm only tiny auth helpers already on critical path. */
@@ -4004,6 +3999,28 @@
       };
       window.gmCalloutEnsureManagerMessaging = function () {
         return window.gmLoadScript('manager-messaging.js');
+      };
+      /**
+       * Timeclock kiosk modules are lazy. Sign-in happens after first paint, so
+       * loadOptionalBundles often already ran as logged-out and never loaded them.
+       * Always load + bootstrap here when the device shell is applied.
+       */
+      window.gmCalloutEnsureTimeclockApp = function () {
+        var loadScripts =
+          typeof window.gmLoadScripts === 'function'
+            ? window.gmLoadScripts
+            : function (list) {
+                return Promise.all(
+                  (list || []).map(function (src) {
+                    return window.gmLoadScript(src);
+                  })
+                );
+              };
+        return loadScripts(['timeclock-schedule-match.js', 'timeclock-app.js']).then(function () {
+          if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+            window.gmCalloutTimeclockBootstrap();
+          }
+        });
       };
     })();
   </script>

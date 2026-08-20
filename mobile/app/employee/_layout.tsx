@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect } from 'react';
 import { Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { LanguageToggle } from '../../components/LanguageToggle';
+import { BrandLogoHeader } from '../../components/BrandLogoHeader';
 import { NotificationBellButton } from '../../components/NotificationBellButton';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAuth } from '../../contexts/AuthContext';
@@ -59,6 +60,7 @@ export default function EmployeeLayout() {
   const { t } = useI18n();
   const { width, height } = useWindowDimensions();
   const portrait = height >= width;
+  const renderHeaderLeft = useCallback(() => <BrandLogoHeader />, []);
   const renderHeaderRight = useCallback(
     () => <HeaderActions onSignOut={() => void signOut()} />,
     [signOut]
@@ -93,6 +95,10 @@ export default function EmployeeLayout() {
         tabBarActiveTintColor: '#c41230',
         freezeOnBlur: true,
         lazy: true,
+        headerLeft: renderHeaderLeft,
+        headerLeftContainerStyle: {
+          paddingLeft: portrait ? 4 : 8,
+        },
         headerRight: renderHeaderRight,
         headerRightContainerStyle: {
           paddingRight: portrait ? 4 : 8,

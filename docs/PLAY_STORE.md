@@ -94,6 +94,25 @@ Or upload the `.aab` manually: Play Console → **Testing** → **Internal testi
 3. Sign in with a real manager account (`Martin Long` / `redpoke` against production)
 4. Confirm: login, roster, messages, requests
 
+## Android push notifications (Publish / Notify banners)
+
+Android needs **two** Firebase pieces (iOS only needs APNs in EAS):
+
+1. **FCM V1 in EAS** (sends alerts from Expo’s servers):
+   ```bash
+   cd mobile
+   npx eas credentials -p android
+   ```
+   → production → **Google Service Account** → **FCM V1** → upload Firebase service account JSON
+
+2. **`google-services.json` in the app** (lets the phone obtain a push token):
+   - Firebase Console → **Project settings** → your Android app **`com.shiflow.app`**
+   - Download **google-services.json**
+   - Save as **`mobile/google-services.json`**
+   - Rebuild and submit a new Play internal build (`npm run build:android`)
+
+Without `google-services.json`, **Register this device for alerts** fails on Android even when FCM V1 is in EAS. After a new build, open **Account → Register**, then **Send test alert**.
+
 ## Submit for public production release
 
 In Play Console:

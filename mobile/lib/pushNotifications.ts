@@ -213,8 +213,15 @@ export async function registerDevicePushToken(): Promise<{ ok: boolean; reason?:
         lastRegisterAttemptAt = Date.now();
         return { ok: true };
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err || '');
         console.warn('registerDevicePushToken', err);
-        return { ok: false, reason: 'exception' };
+        if (/firebase|FCM|google-services|Default FirebaseApp|FirebaseInstallations/i.test(msg)) {
+          return { ok: false, reason: 'fcm_not_configured' };
+        }
+        if (/network|fetch|timeout|abort/i.test(msg)) {
+          return { ok: false, reason: 'network_error' };
+        }
+        return { ok: false, reason: msg.trim() || 'exception' };
       } finally {
         registrationInFlight = null;
       }

@@ -1,6 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -339,14 +338,6 @@ export default function EmployeeScheduleScreen() {
         keyboardShouldPersistTaps="handled"
       >
       <View style={styles.chrome}>
-        <View style={styles.brandRow}>
-          <Image
-            source={require('../../assets/red-poke-logo.png')}
-            style={styles.brandLogo}
-            accessibilityLabel="Red Poke"
-          />
-        </View>
-
         <Text style={styles.hint}>{t('schedule.viewOnlyHint')}</Text>
 
         <View style={styles.toolbar}>
@@ -821,8 +812,6 @@ const CalendarCellView = memo(function CalendarCellView({
 const styles = StyleSheet.create({
   screen: { flex: 1, minHeight: 0, backgroundColor: '#f4f6f8' },
   chrome: { flexShrink: 0, backgroundColor: '#f4f6f8' },
-  brandRow: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
-  brandLogo: { width: 72, height: 72, resizeMode: 'contain' },
   hint: { paddingHorizontal: 16, color: '#64748b', fontSize: 13, marginBottom: 8 },
   toolbar: { paddingHorizontal: 16, marginBottom: 8 },
   toolbarLabel: { fontSize: 11, fontWeight: '700', color: '#666', marginBottom: 6, textTransform: 'uppercase' },
