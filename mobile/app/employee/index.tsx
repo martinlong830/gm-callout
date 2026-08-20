@@ -83,16 +83,13 @@ export default function EmployeeHome() {
   // when the root Stack mounts, so avoid any static import of push/notifications.
   useEffect(() => {
     let cancelled = false;
-    const timer = setTimeout(() => {
-      void import('../../lib/pushNotifications')
-        .then((m) => {
-          if (!cancelled) m.scheduleDevicePushTokenRegistration(0);
-        })
-        .catch((err) => console.warn('pushNotifications dynamic import', err));
-    }, 2500);
+    void import('../../lib/pushNotifications')
+      .then((m) => {
+        if (!cancelled) m.scheduleDevicePushTokenRegistration(0);
+      })
+      .catch((err) => console.warn('pushNotifications dynamic import', err));
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
   }, []);
 

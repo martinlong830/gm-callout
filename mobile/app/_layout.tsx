@@ -10,7 +10,10 @@ import { LocaleProvider } from '../contexts/LocaleContext';
 export default function RootLayout() {
   useEffect(() => {
     void import('../lib/pushNotifications')
-      .then((m) => m.preparePushNotificationPresentation())
+      .then((m) => {
+        void m.preparePushNotificationPresentation();
+        m.startPushTokenRegistrationOnForeground();
+      })
       .catch((err) => console.warn('push presentation', err));
   }, []);
 

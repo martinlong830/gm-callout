@@ -1,8 +1,8 @@
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
-import { InteractionManager, Platform } from 'react-native';
+import { AppState, InteractionManager, Platform } from 'react-native';
 import { portalRegisterPushToken } from './portalAuth';
-import { readStoredTeamStateId } from './companySession';
+import { readStoredTeamStateId, storeCompanySession } from './companySession';
 import { hrefForNotificationRoute, resolveNotificationRoute } from './notificationRoutes';
 import type { AppRole } from './roles';
 
@@ -62,6 +62,7 @@ type NotificationsModule = {
 };
 
 let presentationConfigured = false;
+let foregroundRegistrationStarted = false;
 let registrationInFlight: Promise<{ ok: boolean; reason?: string }> | null = null;
 let deferredTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRegisterAttemptAt = 0;
@@ -206,6 +207,9 @@ export async function registerDevicePushToken(): Promise<{ ok: boolean; reason?:
           platform: Platform.OS,
         });
         if (!reg.ok) return { ok: false, reason: reg.message || 'register_failed' };
+        if (reg.teamStateId) {
+          await storeCompanySession({ teamStateId: reg.teamStateId });
+        }
         lastRegisterAttemptAt = Date.now();
         return { ok: true };
       } catch (err) {
@@ -236,10 +240,6 @@ export async function registerEmployeePushToken(): Promise<{ ok: boolean; reason
  */
 export function scheduleDevicePushTokenRegistration(delayMs = 2500): void {
   try {
-    // Avoid hammering native permission / register when layouts remount.
-    if (Date.now() - lastRegisterAttemptAt < 15_000 && !registrationInFlight) {
-      return;
-    }
     if (deferredTimer) clearTimeout(deferredTimer);
     const task = InteractionManager.runAfterInteractions(() => {
       deferredTimer = setTimeout(() => {
@@ -255,6 +255,22 @@ export function scheduleDevicePushTokenRegistration(delayMs = 2500): void {
       void registerDevicePushToken();
     }, delayMs);
   }
+}
+
+/** Re-register when app returns to foreground (token can go stale after OS updates). */
+export function startPushTokenRegistrationOnForeground(): void {
+  if (foregroundRegistrationStarted) return;
+  foregroundRegistrationStarted = true;
+  let lastRun = 0;
+  const sub = AppState.addEventListener('change', (state) => {
+    if (state !== 'active') return;
+    const now = Date.now();
+    if (now - lastRun < 30_000) return;
+    lastRun = now;
+    void registerDevicePushToken();
+  });
+  // Keep listener for app lifetime; no teardown needed.
+  void sub;
 }
 
 /** @deprecated Prefer scheduleDevicePushTokenRegistration — same implementation. */

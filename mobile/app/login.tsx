@@ -412,8 +412,16 @@ export default function LoginScreen() {
       return;
     }
     if (companyId) {
-      await storeCompanySession({ companyId });
+      await storeCompanySession({
+        companyId,
+        teamStateId: res.teamStateId,
+        accessCode: verifiedAccessCode || undefined,
+        companyName: verifiedCompanyName || undefined,
+      });
     }
+    void import('../lib/pushNotifications')
+      .then((m) => m.registerDevicePushToken())
+      .catch(() => undefined);
     router.replace(
       isAdminRole(res.role)
         ? '/manager/schedule'

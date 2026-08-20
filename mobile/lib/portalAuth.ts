@@ -150,7 +150,16 @@ export async function portalSignIn(
   companyId?: string,
   accessCode?: string
 ): Promise<
-  | { ok: true; role?: string; displayName?: string; companyId?: string; companyName?: string }
+  | {
+      ok: true;
+      role?: string;
+      displayName?: string;
+      companyId?: string;
+      companyName?: string;
+      teamStateId?: string;
+      accessCode?: string;
+      restaurantsConfig?: unknown[];
+    }
   | { ok: false; message: string }
 > {
   const body: Record<string, unknown> = {
@@ -166,6 +175,9 @@ export async function portalSignIn(
     displayName?: string;
     companyId?: string;
     companyName?: string;
+    teamStateId?: string;
+    accessCode?: string;
+    restaurantsConfig?: unknown[];
   }>('/api/portal/signin', body);
   if (!r.ok) return { ok: false, message: friendlyPortalErrorMessage(r.message) };
   const applied = await applyPortalSession({
@@ -179,6 +191,9 @@ export async function portalSignIn(
     displayName: r.displayName,
     companyId: r.companyId,
     companyName: r.companyName,
+    teamStateId: r.teamStateId,
+    accessCode: r.accessCode,
+    restaurantsConfig: r.restaurantsConfig,
   };
 }
 
@@ -850,7 +865,7 @@ export async function portalRegisterPushToken(payload: {
   expoPushToken: string;
   teamStateId?: string;
   platform?: string;
-}): Promise<{ ok: true } | { ok: false; message: string }> {
+}): Promise<{ ok: true; teamStateId?: string } | { ok: false; message: string }> {
   if (!isPortalAuthConfigured()) {
     return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
   }
@@ -860,7 +875,10 @@ export async function portalRegisterPushToken(payload: {
     platform: payload.platform || '',
   });
   if (!r.ok) return r;
-  return { ok: true };
+  return {
+    ok: true,
+    teamStateId: (r as { teamStateId?: string }).teamStateId,
+  };
 }
 
 export async function portalPushStatus(): Promise<

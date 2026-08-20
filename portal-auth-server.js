@@ -2092,6 +2092,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       const companyId = auth.profile.company_id || null;
       const teamStateId = await resolveCompanyTeamStateId(admin, companyId, body.teamStateId);
       const platform = body.platform != null ? String(body.platform).slice(0, 32) : null;
+      if (companyId) {
+        await admin
+          .from("device_push_tokens")
+          .update({ team_state_id: teamStateId, company_id: companyId })
+          .eq("user_id", auth.userId);
+      }
       const { error } = await admin.from("device_push_tokens").upsert(
         {
           user_id: auth.userId,

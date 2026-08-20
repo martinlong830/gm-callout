@@ -33,7 +33,17 @@ type AuthState = {
     password: string,
     companyId?: string,
     accessCode?: string
-  ) => Promise<{ ok: true; role: AppRole } | { ok: false; message: string }>;
+  ) => Promise<
+    | {
+        ok: true;
+        role: AppRole;
+        teamStateId?: string;
+        companyId?: string;
+        companyName?: string;
+        accessCode?: string;
+      }
+    | { ok: false; message: string }
+  >;
   signUp: (
     payload: PortalSignUpPayload,
     roster?: RegisterEmployeeInput
@@ -153,6 +163,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [applySession]);
 
+  useEffect(() => {
+    if (!session || !role) return;
+    void import('../lib/pushNotifications')
+      .then((m) => m.scheduleDevicePushTokenRegistration(0))
+      .catch(() => undefined);
+  }, [session, role]);
+
   const signIn = useCallback(
     async (loginName: string, password: string, companyId?: string, accessCode?: string) => {
       if (!supabase) {
@@ -181,7 +198,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             portal.role,
             String(portal.displayName || loginName).trim()
           );
-          return { ok: true as const, role: portal.role };
+          return {
+            ok: true as const,
+            role: portal.role,
+            teamStateId: portal.teamStateId,
+            companyId: portal.companyId,
+            companyName: portal.companyName,
+            accessCode: portal.accessCode,
+          };
         }
 
         const prof = await fetchProfile(data.session.user.id);

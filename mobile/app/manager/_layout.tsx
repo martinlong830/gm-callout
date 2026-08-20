@@ -73,19 +73,16 @@ export default function ManagerLayout() {
   useEffect(() => {
     if (!session || !isManagerLikeRole(role)) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
-      void import('../../lib/pushNotifications')
-        .then((m) => {
-          if (cancelled) return;
-          m.setPushNotificationRouteRoleGetter(() => role);
-          m.startPushNotificationResponseRouting();
-          m.scheduleDevicePushTokenRegistration(0);
-        })
-        .catch((err) => console.warn('pushNotifications dynamic import', err));
-    }, 2500);
+    void import('../../lib/pushNotifications')
+      .then((m) => {
+        if (cancelled) return;
+        m.setPushNotificationRouteRoleGetter(() => role);
+        m.startPushNotificationResponseRouting();
+        m.scheduleDevicePushTokenRegistration(0);
+      })
+      .catch((err) => console.warn('pushNotifications dynamic import', err));
     return () => {
       cancelled = true;
-      clearTimeout(timer);
       void import('../../lib/pushNotifications')
         .then((m) => m.setPushNotificationRouteRoleGetter(null))
         .catch(() => undefined);
