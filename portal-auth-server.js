@@ -641,6 +641,39 @@ function humanizeAuthCreateUserError(msg) {
   return m || "Could not create account.";
 }
 
+/** Canonical team_state row id for push tokens + notify (mobile may send legacy `main`). */
+async function resolveCompanyTeamStateId(adminClient, companyId, bodyTeamStateId) {
+  const fromBody = String(bodyTeamStateId || "").trim();
+  if (!companyId) return fromBody || "main";
+  const { data: company } = await adminClient
+    .from("companies")
+    .select("team_state_id")
+    .eq("id", companyId)
+    .maybeSingle();
+  const canonical = String((company && company.team_state_id) || companyId || "main").trim();
+  if (!fromBody || fromBody === "main") return canonical;
+  return fromBody;
+}
+
+function schedulePushMessagePayload(token, title, bodyText, dataExtra) {
+  return {
+    to: token,
+    sound: "default",
+    title,
+    body: bodyText,
+    channelId: "schedule_heads_up",
+    priority: "high",
+    interruptionLevel: "active",
+    data: Object.assign(
+      {
+        type: "schedule_published",
+        subsection: "schedule",
+      },
+      dataExtra || {}
+    ),
+  };
+}
+
 function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBaseUrl }) {
   const router = require("express").Router();
 
@@ -2056,17 +2089,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!/^Expo(nent)?PushToken\[.+\]$/.test(token)) {
         return res.status(400).json({ ok: false, message: "Invalid Expo push token." });
       }
-      let teamStateId = String(body.teamStateId || "").trim();
-      let companyId = auth.profile.company_id || null;
-      if (!teamStateId && companyId) {
-        const { data: company } = await admin
-          .from("companies")
-          .select("team_state_id")
-          .eq("id", companyId)
-          .maybeSingle();
-        teamStateId = (company && company.team_state_id) || companyId || "main";
-      }
-      if (!teamStateId) teamStateId = "main";
+      const companyId = auth.profile.company_id || null;
+      const teamStateId = await resolveCompanyTeamStateId(admin, companyId, body.teamStateId);
       const platform = body.platform != null ? String(body.platform).slice(0, 32) : null;
       const { error } = await admin.from("device_push_tokens").upsert(
         {
@@ -2083,10 +2107,149 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         console.warn("push/register", error);
         return res.status(500).json({ ok: false, message: error.message || "Could not save push token." });
       }
-      return res.json({ ok: true });
+      return res.json({ ok: true, teamStateId });
     } catch (err) {
       console.warn("push/register", err);
       return res.status(500).json({ ok: false, message: "Could not register push token." });
+    }
+  });
+
+  /** Whether this signed-in user has registered push token(s) on any device. */
+  router.get("/push/status", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      const companyId = auth.profile.company_id || null;
+      let q = admin
+        .from("device_push_tokens")
+        .select("platform, team_state_id, updated_at")
+        .eq("user_id", auth.userId)
+        .order("updated_at", { ascending: false });
+      if (companyId) {
+        q = q.or(`company_id.eq.${companyId},company_id.is.null`);
+      }
+      const { data: rows, error } = await q;
+      if (error) {
+        return res.status(500).json({ ok: false, message: error.message || "Could not load push status." });
+      }
+      const tokens = rows || [];
+      return res.json({
+        ok: true,
+        registered: tokens.length > 0,
+        tokenCount: tokens.length,
+        platforms: tokens.map((r) => r.platform).filter(Boolean),
+        lastUpdated: tokens[0] && tokens[0].updated_at ? tokens[0].updated_at : null,
+        teamStateIds: tokens.map((r) => r.team_state_id).filter(Boolean),
+      });
+    } catch (err) {
+      console.warn("push/status", err);
+      return res.status(500).json({ ok: false, message: "Could not load push status." });
+    }
+  });
+
+  /** Send a test banner to every push token registered for the signed-in user. */
+  router.post("/push/test", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      const companyId = auth.profile.company_id || null;
+      let q = admin
+        .from("device_push_tokens")
+        .select("expo_push_token")
+        .eq("user_id", auth.userId);
+      if (companyId) {
+        q = q.or(`company_id.eq.${companyId},company_id.is.null`);
+      }
+      const { data: rows, error } = await q;
+      if (error) {
+        return res.status(500).json({ ok: false, message: error.message || "Could not load push tokens." });
+      }
+      const tokens = [];
+      const seen = Object.create(null);
+      (rows || []).forEach((row) => {
+        const t = String((row && row.expo_push_token) || "").trim();
+        if (!t || seen[t]) return;
+        seen[t] = true;
+        tokens.push(t);
+      });
+      if (!tokens.length) {
+        return res.json({
+          ok: false,
+          message:
+            "No push token for this account. Open Shiflow on your phone, allow notifications, and tap Register this device for alerts in Account.",
+          sent: 0,
+          tokens: 0,
+        });
+      }
+      const messages = tokens.map((to) =>
+        schedulePushMessagePayload(to, "Shiflow test alert", "If you see this banner, push is working.", {
+          type: "push_test",
+        })
+      );
+      let sent = 0;
+      let failed = 0;
+      const errors = [];
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        const pushRes = await fetch("https://exp.host/--/api/v2/push/send", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(chunk),
+        });
+        if (!pushRes.ok) {
+          const text = await pushRes.text().catch(() => "");
+          return res.status(502).json({
+            ok: false,
+            message: "Expo push send failed (" + pushRes.status + "). " + text,
+            sent,
+            failed: tokens.length - sent,
+            tokens: tokens.length,
+          });
+        }
+        const pushJson = await pushRes.json().catch(() => null);
+        const tickets = (pushJson && pushJson.data) || [];
+        tickets.forEach((t) => {
+          if (t && t.status === "ok") sent += 1;
+          else {
+            failed += 1;
+            errors.push((t && (t.message || (t.details && t.details.error))) || "Push ticket error");
+          }
+        });
+      }
+      return res.json({
+        ok: sent > 0,
+        sent,
+        failed,
+        tokens: tokens.length,
+        errors: errors.length ? errors : undefined,
+        message:
+          sent > 0
+            ? "Test alert sent to " +
+              sent +
+              " device" +
+              (sent === 1 ? "" : "s") +
+              ". Background the app and check your lock screen."
+            : "Push delivery failed: " + (errors.join(" | ") || "unknown error"),
+      });
+    } catch (err) {
+      console.warn("push/test", err);
+      return res.status(500).json({ ok: false, message: "Could not send test push." });
     }
   });
 
@@ -2157,17 +2320,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           }
         }
       }
-      let teamStateId = String(body.teamStateId || "").trim();
       const companyId = auth.profile.company_id || null;
-      if (!teamStateId && companyId) {
-        const { data: company } = await admin
-          .from("companies")
-          .select("team_state_id")
-          .eq("id", companyId)
-          .maybeSingle();
-        teamStateId = (company && company.team_state_id) || companyId || "main";
-      }
-      if (!teamStateId) teamStateId = "main";
+      let teamStateId = await resolveCompanyTeamStateId(admin, companyId, body.teamStateId);
 
       const storeLabel =
         restaurantId === "rp-8" ? "8th Ave" : restaurantId === "rp-9" ? "9th Ave" : "";
@@ -2324,18 +2478,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
       let tokenQuery = admin
         .from("device_push_tokens")
-        .select("expo_push_token, user_id")
-        .eq("team_state_id", teamStateId);
+        .select("expo_push_token, user_id, team_state_id")
+        .in("user_id", recipientIds);
       if (companyId) {
         tokenQuery = tokenQuery.or(`company_id.eq.${companyId},company_id.is.null`);
       }
-      if (recipientIds.length) {
-        tokenQuery = tokenQuery.in("user_id", recipientIds);
-      } else {
-        // No recipients → no tokens to query.
-        tokenQuery = null;
-      }
-      const { data: tokenRows, error: tokErr } = tokenQuery
+      const { data: tokenRows, error: tokErr } = recipientIds.length
         ? await tokenQuery
         : { data: [], error: null };
       if (tokErr) {
@@ -2402,24 +2550,15 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
-      const messages = tokens.map((to) => ({
-        to,
-        sound: "default",
-        title,
-        body: bodyText,
-        // Must match mobile SCHEDULE_PUSH_CHANNEL_ID (HIGH importance heads-up).
-        channelId: "schedule_heads_up",
-        priority: "high",
-        interruptionLevel: "active",
-        data: {
+      const messages = tokens.map((to) =>
+        schedulePushMessagePayload(to, title, bodyText, {
           type: "schedule_published",
           weekMondayIso,
           teamStateId,
           restaurantId: restaurantId || null,
           audience,
-          subsection: "schedule",
-        },
-      }));
+        })
+      );
 
       let sent = 0;
       let failed = 0;

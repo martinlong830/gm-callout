@@ -863,6 +863,51 @@ export async function portalRegisterPushToken(payload: {
   return { ok: true };
 }
 
+export async function portalPushStatus(): Promise<
+  | {
+      ok: true;
+      registered: boolean;
+      tokenCount: number;
+      platforms?: string[];
+      lastUpdated?: string | null;
+    }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    registered?: boolean;
+    tokenCount?: number;
+    platforms?: string[];
+    lastUpdated?: string | null;
+  }>('GET', '/api/portal/push/status');
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    registered: !!r.registered,
+    tokenCount: r.tokenCount != null ? Number(r.tokenCount) : 0,
+    platforms: r.platforms,
+    lastUpdated: r.lastUpdated ?? null,
+  };
+}
+
+export async function portalSendTestPush(): Promise<
+  | { ok: true; sent: number; message?: string }
+  | { ok: false; message: string; sent?: number }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{ sent?: number; message?: string }>('POST', '/api/portal/push/test', {});
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    sent: r.sent != null ? Number(r.sent) : 0,
+    message: r.message,
+  };
+}
+
 export async function portalNotifySchedulePublished(payload: {
   weekMondayIso: string;
   weekRangeLabel?: string;

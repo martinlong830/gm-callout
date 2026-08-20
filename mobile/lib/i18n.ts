@@ -181,6 +181,18 @@ const EN: Dict = {
   'account.companyRequired': 'Company name is required.',
   'account.enterUsername': 'Enter a sign-in username.',
   'account.typeDeleteError': 'Type DELETE (all caps) to permanently delete your account.',
+  'account.pushAlertsTitle': 'Phone alerts',
+  'account.pushAlertsHint':
+    'Schedule publish uses a banner on your lock screen. The in-app bell works without this; banners need this device registered.',
+  'account.pushRegister': 'Register this device for alerts',
+  'account.pushRegistered': 'This device is registered for schedule alerts.',
+  'account.pushDenied': 'Notifications are off. Enable Shiflow in Settings → Notifications (Banners / Lock Screen).',
+  'account.pushNotDevice': 'Push alerts only work on a physical phone, not a simulator.',
+  'account.pushExpoGo': 'Install the TestFlight or Play Store app — Expo Go cannot receive alerts.',
+  'account.pushFailed': 'Could not register this device. Check your connection and try again.',
+  'account.pushNotRegistered': 'This phone is not registered for lock-screen alerts yet.',
+  'account.pushTest': 'Send test alert to this phone',
+  'account.pushTestSent': 'Test alert sent. Background the app and check your lock screen.',
 
   'schedule.publishNotify': 'Publish / Notify',
   'schedule.publishNotifyAdmins': 'Publish / notify admin accounts',
@@ -865,6 +877,21 @@ const ES: Dict = {
   'account.enterUsername': 'Ingresa un usuario de inicio de sesión.',
   'account.typeDeleteError':
     'Escribe DELETE (en mayúsculas) para eliminar tu cuenta de forma permanente.',
+  'account.pushAlertsTitle': 'Alertas en el teléfono',
+  'account.pushAlertsHint':
+    'Publicar horario muestra un aviso en la pantalla de bloqueo. La campana en la app funciona sin esto; los avisos del sistema requieren registrar este dispositivo.',
+  'account.pushRegister': 'Registrar este dispositivo para alertas',
+  'account.pushRegistered': 'Este dispositivo está registrado para alertas de horario.',
+  'account.pushDenied':
+    'Las notificaciones están desactivadas. Actívalas en Ajustes → Shiflow → Notificaciones (banners / pantalla de bloqueo).',
+  'account.pushNotDevice': 'Las alertas push solo funcionan en un teléfono real, no en un simulador.',
+  'account.pushExpoGo':
+    'Instala la app de TestFlight o Play Store — Expo Go no puede recibir alertas.',
+  'account.pushFailed':
+    'No se pudo registrar este dispositivo. Revisa tu conexión e inténtalo de nuevo.',
+  'account.pushNotRegistered': 'Este teléfono aún no está registrado para alertas en pantalla de bloqueo.',
+  'account.pushTest': 'Enviar alerta de prueba a este teléfono',
+  'account.pushTestSent': 'Alerta de prueba enviada. Pon la app en segundo plano y revisa la pantalla de bloqueo.',
 
   'schedule.publishNotify': 'Publicar / Avisar',
   'schedule.publishNotifyAdmins': 'Publicar / avisar a cuentas admin',

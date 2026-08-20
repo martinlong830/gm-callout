@@ -22,6 +22,8 @@ import { storeCompanySession } from '../lib/companySession';
 import {
   portalDeleteAccount,
   portalGetAccount,
+  portalPushStatus,
+  portalSendTestPush,
   portalUpdateCompany,
   portalUpdateLoginName,
   portalUpdateRecoveryEmail,
@@ -45,6 +47,62 @@ export default function AccountScreen() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushTestBusy, setPushTestBusy] = useState(false);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+  const [pushRegistered, setPushRegistered] = useState<boolean | null>(null);
+
+  const pushMessageForReason = useCallback(
+    (reason?: string) => {
+      if (reason === 'permission_denied') return t('account.pushDenied');
+      if (reason === 'not_a_device') return t('account.pushNotDevice');
+      if (reason === 'expo_go') return t('account.pushExpoGo');
+      return t('account.pushFailed');
+    },
+    [t]
+  );
+
+  async function refreshPushStatus() {
+    const st = await portalPushStatus();
+    if (st.ok) {
+      setPushRegistered(st.registered);
+      if (!st.registered) setPushStatus(t('account.pushNotRegistered'));
+    }
+  }
+
+  async function onRegisterPush() {
+    setPushBusy(true);
+    setPushStatus(null);
+    try {
+      const mod = await import('../lib/pushNotifications');
+      const res = await mod.registerDevicePushToken();
+      if (res.ok) {
+        setPushStatus(t('account.pushRegistered'));
+        setPushRegistered(true);
+      } else {
+        setPushStatus(pushMessageForReason(res.reason));
+        setPushRegistered(false);
+      }
+    } catch {
+      setPushStatus(t('account.pushFailed'));
+      setPushRegistered(false);
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function onTestPush() {
+    setPushTestBusy(true);
+    setPushStatus(null);
+    const res = await portalSendTestPush();
+    setPushTestBusy(false);
+    if (res.ok && res.sent > 0) {
+      setPushStatus(res.message || t('account.pushTestSent'));
+      setPushRegistered(true);
+      return;
+    }
+    setPushStatus(res.message || t('account.pushFailed'));
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,6 +123,7 @@ export default function AccountScreen() {
   useEffect(() => {
     if (!session) return;
     void load();
+    void refreshPushStatus();
   }, [session, load]);
 
   if (authLoading) {
@@ -224,6 +283,47 @@ export default function AccountScreen() {
               {!hasRecovery ? (
                 <Text style={styles.hint}>{t('account.recoveryHint')}</Text>
               ) : null}
+
+              <View style={styles.pushBlock}>
+                <Text style={styles.label}>{t('account.pushAlertsTitle')}</Text>
+                <Text style={styles.hint}>{t('account.pushAlertsHint')}</Text>
+                {pushStatus ? (
+                  <Text
+                    style={
+                      pushStatus === t('account.pushRegistered') ||
+                      pushStatus === t('account.pushTestSent') ||
+                      pushRegistered
+                        ? styles.pushOk
+                        : styles.error
+                    }
+                  >
+                    {pushStatus}
+                  </Text>
+                ) : null}
+                <Pressable
+                  style={styles.buttonSecondary}
+                  onPress={() => void onRegisterPush()}
+                  disabled={busy || deleting || pushBusy || pushTestBusy}
+                >
+                  {pushBusy ? (
+                    <ActivityIndicator color="#1e3a5f" />
+                  ) : (
+                    <Text style={styles.buttonSecondaryText}>{t('account.pushRegister')}</Text>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={[styles.buttonSecondary, { marginTop: 8 }]}
+                  onPress={() => void onTestPush()}
+                  disabled={busy || deleting || pushBusy || pushTestBusy}
+                >
+                  {pushTestBusy ? (
+                    <ActivityIndicator color="#1e3a5f" />
+                  ) : (
+                    <Text style={styles.buttonSecondaryText}>{t('account.pushTest')}</Text>
+                  )}
+                </Pressable>
+              </View>
+
               {message ? <Text style={styles.error}>{message}</Text> : null}
               <Pressable style={styles.buttonPrimary} onPress={() => void onSave()} disabled={busy || deleting}>
                 {busy ? (
@@ -349,6 +449,22 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  buttonSecondary: {
+    borderWidth: 1,
+    borderColor: '#1e3a5f',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  buttonSecondaryText: { color: '#1e3a5f', fontSize: 15, fontWeight: '600' },
+  pushBlock: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e6ea',
+  },
+  pushOk: { color: '#047857', marginTop: 8, fontSize: 14, lineHeight: 20 },
   error: { color: '#b00020', marginTop: 8, fontSize: 14 },
   supportBlock: {
     marginTop: 20,
