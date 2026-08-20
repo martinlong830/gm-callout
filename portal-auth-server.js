@@ -674,6 +674,144 @@ function schedulePushMessagePayload(token, title, bodyText, dataExtra) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Send via Expo, poll receipts, and surface APNs/FCM delivery errors. */
+async function sendExpoPushMessages(messages, opts) {
+  const waitMs = (opts && opts.receiptWaitMs) || 2000;
+  let sent = 0;
+  let failed = 0;
+  const ticketErrors = [];
+  const ticketIds = [];
+  const ticketTokenById = Object.create(null);
+
+  for (let i = 0; i < messages.length; i += 100) {
+    const chunk = messages.slice(i, i + 100);
+    const pushRes = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(chunk),
+    });
+    if (!pushRes.ok) {
+      const text = await pushRes.text().catch(() => "");
+      return {
+        ok: false,
+        httpStatus: pushRes.status,
+        httpBody: text,
+        sent,
+        failed: messages.length - sent,
+        ticketErrors,
+        deliveryErrors: [],
+        delivered: 0,
+        ticketIds,
+      };
+    }
+    const pushJson = await pushRes.json().catch(() => null);
+    const tickets = (pushJson && pushJson.data) || [];
+    tickets.forEach((t, idx) => {
+      const token = chunk[idx] && chunk[idx].to;
+      if (t && t.status === "ok" && t.id) {
+        sent += 1;
+        ticketIds.push(t.id);
+        if (token) ticketTokenById[t.id] = token;
+      } else {
+        failed += 1;
+        ticketErrors.push(
+          (t && (t.message || (t.details && t.details.error))) || "Push ticket error"
+        );
+      }
+    });
+  }
+
+  let delivered = 0;
+  const deliveryErrors = [];
+  const staleTokens = [];
+
+  if (ticketIds.length) {
+    await sleep(waitMs);
+    for (let attempt = 0; attempt < 4 && ticketIds.length; attempt += 1) {
+      if (attempt > 0) await sleep(1500);
+      const receiptRes = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ids: ticketIds }),
+      });
+      if (!receiptRes.ok) {
+        deliveryErrors.push("Could not read Expo delivery receipts (" + receiptRes.status + ").");
+        break;
+      }
+      const receiptJson = await receiptRes.json().catch(() => null);
+      const receipts = (receiptJson && receiptJson.data) || {};
+      let pending = 0;
+      ticketIds.forEach((id) => {
+        const receipt = receipts[id];
+        if (!receipt) {
+          pending += 1;
+          return;
+        }
+        if (receipt.status === "ok") {
+          delivered += 1;
+          return;
+        }
+        const err =
+          (receipt.details && receipt.details.error) ||
+          receipt.message ||
+          "Delivery failed";
+        const token = ticketTokenById[id];
+        deliveryErrors.push(err + (token ? " (" + String(token).slice(-12) + ")" : ""));
+        if (err === "DeviceNotRegistered" && token) staleTokens.push(token);
+      });
+      if (!pending || attempt === 3) break;
+    }
+  }
+
+  return {
+    ok: sent > 0,
+    sent,
+    failed,
+    delivered,
+    ticketErrors,
+    deliveryErrors,
+    staleTokens,
+    ticketIds,
+  };
+}
+
+function humanizePushDeliveryErrors(errors) {
+  const list = errors || [];
+  if (!list.length) return "";
+  const joined = list.join(" | ");
+  if (/InvalidCredentials|BadDeviceToken|ExpiredProviderToken/i.test(joined)) {
+    return (
+      "Apple/Google rejected delivery (" +
+      joined +
+      "). For iPhone: upload an APNs .p8 key in EAS (cd mobile && npx eas credentials -p ios). " +
+      "For Android: add FCM V1 in EAS (cd mobile && npx eas credentials -p android)."
+    );
+  }
+  if (/DeviceNotRegistered/i.test(joined)) {
+    return (
+      "This push token is stale (" +
+      joined +
+      "). Tap Register this device for alerts again, then retry."
+    );
+  }
+  if (/MismatchSenderId|InvalidApnsCredential/i.test(joined)) {
+    return "Push credentials mismatch (" + joined + "). Re-upload FCM (Android) or APNs key (iOS) in EAS.";
+  }
+  return "Push was sent but not delivered: " + joined;
+}
+
 function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBaseUrl }) {
   const router = require("express").Router();
 
@@ -2113,6 +2251,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         console.warn("push/register", error);
         return res.status(500).json({ ok: false, message: error.message || "Could not save push token." });
       }
+      // One active phone per account — drop stale tokens from old installs.
+      await admin
+        .from("device_push_tokens")
+        .delete()
+        .eq("user_id", auth.userId)
+        .neq("expo_push_token", token);
       return res.json({ ok: true, teamStateId });
     } catch (err) {
       console.warn("push/register", err);
@@ -2173,8 +2317,9 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       const companyId = auth.profile.company_id || null;
       let q = admin
         .from("device_push_tokens")
-        .select("expo_push_token")
-        .eq("user_id", auth.userId);
+        .select("expo_push_token, platform, updated_at")
+        .eq("user_id", auth.userId)
+        .order("updated_at", { ascending: false });
       if (companyId) {
         q = q.or(`company_id.eq.${companyId},company_id.is.null`);
       }
@@ -2204,54 +2349,46 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           type: "push_test",
         })
       );
-      let sent = 0;
-      let failed = 0;
-      const errors = [];
-      for (let i = 0; i < messages.length; i += 100) {
-        const chunk = messages.slice(i, i + 100);
-        const pushRes = await fetch("https://exp.host/--/api/v2/push/send", {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Accept-Encoding": "gzip, deflate",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(chunk),
-        });
-        if (!pushRes.ok) {
-          const text = await pushRes.text().catch(() => "");
-          return res.status(502).json({
-            ok: false,
-            message: "Expo push send failed (" + pushRes.status + "). " + text,
-            sent,
-            failed: tokens.length - sent,
-            tokens: tokens.length,
-          });
-        }
-        const pushJson = await pushRes.json().catch(() => null);
-        const tickets = (pushJson && pushJson.data) || [];
-        tickets.forEach((t) => {
-          if (t && t.status === "ok") sent += 1;
-          else {
-            failed += 1;
-            errors.push((t && (t.message || (t.details && t.details.error))) || "Push ticket error");
-          }
+      const push = await sendExpoPushMessages(messages);
+      if (push.httpStatus) {
+        return res.status(502).json({
+          ok: false,
+          message: "Expo push send failed (" + push.httpStatus + "). " + (push.httpBody || ""),
+          sent: push.sent,
+          failed: tokens.length - push.sent,
+          tokens: tokens.length,
         });
       }
+      if (push.staleTokens && push.staleTokens.length) {
+        await admin.from("device_push_tokens").delete().in("expo_push_token", push.staleTokens);
+      }
+      const deliveryHint = humanizePushDeliveryErrors(push.deliveryErrors);
+      const ticketHint =
+        push.ticketErrors && push.ticketErrors.length ? push.ticketErrors.join(" | ") : "";
+      let message;
+      if (push.delivered > 0) {
+        message =
+          "Test alert delivered to " +
+          push.delivered +
+          " device" +
+          (push.delivered === 1 ? "" : "s") +
+          ". Background the app and check your lock screen.";
+      } else if (push.sent > 0) {
+        message =
+          deliveryHint ||
+          "Expo accepted the alert but your phone did not confirm delivery. Check notification settings, then Register again.";
+      } else {
+        message = "Push delivery failed: " + (ticketHint || deliveryHint || "unknown error");
+      }
       return res.json({
-        ok: sent > 0,
-        sent,
-        failed,
+        ok: push.delivered > 0,
+        sent: push.sent,
+        delivered: push.delivered,
+        failed: push.failed,
         tokens: tokens.length,
-        errors: errors.length ? errors : undefined,
-        message:
-          sent > 0
-            ? "Test alert sent to " +
-              sent +
-              " device" +
-              (sent === 1 ? "" : "s") +
-              ". Background the app and check your lock screen."
-            : "Push delivery failed: " + (errors.join(" | ") || "unknown error"),
+        platforms: (rows || []).map((r) => r.platform).filter(Boolean),
+        errors: push.ticketErrors.length ? push.ticketErrors : push.deliveryErrors.length ? push.deliveryErrors : undefined,
+        message,
       });
     } catch (err) {
       console.warn("push/test", err);

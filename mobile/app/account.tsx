@@ -96,12 +96,13 @@ export default function AccountScreen() {
     setPushStatus(null);
     const res = await portalSendTestPush();
     setPushTestBusy(false);
-    if (res.ok && res.sent > 0) {
+    if (res.ok && res.delivered > 0) {
       setPushStatus(res.message || t('account.pushTestSent'));
       setPushRegistered(true);
       return;
     }
     setPushStatus(res.message || t('account.pushFailed'));
+    if (res.delivered === 0) setPushRegistered(false);
   }
 
   const load = useCallback(async () => {

@@ -911,18 +911,28 @@ export async function portalPushStatus(): Promise<
 }
 
 export async function portalSendTestPush(): Promise<
-  | { ok: true; sent: number; message?: string }
-  | { ok: false; message: string; sent?: number }
+  | { ok: true; sent: number; delivered: number; message?: string }
+  | { ok: false; message: string; sent?: number; delivered?: number }
 > {
   if (!isPortalAuthConfigured()) {
     return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
   }
-  const r = await portalAuthedFetch<{ sent?: number; message?: string }>('POST', '/api/portal/push/test', {});
+  const r = await portalAuthedFetch<{ sent?: number; delivered?: number; message?: string; ok?: boolean }>(
+    'POST',
+    '/api/portal/push/test',
+    {}
+  );
   if (!r.ok) return r;
+  const delivered = r.delivered != null ? Number(r.delivered) : 0;
+  const sent = r.sent != null ? Number(r.sent) : 0;
+  if (delivered > 0) {
+    return { ok: true, sent, delivered, message: r.message };
+  }
   return {
-    ok: true,
-    sent: r.sent != null ? Number(r.sent) : 0,
-    message: r.message,
+    ok: false,
+    sent,
+    delivered,
+    message: r.message || 'Push was not delivered to this phone.',
   };
 }
 
