@@ -1284,11 +1284,11 @@
       titles = getEmpTitles();
       var activeNav = document.querySelector('[data-emp-nav].active');
       var navKey = activeNav ? activeNav.getAttribute('data-emp-nav') : 'home';
-      showEmpNav(navKey);
-      renderHome();
-      renderThreadsList();
-      if (navKey === 'schedule') renderMasterScheduleScreen();
-      if (navKey === 'availability') renderEmployeeAvailabilityTab();
+      if (screenTitle) screenTitle.textContent = titles[navKey] || t('title.home');
+      if (navKey === 'home') renderHome();
+      else if (navKey === 'schedule') renderMasterScheduleScreen();
+      else if (navKey === 'availability') renderEmployeeAvailabilityTab();
+      else if (navKey === 'messages') renderThreadsList();
     };
 
     renderHome();

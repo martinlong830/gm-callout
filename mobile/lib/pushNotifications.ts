@@ -22,15 +22,38 @@ type NotificationResponseLike = {
   };
 };
 
+/**
+ * Android heads-up banners require IMPORTANCE_HIGH. Existing installs already
+ * created the old `schedule` channel at DEFAULT, which Android will not upgrade,
+ * so notify uses a new channel id (must match portal-auth-server.js).
+ */
+export const SCHEDULE_PUSH_CHANNEL_ID = 'schedule_heads_up';
+
 type NotificationsModule = {
-  AndroidImportance: { DEFAULT: number };
-  IosAuthorizationStatus?: { PROVISIONAL?: number };
+  AndroidImportance?: { DEFAULT?: number; HIGH?: number; MAX?: number };
+  AndroidNotificationVisibility?: { PUBLIC?: number };
+  IosAuthorizationStatus?: { AUTHORIZED?: number; PROVISIONAL?: number };
+  setNotificationHandler?: (handler: {
+    handleNotification: () => Promise<{
+      shouldShowAlert?: boolean;
+      shouldShowBanner?: boolean;
+      shouldShowList?: boolean;
+      shouldPlaySound?: boolean;
+      shouldSetBadge?: boolean;
+    }>;
+  }) => void;
   setNotificationChannelAsync: (
     id: string,
-    config: { name: string; importance: number }
+    config: Record<string, unknown>
   ) => Promise<unknown>;
   getPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
-  requestPermissionsAsync: () => Promise<{ granted?: boolean; ios?: { status?: number } }>;
+  requestPermissionsAsync: (opts?: {
+    ios?: {
+      allowAlert?: boolean;
+      allowBadge?: boolean;
+      allowSound?: boolean;
+    };
+  }) => Promise<{ granted?: boolean; ios?: { status?: number } }>;
   getExpoPushTokenAsync: (opts: { projectId: string }) => Promise<{ data?: string }>;
   addNotificationResponseReceivedListener: (
     listener: (response: NotificationResponseLike) => void
@@ -38,6 +61,7 @@ type NotificationsModule = {
   getLastNotificationResponseAsync: () => Promise<NotificationResponseLike | null>;
 };
 
+let presentationConfigured = false;
 let registrationInFlight: Promise<{ ok: boolean; reason?: string }> | null = null;
 let deferredTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRegisterAttemptAt = 0;
@@ -73,6 +97,63 @@ async function isPhysicalDevice(): Promise<boolean> {
   }
 }
 
+function permissionAllowsBanners(
+  status: { granted?: boolean; ios?: { status?: number } },
+  iosAuthorizedStatus = 2
+): boolean {
+  // iOS provisional/quiet delivery does not show banners — require full alert permission.
+  if (Platform.OS === 'ios' && status.ios?.status != null) {
+    return status.ios.status === iosAuthorizedStatus;
+  }
+  return !!status.granted;
+}
+
+async function ensureAndroidHeadsUpChannel(Notifications: NotificationsModule): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  const importance = Notifications.AndroidImportance?.HIGH ?? 6;
+  const visibility = Notifications.AndroidNotificationVisibility?.PUBLIC ?? 1;
+  try {
+    await Notifications.setNotificationChannelAsync(SCHEDULE_PUSH_CHANNEL_ID, {
+      name: 'Schedule alerts',
+      description: 'When a manager publishes or notifies a schedule week',
+      importance,
+      vibrationPattern: [0, 250, 250, 250],
+      enableVibrate: true,
+      lockscreenVisibility: visibility,
+      sound: 'default',
+      showBadge: true,
+    });
+  } catch (channelErr) {
+    console.warn('setNotificationChannelAsync', channelErr);
+  }
+}
+
+/**
+ * Show OS banner + sound when a remote push arrives, including while the app
+ * is in the foreground. Safe to call repeatedly; never throws.
+ */
+export async function preparePushNotificationPresentation(): Promise<void> {
+  try {
+    const Notifications = await loadNotifications();
+    if (!Notifications) return;
+    if (!presentationConfigured && typeof Notifications.setNotificationHandler === 'function') {
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldShowBanner: true,
+          shouldShowList: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+        }),
+      });
+      presentationConfigured = true;
+    }
+    await ensureAndroidHeadsUpChannel(Notifications);
+  } catch (err) {
+    console.warn('preparePushNotificationPresentation', err);
+  }
+}
+
 /**
  * Request permission, obtain Expo push token, and register with portal API.
  * Safe to call repeatedly; never throws. No-ops on simulators / Expo Go /
@@ -94,29 +175,16 @@ export async function registerDevicePushToken(): Promise<{ ok: boolean; reason?:
         const Notifications = await loadNotifications();
         if (!Notifications) return { ok: false, reason: 'notifications_unavailable' };
 
-        if (Platform.OS === 'android') {
-          try {
-            // AndroidImportance.DEFAULT === 5; use numeric fallback if the enum is missing.
-            const importance = Notifications.AndroidImportance?.DEFAULT ?? 5;
-            await Notifications.setNotificationChannelAsync('schedule', {
-              name: 'Schedule',
-              importance,
-            });
-          } catch (channelErr) {
-            console.warn('setNotificationChannelAsync', channelErr);
-            // Channel setup failure must not block token registration / login.
-          }
-        }
+        await preparePushNotificationPresentation();
 
         const existing = await Notifications.getPermissionsAsync();
-        const provisional = Notifications.IosAuthorizationStatus?.PROVISIONAL;
-        let granted = !!(
-          existing.granted ||
-          (provisional != null && existing.ios?.status === provisional)
-        );
+        const iosAuthorized = Notifications.IosAuthorizationStatus?.AUTHORIZED ?? 2;
+        let granted = permissionAllowsBanners(existing, iosAuthorized);
         if (!granted) {
-          const req = await Notifications.requestPermissionsAsync();
-          granted = !!(req.granted || (provisional != null && req.ios?.status === provisional));
+          const req = await Notifications.requestPermissionsAsync({
+            ios: { allowAlert: true, allowBadge: true, allowSound: true },
+          });
+          granted = permissionAllowsBanners(req, iosAuthorized);
         }
         if (!granted) return { ok: false, reason: 'permission_denied' };
 

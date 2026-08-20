@@ -54,7 +54,7 @@ const config: ExpoConfig = {
         // Android requires an all-white transparent icon (not the full-color app icon).
         icon: './assets/notification-icon.png',
         color: '#c41230',
-        defaultChannel: 'schedule',
+        defaultChannel: 'schedule_heads_up',
       },
     ],
   ],

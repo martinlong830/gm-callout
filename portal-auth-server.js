@@ -2407,7 +2407,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         sound: "default",
         title,
         body: bodyText,
-        channelId: "schedule",
+        // Must match mobile SCHEDULE_PUSH_CHANNEL_ID (HIGH importance heads-up).
+        channelId: "schedule_heads_up",
+        priority: "high",
+        interruptionLevel: "active",
         data: {
           type: "schedule_published",
           weekMondayIso,

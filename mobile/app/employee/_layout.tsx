@@ -72,6 +72,7 @@ export default function EmployeeLayout() {
         if (cancelled) return;
         m.setPushNotificationRouteRoleGetter(() => role);
         m.startPushNotificationResponseRouting();
+        m.scheduleDevicePushTokenRegistration(0);
       })
       .catch((err) => console.warn('pushNotifications routing', err));
     return () => {

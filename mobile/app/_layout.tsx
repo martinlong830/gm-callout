@@ -1,4 +1,5 @@
 import 'react-native-gesture-handler';
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { RootErrorBoundary } from '../components/RootErrorBoundary';
@@ -7,6 +8,12 @@ import { AppDataProvider } from '../contexts/AppDataContext';
 import { LocaleProvider } from '../contexts/LocaleContext';
 
 export default function RootLayout() {
+  useEffect(() => {
+    void import('../lib/pushNotifications')
+      .then((m) => m.preparePushNotificationPresentation())
+      .catch((err) => console.warn('push presentation', err));
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       {/* Locale outside the root boundary so fallback UI can still translate. */}

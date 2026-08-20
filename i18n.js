@@ -49,46 +49,31 @@
 
   function applyDomI18n(root) {
     var scope = root || document;
-    scope.querySelectorAll('[data-i18n]').forEach(function (el) {
+    var nodes = scope.querySelectorAll(
+      '[data-i18n],[data-i18n-html],[data-i18n-placeholder],[data-i18n-aria],[data-i18n-title],.lang-toggle-btn'
+    );
+    var i;
+    for (i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
       var key = el.getAttribute('data-i18n');
-      if (!key) return;
-      el.textContent = t(key);
-    });
-    scope.querySelectorAll('[data-i18n-html]').forEach(function (el) {
-      var key = el.getAttribute('data-i18n-html');
-      if (!key) return;
-      el.innerHTML = t(key);
-    });
-    scope.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
-      var key = el.getAttribute('data-i18n-placeholder');
-      if (!key) return;
-      el.setAttribute('placeholder', t(key));
-    });
-    scope.querySelectorAll('[data-i18n-aria]').forEach(function (el) {
-      var key = el.getAttribute('data-i18n-aria');
-      if (!key) return;
-      el.setAttribute('aria-label', t(key));
-    });
-    scope.querySelectorAll('[data-i18n-title]').forEach(function (el) {
-      var key = el.getAttribute('data-i18n-title');
-      if (!key) return;
-      el.setAttribute('title', t(key));
-    });
-    scope.querySelectorAll('.lang-toggle-btn').forEach(function (btn) {
-      var lang = btn.getAttribute('data-lang');
-      var active = lang === locale;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-  }
-
-  function refreshDynamicUi() {
-    try {
-      if (typeof global.gmCalloutOnLocaleChange === 'function') {
-        global.gmCalloutOnLocaleChange(locale);
+      if (key) {
+        var text = t(key);
+        if (el.textContent !== text) el.textContent = text;
       }
-    } catch (e) {
-      console.warn('gmCalloutOnLocaleChange', e);
+      var htmlKey = el.getAttribute('data-i18n-html');
+      if (htmlKey) el.innerHTML = t(htmlKey);
+      var phKey = el.getAttribute('data-i18n-placeholder');
+      if (phKey) el.setAttribute('placeholder', t(phKey));
+      var ariaKey = el.getAttribute('data-i18n-aria');
+      if (ariaKey) el.setAttribute('aria-label', t(ariaKey));
+      var titleKey = el.getAttribute('data-i18n-title');
+      if (titleKey) el.setAttribute('title', t(titleKey));
+      if (el.classList.contains('lang-toggle-btn')) {
+        var lang = el.getAttribute('data-lang');
+        var active = lang === locale;
+        el.classList.toggle('is-active', active);
+        el.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
     }
   }
 
@@ -113,7 +98,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-2';
+      s.src = 'locales/es.js?v=perf-3';
       s.setAttribute('data-gm-locale-es', '1');
       s.onload = function () {
         resolve();
@@ -125,9 +110,47 @@
     });
   }
 
+  function refreshDynamicUi() {
+    try {
+      if (typeof global.gmCalloutOnLocaleChange === 'function') {
+        global.gmCalloutOnLocaleChange(locale);
+      }
+    } catch (e) {
+      console.warn('gmCalloutOnLocaleChange', e);
+    }
+  }
+
+  function scheduleRefreshDynamicUi() {
+    var run = refreshDynamicUi;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () {
+        setTimeout(run, 0);
+      });
+    } else {
+      setTimeout(run, 0);
+    }
+  }
+
+  function paintToggleButtons(next) {
+    var buttons = document.querySelectorAll('.lang-toggle-btn');
+    var i;
+    for (i = 0; i < buttons.length; i++) {
+      var btn = buttons[i];
+      var active = btn.getAttribute('data-lang') === next;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+
   function setLocale(lang, opts) {
     var next = lang === 'es' ? 'es' : 'en';
     var silent = opts && opts.silent;
+    var force = opts && opts.force;
+    var esReady = global.GM_I18N_ES && typeof global.GM_I18N_ES === 'object';
+    if (!force && next === locale && (next !== 'es' || esReady)) {
+      return next;
+    }
+    paintToggleButtons(next);
     function apply() {
       locale = next;
       writeStored(next);
@@ -135,7 +158,7 @@
         document.documentElement.lang = next === 'es' ? 'es' : 'en';
       } catch (e) {}
       applyDomI18n(document);
-      if (!silent) refreshDynamicUi();
+      if (!silent) scheduleRefreshDynamicUi();
       listeners.forEach(function (fn) {
         try {
           fn(next);
@@ -180,14 +203,24 @@
     return locale === 'es' ? 'es' : 'en-US';
   }
 
+  var documentToggleBound = false;
+
+  function onLangToggleClick(ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('.lang-toggle-btn') : null;
+    if (!btn) return;
+    var lang = btn.getAttribute('data-lang');
+    if (lang === 'en' || lang === 'es') setLocale(lang);
+  }
+
   function bindToggleRoot(root) {
     if (!root) return;
-    root.addEventListener('click', function (ev) {
-      var btn = ev.target && ev.target.closest ? ev.target.closest('.lang-toggle-btn') : null;
-      if (!btn) return;
-      var lang = btn.getAttribute('data-lang');
-      if (lang === 'en' || lang === 'es') setLocale(lang);
-    });
+    /* Document delegation covers login, header, and account toggles. Binding
+       each control as well would fire setLocale twice and freeze the UI. */
+    if (root === document || root === document.documentElement || root === document.body) {
+      if (documentToggleBound) return;
+      documentToggleBound = true;
+      document.addEventListener('click', onLangToggleClick);
+    }
   }
 
   function buildToggleHtml(extraClass) {
@@ -219,7 +252,6 @@
     wrap.className = 'login-lang-wrap';
     wrap.innerHTML = buildToggleHtml('lang-toggle--login');
     card.insertBefore(wrap, card.firstChild);
-    bindToggleRoot(wrap);
   }
 
   function ensureHeaderToggles() {
@@ -229,7 +261,6 @@
       wrap.innerHTML = buildToggleHtml('lang-toggle--header');
       var node = wrap.firstChild;
       actions.insertBefore(node, actions.firstChild);
-      bindToggleRoot(node);
     });
     var tcHeader = document.querySelector('#appTimeclock .header');
     if (tcHeader && !tcHeader.querySelector('.lang-toggle')) {
@@ -242,7 +273,6 @@
       } else {
         tcHeader.appendChild(node2);
       }
-      bindToggleRoot(node2);
     }
   }
 
@@ -255,7 +285,6 @@
       '<span class="form-label" data-i18n="common.language">Language</span>' +
       buildToggleHtml('lang-toggle--account');
     form.insertBefore(row, form.firstChild);
-    bindToggleRoot(row);
     applyDomI18n(row);
   }
 

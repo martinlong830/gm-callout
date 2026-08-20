@@ -3023,7 +3023,7 @@
       script.src =
         'timecards-manager.js?v=' +
         encodeURIComponent(
-          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-2'
+          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-3'
         );
       script.async = true;
       script.onload = function () {
@@ -18450,27 +18450,49 @@
     if (typeof window.gmI18n !== 'undefined' && window.gmI18n.ensureHeaderToggles) {
       window.gmI18n.ensureHeaderToggles();
     }
+    if (screenTitle && currentScreen) {
+      if (currentScreen === 11 || currentScreen === 12) {
+        screenTitle.textContent = timecardScreenTitles[currentScreen] || titles[currentScreen] || titles[10];
+      } else {
+        screenTitle.textContent = titles[currentScreen] || titles[1];
+      }
+    }
     if (document.documentElement.classList.contains('manager-app')) {
-      if (typeof showScreen === 'function' && currentScreen) {
-        showScreen(currentScreen);
-      }
-      if (typeof renderCalendar === 'function') renderCalendar();
-      if (typeof renderEmployeeList === 'function') renderEmployeeList();
-      if (typeof renderRequestsList === 'function') renderRequestsList();
-      if (typeof renderManagerAvailabilityScreen === 'function') renderManagerAvailabilityScreen();
-      if (typeof updateSchedulePublishNotifyButton === 'function') {
-        updateSchedulePublishNotifyButton();
-      }
-      if (typeof updateScheduleWeekNav === 'function') updateScheduleWeekNav();
-      if (
+      var screen = currentScreen;
+      /* Refresh only the visible screen. showScreen() rebuilt the full schedule
+         (and every other page) and froze the UI on EN/ES. */
+      if (screen === 1) {
+        if (typeof renderCalendar === 'function') renderCalendar({ force: true });
+        if (typeof updateSchedulePublishNotifyButton === 'function') updateSchedulePublishNotifyButton();
+        if (typeof updateScheduleWeekNav === 'function') updateScheduleWeekNav();
+        if (scheduleView === 'table' && scheduleBody && typeof renderSchedule === 'function') {
+          renderSchedule();
+        }
+      } else if (screen === 14 && typeof renderManagerHomeShifts === 'function') {
+        renderManagerHomeShifts();
+      } else if (screen === 5 && typeof renderEmployeeList === 'function') {
+        renderEmployeeList();
+      } else if (screen === 8 && typeof renderRequestsList === 'function') {
+        renderRequestsList();
+      } else if (screen === 9 && typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
+        window.gmCalloutManagerMessagesRefreshUi();
+      } else if (
+        screen === 10 &&
         window.gmCalloutTimecards &&
-        typeof window.gmCalloutTimecards.renderRoster === 'function' &&
-        currentScreen === 10
+        typeof window.gmCalloutTimecards.renderRoster === 'function'
       ) {
         window.gmCalloutTimecards.renderRoster();
-      }
-      if (typeof window.gmCalloutManagerMessagesRefreshUi === 'function') {
-        window.gmCalloutManagerMessagesRefreshUi();
+      } else if (screen === 13 && typeof renderManagerAvailabilityScreen === 'function') {
+        renderManagerAvailabilityScreen();
+      } else if (screen === 6) {
+        var empForHeader = editingEmployeeId
+          ? employees.find(function (e) {
+              return e.id === editingEmployeeId;
+            })
+          : null;
+        if (typeof refreshEmployeeProfileHeader === 'function') {
+          refreshEmployeeProfileHeader(empForHeader);
+        }
       }
     }
     if (document.documentElement.classList.contains('employee-app')) {
