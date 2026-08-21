@@ -102,6 +102,9 @@
   var TIP_NET_RATE_DELIVERY = 0.8;
   var selectedPayWeekStartIso = null;
   var timecardsLocationFilter = 'rp-9';
+  /** Temporary overrides for schedule-only Excel download (do not persist). */
+  var scheduleExportWeekOverrideIso = null;
+  var scheduleExportLocationOverride = null;
   var SOH_THRESHOLD_MINUTES = 10 * 60;
   var SOH_PAY_HOURS = 1;
   /** Spread of Hours premium is paid at a fixed hourly rate (editable on the roster page), independent of base pay. */
@@ -301,7 +304,11 @@
   }
 
   function effectiveLocationFilter(locationFilter) {
-    return locationFilter != null ? locationFilter : timecardsLocationFilter;
+    if (locationFilter != null) return locationFilter;
+    if (scheduleExportLocationOverride === 'rp-8' || scheduleExportLocationOverride === 'rp-9') {
+      return scheduleExportLocationOverride;
+    }
+    return timecardsLocationFilter;
   }
 
   function preferRestaurantAmongMatches(emp, matches) {
@@ -1044,6 +1051,16 @@
   }
 
   function getSelectedPayWeekMondayDate() {
+    if (scheduleExportWeekOverrideIso && /^\d{4}-\d{2}-\d{2}$/.test(scheduleExportWeekOverrideIso)) {
+      var overrideMon = new Date(scheduleExportWeekOverrideIso + 'T12:00:00');
+      if (!Number.isNaN(overrideMon.getTime())) {
+        return new Date(
+          overrideMon.getFullYear(),
+          overrideMon.getMonth(),
+          overrideMon.getDate()
+        );
+      }
+    }
     var thisMon = d().getThisMondayDate();
     var earliest = earliestPayWeekMondayDate();
     if (!selectedPayWeekStartIso) return thisMon;
@@ -7447,6 +7464,75 @@
     }), null, rowHeights);
   }
 
+  /**
+   * Download only the Schedule sheet for a specific week (full-report formatting).
+   * opts.weekMondayIso — Monday YYYY-MM-DD (required)
+   * opts.restaurantId — rp-8 | rp-9 (defaults to current timecards location)
+   */
+  async function downloadScheduleWeekOnly(opts) {
+    opts = opts || {};
+    var weekMondayIso = String(opts.weekMondayIso || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
+      return { ok: false, message: 'Invalid week' };
+    }
+    var restaurantId =
+      opts.restaurantId === 'rp-8' || opts.restaurantId === 'rp-9' ? opts.restaurantId : null;
+
+    try {
+      await ensureExportLibsLoaded();
+    } catch (loadErr) {
+      return {
+        ok: false,
+        message: (loadErr && loadErr.message) || 'Excel library failed to load',
+      };
+    }
+    var XLSX = global.XLSX;
+    if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
+      return { ok: false, message: 'Excel library not loaded' };
+    }
+
+    var prevWeekOverride = scheduleExportWeekOverrideIso;
+    var prevLocOverride = scheduleExportLocationOverride;
+    var prevLocFilter = timecardsLocationFilter;
+    try {
+      scheduleExportWeekOverrideIso = weekMondayIso;
+      scheduleExportLocationOverride = restaurantId;
+      if (restaurantId) timecardsLocationFilter = restaurantId;
+      invalidatePayWeekScheduleCache();
+      invalidateFullReportSheetsCache();
+
+      var ws = buildScheduleWorksheet();
+      if (!ws) {
+        return { ok: false, message: 'Could not build schedule sheet' };
+      }
+      xlSanitizeSheetForExport(ws);
+      var wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+      var bounds = payWeekBounds();
+      var fileBase =
+        'schedule-' +
+        isoFromDate(bounds.start) +
+        '_' +
+        isoFromDate(bounds.end) +
+        '-' +
+        locationFileSlug(restaurantId);
+      XLSX.writeFile(wb, fileBase + '.xlsx');
+      return { ok: true, fileBase: fileBase };
+    } catch (err) {
+      console.warn('downloadScheduleWeekOnly', err);
+      return {
+        ok: false,
+        message: (err && err.message) || 'Download failed',
+      };
+    } finally {
+      scheduleExportWeekOverrideIso = prevWeekOverride;
+      scheduleExportLocationOverride = prevLocOverride;
+      timecardsLocationFilter = prevLocFilter;
+      invalidatePayWeekScheduleCache();
+      invalidateFullReportSheetsCache();
+    }
+  }
+
   var PTO_SHEET_COLS = 20;
   var PTO_TITLE_ROW = 0;
   var PTO_SUBTITLE_ROW = 1;
@@ -12090,6 +12176,7 @@
     setEmployeeBorrowedRestaurant: setEmployeeBorrowedRestaurant,
     employeeEligibleForWeekBorrow: employeeEligibleForWeekBorrow,
     payWeekBoundsFromMonday: payWeekBoundsFromMonday,
+    downloadScheduleWeekOnly: downloadScheduleWeekOnly,
   };
 
   if (global.__gmTimecardsEnableTestExports) {

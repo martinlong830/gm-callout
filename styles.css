@@ -2591,7 +2591,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   min-width: 5rem;
   max-width: 5rem;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--surface) 94%, var(--primary) 6%);
+  background: var(--surface);
   border-left: 1px solid var(--border);
   vertical-align: middle;
   padding-left: 6px;
@@ -3081,6 +3081,235 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 /* Legacy bottom footer totals (removed from main schedule; kept harmless if present). */
 .calendar-matrix tfoot.schedule-day-totals {
   display: none;
+}
+
+/* Manager/admin labor & group-order panels below the main matrix (not in Excel download).
+   Lives inside #calendarGrid so it scrolls with the schedule — not pinned to the viewport. */
+.schedule-below-calendar {
+  margin-top: 12px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Must span the full matrix scroll width — default block width is only the
+     #calendarGrid viewport, which clipped Sat/Sun under overflow:hidden. */
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.schedule-collapsible {
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+  background: #fff;
+  overflow: visible;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.schedule-collapsible-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  left: 0;
+  z-index: 6;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-left: 1px solid #e2e8f0;
+  background: #fff;
+  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: #334155;
+  box-sizing: border-box;
+}
+
+.schedule-collapsible-toggle:hover {
+  background: #f8fafc;
+}
+
+.schedule-collapsible-chevron {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid #64748b;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.schedule-collapsible.is-open .schedule-collapsible-chevron {
+  transform: rotate(90deg);
+}
+
+/* Match FOH / BOH / Delivery section bar typography */
+.schedule-collapsible-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #334155;
+}
+
+.schedule-collapsible-body {
+  border-top: 1px solid #e2e8f0;
+  /* No horizontal padding — day cols must line up with the calendar matrix above. */
+  padding: 0;
+}
+
+.schedule-panel-scroll {
+  overflow: visible;
+}
+
+.schedule-panel-matrix {
+  /* separate: sticky first-col left borders stay visible (collapse drops them). */
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 0;
+  table-layout: fixed;
+  box-sizing: border-box;
+}
+
+.schedule-panel-matrix th,
+.schedule-panel-matrix td {
+  border: 1px solid #e2e8f0;
+  border-top-width: 0;
+  border-left-width: 0;
+  padding: 8px 10px;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.schedule-panel-matrix tr:first-child th,
+.schedule-panel-matrix tr:first-child td {
+  border-top-width: 1px;
+}
+
+/* Match calendar day-header thead */
+.schedule-panel-matrix thead th {
+  background: var(--surface);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.schedule-panel-day-th {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+/* Widths synced from calendar thead in JS; these match schedule tile mins as fallback.
+   Sticky left like `.calendar-row-person-col` while #calendarGrid scrolls horizontally. */
+.schedule-panel-row-label {
+  width: 11rem;
+  min-width: 11rem;
+  max-width: 11rem;
+  text-align: left !important;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text, #0f172a);
+  background: #fff;
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  border-left-width: 1px !important;
+  box-shadow: 4px 0 10px -8px rgba(15, 23, 42, 0.35);
+}
+
+.schedule-panel-day-th,
+.schedule-panel-cell {
+  width: auto;
+  min-width: 11rem;
+  text-align: center;
+}
+
+.schedule-panel-week-totals {
+  width: 5rem;
+  min-width: 5rem;
+  max-width: 5rem;
+  text-align: center;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.schedule-panel-data-row:nth-child(even) .schedule-panel-week-totals {
+  background: color-mix(in srgb, #f8fafc 50%, #fff);
+}
+
+@media (max-width: 1023px) {
+  .schedule-panel-row-label {
+    width: 9.5rem;
+    min-width: 9.5rem;
+    max-width: 9.5rem;
+  }
+
+  .schedule-panel-day-th,
+  .schedule-panel-cell {
+    min-width: clamp(11rem, 42vw, 14.5rem);
+  }
+}
+
+.schedule-panel-data-row:nth-child(even) .schedule-panel-cell,
+.schedule-panel-data-row:nth-child(even) .schedule-panel-row-label {
+  background: color-mix(in srgb, #f8fafc 50%, #fff);
+}
+
+.schedule-panel-readonly {
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #0f172a);
+}
+
+.schedule-panel-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+  background: #fff;
+  color: var(--text, #0f172a);
+}
+
+.schedule-panel-input:hover {
+  border-color: #94a3b8;
+}
+
+.schedule-panel-input:focus {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+  border-color: #60a5fa;
+}
+
+@media print {
+  .schedule-below-calendar {
+    display: none !important;
+  }
 }
 
 .calendar-group-order-row td {
@@ -5265,7 +5494,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   box-shadow: none;
 }
 
-#schedulePublishNotifyBtn {
+#schedulePublishNotifyBtn,
+#scheduleDownloadWeekBtn {
   white-space: nowrap;
 }
 

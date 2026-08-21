@@ -64,6 +64,7 @@ import {
   buildSchedule,
   buildWeeksFromMonday,
   compactAssignmentsAfterDraftSlotDeletes,
+  computeScheduleDayTotals,
   computeScheduleRowWeekTotals,
   defaultRestaurants,
   defaultTimesForDraftCell,
@@ -131,8 +132,23 @@ import {
   GROUP_ORDER_POTENTIAL_PLATFORMS,
   patchGroupOrderPotentialInDraft,
 } from '../../lib/schedule/groupOrderPotential';
+import {
+  getScheduleNetSalesCell,
+  patchScheduleNetSalesInDraft,
+} from '../../lib/schedule/scheduleNetSales';
 
-/** Wide enough for a single-line slot time (e.g. 10:00 AM – 7:30 PM) in the cell header. */
+function formatScheduleLaborPay(amount: number): string {
+  const n = Number(amount) || 0;
+  return `$${n.toFixed(2)}`;
+}
+
+function formatScheduleLaborPct(pay: number, salesStr: string): string {
+  const sales = Number(String(salesStr || '').replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(sales) || sales <= 0) return '—';
+  const pct = ((Number(pay) || 0) / sales) * 100;
+  if (!Number.isFinite(pct)) return '—';
+  return `${pct.toFixed(1)}%`;
+}
 const CELL_MIN = 158;
 /** Sticky Person column — parity with web `.calendar-row-person-col`. */
 const PERSON_COL = 132;
@@ -279,6 +295,8 @@ export default function ManagerScheduleScreen() {
   const [undoDepth, setUndoDepth] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<ScheduleRevisionRow[]>([]);
+  const [laborPanelOpen, setLaborPanelOpen] = useState(false);
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1590,6 +1608,60 @@ export default function ManagerScheduleScreen() {
     return map;
   }, [calendarBody, schedule, visibleDays]);
 
+  const dayLaborTotals = useMemo(
+    () => computeScheduleDayTotals(schedule, visibleDays, lites, draftRows),
+    [schedule, visibleDays, lites, draftRows]
+  );
+
+  const weekLaborPanelTotals = useMemo(() => {
+    let hours = 0;
+    let pay = 0;
+    let sales = 0;
+    let hasSales = false;
+    const names = new Set<string>();
+    for (const dayStr of visibleDays) {
+      hours += dayLaborTotals[dayStr]?.hours || 0;
+      pay += dayLaborTotals[dayStr]?.pay || 0;
+      const meta = weekMeta.find((m) => m.label === dayStr);
+      const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+      const salesStr = getScheduleNetSalesCell(
+        draftScheduleRaw,
+        selectedWeekMonday,
+        currentRestaurantId,
+        dayIso
+      );
+      if (salesStr !== '') {
+        hasSales = true;
+        const n = Number(String(salesStr).replace(/[$,\s]/g, ''));
+        if (Number.isFinite(n)) sales += n;
+      }
+      if (!(dayLaborTotals[dayStr]?.headcount > 0)) continue;
+      for (const shift of schedule) {
+        if (!shift || shift.day !== dayStr) continue;
+        const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+          (n) => n && n !== 'Unassigned'
+        );
+        for (const wname of workers) names.add(String(wname).trim());
+      }
+    }
+    return {
+      hours,
+      pay,
+      sales,
+      hasSales,
+      headcount: names.size,
+      laborPct: formatScheduleLaborPct(pay, hasSales ? String(sales) : ''),
+    };
+  }, [
+    dayLaborTotals,
+    visibleDays,
+    weekMeta,
+    draftScheduleRaw,
+    selectedWeekMonday,
+    currentRestaurantId,
+    schedule,
+  ]);
+
   const breakTimeChipLabels = useMemo(
     () => breakTimePresetsForType(editBreakType, normalizeBreakAnnotationTime(editBreakTime) || ''),
     [editBreakType, editBreakTime]
@@ -1747,6 +1819,7 @@ export default function ManagerScheduleScreen() {
             }}
             scrollEventThrottle={16}
           >
+          <View>
           <View style={styles.matrixInner}>
             <View style={[styles.personCol, { width: PERSON_COL }]}>
               <View style={styles.personTh}>
@@ -1781,22 +1854,6 @@ export default function ManagerScheduleScreen() {
                   />
                 );
               })}
-              <View
-                style={[
-                  styles.personSection,
-                  styles.sectionMatrixRow,
-                  { backgroundColor: '#f8fafc', borderLeftColor: '#64748b' },
-                ]}
-              >
-                <Text style={[styles.sectionText, styles.groupOrderSectionTitle]} numberOfLines={2}>
-                  {t('schedule.groupOrderPotential')}
-                </Text>
-              </View>
-              {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
-                <View key={`go-p-${plat.id}`} style={[styles.personCell, styles.dataMatrixRow]}>
-                  <Text style={styles.groupOrderPersonLabel}>{plat.label}</Text>
-                </View>
-              ))}
             </View>
 
                 <View style={{ width: daysWidth }}>
@@ -1839,80 +1896,6 @@ export default function ManagerScheduleScreen() {
                       onMarkDayOff={clearCellToDayOff}
                     />
                   ))}
-                  <View
-                    style={[
-                      styles.sectionDayFill,
-                      styles.sectionMatrixRow,
-                      {
-                        width: daysWidth,
-                        backgroundColor: '#f8fafc',
-                      },
-                    ]}
-                  />
-                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat, gi) => (
-                    <View
-                      key={`go-d-${plat.id}`}
-                      style={[
-                        styles.dataDays,
-                        styles.dataMatrixRow,
-                        styles.groupOrderDataRow,
-                        gi % 2 === 1 && styles.groupOrderDataRowAlt,
-                        { width: daysWidth },
-                      ]}
-                    >
-                      {visibleDays.map((dayStr) => {
-                        const meta = weekMeta.find((m) => m.label === dayStr);
-                        const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
-                        const stored = getGroupOrderPotentialCell(
-                          draftScheduleRaw,
-                          selectedWeekMonday,
-                          currentRestaurantId,
-                          plat.id,
-                          dayIso
-                        );
-                        const val = stored !== '' ? stored : '0';
-                        return (
-                          <View
-                            key={`${plat.id}-${dayStr}`}
-                            style={[styles.groupOrderCell, { width: CELL_MIN }]}
-                          >
-                            {scheduleEditable ? (
-                              <TextInput
-                                key={`${plat.id}-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${val}`}
-                                style={styles.groupOrderInput}
-                                defaultValue={val}
-                                placeholder="0"
-                                placeholderTextColor="#94a3b8"
-                                keyboardType="decimal-pad"
-                                selectTextOnFocus
-                                onEndEditing={(e) => {
-                                  const text = e.nativeEvent.text;
-                                  if (text === stored || (text === '0' && stored === '')) return;
-                                  const next = patchGroupOrderPotentialInDraft(
-                                    draftScheduleRawRef.current ?? draftScheduleRaw,
-                                    selectedWeekMonday,
-                                    currentRestaurantId,
-                                    plat.id,
-                                    dayIso,
-                                    text
-                                  );
-                                  pushUndoSnapshot();
-                                  suppressHydrateUndoClearRef.current = true;
-                                  setRolledDraftRaw(next);
-                                  applyLocalScheduleAssignments(assignmentStoreRef.current, next);
-                                  queuePersist(assignmentStoreRef.current, next);
-                                }}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                              />
-                            ) : (
-                              <Text style={styles.groupOrderReadonly}>{val}</Text>
-                            )}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  ))}
                 </View>
                 {scheduleEditable ? (
                   <View style={[styles.sideTotals, { width: SIDE_TOTALS_W }]}>
@@ -1948,23 +1931,262 @@ export default function ManagerScheduleScreen() {
                         </View>
                       );
                     })}
-                    <View
-                      style={[
-                        styles.personTotalsSection,
-                        {
-                          height: SECTION_ROW_H + SECTION_GAP_BELOW,
-                          backgroundColor: '#f8fafc',
-                        },
-                      ]}
-                    />
-                    {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
-                      <View
-                        key={`pt-go-${plat.id}`}
-                        style={[styles.personTotalsCell, styles.groupOrderDataRow, { opacity: 0 }]}
-                      />
-                    ))}
                   </View>
                 ) : null}
+          </View>
+
+      <View
+        style={[
+          styles.belowPanels,
+          {
+            width:
+              PERSON_COL + daysWidth + (scheduleEditable ? SIDE_TOTALS_W : 0),
+          },
+        ]}
+      >
+        <View style={styles.collapsible}>
+          <Pressable
+            style={styles.collapsibleToggle}
+            onPress={() => setLaborPanelOpen((o) => !o)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: laborPanelOpen }}
+          >
+            <Text style={styles.collapsibleChevron}>{laborPanelOpen ? '▾' : '▸'}</Text>
+            <Text style={styles.collapsibleTitle}>{t('schedule.laborSalesPanel')}</Text>
+          </Pressable>
+          {laborPanelOpen ? (
+            <View style={styles.panelBody}>
+                {(
+                  [
+                    {
+                      key: 'hours',
+                      label: t('schedule.totalHours'),
+                      render: (dayStr: string) =>
+                        formatScheduleDayHoursLabel(dayLaborTotals[dayStr]?.hours || 0),
+                    },
+                    {
+                      key: 'headcount',
+                      label: t('schedule.headcount'),
+                      render: (dayStr: string) => String(dayLaborTotals[dayStr]?.headcount || 0),
+                    },
+                    {
+                      key: 'netSales',
+                      label: t('schedule.netSales'),
+                      render: undefined as undefined | ((dayStr: string) => string),
+                    },
+                    {
+                      key: 'laborCost',
+                      label: t('schedule.laborCost'),
+                      render: (dayStr: string) =>
+                        formatScheduleLaborPay(dayLaborTotals[dayStr]?.pay || 0),
+                    },
+                    {
+                      key: 'laborPct',
+                      label: t('schedule.laborPct'),
+                      render: (dayStr: string) => {
+                        const meta = weekMeta.find((m) => m.label === dayStr);
+                        const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                        const sales = getScheduleNetSalesCell(
+                          draftScheduleRaw,
+                          selectedWeekMonday,
+                          currentRestaurantId,
+                          dayIso
+                        );
+                        return formatScheduleLaborPct(dayLaborTotals[dayStr]?.pay || 0, sales);
+                      },
+                    },
+                  ] as Array<{
+                    key: string;
+                    label: string;
+                    render?: (dayStr: string) => string;
+                    weekTotal?: string;
+                  }>
+                )
+                  .map((row) => {
+                    const weekTotal =
+                      row.key === 'hours'
+                        ? formatScheduleDayHoursLabel(weekLaborPanelTotals.hours)
+                        : row.key === 'headcount'
+                          ? String(weekLaborPanelTotals.headcount)
+                          : row.key === 'netSales'
+                            ? weekLaborPanelTotals.hasSales
+                              ? String(Math.round(weekLaborPanelTotals.sales * 100) / 100)
+                              : '—'
+                            : row.key === 'laborCost'
+                              ? formatScheduleLaborPay(weekLaborPanelTotals.pay)
+                              : row.key === 'laborPct'
+                                ? weekLaborPanelTotals.laborPct
+                                : '—';
+                    return { ...row, weekTotal };
+                  })
+                  .map((row) => (
+                  <View key={row.key} style={styles.panelDataRow}>
+                    <View style={[styles.panelLabelCol, { width: PERSON_COL }]}>
+                      <Text style={styles.panelLabelText}>{row.label}</Text>
+                    </View>
+                    {visibleDays.map((dayStr) => {
+                      const meta = weekMeta.find((m) => m.label === dayStr);
+                      const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                      if (row.key === 'netSales') {
+                        const stored = getScheduleNetSalesCell(
+                          draftScheduleRaw,
+                          selectedWeekMonday,
+                          currentRestaurantId,
+                          dayIso
+                        );
+                        return (
+                          <View key={`${row.key}-${dayStr}`} style={[styles.panelDayCol, { width: CELL_MIN }]}>
+                            {scheduleEditable ? (
+                              <TextInput
+                                key={`ns-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${stored}`}
+                                style={styles.panelInput}
+                                defaultValue={stored}
+                                placeholder="0"
+                                placeholderTextColor="#94a3b8"
+                                keyboardType="decimal-pad"
+                                selectTextOnFocus
+                                onEndEditing={(e) => {
+                                  const text = e.nativeEvent.text;
+                                  if (text === stored) return;
+                                  const next = patchScheduleNetSalesInDraft(
+                                    draftScheduleRawRef.current ?? draftScheduleRaw,
+                                    selectedWeekMonday,
+                                    currentRestaurantId,
+                                    dayIso,
+                                    text
+                                  );
+                                  pushUndoSnapshot();
+                                  suppressHydrateUndoClearRef.current = true;
+                                  setRolledDraftRaw(next);
+                                  applyLocalScheduleAssignments(assignmentStoreRef.current, next);
+                                  queuePersist(assignmentStoreRef.current, next);
+                                }}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+                            ) : (
+                              <Text style={styles.panelReadonly}>{stored !== '' ? stored : '—'}</Text>
+                            )}
+                          </View>
+                        );
+                      }
+                      return (
+                        <View key={`${row.key}-${dayStr}`} style={[styles.panelDayCol, { width: CELL_MIN }]}>
+                          <Text style={styles.panelReadonly}>
+                            {row.render ? row.render(dayStr) : '—'}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                    {scheduleEditable ? (
+                      <View style={[styles.panelWeekTotalsCol, { width: SIDE_TOTALS_W }]}>
+                        <Text style={styles.panelReadonly}>{row.weekTotal}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ))}
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.collapsible}>
+          <Pressable
+            style={styles.collapsibleToggle}
+            onPress={() => setGroupPanelOpen((o) => !o)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: groupPanelOpen }}
+          >
+            <Text style={styles.collapsibleChevron}>{groupPanelOpen ? '▾' : '▸'}</Text>
+            <Text style={styles.collapsibleTitle}>{t('schedule.groupOrderPotential')}</Text>
+          </Pressable>
+          {groupPanelOpen ? (
+            <View style={styles.panelBody}>
+                {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => {
+                  let weekSum = 0;
+                  let weekHasNum = false;
+                  for (const dayStr of visibleDays) {
+                    const meta = weekMeta.find((m) => m.label === dayStr);
+                    const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                    const stored = getGroupOrderPotentialCell(
+                      draftScheduleRaw,
+                      selectedWeekMonday,
+                      currentRestaurantId,
+                      plat.id,
+                      dayIso
+                    );
+                    const display = stored !== '' ? stored : '0';
+                    const num = Number(String(display).replace(/[$,\s]/g, ''));
+                    if (Number.isFinite(num)) {
+                      weekSum += num;
+                      weekHasNum = true;
+                    }
+                  }
+                  const weekLabel = weekHasNum ? String(Math.round(weekSum * 100) / 100) : '0';
+                  return (
+                  <View key={`go-${plat.id}`} style={styles.panelDataRow}>
+                    <View style={[styles.panelLabelCol, { width: PERSON_COL }]}>
+                      <Text style={styles.panelLabelText}>{plat.label}</Text>
+                    </View>
+                    {visibleDays.map((dayStr) => {
+                      const meta = weekMeta.find((m) => m.label === dayStr);
+                      const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
+                      const stored = getGroupOrderPotentialCell(
+                        draftScheduleRaw,
+                        selectedWeekMonday,
+                        currentRestaurantId,
+                        plat.id,
+                        dayIso
+                      );
+                      const val = stored !== '' ? stored : '0';
+                      return (
+                        <View key={`${plat.id}-${dayStr}`} style={[styles.panelDayCol, { width: CELL_MIN }]}>
+                          {scheduleEditable ? (
+                            <TextInput
+                              key={`${plat.id}-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${val}`}
+                              style={styles.panelInput}
+                              defaultValue={val}
+                              placeholder="0"
+                              placeholderTextColor="#94a3b8"
+                              keyboardType="decimal-pad"
+                              selectTextOnFocus
+                              onEndEditing={(e) => {
+                                const text = e.nativeEvent.text;
+                                if (text === stored || (text === '0' && stored === '')) return;
+                                const next = patchGroupOrderPotentialInDraft(
+                                  draftScheduleRawRef.current ?? draftScheduleRaw,
+                                  selectedWeekMonday,
+                                  currentRestaurantId,
+                                  plat.id,
+                                  dayIso,
+                                  text
+                                );
+                                pushUndoSnapshot();
+                                suppressHydrateUndoClearRef.current = true;
+                                setRolledDraftRaw(next);
+                                applyLocalScheduleAssignments(assignmentStoreRef.current, next);
+                                queuePersist(assignmentStoreRef.current, next);
+                              }}
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                            />
+                          ) : (
+                            <Text style={styles.panelReadonly}>{val}</Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                    {scheduleEditable ? (
+                      <View style={[styles.panelWeekTotalsCol, { width: SIDE_TOTALS_W }]}>
+                        <Text style={styles.panelReadonly}>{weekLabel}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  );
+                })}
+            </View>
+          ) : null}
+        </View>
+      </View>
           </View>
             </ScrollView>
         </View>
@@ -2870,7 +3092,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderLeftWidth: 1,
     borderColor: '#e2e8f0',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#fff',
   },
   personTotalsTh: {
     height: HEADER_ROW_H,
@@ -2886,6 +3108,121 @@ const styles = StyleSheet.create({
   },
   groupOrderSectionTitle: {
     color: '#334155',
+  },
+  belowPanels: {
+    marginTop: 12,
+    marginBottom: 8,
+    gap: 8,
+  },
+  collapsible: {
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+  },
+  /* Web-only sticky; keep toggle content-sized so it scrolls away horizontally. */
+  collapsibleToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#fff',
+  },
+  collapsibleChevron: {
+    fontSize: 14,
+    color: '#64748b',
+    width: 14,
+  },
+  collapsibleTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: '#334155',
+    lineHeight: 13,
+  },
+  panelBody: {
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  panelScroll: {
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    maxHeight: 280,
+  },
+  panelHeaderRow: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  panelDataRow: {
+    flexDirection: 'row',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+  },
+  panelLabelCol: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: '#e2e8f0',
+    /* No sticky/freeze — labels scroll with days (web sticks these). */
+  },
+  panelDayCol: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: '#e2e8f0',
+  },
+  panelHeaderText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+  panelLabelText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0f172a',
+    letterSpacing: 0.2,
+  },
+  panelReadonly: {
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+    color: '#0f172a',
+    textAlign: 'center',
+  },
+  panelInput: {
+    width: '100%',
+    minHeight: 36,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    color: '#0f172a',
+    backgroundColor: '#fff',
+  },
+  panelWeekTotalsCol: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: '#e2e8f0',
   },
   groupOrderPersonLabel: {
     fontSize: 12,

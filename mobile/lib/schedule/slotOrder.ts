@@ -8,6 +8,10 @@ import {
   mergeGroupOrderPotentialByWeekMaps,
   readGroupOrderPotentialByWeek,
 } from './groupOrderPotential';
+import {
+  mergeScheduleNetSalesByWeekMaps,
+  readScheduleNetSalesByWeek,
+} from './scheduleNetSales';
 
 const ROLE_KEYS: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -256,6 +260,13 @@ export function mergePendingDraftWithHydrated(pending: unknown, hydrated: unknow
   );
   if (Object.keys(mergedGroup).length) p.groupOrderPotentialByWeek = mergedGroup;
   else delete p.groupOrderPotentialByWeek;
+  const mergedSales = mergeScheduleNetSalesByWeekMaps(
+    readScheduleNetSalesByWeek(p),
+    readScheduleNetSalesByWeek(h),
+    'local'
+  );
+  if (Object.keys(mergedSales).length) p.scheduleNetSalesByWeek = mergedSales;
+  else delete p.scheduleNetSalesByWeek;
   const hWin = h.windowMondayIso != null ? String(h.windowMondayIso).slice(0, 10) : '';
   if (hWin) p.windowMondayIso = hWin;
   if (!p.v) p.v = 2;
@@ -298,6 +309,13 @@ export function mergeDraftScheduleSlotOrderFromRemote(
   );
   if (Object.keys(mergedGroup).length) merged.groupOrderPotentialByWeek = mergedGroup;
   else delete merged.groupOrderPotentialByWeek;
+  const mergedSales = mergeScheduleNetSalesByWeekMaps(
+    readScheduleNetSalesByWeek(localDraft),
+    readScheduleNetSalesByWeek(remoteDraft),
+    'remote'
+  );
+  if (Object.keys(mergedSales).length) merged.scheduleNetSalesByWeek = mergedSales;
+  else delete merged.scheduleNetSalesByWeek;
   return merged;
 }
 

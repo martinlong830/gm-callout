@@ -2985,25 +2985,35 @@ function parseBreakMinutesFromScheduleAnnotation(text: string | undefined): numb
   return 0;
 }
 
-export type ScheduleDayTotals = { hours: number; paidHours: number; pay: number };
+export type ScheduleDayTotals = { hours: number; paidHours: number; pay: number; headcount: number };
 
 export type ScheduleRowWeekTotals = { hours: number; paidHours: number };
 
 /**
- * Footer totals per visible day: gross hours, after-break hours, and base pay
- * (paidHours × hourlyRate — no tips / SoH). Parity with web `computeScheduleDayTotals`.
+ * Footer totals per visible day: gross hours, after-break hours, base pay
+ * (paidHours × hourlyRate — no tips / SoH), and unique people actually working
+ * (excludes Unassigned and day-off draft cells). Parity with web `computeScheduleDayTotals`.
  */
 export function computeScheduleDayTotals(
   schedule: ScheduleRow[],
   visibleDays: string[],
-  employees: EmployeeLite[]
+  employees: EmployeeLite[],
+  draftRows?: DraftGrid | null
 ): Record<string, ScheduleDayTotals> {
   const byDay: Record<string, ScheduleDayTotals> = {};
+  const namesByDay: Record<string, Set<string>> = {};
   for (const dayStr of visibleDays || []) {
-    byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0 };
+    byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0, headcount: 0 };
+    namesByDay[dayStr] = new Set();
   }
+  const draft = draftRows || null;
   for (const shift of schedule || []) {
     if (!shift || !byDay[shift.day]) continue;
+    /* Day-off = null draft cell — do not count even if a stale schedule row remains. */
+    if (draft) {
+      const wk = weekdayKeyFromScheduleDay(shift.day);
+      if (!draftTimeSlotFor(draft, shift.role, wk, shift.trIdx)) continue;
+    }
     const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
       (n) => n && n !== 'Unassigned'
     );
@@ -3018,6 +3028,7 @@ export function computeScheduleDayTotals(
     for (const wname of workers) {
       byDay[shift.day].hours += shiftHours;
       byDay[shift.day].paidHours += paidHours;
+      namesByDay[shift.day].add(String(wname).trim());
       const emp = employeeByDisplayNameLite(employees, wname);
       const rate =
         emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
@@ -3025,6 +3036,9 @@ export function computeScheduleDayTotals(
           : 0;
       if (rate > 0) byDay[shift.day].pay += paidHours * rate;
     }
+  }
+  for (const dayStr of Object.keys(byDay)) {
+    byDay[dayStr].headcount = namesByDay[dayStr]?.size || 0;
   }
   return byDay;
 }

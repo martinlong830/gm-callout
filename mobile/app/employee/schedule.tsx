@@ -45,10 +45,6 @@ import {
   type CalendarCell,
 } from '../../lib/schedule/engine';
 import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
-import {
-  GROUP_ORDER_POTENTIAL_PLATFORMS,
-  getGroupOrderPotentialCell,
-} from '../../lib/schedule/groupOrderPotential';
 import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
 import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
 import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
@@ -430,22 +426,6 @@ export default function EmployeeScheduleScreen() {
                     dayOffLabel={t('schedule.dayOffLabel')}
                   />
                 ))}
-                <View
-                  style={[
-                    styles.personSection,
-                    styles.sectionMatrixRow,
-                    { backgroundColor: '#f8fafc', borderLeftColor: '#64748b' },
-                  ]}
-                >
-                  <Text style={[styles.sectionText, styles.groupOrderSectionTitle]} numberOfLines={2}>
-                    {t('schedule.groupOrderPotential')}
-                  </Text>
-                </View>
-                {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
-                  <View key={`go-p-${plat.id}`} style={[styles.personCell, styles.dataMatrixRow]}>
-                    <Text style={styles.groupOrderPersonLabel}>{plat.label}</Text>
-                  </View>
-                ))}
               </View>
 
                 <View style={{ width: daysWidth }}>
@@ -479,46 +459,6 @@ export default function EmployeeScheduleScreen() {
                   </View>
                   {calendarBody.map((row, ri) => (
                     <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} dayOffLabel={t('schedule.dayOffLabel')} />
-                  ))}
-                  <View
-                    style={[
-                      styles.sectionDayFill,
-                      styles.sectionMatrixRow,
-                      { width: daysWidth, backgroundColor: '#f8fafc' },
-                    ]}
-                  />
-                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat, gi) => (
-                    <View
-                      key={`go-d-${plat.id}`}
-                      style={[
-                        styles.dataDays,
-                        styles.dataMatrixRow,
-                        styles.groupOrderDataRow,
-                        gi % 2 === 1 && styles.groupOrderDataRowAlt,
-                        { width: daysWidth },
-                      ]}
-                    >
-                      {visibleDays.map((dayStr) => {
-                        const meta = weekMeta.find((m) => m.label === dayStr);
-                        const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
-                        const stored = getGroupOrderPotentialCell(
-                          draftScheduleRaw,
-                          selectedWeekMonday,
-                          currentRestaurantId,
-                          plat.id,
-                          dayIso
-                        );
-                        const val = stored !== '' ? stored : '0';
-                        return (
-                          <View
-                            key={`${plat.id}-${dayStr}`}
-                            style={[styles.groupOrderCell, { width: CELL_MIN }]}
-                          >
-                            <Text style={styles.groupOrderReadonly}>{val}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
                   ))}
                 </View>
                 <View style={[styles.sideTotals, { width: SIDE_TOTALS_W }]}>
@@ -554,21 +494,6 @@ export default function EmployeeScheduleScreen() {
                       </View>
                     );
                   })}
-                  <View
-                    style={[
-                      styles.personTotalsSection,
-                      {
-                        height: SECTION_ROW_H + SECTION_GAP_BELOW,
-                        backgroundColor: '#f8fafc',
-                      },
-                    ]}
-                  />
-                  {GROUP_ORDER_POTENTIAL_PLATFORMS.map((plat) => (
-                    <View
-                      key={`pt-go-${plat.id}`}
-                      style={[styles.personTotalsCell, styles.groupOrderDataRow, { opacity: 0 }]}
-                    />
-                  ))}
                 </View>
             </View>
             </ScrollView>
@@ -865,7 +790,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderLeftWidth: 1,
     borderColor: '#e2e8f0',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#fff',
   },
   personTotalsTh: {
     height: HEADER_ROW_H,

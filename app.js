@@ -197,6 +197,9 @@
   /** Per-week custom schedule row order (mondayIso → restaurant → role → trIdx[]). Synced via draft_schedule. */
   const SLOT_ORDER_BY_WEEK_KEY = 'gm-callout-slot-order-by-week-v1';
   const GROUP_ORDER_POTENTIAL_KEY = 'gm-callout-group-order-potential-v1';
+  const SCHEDULE_NET_SALES_KEY = 'gm-callout-schedule-net-sales-v1';
+  const SCHEDULE_LABOR_PANEL_OPEN_KEY = 'gm-schedule-labor-panel-open';
+  const SCHEDULE_GROUP_PANEL_OPEN_KEY = 'gm-schedule-group-panel-open';
   /** Legacy global slot order — read fallback only; no longer written as SoT. */
   const SLOT_ORDER_BY_RESTAURANT_KEY = 'gm-callout-slot-order-by-restaurant-v1';
 
@@ -310,6 +313,8 @@
    * Synced inside draft_schedule (same cloud path as slot order).
    */
   var groupOrderPotentialByWeekStore = {};
+  /** Manual net sales: mondayIso → restaurantId → dayIso → number string. */
+  var scheduleNetSalesByWeekStore = {};
 
   var GROUP_ORDER_POTENTIAL_PLATFORMS = [
     { id: 'sharebits', label: 'Sharebits' },
@@ -525,6 +530,178 @@
     if (localJson === remoteJson) return;
     groupOrderPotentialByWeekStore = remoteGroup;
     persistGroupOrderPotentialStore({ skipDirty: true });
+  }
+
+  function sanitizeScheduleNetSalesByWeek(raw) {
+    if (!raw || typeof raw !== 'object') return {};
+    var out = {};
+    Object.keys(raw).forEach(function (weekKey) {
+      var mon = normalizeSlotOrderMondayIso(weekKey);
+      if (!mon) return;
+      var byRest = raw[weekKey];
+      if (!byRest || typeof byRest !== 'object') return;
+      var restOut = {};
+      Object.keys(byRest).forEach(function (rid) {
+        var days = byRest[rid];
+        if (!days || typeof days !== 'object') return;
+        var dayOut = {};
+        Object.keys(days).forEach(function (dayKey) {
+          var iso = String(dayKey || '').slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+          var val = days[dayKey];
+          if (val == null) return;
+          var s = String(val).trim().replace(/[$,\s]/g, '');
+          if (!s) return;
+          var n = Number(s);
+          if (!Number.isFinite(n) || n < 0) return;
+          dayOut[iso] = String(Math.round(n * 100) / 100);
+        });
+        if (Object.keys(dayOut).length) restOut[rid] = dayOut;
+      });
+      if (Object.keys(restOut).length) out[mon] = restOut;
+    });
+    return out;
+  }
+
+  function mergeScheduleNetSalesByWeekMaps(localMap, remoteMap, preferWhenBoth) {
+    preferWhenBoth = preferWhenBoth === 'local' ? 'local' : 'remote';
+    var local = sanitizeScheduleNetSalesByWeek(localMap);
+    var remote = sanitizeScheduleNetSalesByWeek(remoteMap);
+    var out = {};
+    var weekKeys = {};
+    Object.keys(local).forEach(function (k) {
+      weekKeys[k] = true;
+    });
+    Object.keys(remote).forEach(function (k) {
+      weekKeys[k] = true;
+    });
+    Object.keys(weekKeys).forEach(function (mon) {
+      var lRest = local[mon] || {};
+      var rRest = remote[mon] || {};
+      var restKeys = {};
+      Object.keys(lRest).forEach(function (k) {
+        restKeys[k] = true;
+      });
+      Object.keys(rRest).forEach(function (k) {
+        restKeys[k] = true;
+      });
+      var restOut = {};
+      Object.keys(restKeys).forEach(function (rid) {
+        var lDays = lRest[rid] || {};
+        var rDays = rRest[rid] || {};
+        var dayKeys = {};
+        Object.keys(lDays).forEach(function (k) {
+          dayKeys[k] = true;
+        });
+        Object.keys(rDays).forEach(function (k) {
+          dayKeys[k] = true;
+        });
+        var dayOut = {};
+        Object.keys(dayKeys).forEach(function (iso) {
+          var lv = lDays[iso] != null ? String(lDays[iso]).trim() : '';
+          var rv = rDays[iso] != null ? String(rDays[iso]).trim() : '';
+          if (lv && rv) dayOut[iso] = preferWhenBoth === 'local' ? lv : rv;
+          else if (lv) dayOut[iso] = lv;
+          else if (rv) dayOut[iso] = rv;
+        });
+        if (Object.keys(dayOut).length) restOut[rid] = dayOut;
+      });
+      if (Object.keys(restOut).length) out[mon] = restOut;
+    });
+    return out;
+  }
+
+  function getScheduleNetSalesCell(restaurantId, mondayIso, dayIso) {
+    var mon = normalizeSlotOrderMondayIso(mondayIso);
+    var rid = restaurantId || currentRestaurantId;
+    var iso = String(dayIso || '').slice(0, 10);
+    if (!mon || !rid || !iso) return '';
+    var week = scheduleNetSalesByWeekStore[mon];
+    var rest = week && week[rid];
+    var val = rest && rest[iso];
+    return val != null ? String(val) : '';
+  }
+
+  function setScheduleNetSalesCell(restaurantId, mondayIso, dayIso, value) {
+    var mon = normalizeSlotOrderMondayIso(mondayIso);
+    var rid = restaurantId || currentRestaurantId;
+    var iso = String(dayIso || '').slice(0, 10);
+    if (!mon || !rid || !iso) return;
+    if (!scheduleNetSalesByWeekStore[mon]) scheduleNetSalesByWeekStore[mon] = {};
+    if (!scheduleNetSalesByWeekStore[mon][rid]) scheduleNetSalesByWeekStore[mon][rid] = {};
+    var cleaned = value != null ? String(value).trim().replace(/[$,\s]/g, '') : '';
+    var n = cleaned === '' ? NaN : Number(cleaned);
+    if (!Number.isFinite(n) || n < 0) {
+      delete scheduleNetSalesByWeekStore[mon][rid][iso];
+      if (!Object.keys(scheduleNetSalesByWeekStore[mon][rid]).length) {
+        delete scheduleNetSalesByWeekStore[mon][rid];
+      }
+      if (!Object.keys(scheduleNetSalesByWeekStore[mon]).length) {
+        delete scheduleNetSalesByWeekStore[mon];
+      }
+    } else {
+      scheduleNetSalesByWeekStore[mon][rid][iso] = String(Math.round(n * 100) / 100);
+    }
+    scheduleNetSalesByWeekStore = sanitizeScheduleNetSalesByWeek(scheduleNetSalesByWeekStore);
+    persistScheduleNetSalesStore();
+  }
+
+  function loadScheduleNetSalesStore() {
+    try {
+      var raw = localStorage.getItem(SCHEDULE_NET_SALES_KEY);
+      if (!raw) return {};
+      return sanitizeScheduleNetSalesByWeek(JSON.parse(raw));
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function persistScheduleNetSalesStore(opts) {
+    try {
+      localStorage.setItem(
+        SCHEDULE_NET_SALES_KEY,
+        JSON.stringify(sanitizeScheduleNetSalesByWeek(scheduleNetSalesByWeekStore || {}))
+      );
+      if (!(opts && opts.skipDirty) && GM_SUPABASE_DATA && window.gmSupabase) {
+        draftScheduleDirty = true;
+        scheduleTeamStateDebouncedSync();
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function absorbUnchangedRemoteNetSalesFromDraft(remoteDr) {
+    var remotePayload = draftSchedulePayloadFromRemote(remoteDr);
+    if (!remotePayload) return;
+    var confirmedSales = {};
+    try {
+      var confirmedRaw = getDraftScheduleConfirmedJson();
+      if (confirmedRaw) {
+        var confirmedObj = JSON.parse(confirmedRaw);
+        confirmedSales = sanitizeScheduleNetSalesByWeek(
+          confirmedObj && confirmedObj.scheduleNetSalesByWeek
+        );
+      }
+    } catch (_c) {
+      confirmedSales = {};
+    }
+    var remoteSales = sanitizeScheduleNetSalesByWeek(remotePayload.scheduleNetSalesByWeek);
+    var localSales = sanitizeScheduleNetSalesByWeek(scheduleNetSalesByWeekStore);
+    var localJson = JSON.stringify(localSales);
+    var confirmedJson = JSON.stringify(confirmedSales);
+    if (localJson !== confirmedJson) {
+      var mergedDirty = mergeScheduleNetSalesByWeekMaps(localSales, remoteSales, 'local');
+      if (JSON.stringify(mergedDirty) !== localJson) {
+        scheduleNetSalesByWeekStore = mergedDirty;
+        persistScheduleNetSalesStore({ skipDirty: true });
+      }
+      return;
+    }
+    var remoteJson = JSON.stringify(remoteSales);
+    if (localJson === remoteJson) return;
+    scheduleNetSalesByWeekStore = remoteSales;
+    persistScheduleNetSalesStore({ skipDirty: true });
   }
 
   function normalizeSlotOrderMondayIso(iso) {
@@ -1575,6 +1752,69 @@
     btn.title = published
       ? gmT('schedule.notifyAgainHint', { range: range })
       : gmT('schedule.publishHint', { range: range });
+  }
+
+  function updateScheduleDownloadWeekButton(opts) {
+    var btn = document.getElementById('scheduleDownloadWeekBtn');
+    if (!btn) return;
+    var busy = !!(opts && opts.busy);
+    var wi = scheduleCalendarWeekIndex;
+    var range = formatScheduleWeekRangeLabel(wi);
+    btn.disabled = busy;
+    btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+    btn.textContent = busy
+      ? gmT('schedule.downloadingWeek') || 'Downloading…'
+      : gmT('schedule.downloadWeek') || 'Download';
+    btn.title =
+      gmT('schedule.downloadWeekTitle') ||
+      "Download this week’s schedule as Excel (same format as the full report Schedule tab)";
+    if (!busy) {
+      btn.title += ' (' + range + ')';
+    }
+  }
+
+  async function downloadSelectedWeekScheduleExcel() {
+    var wi = scheduleCalendarWeekIndex;
+    var weekIso = mondayIsoForScheduleWeekIndex(wi);
+    var range = formatScheduleWeekRangeLabel(wi);
+    if (!weekIso) {
+      showScheduleNotice(gmT('schedule.downloadWeekFailed') || 'Could not download this week’s schedule.', false);
+      return { ok: false };
+    }
+    updateScheduleDownloadWeekButton({ busy: true });
+    try {
+      await ensureTimecardsManagerLoaded();
+      var api = window.gmCalloutTimecards;
+      if (!api || typeof api.downloadScheduleWeekOnly !== 'function') {
+        showScheduleNotice(gmT('schedule.downloadWeekFailed') || 'Could not download this week’s schedule.', false);
+        return { ok: false };
+      }
+      var result = await api.downloadScheduleWeekOnly({
+        weekMondayIso: weekIso,
+        restaurantId: currentRestaurantId,
+      });
+      if (!result || !result.ok) {
+        showScheduleNotice(
+          (result && result.message) ||
+            gmT('schedule.downloadWeekFailed') ||
+            'Could not download this week’s schedule.',
+          false
+        );
+        return { ok: false };
+      }
+      showScheduleNotice(
+        gmT('schedule.downloadWeekDone', { range: range }) ||
+          'Schedule downloaded for ' + range + '.',
+        true
+      );
+      return { ok: true };
+    } catch (err) {
+      console.warn('downloadSelectedWeekScheduleExcel', err);
+      showScheduleNotice(gmT('schedule.downloadWeekFailed') || 'Could not download this week’s schedule.', false);
+      return { ok: false };
+    } finally {
+      updateScheduleDownloadWeekButton();
+    }
   }
 
   async function publishSelectedWeekScheduleAndNotify(opts) {
@@ -3023,7 +3263,7 @@
       script.src =
         'timecards-manager.js?v=' +
         encodeURIComponent(
-          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-4'
+          (typeof window !== 'undefined' && window.__GM_ASSET_V) || 'perf-13'
         );
       script.async = true;
       script.onload = function () {
@@ -4112,11 +4352,15 @@
 
   try {
     var bootConfirmedGroup = {};
+    var bootConfirmedSales = {};
     var bootGroupRaw = getDraftScheduleConfirmedJson();
     if (bootGroupRaw) {
       var bootGroupObj = JSON.parse(bootGroupRaw);
       bootConfirmedGroup = sanitizeGroupOrderPotentialByWeek(
         bootGroupObj && bootGroupObj.groupOrderPotentialByWeek
+      );
+      bootConfirmedSales = sanitizeScheduleNetSalesByWeek(
+        bootGroupObj && bootGroupObj.scheduleNetSalesByWeek
       );
     }
     var bootLocalGroup = loadGroupOrderPotentialStore();
@@ -4127,6 +4371,16 @@
     );
     persistGroupOrderPotentialStore({ skipDirty: true });
     if (JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(bootConfirmedGroup)) {
+      draftScheduleDirty = true;
+    }
+    var bootLocalSales = loadScheduleNetSalesStore();
+    scheduleNetSalesByWeekStore = mergeScheduleNetSalesByWeekMaps(
+      bootConfirmedSales,
+      bootLocalSales,
+      'local'
+    );
+    persistScheduleNetSalesStore({ skipDirty: true });
+    if (JSON.stringify(scheduleNetSalesByWeekStore) !== JSON.stringify(bootConfirmedSales)) {
       draftScheduleDirty = true;
     }
   } catch (_bootGroup) {
@@ -4142,6 +4396,7 @@
       /* Legacy global kept for older clients / read fallback; no longer the write SoT. */
       slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(legacySlotOrderByRestaurantStore),
       groupOrderPotentialByWeek: sanitizeGroupOrderPotentialByWeek(groupOrderPotentialByWeekStore),
+      scheduleNetSalesByWeek: sanitizeScheduleNetSalesByWeek(scheduleNetSalesByWeekStore),
     };
   }
 
@@ -4155,6 +4410,7 @@
         slotOrderByWeek: sanitizeSlotOrderByWeek(dr.slotOrderByWeek),
         slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(dr.slotOrderByRestaurant),
         groupOrderPotentialByWeek: sanitizeGroupOrderPotentialByWeek(dr.groupOrderPotentialByWeek),
+        scheduleNetSalesByWeek: sanitizeScheduleNetSalesByWeek(dr.scheduleNetSalesByWeek),
       };
     }
     if (draftScheduleJsonHasLayers(dr)) {
@@ -4170,6 +4426,7 @@
         slotOrderByWeek: sanitizeSlotOrderByWeek(dr.slotOrderByWeek),
         slotOrderByRestaurant: sanitizeSlotOrderByRestaurant(dr.slotOrderByRestaurant),
         groupOrderPotentialByWeek: sanitizeGroupOrderPotentialByWeek(dr.groupOrderPotentialByWeek),
+        scheduleNetSalesByWeek: sanitizeScheduleNetSalesByWeek(dr.scheduleNetSalesByWeek),
       };
     }
     return null;
@@ -4811,6 +5068,15 @@
               'remote'
             );
             remoteDraftPayload.groupOrderPotentialByWeek = mergedRemoteGroupOrder;
+            var remoteSalesOnly = sanitizeScheduleNetSalesByWeek(
+              remoteDraftPayload.scheduleNetSalesByWeek
+            );
+            var mergedRemoteNetSales = mergeScheduleNetSalesByWeekMaps(
+              scheduleNetSalesByWeekStore,
+              remoteSalesOnly,
+              'remote'
+            );
+            remoteDraftPayload.scheduleNetSalesByWeek = mergedRemoteNetSales;
             if (
               !remoteDraftPayload.slotOrderByRestaurant ||
               !Object.keys(remoteDraftPayload.slotOrderByRestaurant).length
@@ -4830,11 +5096,13 @@
               );
               slotOrderByWeekStore = mergedRemoteSlotOrder;
               groupOrderPotentialByWeekStore = mergedRemoteGroupOrder;
+              scheduleNetSalesByWeekStore = mergedRemoteNetSales;
               legacySlotOrderByRestaurantStore = sanitizeSlotOrderByRestaurant(
                 remoteDraftPayload.slotOrderByRestaurant
               );
               persistSlotOrderStores({ skipDirty: true });
               persistGroupOrderPotentialStore({ skipDirty: true });
+              persistScheduleNetSalesStore({ skipDirty: true });
               setDraftScheduleConfirmedJson(remoteDraftJson);
               touchedScheduleBundle = true;
               if (remoteDraftPayload.windowMondayIso) {
@@ -4856,6 +5124,7 @@
       } else if (isMgr && localDraftScheduleHasContent()) {
         absorbUnchangedRemoteSlotOrderFromDraft(dr);
         absorbUnchangedRemoteGroupOrderFromDraft(dr);
+        absorbUnchangedRemoteNetSalesFromDraft(dr);
         scheduleTeamStateDebouncedSync();
         flushTeamStateSyncNow();
       }
@@ -5100,14 +5369,21 @@
    * hours = gross shift spans (no break subtract).
    * paidHours = after unpaid break minutes.
    * Pay = paidHours × hourlyRate — no tips / SoH (kept for callers; UI may omit $).
+   * headcount = unique people actually working that day (excludes Unassigned and day-off cells).
    */
   function computeScheduleDayTotals(visibleDays) {
     var byDay = {};
+    var namesByDay = {};
     (visibleDays || []).forEach(function (dayStr) {
-      byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0 };
+      byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0, headcount: 0 };
+      namesByDay[dayStr] = {};
     });
+    var wi = scheduleCalendarWeekIndex;
     SCHEDULE.forEach(function (shift) {
       if (!shift || !byDay[shift.day]) return;
+      /* Day-off = null draft cell — never count even if a stale SCHEDULE row remains. */
+      var wk = weekdayKeyFromScheduleDay(shift.day);
+      if (!draftTimeSlotFor(shift.role, wk, shift.trIdx, wi, currentRestaurantId)) return;
       var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
         return n && n !== 'Unassigned';
       });
@@ -5122,6 +5398,7 @@
       workers.forEach(function (wname) {
         byDay[shift.day].hours += shiftHours;
         byDay[shift.day].paidHours += paidHours;
+        namesByDay[shift.day][String(wname).trim()] = true;
         var emp = employeeByDisplayName(wname);
         var rate =
           emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
@@ -5129,6 +5406,9 @@
             : 0;
         if (rate > 0) byDay[shift.day].pay += paidHours * rate;
       });
+    });
+    Object.keys(byDay).forEach(function (dayStr) {
+      byDay[dayStr].headcount = Object.keys(namesByDay[dayStr] || {}).length;
     });
     return byDay;
   }
@@ -7224,6 +7504,9 @@
       groupOrderPotentialByWeek: sanitizeGroupOrderPotentialByWeek(
         JSON.parse(JSON.stringify(groupOrderPotentialByWeekStore || {}))
       ),
+      scheduleNetSalesByWeek: sanitizeScheduleNetSalesByWeek(
+        JSON.parse(JSON.stringify(scheduleNetSalesByWeekStore || {}))
+      ),
     };
   }
 
@@ -7279,11 +7562,15 @@
       groupOrderPotentialByWeekStore = sanitizeGroupOrderPotentialByWeek(
         snap.groupOrderPotentialByWeek != null ? snap.groupOrderPotentialByWeek : {}
       );
+      scheduleNetSalesByWeekStore = sanitizeScheduleNetSalesByWeek(
+        snap.scheduleNetSalesByWeek != null ? snap.scheduleNetSalesByWeek : {}
+      );
       if (snap.slotOrderByRestaurant != null) {
         legacySlotOrderByRestaurantStore = sanitizeSlotOrderByRestaurant(snap.slotOrderByRestaurant);
       }
       persistSlotOrderStores();
       persistGroupOrderPotentialStore();
+      persistScheduleNetSalesStore();
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
       syncAllAssignmentTimesFromDraft();
       pruneScheduleAssignmentsInvalidSlots();
@@ -7966,6 +8253,7 @@
     if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
     if (today) today.hidden = isCurrent;
     updateSchedulePublishNotifyButton();
+    updateScheduleDownloadWeekButton();
   }
 
   function initScheduleWeekNav() {
@@ -12243,21 +12531,247 @@
       }
     });
 
-    var weekMonGroup = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
-    bodyRows.push(
-      '<tr class="calendar-group-row calendar-section-group-order">' +
-        '<td class="time-col calendar-row-person-col calendar-group-label">' +
-        escapeHtml(gmT('schedule.groupOrderPotential') || 'GROUP ORDER / POTENTIAL') +
-        '</td>' +
-        '<td colspan="' +
-        dayColCount +
-        '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td>' +
-        (showPersonTotals
-          ? '<td class="calendar-person-totals-col calendar-person-totals-col--section" aria-hidden="true"></td>'
-          : '') +
-        '</tr>'
+    var preservedBelow = null;
+    if (targetEl === calendarGrid) {
+      preservedBelow = document.getElementById('scheduleBelowCalendar');
+      if (preservedBelow && preservedBelow.parentNode) {
+        preservedBelow.parentNode.removeChild(preservedBelow);
+      }
+    }
+
+    targetEl.innerHTML =
+      '<table class="calendar-matrix calendar-matrix--redpoke' +
+      (readOnly ? ' calendar-matrix--readonly' : '') +
+      (showPersonTotals ? ' calendar-matrix--person-totals' : '') +
+      '">' +
+      headerHtml +
+      '<tbody>' +
+      bodyRows.join('') +
+      '</tbody>' +
+      '</table>';
+
+    if (preservedBelow && targetEl === calendarGrid) {
+      targetEl.appendChild(preservedBelow);
+    }
+
+    if (!readOnly) {
+      ensureCalendarInteraction();
+      if (!calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
+    }
+    syncCalendarTheadStickyOffset(targetEl);
+  }
+
+  function schedulePanelOpenFromStorage(key) {
+    try {
+      return sessionStorage.getItem(key) === '1';
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function setSchedulePanelOpenStorage(key, open) {
+    try {
+      if (open) sessionStorage.setItem(key, '1');
+      else sessionStorage.removeItem(key);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  function ensureScheduleBelowCalendarHost() {
+    if (!calendarGrid) return null;
+    var host = document.getElementById('scheduleBelowCalendar');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'scheduleBelowCalendar';
+      host.className = 'schedule-below-calendar';
+    }
+    /* Inside #calendarGrid so panels scroll with the matrix (not pinned under it). */
+    if (host.parentNode !== calendarGrid) {
+      calendarGrid.appendChild(host);
+    }
+    return host;
+  }
+
+  function formatScheduleLaborPct(pay, salesStr) {
+    var sales = Number(String(salesStr || '').replace(/[$,\s]/g, ''));
+    if (!Number.isFinite(sales) || sales <= 0) return '—';
+    var pct = ((Number(pay) || 0) / sales) * 100;
+    if (!Number.isFinite(pct)) return '—';
+    return pct.toFixed(1) + '%';
+  }
+
+  function scheduleManagerBelowPanelsAllowed() {
+    return (
+      document.documentElement.classList.contains('manager-app') ||
+      document.documentElement.classList.contains('admin-app')
     );
-    GROUP_ORDER_POTENTIAL_PLATFORMS.forEach(function (plat) {
+  }
+
+  function renderScheduleManagerBelowPanels(visibleDays, showPersonTotals, readOnly) {
+    var host = ensureScheduleBelowCalendarHost();
+    if (!host) return;
+    if (!scheduleManagerBelowPanelsAllowed()) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    host.hidden = false;
+    var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+    var dayTotals = computeScheduleDayTotals(visibleDays);
+    var canEdit = !readOnly && managerCanEditCurrentRestaurant();
+    var laborOpen = schedulePanelOpenFromStorage(SCHEDULE_LABOR_PANEL_OPEN_KEY);
+    var groupOpen = schedulePanelOpenFromStorage(SCHEDULE_GROUP_PANEL_OPEN_KEY);
+
+    function weekTotalsTd(labelHtml) {
+      if (!showPersonTotals) return '';
+      return (
+        '<td class="schedule-panel-week-totals">' +
+        '<div class="schedule-panel-readonly">' +
+        escapeHtml(labelHtml) +
+        '</div></td>'
+      );
+    }
+
+    function parsePanelNumber(raw) {
+      var n = Number(String(raw || '').replace(/[$,\s]/g, ''));
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    var weekHours = 0;
+    var weekPay = 0;
+    var weekSales = 0;
+    var weekHasSales = false;
+    var weekNames = {};
+    var wiLabor = scheduleCalendarWeekIndex;
+    (visibleDays || []).forEach(function (d) {
+      weekHours += (dayTotals[d] && dayTotals[d].hours) || 0;
+      weekPay += (dayTotals[d] && dayTotals[d].pay) || 0;
+      var meta = WEEK_META.find(function (m) {
+        return m.label === d;
+      });
+      var dayIso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
+      var salesRaw = getScheduleNetSalesCell(currentRestaurantId, weekMon, dayIso);
+      if (salesRaw !== '') {
+        weekHasSales = true;
+        var salesN = parsePanelNumber(salesRaw);
+        if (Number.isFinite(salesN)) weekSales += salesN;
+      }
+    });
+    SCHEDULE.forEach(function (shift) {
+      if (!shift || (visibleDays || []).indexOf(shift.day) < 0) return;
+      var wk = weekdayKeyFromScheduleDay(shift.day);
+      if (!draftTimeSlotFor(shift.role, wk, shift.trIdx, wiLabor, currentRestaurantId)) return;
+      var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
+        return n && n !== 'Unassigned';
+      });
+      if (!workers.length) return;
+      if (scheduleShiftGrossHours(shift) <= 0) return;
+      workers.forEach(function (wname) {
+        weekNames[String(wname).trim()] = true;
+      });
+    });
+    var weekHeadcount = Object.keys(weekNames).length;
+    var weekLaborPct = formatScheduleLaborPct(weekPay, weekHasSales ? String(weekSales) : '');
+
+    function laborReadonlyCells(getter) {
+      return visibleDays
+        .map(function (dayStr) {
+          return (
+            '<td class="schedule-panel-cell">' +
+            '<div class="schedule-panel-readonly">' +
+            escapeHtml(getter(dayStr)) +
+            '</div></td>'
+          );
+        })
+        .join('');
+    }
+
+    function netSalesCells() {
+      return visibleDays
+        .map(function (dayStr) {
+          var meta = WEEK_META.find(function (m) {
+            return m.label === dayStr;
+          });
+          var dayIso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
+          var val = getScheduleNetSalesCell(currentRestaurantId, weekMon, dayIso);
+          if (!canEdit) {
+            return (
+              '<td class="schedule-panel-cell">' +
+              '<div class="schedule-panel-readonly">' +
+              escapeHtml(val !== '' ? val : '—') +
+              '</div></td>'
+            );
+          }
+          return (
+            '<td class="schedule-panel-cell">' +
+            '<input type="text" inputmode="decimal" class="schedule-panel-input schedule-net-sales-input" maxlength="16" autocomplete="off" ' +
+            'placeholder="0" data-net-sales-day-iso="' +
+            escapeHtml(dayIso) +
+            '" aria-label="' +
+            escapeHtml((gmT('schedule.netSales') || 'Net sales') + ' · ' + dayStr) +
+            '" value="' +
+            escapeHtml(val) +
+            '" />' +
+            '</td>'
+          );
+        })
+        .join('');
+    }
+
+    var laborBody =
+      '<tr class="schedule-panel-data-row">' +
+      '<th scope="row" class="schedule-panel-row-label">' +
+      escapeHtml(gmT('schedule.totalHours') || 'Total hours') +
+      '</th>' +
+      laborReadonlyCells(function (d) {
+        return formatScheduleDayHoursLabel((dayTotals[d] && dayTotals[d].hours) || 0);
+      }) +
+      weekTotalsTd(formatScheduleDayHoursLabel(weekHours)) +
+      '</tr>' +
+      '<tr class="schedule-panel-data-row">' +
+      '<th scope="row" class="schedule-panel-row-label">' +
+      escapeHtml(gmT('schedule.headcount') || 'Headcount') +
+      '</th>' +
+      laborReadonlyCells(function (d) {
+        return String((dayTotals[d] && dayTotals[d].headcount) || 0);
+      }) +
+      weekTotalsTd(String(weekHeadcount)) +
+      '</tr>' +
+      '<tr class="schedule-panel-data-row">' +
+      '<th scope="row" class="schedule-panel-row-label">' +
+      escapeHtml(gmT('schedule.netSales') || 'Net sales') +
+      '</th>' +
+      netSalesCells() +
+      weekTotalsTd(weekHasSales ? String(Math.round(weekSales * 100) / 100) : '—') +
+      '</tr>' +
+      '<tr class="schedule-panel-data-row">' +
+      '<th scope="row" class="schedule-panel-row-label">' +
+      escapeHtml(gmT('schedule.laborCost') || 'Labor cost') +
+      '</th>' +
+      laborReadonlyCells(function (d) {
+        return formatScheduleDayPayLabel((dayTotals[d] && dayTotals[d].pay) || 0);
+      }) +
+      weekTotalsTd(formatScheduleDayPayLabel(weekPay)) +
+      '</tr>' +
+      '<tr class="schedule-panel-data-row">' +
+      '<th scope="row" class="schedule-panel-row-label">' +
+      escapeHtml(gmT('schedule.laborPct') || 'Labor %') +
+      '</th>' +
+      laborReadonlyCells(function (d) {
+        var meta = WEEK_META.find(function (m) {
+          return m.label === d;
+        });
+        var dayIso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
+        var sales = getScheduleNetSalesCell(currentRestaurantId, weekMon, dayIso);
+        return formatScheduleLaborPct((dayTotals[d] && dayTotals[d].pay) || 0, sales);
+      }) +
+      weekTotalsTd(weekLaborPct) +
+      '</tr>';
+
+    var groupRows = GROUP_ORDER_POTENTIAL_PLATFORMS.map(function (plat) {
+      var weekSum = 0;
+      var weekHasNum = false;
       var cells = visibleDays
         .map(function (dayStr) {
           var meta = WEEK_META.find(function (m) {
@@ -12266,21 +12780,26 @@
           var dayIso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
           var val = displayGroupOrderPotentialCell(
             currentRestaurantId,
-            weekMonGroup,
+            weekMon,
             plat.id,
             dayIso
           );
-          if (readOnly) {
+          var num = parsePanelNumber(val);
+          if (Number.isFinite(num)) {
+            weekSum += num;
+            weekHasNum = true;
+          }
+          if (!canEdit) {
             return (
-              '<td class="calendar-group-order-cell">' +
-              '<div class="calendar-group-order-readonly">' +
+              '<td class="schedule-panel-cell">' +
+              '<div class="schedule-panel-readonly">' +
               escapeHtml(val) +
               '</div></td>'
             );
           }
           return (
-            '<td class="calendar-group-order-cell">' +
-            '<input type="text" inputmode="decimal" class="calendar-group-order-input" maxlength="80" autocomplete="off" ' +
+            '<td class="schedule-panel-cell">' +
+            '<input type="text" inputmode="decimal" class="schedule-panel-input calendar-group-order-input" maxlength="80" autocomplete="off" ' +
             'placeholder="0" data-group-order-platform="' +
             escapeHtml(plat.id) +
             '" data-group-order-day-iso="' +
@@ -12294,38 +12813,187 @@
           );
         })
         .join('');
-      bodyRows.push(
-        '<tr class="calendar-data-row calendar-group-order-row" data-group-order-platform="' +
-          escapeHtml(plat.id) +
-          '">' +
-          '<td class="time-col calendar-row-person-col calendar-group-order-label">' +
-          '<span class="calendar-group-order-label-text">' +
-          escapeHtml(plat.label) +
-          '</span></td>' +
-          cells +
-          (showPersonTotals
-            ? '<td class="calendar-person-totals-col calendar-group-order-totals-spacer" aria-hidden="true"></td>'
-            : '') +
-          '</tr>'
+      var weekLabel = weekHasNum ? String(Math.round(weekSum * 100) / 100) : '0';
+      return (
+        '<tr class="schedule-panel-data-row" data-group-order-platform="' +
+        escapeHtml(plat.id) +
+        '">' +
+        '<th scope="row" class="schedule-panel-row-label">' +
+        escapeHtml(plat.label) +
+        '</th>' +
+        cells +
+        weekTotalsTd(weekLabel) +
+        '</tr>'
       );
+    }).join('');
+
+    host.innerHTML =
+      '<div class="schedule-collapsible' +
+      (laborOpen ? ' is-open' : '') +
+      '" data-schedule-panel="labor">' +
+      '<button type="button" class="schedule-collapsible-toggle" aria-expanded="' +
+      (laborOpen ? 'true' : 'false') +
+      '" data-schedule-panel-toggle="labor">' +
+      '<span class="schedule-collapsible-chevron" aria-hidden="true"></span>' +
+      '<span class="schedule-collapsible-title">' +
+      escapeHtml(gmT('schedule.laborSalesPanel') || 'Labor & sales') +
+      '</span></button>' +
+      '<div class="schedule-collapsible-body"' +
+      (laborOpen ? '' : ' hidden') +
+      '>' +
+      '<div class="schedule-panel-scroll">' +
+      '<table class="schedule-panel-matrix' +
+      (showPersonTotals ? ' schedule-panel-matrix--person-totals' : '') +
+      '"><tbody>' +
+      laborBody +
+      '</tbody></table></div></div></div>' +
+      '<div class="schedule-collapsible' +
+      (groupOpen ? ' is-open' : '') +
+      '" data-schedule-panel="group">' +
+      '<button type="button" class="schedule-collapsible-toggle" aria-expanded="' +
+      (groupOpen ? 'true' : 'false') +
+      '" data-schedule-panel-toggle="group">' +
+      '<span class="schedule-collapsible-chevron" aria-hidden="true"></span>' +
+      '<span class="schedule-collapsible-title">' +
+      escapeHtml(gmT('schedule.groupOrderPotential') || 'GROUP ORDER / POTENTIAL') +
+      '</span></button>' +
+      '<div class="schedule-collapsible-body"' +
+      (groupOpen ? '' : ' hidden') +
+      '>' +
+      '<div class="schedule-panel-scroll">' +
+      '<table class="schedule-panel-matrix' +
+      (showPersonTotals ? ' schedule-panel-matrix--person-totals' : '') +
+      '"><tbody>' +
+      groupRows +
+      '</tbody></table></div></div></div>';
+
+    ensureScheduleBelowCalendarInteraction();
+    syncSchedulePanelColumnAlignment();
+  }
+
+  /**
+   * Copy Person / day / totals column widths from the main calendar thead
+   * so labor & group-order day cells line up under schedule tiles.
+   */
+  function syncSchedulePanelColumnAlignment() {
+    if (!calendarGrid) return;
+    var matrix = calendarGrid.querySelector('table.calendar-matrix');
+    var host = document.getElementById('scheduleBelowCalendar');
+    if (!matrix || !host || host.hidden) return;
+    var srcThs = matrix.querySelectorAll('thead th');
+    if (!srcThs.length) return;
+    var widths = [];
+    var total = 0;
+    for (var i = 0; i < srcThs.length; i += 1) {
+      var w = Math.round(srcThs[i].getBoundingClientRect().width);
+      if (!(w > 0)) return;
+      widths.push(w);
+      total += w;
+    }
+    /* Host defaults to the scrollport width; pin it to the matrix so Sat/Sun aren’t clipped. */
+    var matrixW = Math.max(total, Math.round(matrix.offsetWidth || 0), Math.round(matrix.scrollWidth || 0));
+    host.style.width = matrixW + 'px';
+    host.style.minWidth = matrixW + 'px';
+    host.querySelectorAll('.schedule-collapsible').forEach(function (el) {
+      el.style.width = matrixW + 'px';
+      el.style.minWidth = matrixW + 'px';
+    });
+    host.querySelectorAll('table.schedule-panel-matrix').forEach(function (table) {
+      var colgroup = table.querySelector('colgroup');
+      if (!colgroup) {
+        colgroup = document.createElement('colgroup');
+        table.insertBefore(colgroup, table.firstChild);
+      }
+      colgroup.innerHTML = widths
+        .map(function (w) {
+          return '<col style="width:' + w + 'px;min-width:' + w + 'px;max-width:' + w + 'px" />';
+        })
+        .join('');
+      table.style.width = total + 'px';
+      table.style.minWidth = total + 'px';
+      table.style.tableLayout = 'fixed';
+      table.querySelectorAll('tr').forEach(function (tr) {
+        var cells = tr.children;
+        for (var c = 0; c < cells.length && c < widths.length; c += 1) {
+          cells[c].style.width = widths[c] + 'px';
+          cells[c].style.minWidth = widths[c] + 'px';
+          cells[c].style.maxWidth = widths[c] + 'px';
+          cells[c].style.boxSizing = 'border-box';
+        }
+      });
+    });
+  }
+
+  var scheduleBelowListenersBound = false;
+  function ensureScheduleBelowCalendarInteraction() {
+    var host = document.getElementById('scheduleBelowCalendar');
+    if (!host || scheduleBelowListenersBound) return;
+    scheduleBelowListenersBound = true;
+
+    host.addEventListener('click', function (e) {
+      var toggle = e.target && e.target.closest ? e.target.closest('[data-schedule-panel-toggle]') : null;
+      if (!toggle) return;
+      e.preventDefault();
+      var which = toggle.getAttribute('data-schedule-panel-toggle');
+      var panel = toggle.closest('.schedule-collapsible');
+      if (!panel) return;
+      var body = panel.querySelector('.schedule-collapsible-body');
+      var open = !panel.classList.contains('is-open');
+      panel.classList.toggle('is-open', open);
+      if (body) body.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      setSchedulePanelOpenStorage(
+        which === 'labor' ? SCHEDULE_LABOR_PANEL_OPEN_KEY : SCHEDULE_GROUP_PANEL_OPEN_KEY,
+        open
+      );
+      if (open) {
+        requestAnimationFrame(function () {
+          syncSchedulePanelColumnAlignment();
+        });
+      }
     });
 
-    targetEl.innerHTML =
-      '<table class="calendar-matrix calendar-matrix--redpoke' +
-      (readOnly ? ' calendar-matrix--readonly' : '') +
-      (showPersonTotals ? ' calendar-matrix--person-totals' : '') +
-      '">' +
-      headerHtml +
-      '<tbody>' +
-      bodyRows.join('') +
-      '</tbody>' +
-      '</table>';
+    host.addEventListener('focusin', function (e) {
+      var inp =
+        e.target && e.target.closest
+          ? e.target.closest('.calendar-group-order-input, .schedule-net-sales-input')
+          : null;
+      if (!inp || typeof inp.select !== 'function') return;
+      try {
+        inp.select();
+      } catch (_sel) {
+        /* ignore */
+      }
+    });
 
-    if (!readOnly) {
-      ensureCalendarInteraction();
-      if (!calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
-    }
-    syncCalendarTheadStickyOffset(targetEl);
+    host.addEventListener('change', function (e) {
+      if (!managerCanEditCurrentRestaurant()) return;
+      var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+      var groupInp = e.target && e.target.closest ? e.target.closest('.calendar-group-order-input') : null;
+      if (groupInp) {
+        var platformId = groupInp.getAttribute('data-group-order-platform');
+        var dayIso = groupInp.getAttribute('data-group-order-day-iso');
+        if (!platformId || !dayIso || !weekMon) return;
+        setGroupOrderPotentialCell(
+          currentRestaurantId,
+          weekMon,
+          platformId,
+          dayIso,
+          groupInp.value
+        );
+        if (!String(groupInp.value || '').trim()) groupInp.value = '0';
+        return;
+      }
+      var salesInp = e.target && e.target.closest ? e.target.closest('.schedule-net-sales-input') : null;
+      if (salesInp) {
+        var salesDayIso = salesInp.getAttribute('data-net-sales-day-iso');
+        if (!salesDayIso || !weekMon) return;
+        setScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso, salesInp.value);
+        salesInp.value = getScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso);
+        /* Refresh labor % without collapsing panels. */
+        renderCalendar();
+      }
+    });
   }
 
   /** Keep FOH/BOH section sticky bars flush under Person/day headers (no white overhang / no hairline gap). */
@@ -12363,6 +13031,7 @@
         timer = null;
         syncCalendarTheadStickyOffset(calendarGrid);
         syncCalendarTheadStickyOffset(document.getElementById('empCalendarGrid'));
+        syncSchedulePanelColumnAlignment();
       }, 80);
     });
   }
@@ -12373,13 +13042,19 @@
     var readOnly =
       document.documentElement.classList.contains('manager-app') &&
       !managerCanEditCurrentRestaurant();
+    var showDayTotals = !readOnly;
     renderCalendarInto(calendarGrid, {
       readOnly: readOnly,
       force: !!opts.force,
       /* Hide person hour totals when viewing another store (view-only). */
-      showDayTotals: !readOnly,
+      showDayTotals: showDayTotals,
+    });
+    renderScheduleManagerBelowPanels(getVisibleWeekDays(), showDayTotals, readOnly);
+    requestAnimationFrame(function () {
+      syncSchedulePanelColumnAlignment();
     });
     updateSchedulePublishNotifyButton();
+    updateScheduleDownloadWeekButton();
     updateManagerScheduleViewOnlyHint();
   }
 
@@ -12794,33 +13469,10 @@
     ensureScheduleBorrowEmployeeModalWired();
 
     calendarGrid.addEventListener('focusin', function (e) {
-      var groupInp = e.target && e.target.closest ? e.target.closest('.calendar-group-order-input') : null;
-      if (!groupInp || typeof groupInp.select !== 'function') return;
-      try {
-        groupInp.select();
-      } catch (_sel) {
-        /* ignore */
-      }
+      /* Group-order / net-sales inputs live under #scheduleBelowCalendar. */
     });
 
     calendarGrid.addEventListener('change', function (e) {
-      var groupInp = e.target && e.target.closest ? e.target.closest('.calendar-group-order-input') : null;
-      if (groupInp) {
-        if (!managerCanEditCurrentRestaurant()) return;
-        var platformId = groupInp.getAttribute('data-group-order-platform');
-        var dayIso = groupInp.getAttribute('data-group-order-day-iso');
-        var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
-        if (!platformId || !dayIso || !weekMon) return;
-        setGroupOrderPotentialCell(
-          currentRestaurantId,
-          weekMon,
-          platformId,
-          dayIso,
-          groupInp.value
-        );
-        if (!String(groupInp.value || '').trim()) groupInp.value = '0';
-        return;
-      }
       var sel = e.target.closest('.calendar-row-person-select');
       if (!sel) return;
       var role = sel.getAttribute('data-role');
@@ -16324,6 +16976,9 @@
       groupOrderPotentialByWeekStore = sanitizeGroupOrderPotentialByWeek(
         draftPayload.groupOrderPotentialByWeek
       );
+      scheduleNetSalesByWeekStore = sanitizeScheduleNetSalesByWeek(
+        draftPayload.scheduleNetSalesByWeek
+      );
       try {
         localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
         setDraftScheduleConfirmedJson(JSON.stringify(draftPayload));
@@ -16332,6 +16987,7 @@
       }
       persistSlotOrderStores({ skipDirty: true });
       persistGroupOrderPotentialStore({ skipDirty: true });
+      persistScheduleNetSalesStore({ skipDirty: true });
       draftScheduleDirty = true;
     }
     await flushTeamStateSyncNow();
@@ -16387,6 +17043,13 @@
       }
     });
     updateSchedulePublishNotifyButton();
+  }
+  var scheduleDownloadWeekBtn = document.getElementById('scheduleDownloadWeekBtn');
+  if (scheduleDownloadWeekBtn) {
+    scheduleDownloadWeekBtn.addEventListener('click', function () {
+      void downloadSelectedWeekScheduleExcel();
+    });
+    updateScheduleDownloadWeekButton();
   }
   var schedulePublishNotifyModal = document.getElementById('schedulePublishNotifyModal');
   if (schedulePublishNotifyModal) {
@@ -18464,6 +19127,7 @@
       if (screen === 1) {
         if (typeof renderCalendar === 'function') renderCalendar({ force: true });
         if (typeof updateSchedulePublishNotifyButton === 'function') updateSchedulePublishNotifyButton();
+        if (typeof updateScheduleDownloadWeekButton === 'function') updateScheduleDownloadWeekButton();
         if (typeof updateScheduleWeekNav === 'function') updateScheduleWeekNav();
         if (scheduleView === 'table' && scheduleBody && typeof renderSchedule === 'function') {
           renderSchedule();
