@@ -129,6 +129,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [staffType, setStaffType] = useState('');
+  const [employmentStatus, setEmploymentStatus] = useState<'part-time' | 'full-time'>('full-time');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [usualRestaurant, setUsualRestaurant] = useState('rp-9');
@@ -158,6 +159,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setFirstName('');
     setLastName('');
     setStaffType('');
+    setEmploymentStatus('full-time');
     setPhone('');
     setEmail('');
     setUsualRestaurant('rp-9');
@@ -205,6 +207,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       setFirstName(emp.firstName || '');
       setLastName(emp.lastName || '');
       setStaffType(emp.staffType || 'Kitchen');
+      setEmploymentStatus(emp.employmentStatus === 'full-time' ? 'full-time' : 'part-time');
       setPhone(emp.phone || '');
       setEmail(emp.email || '');
       setUsualRestaurant(
@@ -433,6 +436,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       lastName: last,
       displayName: `${first} ${last}`.trim(),
       staffType,
+      employmentStatus,
       phone: phoneTrim,
       email: emailTrim || undefined,
       usualRestaurant,
@@ -630,6 +634,15 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                 {!staffType ? (
                   <Text style={styles.photoHint}>Required — select a role before saving.</Text>
                 ) : null}
+                <FieldLabel>{t('team.employmentStatus')}</FieldLabel>
+                <ChipRow
+                  options={[
+                    { value: 'part-time', label: t('team.partTime') },
+                    { value: 'full-time', label: t('team.fullTime') },
+                  ]}
+                  value={employmentStatus}
+                  onChange={(v) => setEmploymentStatus(v === 'full-time' ? 'full-time' : 'part-time')}
+                />
                 <FieldLabel>Phone</FieldLabel>
                 <TextInput
                   style={styles.input}
@@ -899,7 +912,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15,23,42,0.45)',
   },
   backdropTap: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   sheet: {
     backgroundColor: '#fff',

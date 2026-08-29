@@ -17,12 +17,14 @@ import {
 import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { ScheduleTemplatesSheet } from '../../components/ScheduleTemplatesSheet';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   employeeDisplayName,
   employeePrimaryLocationId,
+  normalizeEmploymentStatus,
   normalizeEmployeeStaffType,
   managerCanEditRestaurant,
   managerManagedRestaurantId,
@@ -47,6 +49,7 @@ import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
 import { supabase } from '../../lib/supabase';
 import type {
   AssignmentStore,
+  DraftGrid,
   EmployeeLite,
   Restaurant,
   RoleKey,
@@ -65,7 +68,7 @@ import {
   buildWeeksFromMonday,
   compactAssignmentsAfterDraftSlotDeletes,
   computeScheduleDayTotals,
-  computeScheduleRowWeekTotals,
+  computeScheduleWeekRowLaborTotals,
   defaultRestaurants,
   defaultTimesForDraftCell,
   deleteDraftSlotRow,
@@ -88,6 +91,7 @@ import {
   parseBreakAnnotation,
   displayBreakAnnotation,
   patchDraftScheduleForWeek,
+  updateDraftCellForShift,
   purgeDefaultUnassignedRestaurantAssignments,
   redPokeShiftHoursDecimal,
   formatScheduleDayHoursLabel,
@@ -108,6 +112,12 @@ import {
   type CalendarBodyRow,
   type CalendarCell,
 } from '../../lib/schedule/engine';
+import {
+  masterTemplateRowsForRole,
+  normalizeScheduleTemplates,
+  type NormalTemplate,
+  type ScheduleTemplate,
+} from '../../lib/schedule/templates';
 import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
 import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
 import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
@@ -153,7 +163,7 @@ const CELL_MIN = 158;
 /** Sticky Person column — parity with web `.calendar-row-person-col`. */
 const PERSON_COL = 132;
 /** Right-rail per-person week hours (scrolls with days). */
-const SIDE_TOTALS_W = 68;
+const SIDE_TOTALS_W = 104;
 /**
  * Fixed height for role section bars (person sticky + day fill).
  * Same parent row owns both sides — height cannot diverge.
@@ -218,6 +228,7 @@ function toLite(e: EmployeeRow): EmployeeLite {
     lastName: e.lastName,
     displayName: e.displayName,
     staffType: (normalizeEmployeeStaffType(e.staffType) || e.staffType) as RoleKey,
+    employmentStatus: normalizeEmploymentStatus(e.employmentStatus),
     usualRestaurant: e.usualRestaurant || 'both',
     hourlyRate: e.hourlyRate,
     primaryLocationId: employeePrimaryLocationId(e),
@@ -299,6 +310,8 @@ export default function ManagerScheduleScreen() {
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [, setTemplateSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Keeps a pending draft payload across debounced assignment saves (e.g. Monday window roll). */
   const pendingDraftRef = useRef<unknown>(undefined);
@@ -356,6 +369,49 @@ export default function ManagerScheduleScreen() {
   );
   const selectedWeekIsPast = weekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
   const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
+  const scheduleTemplates = useMemo(
+    () => normalizeScheduleTemplates(teamState?.schedule_templates),
+    [teamState?.schedule_templates]
+  );
+
+  const saveScheduleTemplates = useCallback(
+    async (templates: ScheduleTemplate[]) => {
+      if (!supabase || !isManagerLikeRole(role)) return false;
+      setTemplateSaving(true);
+      try {
+        const teamStateId = await readStoredTeamStateId();
+        const up = await supabase
+          .from('team_state')
+          .upsert(
+            { id: teamStateId, schedule_templates: JSON.parse(JSON.stringify(templates)) },
+            { onConflict: 'id' }
+          );
+        if (up.error) {
+          Alert.alert(t('schedule.couldNotSave'), up.error.message || 'Could not save templates.');
+          return false;
+        }
+        await broadcastTeamStateChanged(
+          supabase,
+          teamStateId,
+          ['schedule_templates'],
+          session?.user?.id
+        );
+        await refetch({ silent: true });
+        return true;
+      } finally {
+        setTemplateSaving(false);
+      }
+    },
+    [refetch, role, session?.user?.id, t]
+  );
+
+  const deleteScheduleTemplate = useCallback(
+    async (templateId: string) => {
+      const next = scheduleTemplates.filter((template) => template.id !== templateId);
+      return saveScheduleTemplates(next);
+    },
+    [saveScheduleTemplates, scheduleTemplates]
+  );
 
   const publishSelectedWeek = useCallback(() => {
     if (!selectedWeekMonday || !isManagerLikeRole(role) || selectedWeekIsPast) return;
@@ -672,6 +728,103 @@ export default function ManagerScheduleScreen() {
       armSaveTimer(PERSIST_DEBOUNCE_MS);
     },
     [armSaveTimer]
+  );
+
+  const applyNormalTemplateFromSheet = useCallback(
+    (template: NormalTemplate) => {
+      if (!scheduleEditable) return;
+      const nextStore = JSON.parse(JSON.stringify(assignmentStoreRef.current)) as AssignmentStore;
+      if (!nextStore[currentRestaurantId]) nextStore[currentRestaurantId] = {};
+      const pattern =
+        template.weekPattern && typeof template.weekPattern === 'object'
+          ? (template.weekPattern as Record<string, unknown>)
+          : {};
+      Object.keys(pattern).forEach((key) => {
+        const parts = key.split('-');
+        if (parts.length !== 3) return;
+        const dayIndex = Number(parts[0]);
+        const roleIndex = Number(parts[1]);
+        const trIdx = Number(parts[2]);
+        if (!Number.isInteger(dayIndex) || !Number.isInteger(roleIndex) || !Number.isInteger(trIdx)) return;
+        if (dayIndex < 0 || dayIndex > 6 || roleIndex < 0 || roleIndex > 2 || trIdx < 0) return;
+        const shiftId = `shift-${weekIndex * 7 + dayIndex}-${roleIndex}-${trIdx}`;
+        nextStore[currentRestaurantId][shiftId] = JSON.parse(JSON.stringify(pattern[key]));
+      });
+      let nextDraft = draftScheduleRawRef.current ?? draftScheduleRaw;
+      const weekStart = weekIndex * 7;
+      const weekEnd = weekStart + 7;
+      Object.keys(nextStore[currentRestaurantId]).forEach((shiftId) => {
+        const match = shiftId.match(/^shift-(\d+)-\d+-\d+$/);
+        const dayIndex = match ? Number(match[1]) : -1;
+        if (dayIndex >= weekStart && dayIndex < weekEnd) {
+          delete nextStore[currentRestaurantId][shiftId];
+        }
+      });
+      if (template.draftSchedule && typeof template.draftSchedule === 'object') {
+        const templateDraft = template.draftSchedule as Record<string, unknown>;
+        if (templateDraft.Bartender || templateDraft.Kitchen || templateDraft.Server) {
+          nextDraft = patchDraftScheduleForWeek(
+            nextDraft,
+            weekIndex,
+            currentRestaurantId,
+            templateDraft as DraftGrid
+          );
+        }
+      }
+      const masterTemplateId = String(template.masterTemplateId || '');
+      const master = scheduleTemplates.find(
+        (candidate): candidate is Extract<ScheduleTemplate, { kind: 'master' }> =>
+          candidate.kind === 'master' && candidate.id === masterTemplateId
+      );
+      const choices =
+        template.masterShiftChoices && typeof template.masterShiftChoices === 'object'
+          ? (template.masterShiftChoices as Record<string, string>)
+          : {};
+      if (master && Object.keys(choices).length) {
+        let layers = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
+        Object.keys(choices).forEach((key) => {
+          const parts = key.split(':');
+          if (parts.length !== 3) return;
+          const role = parts[0] as RoleKey;
+          const trIdx = Number(parts[1]);
+          const dayIndex = visibleDays.indexOf(parts[2]);
+          if (!Number.isInteger(trIdx) || dayIndex < 0) return;
+          const option = masterTemplateRowsForRole(master, role).find(
+            (row) => row.id === choices[key]
+          );
+          if (!option || !option.clockIn || !option.clockOut) return;
+          layers = updateDraftCellForShift({
+            draftRows: layers,
+            role,
+            trIdx,
+            dayInWeek: dayIndex,
+            start: option.clockIn,
+            end: option.clockOut,
+            isDayOff: false,
+          });
+        });
+        nextDraft = patchDraftScheduleForWeek(nextDraft, weekIndex, currentRestaurantId, layers);
+      }
+      pushUndoSnapshot();
+      suppressHydrateUndoClearRef.current = true;
+      setAssignmentStore(nextStore);
+      setRolledDraftRaw(nextDraft);
+      applyLocalScheduleAssignments(nextStore, nextDraft);
+      queuePersist(nextStore, nextDraft);
+      Alert.alert(t('schedule.templates'), `${template.name} applied.`);
+    },
+    [
+      applyLocalScheduleAssignments,
+      currentRestaurantId,
+      draftScheduleRaw,
+      pushUndoSnapshot,
+      queuePersist,
+      scheduleEditable,
+      scheduleTemplates,
+      t,
+      visibleDays,
+      weekIndex,
+    ]
   );
 
   const undoLastChange = useCallback(() => {
@@ -1597,16 +1750,29 @@ export default function ManagerScheduleScreen() {
   }, [editDayOff, editStart, editEnd]);
 
   const rowWeekTotals = useMemo(() => {
-    const map = new Map<string, { hours: number; paidHours: number }>();
-    for (const row of calendarBody) {
-      if (row.kind !== 'cells') continue;
-      map.set(
-        `${row.role}:${row.trIdx}`,
-        computeScheduleRowWeekTotals(schedule, row.role, row.trIdx, visibleDays)
-      );
+    return computeScheduleWeekRowLaborTotals(schedule, visibleDays, lites, draftRows);
+  }, [draftRows, lites, schedule, visibleDays]);
+
+  const sectionWeekTotals = useMemo(() => {
+    const rolesBySection: Record<string, RoleKey> = {
+      foh: 'Bartender',
+      boh: 'Kitchen',
+      delivery: 'Server',
+    };
+    const result = new Map<string, { paidHours: number; regHours: number; otHours: number; laborCost: number }>();
+    for (const [section, role] of Object.entries(rolesBySection)) {
+      const total = { paidHours: 0, regHours: 0, otHours: 0, laborCost: 0 };
+      for (const [key, row] of rowWeekTotals.entries()) {
+        if (!key.startsWith(`${role}:`)) continue;
+        total.paidHours += row.paidHours;
+        total.regHours += row.regHours;
+        total.otHours += row.otHours;
+        total.laborCost += row.laborCost;
+      }
+      result.set(section, total);
     }
-    return map;
-  }, [calendarBody, schedule, visibleDays]);
+    return result;
+  }, [rowWeekTotals]);
 
   const dayLaborTotals = useMemo(
     () => computeScheduleDayTotals(schedule, visibleDays, lites, draftRows),
@@ -1614,13 +1780,13 @@ export default function ManagerScheduleScreen() {
   );
 
   const weekLaborPanelTotals = useMemo(() => {
-    let hours = 0;
+    let afterBreakHours = 0;
     let pay = 0;
     let sales = 0;
     let hasSales = false;
     const names = new Set<string>();
     for (const dayStr of visibleDays) {
-      hours += dayLaborTotals[dayStr]?.hours || 0;
+      afterBreakHours += dayLaborTotals[dayStr]?.paidHours || 0;
       pay += dayLaborTotals[dayStr]?.pay || 0;
       const meta = weekMeta.find((m) => m.label === dayStr);
       const dayIso = meta?.iso ? String(meta.iso).slice(0, 10) : '';
@@ -1645,7 +1811,7 @@ export default function ManagerScheduleScreen() {
       }
     }
     return {
-      hours,
+      afterBreakHours,
       pay,
       sales,
       hasSales,
@@ -1716,6 +1882,16 @@ export default function ManagerScheduleScreen() {
                         : t('schedule.publishNotify')}
               </Text>
             </Pressable>
+            {isManagerLikeRole(role) ? (
+              <Pressable
+                onPress={() => setTemplatesOpen(true)}
+                style={styles.undoBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('schedule.templates')}
+              >
+                <Text style={styles.undoBtnText}>{t('schedule.templates')}</Text>
+              </Pressable>
+            ) : null}
             {isManagerLikeRole(role) && scheduleEditable ? (
               <Pressable
                 onPress={undoLastChange}
@@ -1905,6 +2081,12 @@ export default function ManagerScheduleScreen() {
                     </View>
                     {calendarBody.map((row, ri) => {
                       if (row.kind === 'section') {
+                        const sectionTotal = sectionWeekTotals.get(row.variant) || {
+                          paidHours: 0,
+                          regHours: 0,
+                          otHours: 0,
+                          laborCost: 0,
+                        };
                         return (
                           <View
                             key={`pt-s-${ri}`}
@@ -1915,19 +2097,39 @@ export default function ManagerScheduleScreen() {
                                 backgroundColor: sectionBg(row.variant),
                               },
                             ]}
-                          />
+                          >
+                            <Text style={styles.personTotalsSectionText}>
+                              {t('schedule.netHours')}: {formatScheduleDayHoursLabel(sectionTotal.paidHours)}
+                            </Text>
+                            <Text style={styles.personTotalsSectionText}>
+                              {t('schedule.regularHours')}: {formatScheduleDayHoursLabel(sectionTotal.regHours)}
+                            </Text>
+                            <Text style={styles.personTotalsSectionText}>
+                              {t('schedule.overtimeHours')}: {formatScheduleDayHoursLabel(sectionTotal.otHours)}
+                            </Text>
+                            <Text style={styles.personTotalsSectionText}>
+                              {t('schedule.totalLaborCost')}: {formatScheduleLaborPay(sectionTotal.laborCost)}
+                            </Text>
+                          </View>
                         );
                       }
                       const tot = rowWeekTotals.get(`${row.role}:${row.trIdx}`) || {
                         hours: 0,
                         paidHours: 0,
+                        regHours: 0,
+                        otHours: 0,
+                        laborCost: 0,
                       };
                       return (
                         <View key={`pt-${ri}`} style={styles.personTotalsCell}>
-                          <Text style={styles.sideTotalsGross}>{formatScheduleDayHoursLabel(tot.hours)}</Text>
-                          <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
                           <Text style={styles.sideTotalsNet}>{formatScheduleDayHoursLabel(tot.paidHours)}</Text>
-                          <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.netHours')}</Text>
+                          <Text style={styles.sideTotalsNet}>{formatScheduleDayHoursLabel(tot.regHours)}</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.regularHours')}</Text>
+                          <Text style={styles.sideTotalsOt}>{formatScheduleDayHoursLabel(tot.otHours)}</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.overtimeHours')}</Text>
+                          <Text style={styles.sideTotalsCost}>{formatScheduleLaborPay(tot.laborCost)}</Text>
+                          <Text style={styles.sideTotalsTag}>{t('schedule.totalLaborCost')}</Text>
                         </View>
                       );
                     })}
@@ -1959,10 +2161,10 @@ export default function ManagerScheduleScreen() {
                 {(
                   [
                     {
-                      key: 'hours',
-                      label: t('schedule.totalHours'),
+                      key: 'afterBreakHours',
+                      label: t('schedule.netHours'),
                       render: (dayStr: string) =>
-                        formatScheduleDayHoursLabel(dayLaborTotals[dayStr]?.hours || 0),
+                        formatScheduleDayHoursLabel(dayLaborTotals[dayStr]?.paidHours || 0),
                     },
                     {
                       key: 'headcount',
@@ -2004,8 +2206,8 @@ export default function ManagerScheduleScreen() {
                 )
                   .map((row) => {
                     const weekTotal =
-                      row.key === 'hours'
-                        ? formatScheduleDayHoursLabel(weekLaborPanelTotals.hours)
+                      row.key === 'afterBreakHours'
+                        ? formatScheduleDayHoursLabel(weekLaborPanelTotals.afterBreakHours)
                         : row.key === 'headcount'
                           ? String(weekLaborPanelTotals.headcount)
                           : row.key === 'netSales'
@@ -2191,6 +2393,20 @@ export default function ManagerScheduleScreen() {
             </ScrollView>
         </View>
       </ScrollView>
+
+      <ScheduleTemplatesSheet
+        visible={templatesOpen}
+        onClose={() => setTemplatesOpen(false)}
+        schedule={schedule}
+        visibleDays={visibleDays}
+        employees={employees}
+        templates={scheduleTemplates}
+        canEdit={isManagerLikeRole(role) && scheduleEditable}
+        onSaveTemplates={saveScheduleTemplates}
+        onDeleteTemplate={deleteScheduleTemplate}
+        onApplyTemplate={applyNormalTemplateFromSheet}
+        t={t}
+      />
 
       <Modal visible={historyOpen} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setHistoryOpen(false)}>
@@ -2580,6 +2796,12 @@ const PersonColRow = memo(function PersonColRow({
   const borrowedFromLabel = borrowedFromId
     ? borrowRestaurantShortLabel(borrowedFromId)
     : '';
+  const employmentStatusLabel =
+    selectedLite && selectedLite.employmentStatus === 'full-time'
+      ? t('team.fullTime')
+      : selectedLite
+        ? t('team.partTime')
+        : '';
 
   return (
     <View style={[styles.personCell, styles.dataMatrixRow]}>
@@ -2594,6 +2816,11 @@ const PersonColRow = memo(function PersonColRow({
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
+            {employmentStatusLabel ? (
+              <Text style={styles.employmentStatusBadge} numberOfLines={1}>
+                {employmentStatusLabel}
+              </Text>
+            ) : null}
             {awayPrimaryLabel ? (
               <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
                 {t('schedule.primaryStore', { store: awayPrimaryLabel })}
@@ -2609,6 +2836,11 @@ const PersonColRow = memo(function PersonColRow({
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
+            {employmentStatusLabel ? (
+              <Text style={styles.employmentStatusBadge} numberOfLines={1}>
+                {employmentStatusLabel}
+              </Text>
+            ) : null}
             {awayPrimaryLabel ? (
               <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
                 {t('schedule.primaryStore', { store: awayPrimaryLabel })}
@@ -3020,6 +3252,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   personSelectText: { fontSize: 12, fontWeight: '600', color: '#0f172a' },
+  employmentStatusBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+    color: '#475569',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
   awayPrimaryBadge: {
     marginTop: 2,
     fontSize: 10,
@@ -3106,6 +3352,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e2e8f0',
   },
+  personTotalsSectionText: {
+    fontSize: 8,
+    lineHeight: 11,
+    color: '#334155',
+    fontWeight: '700',
+  },
+  sideTotalsOt: { fontSize: 11, fontWeight: '800', color: '#9f1239' },
+  sideTotalsCost: { fontSize: 11, fontWeight: '800', color: '#1e3a5f' },
   groupOrderSectionTitle: {
     color: '#334155',
   },
@@ -3263,7 +3517,7 @@ const styles = StyleSheet.create({
   personTotalsCell: {
     minHeight: DATA_ROW_MIN_H,
     paddingHorizontal: 4,
-    paddingVertical: 8,
+    paddingVertical: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#eef2f7',
     justifyContent: 'center',
@@ -3276,9 +3530,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  sideTotalsGross: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
-  sideTotalsNet: { fontSize: 11, fontWeight: '700', color: '#0f766e', marginTop: 4 },
-  sideTotalsTag: { fontSize: 10, fontWeight: '500', color: '#64748b' },
+  sideTotalsNet: { fontSize: 11, fontWeight: '700', color: '#0f766e', marginTop: 1 },
+  sideTotalsTag: { fontSize: 8, fontWeight: '500', color: '#64748b' },
   cell: { minHeight: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
   cellInner: {
     flex: 1,

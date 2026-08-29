@@ -5,6 +5,7 @@ export type EmployeeRow = {
   lastName: string;
   displayName: string;
   staffType: string;
+  employmentStatus?: 'part-time' | 'full-time';
   phone: string;
   /** Account / profile email (not the sign-in username). */
   email?: string;
@@ -90,6 +91,10 @@ export function normalizeEmployeeStaffType(raw: unknown): 'Kitchen' | 'Bartender
   return null;
 }
 
+export function normalizeEmploymentStatus(raw: unknown): 'part-time' | 'full-time' {
+  return String(raw ?? '').trim().toLowerCase() === 'part-time' ? 'part-time' : 'full-time';
+}
+
 export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | null {
   if (!row?.id) return null;
   const urRaw = String(row.usual_restaurant ?? '').trim();
@@ -138,6 +143,7 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     lastName,
     displayName,
     staffType,
+    employmentStatus: normalizeEmploymentStatus(row.employment_status),
     phone: String(row.phone ?? ''),
     email: emailFromCol || emailFromMeta || undefined,
     usualRestaurant: ur === 'both' ? 'both' : ur,

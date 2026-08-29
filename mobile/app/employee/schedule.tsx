@@ -490,7 +490,7 @@ export default function EmployeeScheduleScreen() {
                         <Text style={styles.sideTotalsGross}>{formatScheduleDayHoursLabel(tot.hours)}</Text>
                         <Text style={styles.sideTotalsTag}>{t('schedule.dayGross')}</Text>
                         <Text style={styles.sideTotalsNet}>{formatScheduleDayHoursLabel(tot.paidHours)}</Text>
-                        <Text style={styles.sideTotalsTag}>{t('schedule.dayAfterBreak')}</Text>
+                        <Text style={styles.sideTotalsTag}>{t('schedule.netHours')}</Text>
                       </View>
                     );
                   })}

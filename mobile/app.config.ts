@@ -11,7 +11,19 @@ const ANDROID_PACKAGE = 'com.shiflow.app';
 const GOOGLE_SERVICES_FILE = './google-services.json';
 const hasGoogleServices = fs.existsSync(path.join(__dirname, GOOGLE_SERVICES_FILE));
 
-const config: ExpoConfig = {
+type AppConfig = ExpoConfig & {
+  newArchEnabled: boolean;
+  splash: {
+    image: string;
+    resizeMode: 'contain';
+    backgroundColor: string;
+  };
+  android: NonNullable<ExpoConfig['android']> & {
+    edgeToEdgeEnabled: boolean;
+  };
+};
+
+const config: AppConfig = {
   name: 'Shiflow',
   slug: 'gm-callout',
   version: '1.0.2',
@@ -48,7 +60,7 @@ const config: ExpoConfig = {
     [
       'expo-build-properties',
       {
-        ios: { deploymentTarget: '15.1' },
+        ios: { deploymentTarget: '16.4' },
         android: { minSdkVersion: 24 },
       },
     ],

@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveCompanyIdForEmployees } from './companySession';
-import { employeeDisplayName, isCloudEmployeeId, type EmployeeRow } from './employees';
+import {
+  employeeDisplayName,
+  isCloudEmployeeId,
+  normalizeEmploymentStatus,
+  type EmployeeRow,
+} from './employees';
 import { normalizeLeaveBalance, type LeaveBalance } from './employeeLeave';
 
 export function employeeToDbRow(
@@ -33,6 +38,7 @@ export function employeeToDbRow(
     phone: emp.phone != null ? String(emp.phone) : '',
     email: emailVal,
     staff_type: emp.staffType,
+    employment_status: normalizeEmploymentStatus(emp.employmentStatus),
     usual_restaurant: urDb,
     weekly_grid: emp.weeklyGrid || {},
     meta,

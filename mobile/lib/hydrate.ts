@@ -16,10 +16,10 @@ export type HydrationResult = {
 
 /** Roster columns — omit unused wide fields; managers still need weekly_grid for schedule. */
 export const EMPLOYEE_LIST_COLUMNS =
-  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
+  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta';
 
 export const EMPLOYEE_MANAGER_COLUMNS =
-  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+  'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
 
 export const STAFF_REQUEST_COLUMNS = 'id, type, status, created_at, payload';
 
@@ -30,10 +30,10 @@ function employeesSelectForCompany(sb: SupabaseClient, cols: string, companyId: 
 }
 
 const EMPLOYEE_LIST_COLUMNS_NO_EMAIL =
-  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta';
+  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta';
 
 const EMPLOYEE_MANAGER_COLUMNS_NO_EMAIL =
-  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+  'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
 
 async function selectEmployees(
   sb: SupabaseClient,

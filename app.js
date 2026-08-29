@@ -1327,9 +1327,9 @@
   }
 
   var EMPLOYEE_SELECT_COLS_WITH_EMAIL =
-    'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+    'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
   var EMPLOYEE_SELECT_COLS_NO_EMAIL =
-    'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+    'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
 
   async function employeesSelectWithEmailFallback(sb) {
     var preferEmail = gmEmployeesEmailColumnAvailable !== false;
@@ -2604,6 +2604,7 @@
       display_name: (display || '').trim() || 'Staff',
       phone: emp.phone != null ? String(emp.phone) : '',
       staff_type: emp.staffType,
+      employment_status: normalizeEmploymentStatus(emp.employmentStatus),
       usual_restaurant: urDb,
       weekly_grid: emp.weeklyGrid || {},
       meta: meta,
@@ -3192,6 +3193,7 @@
       lastName: row.last_name,
       displayName: row.display_name || undefined,
       staffType: row.staff_type,
+      employmentStatus: normalizeEmploymentStatus(row.employment_status),
       phone: row.phone,
       email: row.email || (row.meta && row.meta.email) || '',
       weeklyGrid: row.weekly_grid,
@@ -5330,10 +5332,11 @@
     return '';
   }
 
-  /** Unpaid break minutes from schedule annotation (matches timecards; default 30 when "break"). */
+  /** Unpaid break minutes from schedule annotation (including Mark's "OFFICE" break). */
   function parseBreakMinutesFromAnnotation(text) {
     var s = String(text || '').toLowerCase();
-    if (!s || s.indexOf('no break') !== -1 || s.indexOf('office') !== -1) return 0;
+    if (!s || s.indexOf('no break') !== -1) return 0;
+    if (s.indexOf('office') !== -1) return 30;
     var m = s.match(/(\d+)\s*(?:min|minute)/);
     if (m) return parseInt(m[1], 10) || 0;
     if (s.indexOf('break') !== -1) return 30;
@@ -5415,51 +5418,188 @@
 
   /** Week totals for one calendar row (role + trIdx) across visible days. */
   function computeScheduleRowWeekTotals(role, trIdx, visibleDays) {
-    var hours = 0;
-    var paidHours = 0;
-    (visibleDays || []).forEach(function (dayStr) {
-      var shift = SCHEDULE.find(function (s) {
-        return s.day === dayStr && s.role === role && s.trIdx === trIdx;
-      });
-      if (!shift) return;
+    var totals = computeScheduleWeekLaborTotals(visibleDays);
+    return (
+      totals[role + ':' + trIdx] || {
+        hours: 0,
+        paidHours: 0,
+        regHours: 0,
+        otHours: 0,
+        laborCost: 0,
+      }
+    );
+  }
+
+  /** Allocate scheduled paid hours against the weekly 40-hour regular cap. */
+  function computeScheduleWeekLaborBreakdown(visibleDays) {
+    var dayIndex = {};
+    (visibleDays || []).forEach(function (day, index) {
+      dayIndex[day] = index;
+    });
+    var byDay = {};
+    (visibleDays || []).forEach(function (day) {
+      byDay[day] = {
+        hours: 0,
+        paidHours: 0,
+        regHours: 0,
+        otHours: 0,
+        laborCost: 0,
+      };
+    });
+    var rows = [];
+    SCHEDULE.forEach(function (shift) {
+      if (!shift || dayIndex[shift.day] == null) return;
+      var wk = weekdayKeyFromScheduleDay(shift.day);
+      if (!draftTimeSlotFor(shift.role, wk, shift.trIdx, scheduleCalendarWeekIndex, currentRestaurantId)) {
+        return;
+      }
       var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
         return n && n !== 'Unassigned';
       });
       if (!workers.length) return;
-      var shiftHours = scheduleShiftGrossHours(shift);
-      if (shiftHours <= 0) return;
+      var grossHours = scheduleShiftGrossHours(shift);
+      if (grossHours <= 0) return;
       var breakText =
         shift.redPokeBreak ||
         redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
-      var breakMin = parseBreakMinutesFromAnnotation(breakText);
-      var paid = Math.max(0, shiftHours - breakMin / 60);
-      hours += shiftHours;
-      paidHours += paid;
+      var paidHours = Math.max(0, grossHours - parseBreakMinutesFromAnnotation(breakText) / 60);
+      rows.push({
+        shift: shift,
+        worker: workers[0],
+        grossHours: grossHours,
+        paidHours: paidHours,
+      });
     });
-    return { hours: hours, paidHours: paidHours };
+    rows.sort(function (a, b) {
+      var dayDiff = dayIndex[a.shift.day] - dayIndex[b.shift.day];
+      if (dayDiff) return dayDiff;
+      return String(a.shift.start || '').localeCompare(String(b.shift.start || ''));
+    });
+    var remainingByWorker = {};
+    var totals = {};
+    rows.forEach(function (item) {
+      var workerKey = String(item.worker);
+      var remaining = remainingByWorker[workerKey] == null ? 40 : remainingByWorker[workerKey];
+      var regHours = Math.min(item.paidHours, Math.max(0, remaining));
+      var otHours = Math.max(0, item.paidHours - regHours);
+      remainingByWorker[workerKey] = Math.max(0, remaining - regHours);
+      var employee = employeeByDisplayName(item.worker);
+      var rate =
+        employee && employee.hourlyRate != null && !Number.isNaN(Number(employee.hourlyRate))
+          ? Number(employee.hourlyRate)
+          : 0;
+      var key = item.shift.role + ':' + item.shift.trIdx;
+      var prev = totals[key] || {
+        hours: 0,
+        paidHours: 0,
+        regHours: 0,
+        otHours: 0,
+        laborCost: 0,
+      };
+      totals[key] = {
+        hours: prev.hours + item.grossHours,
+        paidHours: prev.paidHours + item.paidHours,
+        regHours: prev.regHours + regHours,
+        otHours: prev.otHours + otHours,
+        laborCost: prev.laborCost + rate * (regHours + otHours * 1.5),
+      };
+      var dayTotal = byDay[item.shift.day];
+      if (dayTotal) {
+        dayTotal.hours += item.grossHours;
+        dayTotal.paidHours += item.paidHours;
+        dayTotal.regHours += regHours;
+        dayTotal.otHours += otHours;
+        dayTotal.laborCost += rate * (regHours + otHours * 1.5);
+      }
+    });
+    return { byDay: byDay, byRow: totals };
+  }
+
+  function computeScheduleWeekLaborTotals(visibleDays) {
+    return computeScheduleWeekLaborBreakdown(visibleDays).byRow;
+  }
+
+  function computeScheduleSectionWeekTotals(role, visibleDays) {
+    var total = {
+      hours: 0,
+      paidHours: 0,
+      regHours: 0,
+      otHours: 0,
+      laborCost: 0,
+    };
+    var rowTotals = computeScheduleWeekLaborTotals(visibleDays);
+    Object.keys(rowTotals).forEach(function (key) {
+      if (key.indexOf(role + ':') !== 0) return;
+      var row = rowTotals[key];
+      total.hours += row.hours;
+      total.paidHours += row.paidHours;
+      total.regHours += row.regHours;
+      total.otHours += row.otHours;
+      total.laborCost += row.laborCost;
+    });
+    return total;
   }
 
   function calendarPersonTotalsCellHtml(role, trIdx, visibleDays, opts) {
     opts = opts || {};
     if (opts.section) {
-      return '<td class="calendar-person-totals-col calendar-person-totals-col--section" aria-hidden="true"></td>';
+      var sectionTotal = computeScheduleSectionWeekTotals(role, visibleDays);
+      return (
+        '<td class="calendar-person-totals-col calendar-person-totals-col--section">' +
+        '<div class="calendar-person-totals-section-cell" aria-label="' +
+        escapeHtml(gmT('schedule.sectionTotals') || 'Section totals') +
+        '">' +
+        '<span>' +
+        escapeHtml(gmT('schedule.netHours') || 'Net Hours') +
+        ': ' +
+        escapeHtml(formatScheduleDayHoursLabel(sectionTotal.paidHours)) +
+        '</span>' +
+        '<span>' +
+        escapeHtml(gmT('schedule.regularHours') || 'regular') +
+        ': ' +
+        escapeHtml(formatScheduleDayHoursLabel(sectionTotal.regHours)) +
+        '</span>' +
+        '<span>' +
+        escapeHtml(gmT('schedule.overtimeHours') || 'OT') +
+        ': ' +
+        escapeHtml(formatScheduleDayHoursLabel(sectionTotal.otHours)) +
+        '</span>' +
+        '<span>' +
+        escapeHtml(gmT('schedule.totalLaborCost') || 'labor cost') +
+        ': ' +
+        escapeHtml(formatScheduleDayPayLabel(sectionTotal.laborCost)) +
+        '</span>' +
+        '</div>' +
+        '</td>'
+      );
     }
     var tot = computeScheduleRowWeekTotals(role, trIdx, visibleDays);
-    var grossTag = gmT('schedule.dayGross') || 'gross';
-    var afterTag = gmT('schedule.dayAfterBreak') || 'after break';
+    var afterTag = gmT('schedule.netHours') || 'Net Hours';
     return (
       '<td class="calendar-person-totals-col">' +
       '<div class="calendar-person-totals-cell">' +
-      '<span class="schedule-day-totals-hours" title="Gross hours (before break)">' +
-      escapeHtml(formatScheduleDayHoursLabel(tot.hours)) +
-      '<span class="schedule-day-totals-tag">' +
-      escapeHtml(grossTag) +
-      '</span>' +
-      '</span>' +
-      '<span class="schedule-day-totals-hours-net" title="Hours after unpaid break">' +
+      '<span class="schedule-day-totals-hours-net" title="Net Hours">' +
       escapeHtml(formatScheduleDayHoursLabel(tot.paidHours)) +
       '<span class="schedule-day-totals-tag">' +
       escapeHtml(afterTag) +
+      '</span>' +
+      '</span>' +
+      '<span class="schedule-day-totals-hours-net">' +
+      escapeHtml(formatScheduleDayHoursLabel(tot.regHours)) +
+      '<span class="schedule-day-totals-tag">' +
+      escapeHtml(gmT('schedule.regularHours') || 'regular') +
+      '</span>' +
+      '</span>' +
+      '<span class="schedule-day-totals-hours-ot">' +
+      escapeHtml(formatScheduleDayHoursLabel(tot.otHours)) +
+      '<span class="schedule-day-totals-tag">' +
+      escapeHtml(gmT('schedule.overtimeHours') || 'OT') +
+      '</span>' +
+      '</span>' +
+      '<span class="schedule-day-totals-cost">' +
+      escapeHtml(formatScheduleDayPayLabel(tot.laborCost)) +
+      '<span class="schedule-day-totals-tag">' +
+      escapeHtml(gmT('schedule.totalLaborCost') || 'labor cost') +
       '</span>' +
       '</span>' +
       '</div>' +
@@ -6413,6 +6553,12 @@
     return null;
   }
 
+  function normalizeEmploymentStatus(raw) {
+    return String(raw == null ? '' : raw).trim().toLowerCase() === 'part-time'
+      ? 'part-time'
+      : 'full-time';
+  }
+
   function migrateEmployeeRecord(e) {
     if (!e || typeof e !== 'object') return null;
     const staffType = normalizeEmployeeStaffType(e.staffType) || 'Server';
@@ -6431,6 +6577,7 @@
       firstName: String(e.firstName != null ? e.firstName : '').trim(),
       lastName: String(e.lastName != null ? e.lastName : '').trim(),
       staffType: staffType,
+      employmentStatus: normalizeEmploymentStatus(e.employmentStatus || e.employment_status),
       phone: String(e.phone != null ? e.phone : '').trim(),
       email: String(
         e.email != null
@@ -6957,6 +7104,104 @@
       }
     });
     return changed;
+  }
+
+  var scheduleTemplateEditorState = null;
+  var scheduleMasterEditorState = null;
+
+  function isMasterScheduleTemplate(t) {
+    return !!(t && t.kind === 'master');
+  }
+
+  function templateSectionForRoleWeb(role) {
+    if (role === 'Kitchen' || role === 'BOH') return 'BOH';
+    if (role === 'Server' || role === 'Delivery/Dishwasher') return 'Delivery/Dishwasher';
+    return 'FOH';
+  }
+
+  function normalizeMasterBreakWeb(raw) {
+    var value = String(raw == null ? '' : raw).trim().toLowerCase();
+    return value === '30' || value === '30 minutes' ? '30' : 'none';
+  }
+
+  function masterTimeMinutesWeb(raw) {
+    var match = String(raw == null ? '' : raw).trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    var h = parseInt(match[1], 10);
+    var m = parseInt(match[2], 10);
+    if (h > 23 || m > 59) return null;
+    return h * 60 + m;
+  }
+
+  function masterTotalHoursWeb(start, end) {
+    var s = masterTimeMinutesWeb(start);
+    var e = masterTimeMinutesWeb(end);
+    if (s == null || e == null) return 0;
+    var minutes = e - s;
+    if (minutes <= 0) minutes += 1440;
+    return Math.round((minutes / 60) * 100) / 100;
+  }
+
+  function normalizeMasterRowWeb(raw, index) {
+    var row = raw && typeof raw === 'object' ? raw : {};
+    var clockIn = String(row.clockIn || row.start || '').trim();
+    var clockOut = String(row.clockOut || row.end || '').trim();
+    var breakType = normalizeMasterBreakWeb(row.break);
+    var totalHours = masterTotalHoursWeb(clockIn, clockOut);
+    return {
+      id:
+        String(row.id || '').trim() ||
+        'master-row-' + Date.now().toString(36) + '-' + String(index || 0),
+      role: String(row.role || '').trim(),
+      shift: String(row.shift || '').trim(),
+      clockIn: clockIn,
+      clockOut: clockOut,
+      break: breakType,
+      totalHours: totalHours,
+      hoursAfterBreak: Math.max(
+        0,
+        Math.round((totalHours - (breakType === '30' ? 0.5 : 0)) * 100) / 100
+      ),
+      daysPerWeek: String(row.daysPerWeek || row.daysWk || '').trim(),
+    };
+  }
+
+  function normalizeMasterTemplateWeb(raw) {
+    if (!isMasterScheduleTemplate(raw)) return null;
+    var sections = {
+      FOH: [],
+      BOH: [],
+      'Delivery/Dishwasher': [],
+    };
+    var sourceSections = raw.sections && typeof raw.sections === 'object' ? raw.sections : {};
+    ['FOH', 'BOH', 'Delivery/Dishwasher'].forEach(function (section) {
+      sections[section] = Array.isArray(sourceSections[section])
+        ? sourceSections[section].map(function (row, index) {
+            return normalizeMasterRowWeb(row, index);
+          })
+        : [];
+    });
+    return {
+      id: String(raw.id || '').trim(),
+      kind: 'master',
+      name: String(raw.name || 'Untitled Master Template').trim(),
+      createdAt: String(raw.createdAt || new Date().toISOString()),
+      sections: sections,
+    };
+  }
+
+  function masterScheduleTemplates() {
+    return loadScheduleTemplates()
+      .map(normalizeMasterTemplateWeb)
+      .filter(function (t) {
+        return !!t;
+      });
+  }
+
+  function normalScheduleTemplates() {
+    return loadScheduleTemplates().filter(function (t) {
+      return !isMasterScheduleTemplate(t);
+    });
   }
 
   function loadScheduleTemplates() {
@@ -8051,6 +8296,7 @@
     list.push({
       id: id,
       name: n,
+      kind: 'normal',
       createdAt: new Date().toISOString(),
       weekPattern: weekPattern,
       draftSchedule: cloneDraftSchedule(snapshot.draftRows),
@@ -8082,7 +8328,7 @@
     var applyBtn = document.getElementById('applyScheduleTemplateBtn');
     var deleteBtn = document.getElementById('deleteScheduleTemplateBtn');
     var prev = sel.value;
-    var list = loadScheduleTemplates();
+    var list = normalScheduleTemplates();
     sel.innerHTML =
       '<option value="">Choose template…</option>' +
       list
@@ -8101,6 +8347,24 @@
     var hasSelection = !!(sel.value && list.some(function (t) { return t.id === sel.value; }));
     if (applyBtn) applyBtn.disabled = !hasSelection;
     if (deleteBtn) deleteBtn.disabled = !hasSelection;
+  }
+
+  function populateMasterScheduleTemplateSelect(preferredId) {
+    var sel = document.getElementById('masterScheduleTemplateSelect');
+    if (!sel) return;
+    var prev = sel.value;
+    var list = masterScheduleTemplates();
+    sel.innerHTML =
+      '<option value="">Choose Master Template…</option>' +
+      list
+        .map(function (t) {
+          return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>';
+        })
+        .join('');
+    var pick = preferredId || prev;
+    if (pick && list.some(function (t) { return t.id === pick; })) sel.value = pick;
+    var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
+    if (deleteBtn) deleteBtn.disabled = !sel.value;
   }
 
   function addRestaurantFromInput(nameStr, shortStr) {
@@ -9813,6 +10077,7 @@
     syncEmployeeFilterControls();
     initScheduleWeekNav();
     populateScheduleTemplateSelect();
+    populateMasterScheduleTemplateSelect();
     populateRemoveRestaurantSelect();
     renderEmployeeLocationSelectOptions('both');
   }
@@ -10553,6 +10818,7 @@
   const empFirstName = document.getElementById('empFirstName');
   const empLastName = document.getElementById('empLastName');
   const empStaffType = document.getElementById('empStaffType');
+  const empEmploymentStatus = document.getElementById('empEmploymentStatus');
   const empPhone = document.getElementById('empPhone');
   const empEmail = document.getElementById('empEmail');
   const empUsualRestaurant = document.getElementById('empUsualRestaurant');
@@ -10608,6 +10874,13 @@
   const applyScheduleTemplateBtn = document.getElementById('applyScheduleTemplateBtn');
   const deleteScheduleTemplateBtn = document.getElementById('deleteScheduleTemplateBtn');
   const saveScheduleTemplateBtn = document.getElementById('saveScheduleTemplateBtn');
+  const loadScheduleTemplateBtn = document.getElementById('loadScheduleTemplateBtn');
+  const newScheduleTemplateBtn = document.getElementById('newScheduleTemplateBtn');
+  const scheduleMasterTemplateSelect = document.getElementById('scheduleMasterTemplateSelect');
+  const masterScheduleTemplateSelect = document.getElementById('masterScheduleTemplateSelect');
+  const newMasterScheduleTemplateBtn = document.getElementById('newMasterScheduleTemplateBtn');
+  const saveMasterScheduleTemplateBtn = document.getElementById('saveMasterScheduleTemplateBtn');
+  const deleteMasterScheduleTemplateBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
   const addRestaurantBtn = document.getElementById('addRestaurantBtn');
 
   function refreshScheduleSheetBodyLock() {
@@ -10974,6 +11247,247 @@
     refreshScheduleSheetBodyLock();
   }
 
+  function masterTemplateChoiceLabelWeb(row) {
+    if (!row) return '';
+    var time = row.clockIn && row.clockOut ? row.clockIn + '–' + row.clockOut : 'No time';
+    var days = row.daysPerWeek ? ' · ' + row.daysPerWeek + ' days/wk' : '';
+    return (
+      (row.role || 'Unspecified role') +
+      ' · ' +
+      (row.shift || 'Unspecified shift') +
+      ' · ' +
+      time +
+      days
+    );
+  }
+
+  function templateEditorRowKey(role, trIdx) {
+    return String(role) + ':' + String(trIdx);
+  }
+
+  function templateEditorCellKey(role, trIdx, day) {
+    return String(role) + ':' + String(trIdx) + ':' + String(day);
+  }
+
+  function currentTemplateEditorState() {
+    var workers = {};
+    var choices = {};
+    var visibleDays = getVisibleWeekDays();
+    SCHEDULE_GRID_ROLE_ORDER.forEach(function (role) {
+      var slotCount = slotCountForRole(role, scheduleCalendarWeekIndex, currentRestaurantId);
+      for (var trIdx = 0; trIdx < slotCount; trIdx += 1) {
+        workers[templateEditorRowKey(role, trIdx)] =
+          scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
+      }
+    });
+    return {
+      workers: workers,
+      choices: choices,
+      masterTemplateId: '',
+      sourceTemplateId: '',
+      draft: cloneDraftSchedule(
+        getDraftScheduleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId)
+      ),
+    };
+  }
+
+  function renderScheduleTemplatePreview() {
+    var mount = document.getElementById('scheduleTemplatePreviewMount');
+    if (!mount) return;
+    if (!scheduleTemplateEditorState) scheduleTemplateEditorState = currentTemplateEditorState();
+    mount.innerHTML = '';
+    renderCalendarInto(mount, { readOnly: false, showDayTotals: false, force: true });
+    var master = masterScheduleTemplates().find(function (t) {
+      return t.id === scheduleTemplateEditorState.masterTemplateId;
+    });
+    var visibleDays = getVisibleWeekDays();
+    mount.querySelectorAll('.calendar-row-person-select').forEach(function (select) {
+      var role = select.getAttribute('data-role');
+      var trIdx = parseInt(select.getAttribute('data-tr-idx'), 10);
+      var rowKey = templateEditorRowKey(role, trIdx);
+      if (scheduleTemplateEditorState.workers[rowKey] != null) {
+        select.value = scheduleTemplateEditorState.workers[rowKey];
+      }
+      select.addEventListener('change', function () {
+        scheduleTemplateEditorState.workers[rowKey] = select.value || 'Unassigned';
+      });
+    });
+    mount.querySelectorAll('.calendar-data-row').forEach(function (tr) {
+      var role = tr.getAttribute('data-role');
+      var trIdx = parseInt(tr.getAttribute('data-tr-idx'), 10);
+      var cells = tr.querySelectorAll('td');
+      visibleDays.forEach(function (day, dayIndex) {
+        var cell = cells[dayIndex + 1];
+        if (!cell) return;
+        var rows = master && master.sections[templateSectionForRoleWeb(role)]
+          ? master.sections[templateSectionForRoleWeb(role)]
+          : [];
+        var key = templateEditorCellKey(role, trIdx, day);
+        var draftCell =
+          scheduleTemplateEditorState.draft &&
+          scheduleTemplateEditorState.draft[role] &&
+          scheduleTemplateEditorState.draft[role][trIdx] &&
+          scheduleTemplateEditorState.draft[role][trIdx][dayIndex];
+        if (draftCell && draftCell[0] && draftCell[1]) {
+          var timeEl = cell.querySelector('.calendar-slot-rp-time');
+          if (timeEl) timeEl.textContent = draftCell[0] + '–' + draftCell[1];
+          var timeEditor = document.createElement('div');
+          timeEditor.className = 'schedule-template-time-editor';
+          var startInput = document.createElement('input');
+          startInput.type = 'time';
+          startInput.className = 'schedule-template-time-input';
+          startInput.value = draftCell[0];
+          startInput.setAttribute('aria-label', role + ' ' + day + ' clock in');
+          var endInput = document.createElement('input');
+          endInput.type = 'time';
+          endInput.className = 'schedule-template-time-input';
+          endInput.value = draftCell[1];
+          endInput.setAttribute('aria-label', role + ' ' + day + ' clock out');
+          if (master) {
+            startInput.disabled = true;
+            endInput.disabled = true;
+          }
+          function syncTemplateTimeInputs() {
+            draftCell[0] = startInput.value;
+            draftCell[1] = endInput.value;
+            if (timeEl) timeEl.textContent = startInput.value + '–' + endInput.value;
+          }
+          startInput.addEventListener('change', syncTemplateTimeInputs);
+          endInput.addEventListener('change', syncTemplateTimeInputs);
+          timeEditor.appendChild(startInput);
+          timeEditor.appendChild(document.createTextNode('–'));
+          timeEditor.appendChild(endInput);
+          cell.appendChild(timeEditor);
+          var pickedForTime = rows.find(function (row) {
+            return row.id === scheduleTemplateEditorState.choices[key];
+          });
+          if (pickedForTime) {
+            draftCell[0] = pickedForTime.clockIn;
+            draftCell[1] = pickedForTime.clockOut;
+            startInput.value = pickedForTime.clockIn;
+            endInput.value = pickedForTime.clockOut;
+            if (timeEl) timeEl.textContent = pickedForTime.clockIn + '–' + pickedForTime.clockOut;
+          }
+        }
+        if (master) {
+          var options = '<option value="">Keep current shift</option>';
+          rows.forEach(function (row) {
+            options +=
+              '<option value="' +
+              escapeHtml(row.id) +
+              '">' +
+              escapeHtml(masterTemplateChoiceLabelWeb(row)) +
+              '</option>';
+          });
+          var select = document.createElement('select');
+          select.className = 'schedule-template-shift-select';
+          select.setAttribute('aria-label', 'Master shift choice for ' + role + ' ' + day);
+          select.innerHTML = options;
+          select.value = scheduleTemplateEditorState.choices[key] || '';
+          select.addEventListener('change', function () {
+            scheduleTemplateEditorState.choices[key] = select.value;
+            var picked = rows.find(function (row) { return row.id === select.value; });
+            var hint = cell.querySelector('.schedule-template-shift-hint');
+            if (hint) hint.textContent = picked ? masterTemplateChoiceLabelWeb(picked) : '';
+            var start = cell.querySelector('.schedule-template-time-input:first-of-type');
+            var end = cell.querySelector('.schedule-template-time-input:last-of-type');
+            var timeEl = cell.querySelector('.calendar-slot-rp-time');
+            if (picked && start && end) {
+              start.value = picked.clockIn;
+              end.value = picked.clockOut;
+              if (timeEl) timeEl.textContent = picked.clockIn + '–' + picked.clockOut;
+              if (
+                scheduleTemplateEditorState.draft &&
+                scheduleTemplateEditorState.draft[role] &&
+                scheduleTemplateEditorState.draft[role][trIdx] &&
+                scheduleTemplateEditorState.draft[role][trIdx][dayIndex]
+              ) {
+                scheduleTemplateEditorState.draft[role][trIdx][dayIndex] = [
+                  picked.clockIn,
+                  picked.clockOut,
+                ];
+              }
+            }
+          });
+          var hint = document.createElement('div');
+          hint.className = 'schedule-template-shift-hint';
+          var picked = rows.find(function (row) {
+            return row.id === scheduleTemplateEditorState.choices[key];
+          });
+          hint.textContent = picked ? masterTemplateChoiceLabelWeb(picked) : '';
+          cell.appendChild(select);
+          cell.appendChild(hint);
+        }
+      });
+    });
+  }
+
+  function renderMasterScheduleTemplateEditor() {
+    var mount = document.getElementById('masterScheduleTemplateEditor');
+    var saveBtn = document.getElementById('saveMasterScheduleTemplateBtn');
+    if (!mount || !scheduleMasterEditorState) return;
+    mount.hidden = false;
+    if (saveBtn) saveBtn.hidden = false;
+    var sections = ['FOH', 'BOH', 'Delivery/Dishwasher'];
+    mount.innerHTML = sections
+      .map(function (section) {
+        var rows = scheduleMasterEditorState.sections[section] || [];
+        return (
+          '<section class="schedule-master-section" data-master-section="' +
+          escapeHtml(section) +
+          '">' +
+          '<h4>' +
+          escapeHtml(section) +
+          '</h4>' +
+          '<div class="schedule-master-table-wrap"><table class="schedule-master-table">' +
+          '<thead><tr><th>Role</th><th>Shift</th><th>Clock in</th><th>Clock out</th><th>Total hours</th><th>Break</th><th>Hours after break</th><th>Days/wk</th><th></th></tr></thead><tbody>' +
+          rows
+            .map(function (row, index) {
+              return (
+                '<tr data-master-row="' +
+                index +
+                '">' +
+                '<td><input data-master-field="role" value="' +
+                escapeHtml(row.role) +
+                '" placeholder="Role" /></td>' +
+                '<td><input data-master-field="shift" value="' +
+                escapeHtml(row.shift) +
+                '" placeholder="Shift" /></td>' +
+                '<td><input data-master-field="clockIn" value="' +
+                escapeHtml(row.clockIn) +
+                '" placeholder="HH:MM" inputmode="numeric" /></td>' +
+                '<td><input data-master-field="clockOut" value="' +
+                escapeHtml(row.clockOut) +
+                '" placeholder="HH:MM" inputmode="numeric" /></td>' +
+                '<td data-master-total>' +
+                escapeHtml(String(row.totalHours || 0)) +
+                '</td>' +
+                '<td><select data-master-field="break"><option value="none"' +
+                (row.break === 'none' ? ' selected' : '') +
+                '>No break</option><option value="30"' +
+                (row.break === '30' ? ' selected' : '') +
+                '>30 minutes</option></select></td>' +
+                '<td data-master-after-break>' +
+                escapeHtml(String(row.hoursAfterBreak || 0)) +
+                '</td>' +
+                '<td><input data-master-field="daysPerWeek" value="' +
+                escapeHtml(row.daysPerWeek) +
+                '" placeholder="Days/wk" inputmode="numeric" /></td>' +
+                '<td><button type="button" class="btn btn-secondary schedule-master-remove" data-master-remove>×</button></td>' +
+                '</tr>'
+              );
+            })
+            .join('') +
+          '</tbody></table></div>' +
+          '<button type="button" class="btn btn-secondary schedule-master-add" data-master-add="' +
+          escapeHtml(section) +
+          '">Add row</button>' +
+          '</section>'
+        );
+      })
+      .join('');
+  }
+
   function openScheduleTemplateModal() {
     if (!scheduleTemplateModal) return;
     if (draftScheduleModal && !draftScheduleModal.hidden) {
@@ -10984,6 +11498,16 @@
       scheduleAddLocationModal.setAttribute('aria-hidden', 'true');
     }
     populateScheduleTemplateSelect();
+    populateMasterScheduleTemplateSelect();
+    scheduleTemplateEditorState = currentTemplateEditorState();
+    var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
+    if (masterSelect) masterSelect.value = '';
+    var masterEditor = document.getElementById('masterScheduleTemplateEditor');
+    if (masterEditor) masterEditor.hidden = true;
+    var masterSave = document.getElementById('saveMasterScheduleTemplateBtn');
+    if (masterSave) masterSave.hidden = true;
+    scheduleMasterEditorState = null;
+    renderScheduleTemplatePreview();
     scheduleTemplateModal.hidden = false;
     scheduleTemplateModal.setAttribute('aria-hidden', 'false');
     refreshScheduleSheetBodyLock();
@@ -10993,6 +11517,181 @@
         sel.focus();
       }, 0);
     }
+  }
+
+  function startMasterScheduleTemplateEditor(template) {
+    var source = normalizeMasterTemplateWeb(template);
+    scheduleMasterEditorState = source || {
+      id: '',
+      kind: 'master',
+      name: '',
+      createdAt: new Date().toISOString(),
+      sections: { FOH: [], BOH: [], 'Delivery/Dishwasher': [] },
+    };
+    var nameInput = document.getElementById('masterScheduleTemplateNameInput');
+    if (nameInput) nameInput.value = scheduleMasterEditorState.name || '';
+    renderMasterScheduleTemplateEditor();
+  }
+
+  function saveMasterScheduleTemplateFromEditor() {
+    if (!managerCanEditCurrentRestaurant() || !scheduleMasterEditorState) return false;
+    var nameInput = document.getElementById('masterScheduleTemplateNameInput');
+    var name = String(
+      (nameInput && nameInput.value) || scheduleMasterEditorState.name || ''
+    ).trim();
+    if (!name) return false;
+    var invalidTime = false;
+    ['FOH', 'BOH', 'Delivery/Dishwasher'].forEach(function (section) {
+      (scheduleMasterEditorState.sections[section] || []).forEach(function (row) {
+        if (
+          (row.clockIn && masterTimeMinutesWeb(row.clockIn) == null) ||
+          (row.clockOut && masterTimeMinutesWeb(row.clockOut) == null)
+        ) {
+          invalidTime = true;
+        }
+      });
+    });
+    if (invalidTime) {
+      showScheduleNotice('Use HH:MM format for every clock-in and clock-out time.', false);
+      return false;
+    }
+    scheduleMasterEditorState.name = name;
+    var list = loadScheduleTemplates().filter(function (t) {
+      return t && t.id !== scheduleMasterEditorState.id;
+    });
+    if (!scheduleMasterEditorState.id) {
+      scheduleMasterEditorState.id =
+        'master-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    }
+    list.push(JSON.parse(JSON.stringify(scheduleMasterEditorState)));
+    saveScheduleTemplatesList(list);
+    populateMasterScheduleTemplateSelect(scheduleMasterEditorState.id);
+    var restriction = document.getElementById('scheduleMasterTemplateSelect');
+    if (restriction) restriction.value = scheduleMasterEditorState.id;
+    if (scheduleTemplateEditorState) {
+      scheduleTemplateEditorState.masterTemplateId = scheduleMasterEditorState.id;
+      renderScheduleTemplatePreview();
+    }
+    return scheduleMasterEditorState.id;
+  }
+
+  function saveScheduleTemplateFromEditor(name) {
+    var n = String(name || '').trim();
+    if (!n || !scheduleTemplateEditorState) return false;
+    saveScheduleAssignments();
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    var snapshot = syncTemplateWeekAssignmentsFromDraft(rid, wi);
+    saveScheduleAssignments();
+    var editorDraft = cloneDraftSchedule(
+      scheduleTemplateEditorState.draft || snapshot.draftRows
+    );
+    var pattern = sanitizeWeekPatternWorkers(
+      normalizeWeekPatternKeys(buildWeekPatternFromRestaurantWeek(rid, wi)),
+      rid
+    );
+    var visibleDays = getVisibleWeekDays();
+    Object.keys(scheduleTemplateEditorState.workers || {}).forEach(function (rowKey) {
+      var bits = rowKey.split(':');
+      var role = bits[0];
+      var trIdx = parseInt(bits[1], 10);
+      var roleDef = ROLE_DEFS.find(function (r) { return r.role === role; });
+      if (!roleDef || isNaN(trIdx)) return;
+      var worker = scheduleTemplateEditorState.workers[rowKey] || 'Unassigned';
+      for (var dayIndex = 0; dayIndex < visibleDays.length; dayIndex += 1) {
+        var key = dayIndex + '-' + ROLE_DEFS.indexOf(roleDef) + '-' + trIdx;
+        var cellKey = templateEditorCellKey(role, trIdx, visibleDays[dayIndex]);
+        var choiceId = scheduleTemplateEditorState.choices[cellKey];
+        var hasShiftCell =
+          (editorDraft[role] &&
+            editorDraft[role][trIdx] &&
+            editorDraft[role][trIdx][dayIndex]) ||
+          SCHEDULE.some(function (shift) {
+            return shift.day === visibleDays[dayIndex] && shift.role === role && shift.trIdx === trIdx;
+          });
+        if (!hasShiftCell) {
+          delete pattern[key];
+          continue;
+        }
+        var master = masterScheduleTemplates().find(function (t) {
+          return t.id === scheduleTemplateEditorState.masterTemplateId;
+        });
+        var choices = master ? master.sections[templateSectionForRoleWeb(role)] || [] : [];
+        var choice = choices.find(function (row) { return row.id === choiceId; });
+        if (choice) {
+          if (
+            !editorDraft[role] ||
+            !editorDraft[role][trIdx]
+          ) {
+            continue;
+          }
+          editorDraft[role][trIdx][dayIndex] = [choice.clockIn, choice.clockOut];
+        }
+        if (!worker || worker === 'Unassigned') {
+          delete pattern[key];
+        } else {
+          var existing = pattern[key] ? cloneScheduleAssignment(pattern[key]) : { workers: [worker] };
+          existing.workers = [worker];
+          pattern[key] = existing;
+        }
+      }
+    });
+    var list = normalScheduleTemplates();
+    var existing = list.find(function (t) { return t && t.name === n; });
+    if (existing) {
+      if (!confirm('A template named "' + n + '" already exists. Replace it?')) {
+        return 'duplicate-cancelled';
+      }
+      list = list.filter(function (t) { return t.id !== existing.id; });
+    }
+    var id =
+      'tpl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    list.push({
+      id: id,
+      name: n,
+      createdAt: new Date().toISOString(),
+      kind: 'normal',
+      weekPattern: pattern,
+      draftSchedule: cloneDraftSchedule(editorDraft),
+      draftBreakSchedule: cloneDraftSchedule(
+        sanitizeDraftBreakScheduleLayers(snapshot.breakRows)
+      ),
+      sourceWeekIndex: wi,
+      sourceRestaurantId: rid,
+      masterTemplateId: scheduleTemplateEditorState.masterTemplateId || '',
+      masterShiftChoices: JSON.parse(
+        JSON.stringify(scheduleTemplateEditorState.choices || {})
+      ),
+    });
+    saveScheduleTemplatesList(list.concat(masterScheduleTemplates()));
+    return id;
+  }
+
+  function loadNormalScheduleTemplateIntoEditor(template) {
+    if (!template) return;
+    var state = currentTemplateEditorState();
+    var pattern = normalizeWeekPatternKeys(template.weekPattern || {});
+    Object.keys(pattern).forEach(function (key) {
+      var slot = parseWeekPatternSlotKey(key);
+      if (!slot) return;
+      var role = ROLE_DEFS[slot.roleIdx] && ROLE_DEFS[slot.roleIdx].role;
+      if (!role) return;
+      var entry = normalizeScheduleAssignment(pattern[key]);
+      var worker = scheduleAssignmentPrimaryWorker(entry) || 'Unassigned';
+      state.workers[templateEditorRowKey(role, slot.trIdx)] = worker;
+    });
+    state.masterTemplateId = String(template.masterTemplateId || '');
+    state.sourceTemplateId = String(template.id || '');
+    state.choices = template.masterShiftChoices && typeof template.masterShiftChoices === 'object'
+      ? JSON.parse(JSON.stringify(template.masterShiftChoices))
+      : {};
+    if (template.draftSchedule && draftScheduleJsonHasLayers(template.draftSchedule)) {
+      state.draft = cloneDraftSchedule(template.draftSchedule);
+    }
+    scheduleTemplateEditorState = state;
+    var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
+    if (masterSelect) masterSelect.value = state.masterTemplateId;
+    renderScheduleTemplatePreview();
   }
 
   function closeScheduleAddLocationModal() {
@@ -11808,8 +12507,19 @@
     var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
     var selectedLabel = displayScheduleWorkerName(selected);
     var awayPrimaryHtml = '';
+    var employmentStatusHtml = '';
     if (selected && selected !== 'Unassigned') {
       var selEmp = employeeByDisplayName(selected);
+      employmentStatusHtml =
+        selEmp
+          ? '<span class="calendar-row-employment-status">' +
+            escapeHtml(
+              normalizeEmploymentStatus(selEmp.employmentStatus) === 'full-time'
+                ? gmT('team.fullTime') || 'Full-time'
+                : gmT('team.partTime') || 'Part-time'
+            ) +
+            '</span>'
+          : '';
       var primaryId = employeePrimaryLocationId(selEmp);
       if (primaryId && primaryId !== currentRestaurantId) {
         var primaryLbl = restaurantShortLabel(primaryId);
@@ -11863,6 +12573,7 @@
         '<span class="calendar-row-person-text">' +
         escapeHtml(selectedLabel) +
         '</span>' +
+        employmentStatusHtml +
         awayPrimaryHtml +
         '</div>' +
         '</td>'
@@ -11936,6 +12647,7 @@
       opts +
       '</select>' +
       '</div>' +
+      employmentStatusHtml +
       '<div class="calendar-row-reorder" role="group" aria-label="Reorder row">' +
       '<button type="button" class="calendar-reorder-btn"' +
       (canUp ? '' : ' disabled') +
@@ -12619,6 +13331,8 @@
     host.hidden = false;
     var weekMon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
     var dayTotals = computeScheduleDayTotals(visibleDays);
+    var laborBreakdown = computeScheduleWeekLaborBreakdown(visibleDays);
+    var dayLaborTotals = laborBreakdown.byDay;
     var canEdit = !readOnly && managerCanEditCurrentRestaurant();
     var laborOpen = schedulePanelOpenFromStorage(SCHEDULE_LABOR_PANEL_OPEN_KEY);
     var groupOpen = schedulePanelOpenFromStorage(SCHEDULE_GROUP_PANEL_OPEN_KEY);
@@ -12638,15 +13352,15 @@
       return Number.isFinite(n) ? n : NaN;
     }
 
-    var weekHours = 0;
+    var weekAfterBreakHours = 0;
     var weekPay = 0;
     var weekSales = 0;
     var weekHasSales = false;
     var weekNames = {};
     var wiLabor = scheduleCalendarWeekIndex;
     (visibleDays || []).forEach(function (d) {
-      weekHours += (dayTotals[d] && dayTotals[d].hours) || 0;
-      weekPay += (dayTotals[d] && dayTotals[d].pay) || 0;
+      weekAfterBreakHours += (dayLaborTotals[d] && dayLaborTotals[d].paidHours) || 0;
+      weekPay += (dayLaborTotals[d] && dayLaborTotals[d].laborCost) || 0;
       var meta = WEEK_META.find(function (m) {
         return m.label === d;
       });
@@ -12722,12 +13436,12 @@
     var laborBody =
       '<tr class="schedule-panel-data-row">' +
       '<th scope="row" class="schedule-panel-row-label">' +
-      escapeHtml(gmT('schedule.totalHours') || 'Total hours') +
+      escapeHtml(gmT('schedule.netHours') || 'Net Hours') +
       '</th>' +
       laborReadonlyCells(function (d) {
-        return formatScheduleDayHoursLabel((dayTotals[d] && dayTotals[d].hours) || 0);
+        return formatScheduleDayHoursLabel((dayLaborTotals[d] && dayLaborTotals[d].paidHours) || 0);
       }) +
-      weekTotalsTd(formatScheduleDayHoursLabel(weekHours)) +
+      weekTotalsTd(formatScheduleDayHoursLabel(weekAfterBreakHours)) +
       '</tr>' +
       '<tr class="schedule-panel-data-row">' +
       '<th scope="row" class="schedule-panel-row-label">' +
@@ -12750,7 +13464,7 @@
       escapeHtml(gmT('schedule.laborCost') || 'Labor cost') +
       '</th>' +
       laborReadonlyCells(function (d) {
-        return formatScheduleDayPayLabel((dayTotals[d] && dayTotals[d].pay) || 0);
+        return formatScheduleDayPayLabel((dayLaborTotals[d] && dayLaborTotals[d].laborCost) || 0);
       }) +
       weekTotalsTd(formatScheduleDayPayLabel(weekPay)) +
       '</tr>' +
@@ -12764,7 +13478,7 @@
         });
         var dayIso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
         var sales = getScheduleNetSalesCell(currentRestaurantId, weekMon, dayIso);
-        return formatScheduleLaborPct((dayTotals[d] && dayTotals[d].pay) || 0, sales);
+        return formatScheduleLaborPct((dayLaborTotals[d] && dayLaborTotals[d].laborCost) || 0, sales);
       }) +
       weekTotalsTd(weekLaborPct) +
       '</tr>';
@@ -14937,6 +15651,10 @@
         const phone = (emp.phone || '').trim();
         const phoneLine = phone ? escapeHtml(phone) : '—';
         const locLine = escapeHtml(employeeLocationLine(emp));
+        const employmentStatusLine =
+          normalizeEmploymentStatus(emp.employmentStatus) === 'full-time'
+            ? gmT('team.fullTime') || 'Full-time'
+            : gmT('team.partTime') || 'Part-time';
         var pinLine = '';
         if (emp.clockPin) {
           pinLine = escapeHtml(String(emp.clockPin));
@@ -14953,6 +15671,13 @@
           '<span class="employee-card-label">Location</span>' +
           '<span class="employee-card-value">' +
           locLine +
+          '</span></li>' +
+          '<li class="employee-card-meta-row">' +
+          '<span class="employee-card-label">' +
+          escapeHtml(gmT('team.employmentStatus') || 'Employment status') +
+          '</span>' +
+          '<span class="employee-card-value">' +
+          escapeHtml(employmentStatusLine) +
           '</span></li>';
         if (pinLine) {
           metaRows +=
@@ -15707,6 +16432,9 @@
     if (empFirstName) empFirstName.value = emp ? emp.firstName || '' : '';
     if (empLastName) empLastName.value = emp ? emp.lastName || '' : '';
     if (empStaffType) empStaffType.value = emp && emp.staffType ? emp.staffType : '';
+    if (empEmploymentStatus) {
+      empEmploymentStatus.value = normalizeEmploymentStatus(emp && emp.employmentStatus);
+    }
     if (empPhone) empPhone.value = emp ? emp.phone || '' : '';
     if (empEmail) empEmail.value = emp ? emp.email || '' : '';
     if (empClockPinBlock) {
@@ -17208,6 +17936,123 @@
       var hasSelection = !!scheduleTemplateSelectEl.value;
       if (applyBtn) applyBtn.disabled = !hasSelection;
       if (deleteBtn) deleteBtn.disabled = !hasSelection;
+      var chosen = normalScheduleTemplates().find(function (t) {
+        return t && t.id === scheduleTemplateSelectEl.value;
+      });
+      if (chosen) loadNormalScheduleTemplateIntoEditor(chosen);
+    });
+  }
+  if (loadScheduleTemplateBtn) {
+    loadScheduleTemplateBtn.addEventListener('click', function () {
+      var sel = document.getElementById('scheduleTemplateSelect');
+      var chosen = normalScheduleTemplates().find(function (t) {
+        return t && t.id === (sel && sel.value);
+      });
+      if (chosen) loadNormalScheduleTemplateIntoEditor(chosen);
+    });
+  }
+  if (newScheduleTemplateBtn) {
+    newScheduleTemplateBtn.addEventListener('click', function () {
+      scheduleTemplateEditorState = currentTemplateEditorState();
+      var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
+      if (masterSelect) masterSelect.value = '';
+      renderScheduleTemplatePreview();
+    });
+  }
+  if (scheduleMasterTemplateSelect) {
+    scheduleMasterTemplateSelect.addEventListener('change', function () {
+      if (!scheduleTemplateEditorState) scheduleTemplateEditorState = currentTemplateEditorState();
+      scheduleTemplateEditorState.masterTemplateId = scheduleMasterTemplateSelect.value || '';
+      scheduleTemplateEditorState.choices = {};
+      renderScheduleTemplatePreview();
+    });
+  }
+  if (newMasterScheduleTemplateBtn) {
+    newMasterScheduleTemplateBtn.addEventListener('click', function () {
+      if (!managerCanEditCurrentRestaurant()) return;
+      startMasterScheduleTemplateEditor(null);
+    });
+  }
+  if (masterScheduleTemplateSelect) {
+    masterScheduleTemplateSelect.addEventListener('change', function () {
+      var chosen = masterScheduleTemplates().find(function (t) {
+        return t && t.id === masterScheduleTemplateSelect.value;
+      });
+      var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
+      if (deleteBtn) deleteBtn.disabled = !chosen;
+      if (chosen) startMasterScheduleTemplateEditor(chosen);
+    });
+  }
+  var masterEditorMount = document.getElementById('masterScheduleTemplateEditor');
+  if (masterEditorMount) {
+    masterEditorMount.addEventListener('input', function (event) {
+      var input = event.target;
+      var rowEl = input && input.closest ? input.closest('[data-master-row]') : null;
+      var sectionEl = input && input.closest ? input.closest('[data-master-section]') : null;
+      if (!rowEl || !sectionEl || !scheduleMasterEditorState) return;
+      var section = sectionEl.getAttribute('data-master-section');
+      var index = parseInt(rowEl.getAttribute('data-master-row'), 10);
+      var field = input.getAttribute('data-master-field');
+      var row = scheduleMasterEditorState.sections[section] && scheduleMasterEditorState.sections[section][index];
+      if (!row || !field) return;
+      row[field] = input.value;
+      var normalized = normalizeMasterRowWeb(row, index);
+      scheduleMasterEditorState.sections[section][index] = normalized;
+      var total = rowEl.querySelector('[data-master-total]');
+      var after = rowEl.querySelector('[data-master-after-break]');
+      if (total) total.textContent = String(normalized.totalHours || 0);
+      if (after) after.textContent = String(normalized.hoursAfterBreak || 0);
+    });
+    masterEditorMount.addEventListener('change', function (event) {
+      var input = event.target;
+      if (!input || !input.matches('[data-master-field="break"]')) return;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    masterEditorMount.addEventListener('click', function (event) {
+      var addBtn = event.target.closest('[data-master-add]');
+      if (addBtn && scheduleMasterEditorState) {
+        var section = addBtn.getAttribute('data-master-add');
+        scheduleMasterEditorState.sections[section].push(normalizeMasterRowWeb({}, 0));
+        renderMasterScheduleTemplateEditor();
+        return;
+      }
+      var removeBtn = event.target.closest('[data-master-remove]');
+      if (removeBtn && scheduleMasterEditorState) {
+        var rowEl = removeBtn.closest('[data-master-row]');
+        var sectionEl = removeBtn.closest('[data-master-section]');
+        if (rowEl && sectionEl) {
+          var index = parseInt(rowEl.getAttribute('data-master-row'), 10);
+          var section = sectionEl.getAttribute('data-master-section');
+          scheduleMasterEditorState.sections[section].splice(index, 1);
+          renderMasterScheduleTemplateEditor();
+        }
+      }
+    });
+  }
+  if (saveMasterScheduleTemplateBtn) {
+    saveMasterScheduleTemplateBtn.addEventListener('click', function () {
+      var saved = saveMasterScheduleTemplateFromEditor();
+      if (!saved) {
+        showScheduleNotice('Enter a Master Template name first.', false);
+        return;
+      }
+      showScheduleNotice('Master Template saved.', false);
+    });
+  }
+  if (deleteMasterScheduleTemplateBtn) {
+    deleteMasterScheduleTemplateBtn.addEventListener('click', function () {
+      var id = masterScheduleTemplateSelect && masterScheduleTemplateSelect.value;
+      var chosen = masterScheduleTemplates().find(function (t) { return t.id === id; });
+      if (!chosen || !confirm('Delete Master Template "' + chosen.name + '"?')) return;
+      saveScheduleTemplatesList(loadScheduleTemplates().filter(function (t) { return t.id !== id; }));
+      scheduleMasterEditorState = null;
+      populateMasterScheduleTemplateSelect();
+      var editor = document.getElementById('masterScheduleTemplateEditor');
+      if (editor) {
+        editor.hidden = true;
+        editor.innerHTML = '';
+      }
+      deleteMasterScheduleTemplateBtn.disabled = true;
     });
   }
   if (saveScheduleTemplateBtn) {
@@ -17218,7 +18063,7 @@
         showScheduleNotice('Enter a template name.', false);
         return;
       }
-      var saved = saveCurrentScheduleAsTemplate(name);
+      var saved = saveScheduleTemplateFromEditor(name);
       if (saved === 'duplicate-cancelled') return;
       if (!saved) {
         showScheduleNotice(
@@ -17490,6 +18335,9 @@
         firstName: first,
         lastName: last,
         staffType: stSave,
+        employmentStatus: normalizeEmploymentStatus(
+          empEmploymentStatus ? empEmploymentStatus.value : 'full-time'
+        ),
         phone: phoneSave,
         email: empEmail ? (empEmail.value || '').trim() : '',
         weeklyGrid: normalizeWeeklyGrid(wg, stSave),

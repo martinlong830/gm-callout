@@ -61,6 +61,10 @@ const TeamMemberCard = memo(function TeamMemberCard({
           <Text style={styles.name}>{employeeDisplayName(item)}</Text>
           <MetaRow label={t('common.phone')} value={(item.phone || '').trim() || '—'} />
           <MetaRow label={t('team.location')} value={employeeUsualLocationLine(item.usualRestaurant)} />
+          <MetaRow
+            label={t('team.employmentStatus')}
+            value={item.employmentStatus === 'full-time' ? t('team.fullTime') : t('team.partTime')}
+          />
           {pinLine ? <MetaRow label={t('team.pin')} value={pinLine} /> : null}
           {leaveLines.length ? (
             <View style={styles.leaveBlock}>

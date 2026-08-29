@@ -2987,11 +2987,17 @@ function parseBreakMinutesFromScheduleAnnotation(text: string | undefined): numb
 
 export type ScheduleDayTotals = { hours: number; paidHours: number; pay: number; headcount: number };
 
-export type ScheduleRowWeekTotals = { hours: number; paidHours: number };
+export type ScheduleRowWeekTotals = {
+  hours: number;
+  paidHours: number;
+  regHours: number;
+  otHours: number;
+  laborCost: number;
+};
 
 /**
- * Footer totals per visible day: gross hours, after-break hours, base pay
- * (paidHours × hourlyRate — no tips / SoH), and unique people actually working
+ * Footer totals per visible day: gross hours, after-break hours, labor cost
+ * (regular pay + 1.5× overtime pay), and unique people actually working
  * (excludes Unassigned and day-off draft cells). Parity with web `computeScheduleDayTotals`.
  */
 export function computeScheduleDayTotals(
@@ -3002,6 +3008,8 @@ export function computeScheduleDayTotals(
 ): Record<string, ScheduleDayTotals> {
   const byDay: Record<string, ScheduleDayTotals> = {};
   const namesByDay: Record<string, Set<string>> = {};
+  const laborItems: Array<{ shift: ScheduleRow; worker: string; paidHours: number }> = [];
+  const dayIndex = new Map((visibleDays || []).map((day, index) => [day, index]));
   for (const dayStr of visibleDays || []) {
     byDay[dayStr] = { hours: 0, paidHours: 0, pay: 0, headcount: 0 };
     namesByDay[dayStr] = new Set();
@@ -3025,17 +3033,33 @@ export function computeScheduleDayTotals(
       redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
     const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
     const paidHours = Math.max(0, shiftHours - breakMin / 60);
+    laborItems.push({ shift, worker: String(workers[0]), paidHours });
     for (const wname of workers) {
       byDay[shift.day].hours += shiftHours;
       byDay[shift.day].paidHours += paidHours;
       namesByDay[shift.day].add(String(wname).trim());
-      const emp = employeeByDisplayNameLite(employees, wname);
-      const rate =
-        emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
-          ? Number(emp.hourlyRate)
-          : 0;
-      if (rate > 0) byDay[shift.day].pay += paidHours * rate;
     }
+  }
+  /* Match the rightmost totals column: allocate each worker's paid hours in
+     visible day/start-time order against a 40-hour weekly regular cap. */
+  for (const dayStr of Object.keys(byDay)) byDay[dayStr].pay = 0;
+  laborItems.sort((a, b) => {
+    const dayDiff = (dayIndex.get(a.shift.day) || 0) - (dayIndex.get(b.shift.day) || 0);
+    if (dayDiff) return dayDiff;
+    return String(a.shift.start || '').localeCompare(String(b.shift.start || ''));
+  });
+  const remainingByWorker = new Map<string, number>();
+  for (const item of laborItems) {
+    const available = remainingByWorker.has(item.worker) ? remainingByWorker.get(item.worker)! : 40;
+    const regHours = Math.min(item.paidHours, Math.max(0, available));
+    const otHours = Math.max(0, item.paidHours - regHours);
+    remainingByWorker.set(item.worker, Math.max(0, available - regHours));
+    const emp = employeeByDisplayNameLite(employees, item.worker);
+    const rate =
+      emp && emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))
+        ? Number(emp.hourlyRate)
+        : 0;
+    byDay[item.shift.day].pay += rate * (regHours + otHours * 1.5);
   }
   for (const dayStr of Object.keys(byDay)) {
     byDay[dayStr].headcount = namesByDay[dayStr]?.size || 0;
@@ -3070,5 +3094,71 @@ export function computeScheduleRowWeekTotals(
     hours += shiftHours;
     paidHours += Math.max(0, shiftHours - breakMin / 60);
   }
-  return { hours, paidHours };
+  return { hours, paidHours, regHours: paidHours, otHours: 0, laborCost: 0 };
+}
+
+/** Weekly scheduled labor allocation using the same 40-hour regular cap as timecards. */
+export function computeScheduleWeekRowLaborTotals(
+  schedule: ScheduleRow[],
+  visibleDays: string[],
+  employees: EmployeeLite[],
+  draft?: DraftGrid
+): Map<string, ScheduleRowWeekTotals> {
+  const dayIndex = new Map((visibleDays || []).map((day, index) => [day, index]));
+  const shifts = (schedule || [])
+    .filter((shift) => dayIndex.has(shift.day))
+    .map((shift) => {
+      const workers = (shift.workers || [shift.worker].filter(Boolean)).filter(
+        (name) => name && name !== 'Unassigned'
+      );
+      const wk = weekdayKeyFromScheduleDay(shift.day);
+      const hasDraftShift = !draft || !!draftTimeSlotFor(draft, shift.role, wk, shift.trIdx);
+      const grossHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
+      const breakText =
+        shift.redPokeBreak ||
+        redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+      const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
+      return {
+        shift,
+        worker: workers[0] || '',
+        grossHours,
+        paidHours: Math.max(0, grossHours - breakMin / 60),
+        hasDraftShift,
+      };
+    })
+    .filter((item) => item.worker && item.grossHours > 0 && item.hasDraftShift)
+    .sort((a, b) => {
+      const dayDiff = (dayIndex.get(a.shift.day) || 0) - (dayIndex.get(b.shift.day) || 0);
+      if (dayDiff) return dayDiff;
+      return String(a.shift.start || '').localeCompare(String(b.shift.start || ''));
+    });
+  const remaining = new Map<string, number>();
+  const totals = new Map<string, ScheduleRowWeekTotals>();
+  shifts.forEach(({ shift, worker, grossHours, paidHours }) => {
+    const available = remaining.has(worker) ? remaining.get(worker)! : 40;
+    const regHours = Math.min(paidHours, Math.max(0, available));
+    const otHours = Math.max(0, paidHours - regHours);
+    remaining.set(worker, Math.max(0, available - regHours));
+    const employee = employeeByDisplayNameLite(employees, worker);
+    const rate =
+      employee && employee.hourlyRate != null && !Number.isNaN(Number(employee.hourlyRate))
+        ? Number(employee.hourlyRate)
+        : 0;
+    const key = `${shift.role}:${shift.trIdx}`;
+    const previous = totals.get(key) || {
+      hours: 0,
+      paidHours: 0,
+      regHours: 0,
+      otHours: 0,
+      laborCost: 0,
+    };
+    totals.set(key, {
+      hours: previous.hours + grossHours,
+      paidHours: previous.paidHours + paidHours,
+      regHours: previous.regHours + regHours,
+      otHours: previous.otHours + otHours,
+      laborCost: previous.laborCost + rate * (regHours + otHours * 1.5),
+    });
+  });
+  return totals;
 }

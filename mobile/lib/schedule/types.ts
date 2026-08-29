@@ -38,6 +38,7 @@ export type EmployeeLite = {
   lastName: string;
   displayName?: string;
   staffType: RoleKey;
+  employmentStatus?: 'part-time' | 'full-time';
   usualRestaurant: string;
   hourlyRate?: number;
   primaryLocationId?: string | null;
