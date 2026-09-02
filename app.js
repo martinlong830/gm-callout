@@ -863,6 +863,8 @@
       }
       if (!(opts && opts.skipDirty) && GM_SUPABASE_DATA && window.gmSupabase) {
         draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateDebouncedSync();
       }
     } catch (_e) {
       /* ignore */
@@ -1059,7 +1061,12 @@
     weekEntry[rid] = sanitized;
     try {
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
-      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+      if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateDebouncedSync();
+        flushTeamStateSyncNow();
+      }
     } catch (eDraftSave) {
       /* ignore */
     }
@@ -1267,6 +1274,8 @@
   const SCHEDULE_TEMPLATES_CONFIRMED_JSON_KEY = 'gm-callout-schedule-templates-confirmed-v1';
   /** JSON snapshot last confirmed on Supabase — blocks stale remote refresh from reverting draft structure. */
   const DRAFT_SCHEDULE_CONFIRMED_JSON_KEY = 'gm-callout-draft-schedule-confirmed-v1';
+  /** Survives refresh so unpushed schedule edits still flush after reload. */
+  const TEAM_STATE_DIRTY_FLAGS_KEY = 'gm-callout-team-state-dirty-v1';
   /** Supabase `public.team_state` row id (single-store legacy = main; new companies use company UUID). */
   const TEAM_STATE_ROW_ID = 'main';
   const RED_POKE_COMPANY_ID = 'a0000000-0000-4000-8000-000000000001';
@@ -3415,7 +3424,7 @@
   }
 
   var teamStateSyncTimer = null;
-  var TEAM_STATE_PUSH_DEBOUNCE_MS = 3000;
+  var TEAM_STATE_PUSH_DEBOUNCE_MS = 1200;
   var TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS = 1200;
   /** Blocks remote assignment merge while a debounced or in-flight team_state push is active. */
   var teamStatePushInFlight = false;
@@ -3461,6 +3470,86 @@
   var gmCalloutSessionIsManager = false;
   /** After first manager bootstrap, avoid forcing Schedule when async hydrate finishes. */
   var gmManagerShellBootstrapped = false;
+
+  function persistTeamStateDirtyFlags() {
+    try {
+      localStorage.setItem(
+        TEAM_STATE_DIRTY_FLAGS_KEY,
+        JSON.stringify({
+          assignments: !!scheduleAssignmentsDirty,
+          draft: !!draftScheduleDirty,
+          templates: !!scheduleTemplatesDirty,
+          published: !!schedulePublishedDirty,
+          meta: !!teamStateMetaDirty,
+        })
+      );
+    } catch (_dirtyPersist) {
+      /* ignore */
+    }
+  }
+
+  function restoreTeamStateDirtyFlagsFromStorage() {
+    try {
+      var raw = localStorage.getItem(TEAM_STATE_DIRTY_FLAGS_KEY);
+      if (!raw) return;
+      var o = JSON.parse(raw);
+      if (!o || typeof o !== 'object') return;
+      if (o.assignments) scheduleAssignmentsDirty = true;
+      if (o.draft) draftScheduleDirty = true;
+      if (o.templates) scheduleTemplatesDirty = true;
+      if (o.published) schedulePublishedDirty = true;
+      if (o.meta) teamStateMetaDirty = true;
+    } catch (_dirtyRestore) {
+      /* ignore */
+    }
+  }
+
+  /**
+   * After refresh, dirty flags are gone but localStorage may still be ahead of the last
+   * confirmed cloud snapshot. Re-dirty so hydrate refuses stale remote and re-pushes.
+   * Only compare when a confirmed snapshot exists — missing confirmed means prefer remote apply.
+   */
+  function recoverUnpushedScheduleEdits() {
+    restoreTeamStateDirtyFlagsFromStorage();
+    try {
+      var localAssignRaw = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
+      var confAssign = getScheduleAssignmentsConfirmedJson();
+      if (localAssignRaw && confAssign && localAssignRaw !== confAssign) {
+        var localAssignObj = JSON.parse(localAssignRaw);
+        if (scheduleAssignmentsStoreIsPopulated(localAssignObj)) {
+          scheduleAssignmentsDirty = true;
+        }
+      }
+    } catch (_recAssign) {
+      /* ignore */
+    }
+    try {
+      if (localDraftScheduleHasContent()) {
+        var localDraftJson = JSON.stringify(
+          draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+        );
+        var confDraft = getDraftScheduleConfirmedJson();
+        if (confDraft && confDraft !== localDraftJson) {
+          draftScheduleDirty = true;
+        }
+      }
+    } catch (_recDraft) {
+      /* ignore */
+    }
+    try {
+      var tplRaw = localStorage.getItem(SCHEDULE_TEMPLATES_KEY) || '';
+      var confTpl = getScheduleTemplatesConfirmedJson();
+      if (tplRaw && confTpl && confTpl !== tplRaw) {
+        var tplArr = JSON.parse(tplRaw);
+        if (Array.isArray(tplArr) && tplArr.length) {
+          scheduleTemplatesDirty = true;
+        }
+      }
+    } catch (_recTpl) {
+      /* ignore */
+    }
+    persistTeamStateDirtyFlags();
+  }
 
   function isValidEmployeeChatPayload(o) {
     return !!(o && typeof o === 'object' && o.version === 1 && Array.isArray(o.threads));
@@ -4386,7 +4475,10 @@
       'local'
     );
     persistGroupOrderPotentialStore({ skipDirty: true });
-    if (JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(bootConfirmedGroup)) {
+    if (
+      bootGroupRaw &&
+      JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(bootConfirmedGroup)
+    ) {
       draftScheduleDirty = true;
     }
     var bootLocalSales = loadScheduleNetSalesStore();
@@ -4396,11 +4488,19 @@
       'local'
     );
     persistScheduleNetSalesStore({ skipDirty: true });
-    if (JSON.stringify(scheduleNetSalesByWeekStore) !== JSON.stringify(bootConfirmedSales)) {
+    if (
+      bootGroupRaw &&
+      JSON.stringify(scheduleNetSalesByWeekStore) !== JSON.stringify(bootConfirmedSales)
+    ) {
       draftScheduleDirty = true;
     }
+    recoverUnpushedScheduleEdits();
   } catch (_bootGroup) {
-    /* ignore */
+    try {
+      recoverUnpushedScheduleEdits();
+    } catch (_recBoot) {
+      /* ignore */
+    }
   }
 
   function draftSchedulePayloadFromStore(store) {
@@ -4564,6 +4664,7 @@
   function scheduleTeamStateDebouncedSync() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (teamStateRemoteApplyActive()) return;
+    persistTeamStateDirtyFlags();
     if (teamStateSyncTimer) clearTimeout(teamStateSyncTimer);
     teamStateSyncTimer = setTimeout(function () {
       teamStateSyncTimer = null;
@@ -4573,6 +4674,7 @@
 
   function flushTeamStateSyncNow() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return Promise.resolve();
+    persistTeamStateDirtyFlags();
     if (teamStateSyncTimer) {
       clearTimeout(teamStateSyncTimer);
       teamStateSyncTimer = null;
@@ -4897,6 +4999,7 @@
           teamStateMetaDirty =
             String(currentRestaurantId || 'rp-9') !== String(pushedMetaRestaurantId || '');
         }
+        persistTeamStateDirtyFlags();
         if (pushedAssignJson != null || pushedDraftJson != null) {
           var guardAssign =
             pushedAssignJson != null
@@ -4985,6 +5088,8 @@
           }
           localStorage.setItem(SCHEDULE_ASSIGN_KEY, mergedSchedJson);
           setScheduleAssignmentsConfirmedJson(mergedSchedJson);
+          scheduleAssignmentsDirty = false;
+          persistTeamStateDirtyFlags();
           touchedScheduleBundle = true;
           /* Echo of our own push / already-local SoT must not wipe Undo. */
           if (prevConfirmedAssign !== mergedSchedJson && prevLocalAssign !== mergedSchedJson) {
@@ -5003,10 +5108,11 @@
       scheduleTeamStateDebouncedSync();
       flushTeamStateSyncNow();
     } else if (isMgr && scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
-      if (scheduleAssignmentsDirty) {
-        scheduleTeamStateDebouncedSync();
-        flushTeamStateSyncNow();
-      }
+      /* Empty/missing remote assignments: seed cloud from this device even if dirty was lost. */
+      scheduleAssignmentsDirty = true;
+      persistTeamStateDirtyFlags();
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
     }
 
     var tpl = row.schedule_templates;
@@ -5021,6 +5127,8 @@
           try {
             localStorage.setItem(SCHEDULE_TEMPLATES_KEY, JSON.stringify(tpl));
             setScheduleTemplatesConfirmedJson(JSON.stringify(tpl));
+            scheduleTemplatesDirty = false;
+            persistTeamStateDirtyFlags();
             if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
               populateScheduleTemplateSelect();
             }
@@ -5120,6 +5228,7 @@
               persistGroupOrderPotentialStore({ skipDirty: true });
               persistScheduleNetSalesStore({ skipDirty: true });
               setDraftScheduleConfirmedJson(remoteDraftJson);
+              draftScheduleDirty = false;
               touchedScheduleBundle = true;
               if (remoteDraftPayload.windowMondayIso) {
                 writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
@@ -5128,6 +5237,7 @@
               if (preservedLocalSlotOrder && isMgr && GM_SUPABASE_DATA && window.gmSupabase) {
                 draftScheduleDirty = true;
               }
+              persistTeamStateDirtyFlags();
             } catch (_d) {
               /* ignore */
             }
@@ -5141,9 +5251,16 @@
         absorbUnchangedRemoteSlotOrderFromDraft(dr);
         absorbUnchangedRemoteGroupOrderFromDraft(dr);
         absorbUnchangedRemoteNetSalesFromDraft(dr);
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
         scheduleTeamStateDebouncedSync();
         flushTeamStateSyncNow();
       }
+    } else if (isMgr && localDraftScheduleHasContent()) {
+      draftScheduleDirty = true;
+      persistTeamStateDirtyFlags();
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
     }
 
     if (Object.prototype.hasOwnProperty.call(row, 'schedule_published')) {
@@ -7082,6 +7199,7 @@
     scheduleTeamStateDebouncedSync();
     /* Compact-during-delete must not flush mid-batch before draft/slotOrder are updated. */
     if (!opts.skipFlush) flushTeamStateSyncNow();
+    persistTeamStateDirtyFlags();
     notifyTimecardsScheduleChanged();
   }
 
@@ -20096,6 +20214,7 @@
   window.gmCalloutBootAuthedAppFromCache = gmCalloutBootAuthedAppFromCache;
   window.gmCalloutRunPostRemoteHydrate = gmCalloutRunPostRemoteHydrate;
   window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
+  window.gmCalloutFlushTeamStateSyncNow = flushTeamStateSyncNow;
   window.gmCalloutSetupEmployeesRealtime = setupEmployeesRealtimeSubscription;
   window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
   window.gmCalloutManagerBootstrap = function (opts) {
