@@ -5,6 +5,8 @@
   'use strict';
 
   var SESSION_KEY = 'gm-callout-session';
+  /** Must match timeclock-schedule-match.js — written here before that module loads. */
+  var TIMECLOCK_RESTAURANT_KEY = 'gm-callout-timeclock-restaurant';
 
   var landingPanel = document.getElementById('landingPanel');
   var accessCodePanel = document.getElementById('accessCodePanel');
@@ -53,14 +55,45 @@
     return window.gmTimeclockScheduleMatch || null;
   }
 
-  function selectedTimeclockRestaurantId() {
-    var activeBtn = document.querySelector('.timeclock-location-btn--active');
+  function normalizeTimeclockRestaurantId(id) {
     var api = scheduleMatchApi();
-    if (activeBtn && activeBtn.getAttribute('data-tc-location')) {
-      return api && typeof api.normalizeRestaurantId === 'function'
-        ? api.normalizeRestaurantId(activeBtn.getAttribute('data-tc-location'))
-        : activeBtn.getAttribute('data-tc-location');
+    if (api && typeof api.normalizeRestaurantId === 'function') {
+      return api.normalizeRestaurantId(id) || (id === 'rp-8' ? 'rp-8' : 'rp-9');
     }
+    return id === 'rp-8' ? 'rp-8' : 'rp-9';
+  }
+
+  function persistTimeclockRestaurantId(restaurantId) {
+    var norm = normalizeTimeclockRestaurantId(restaurantId);
+    try {
+      sessionStorage.setItem(TIMECLOCK_RESTAURANT_KEY, norm);
+    } catch (_e) {
+      /* ignore */
+    }
+    var api = scheduleMatchApi();
+    if (api && typeof api.setStoredRestaurantId === 'function') {
+      api.setStoredRestaurantId(norm);
+    }
+    return norm;
+  }
+
+  function selectedTimeclockRestaurantId() {
+    var activeBtn =
+      document.querySelector('#timeclockLoginPanel .timeclock-location-btn--active') ||
+      document.querySelector('#timeclockRegisterPanel .timeclock-location-btn--active') ||
+      document.querySelector('.timeclock-location-btn--active') ||
+      document.querySelector('#timeclockLoginPanel .timeclock-location-btn[aria-pressed="true"]') ||
+      document.querySelector('.timeclock-location-btn[aria-pressed="true"]');
+    if (activeBtn && activeBtn.getAttribute('data-tc-location')) {
+      return normalizeTimeclockRestaurantId(activeBtn.getAttribute('data-tc-location'));
+    }
+    try {
+      var stored = sessionStorage.getItem(TIMECLOCK_RESTAURANT_KEY);
+      if (stored === 'rp-8' || stored === 'rp-9') return stored;
+    } catch (_st) {
+      /* ignore */
+    }
+    var api = scheduleMatchApi();
     if (api && typeof api.resolveDeviceRestaurantId === 'function') {
       return api.resolveDeviceRestaurantId() || 'rp-9';
     }
@@ -68,13 +101,7 @@
   }
 
   function applyTimeclockLocationSelection(restaurantId, locked) {
-    var api = scheduleMatchApi();
-    var norm =
-      api && typeof api.normalizeRestaurantId === 'function'
-        ? api.normalizeRestaurantId(restaurantId)
-        : restaurantId === 'rp-8'
-          ? 'rp-8'
-          : 'rp-9';
+    var norm = persistTimeclockRestaurantId(restaurantId);
     document.querySelectorAll('.timeclock-location-toggle').forEach(function (toggle) {
       toggle.classList.toggle('timeclock-location-toggle--locked', !!locked);
       toggle.querySelectorAll('.timeclock-location-btn').forEach(function (btn) {
@@ -84,9 +111,6 @@
         btn.disabled = !!locked;
       });
     });
-    if (api && typeof api.setStoredRestaurantId === 'function') {
-      api.setStoredRestaurantId(norm);
-    }
     syncTimeclockLocationCopy(norm);
   }
 
@@ -94,7 +118,13 @@
     var api = scheduleMatchApi();
     var id = restaurantId || selectedTimeclockRestaurantId();
     var label =
-      api && typeof api.restaurantLabel === 'function' && id ? api.restaurantLabel(id) : '';
+      api && typeof api.restaurantLabel === 'function' && id
+        ? api.restaurantLabel(id)
+        : id === 'rp-8'
+          ? '8th Ave'
+          : id === 'rp-9'
+            ? '9th Ave'
+            : '';
     var subtitleEl = document.getElementById('timeclockLoginSubtitle');
     if (subtitleEl) {
       subtitleEl.textContent = label ? 'Time clock — ' + label : 'Time clock device';
@@ -113,6 +143,15 @@
       api && typeof api.restaurantFromPagePath === 'function' ? api.restaurantFromPagePath() : null;
     var initial =
       fromPath ||
+      (function () {
+        try {
+          var stored = sessionStorage.getItem(TIMECLOCK_RESTAURANT_KEY);
+          if (stored === 'rp-8' || stored === 'rp-9') return stored;
+        } catch (_s) {
+          /* ignore */
+        }
+        return null;
+      })() ||
       (api && typeof api.resolveDeviceRestaurantId === 'function'
         ? api.resolveDeviceRestaurantId()
         : null) ||
@@ -169,7 +208,9 @@
   }
 
   async function finishTimeclockSignIn() {
-    applyTimeclockLocationSelection(selectedTimeclockRestaurantId(), false);
+    /* Persist store BEFORE lazy-loading timeclock-app (it reads location at boot). */
+    var rid = persistTimeclockRestaurantId(selectedTimeclockRestaurantId());
+    applyTimeclockLocationSelection(rid, false);
     try {
       sessionStorage.setItem(SESSION_KEY, 'timeclock');
     } catch (_e) {
@@ -180,6 +221,14 @@
     if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
       try {
         await window.gmCalloutEnsureTimeclockApp();
+        /* Re-apply after modules load so header + punch restaurant match the toggle. */
+        persistTimeclockRestaurantId(rid);
+        applyTimeclockLocationSelection(rid, false);
+        if (typeof window.gmCalloutTimeclockSetRestaurant === 'function') {
+          window.gmCalloutTimeclockSetRestaurant(rid);
+        } else if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+          window.gmCalloutTimeclockBootstrap();
+        }
       } catch (ex) {
         console.warn('timeclock ensure', ex);
         showTcLoginError(

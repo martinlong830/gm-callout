@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-25';
+    window.__GM_ASSET_V = 'perf-26';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -552,7 +552,7 @@
         <div class="login-field timeclock-login-location">
           <span class="login-label"><span data-i18n="common.location">Location</span></span>
           <div class="timeclock-location-toggle" id="timeclockLoginLocationToggle" role="group" data-i18n-aria="auth.storeLocation" aria-label="Store location">
-            <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
+            <button type="button" class="timeclock-location-btn timeclock-location-btn--active" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
           </div>
         </div>
@@ -583,7 +583,7 @@
         <div class="login-field timeclock-login-location">
           <span class="login-label"><span data-i18n="common.location">Location</span></span>
           <div class="timeclock-location-toggle" id="timeclockRegisterLocationToggle" role="group" data-i18n-aria="auth.storeLocation" aria-label="Store location">
-            <button type="button" class="timeclock-location-btn" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
+            <button type="button" class="timeclock-location-btn timeclock-location-btn--active" data-tc-location="rp-9" aria-pressed="true">9th Ave</button>
             <button type="button" class="timeclock-location-btn" data-tc-location="rp-8" aria-pressed="false">8th Ave</button>
           </div>
         </div>
@@ -4083,7 +4083,7 @@
   <script defer src="employee-leave.js?v=perf-2"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
   <script defer src="portal-auth-client.js?v=perf-2"></script>
-  <script defer src="login-timeclock.js?v=perf-4"></script>
+  <script defer src="login-timeclock.js?v=perf-5"></script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
   <script defer src="app.js?v=perf-25"></script>
   <script>

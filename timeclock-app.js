@@ -134,6 +134,31 @@
     deviceRestaurantId = inferDeviceRestaurantId('');
   }
 
+  function setDeviceRestaurantId(restaurantId) {
+    var api = scheduleMatchApi();
+    var norm =
+      api && typeof api.normalizeRestaurantId === 'function'
+        ? api.normalizeRestaurantId(restaurantId)
+        : restaurantId === 'rp-8'
+          ? 'rp-8'
+          : restaurantId === 'rp-9'
+            ? 'rp-9'
+            : null;
+    if (!norm) return deviceRestaurantId;
+    if (api && typeof api.setStoredRestaurantId === 'function') {
+      api.setStoredRestaurantId(norm);
+    } else {
+      try {
+        sessionStorage.setItem('gm-callout-timeclock-restaurant', norm);
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+    deviceRestaurantId = norm;
+    updateLocationLabel(deviceRestaurantId);
+    return deviceRestaurantId;
+  }
+
   function updateLocationLabel(restaurantId) {
     if (!locationLabelEl) return;
     var api = scheduleMatchApi();
@@ -630,7 +655,15 @@
         .eq('id', uid)
         .maybeSingle();
       if (prof.data && prof.data.display_name) {
-        deviceRestaurantId = inferDeviceRestaurantId(prof.data.display_name);
+        /* Keep explicit store toggle / URL restaurant; only use device name as fallback. */
+        var api = scheduleMatchApi();
+        var stored =
+          api && typeof api.storedRestaurantId === 'function' ? api.storedRestaurantId() : null;
+        if (!urlRestaurantId && !stored) {
+          deviceRestaurantId = inferDeviceRestaurantId(prof.data.display_name);
+        } else {
+          refreshDeviceRestaurantId();
+        }
         if (deviceLabelEl) deviceLabelEl.textContent = prof.data.display_name;
         updateLocationLabel(deviceRestaurantId);
       }
@@ -685,5 +718,9 @@
       hiddenInputEl.setAttribute('readonly', 'readonly');
       if (phase === 'enter') armHiddenInputForEntry();
     }
+  };
+
+  window.gmCalloutTimeclockSetRestaurant = function (restaurantId) {
+    return setDeviceRestaurantId(restaurantId);
   };
 })();
