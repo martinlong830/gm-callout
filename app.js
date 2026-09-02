@@ -7125,7 +7125,10 @@
   var scheduleTemplatePreviewSession = null;
 
   function scheduleTemplateModalIsOpen() {
-    return !!(scheduleTemplateModal && !scheduleTemplateModal.hidden);
+    /* Query live — do not close over the later `const scheduleTemplateModal` (TDZ crash on boot). */
+    var modal =
+      typeof document !== 'undefined' ? document.getElementById('scheduleTemplateModal') : null;
+    return !!(modal && !modal.hidden);
   }
 
   function scheduleTemplateEditsAreScratch() {
