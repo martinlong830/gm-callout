@@ -20225,7 +20225,14 @@
   }
 
   (async function () {
-    if (!gmCalloutIsTimeclockKiosk()) {
+    var hadStoredSessionHint = false;
+    try {
+      hadStoredSessionHint = !!(sessionStorage.getItem('gm-callout-session') || '').trim();
+    } catch (_sessHint) {
+      hadStoredSessionHint = false;
+    }
+    /* Don't flash the login gate when a prior session is likely — restore first. */
+    if (!gmCalloutIsTimeclockKiosk() && !hadStoredSessionHint) {
       gmCalloutSetLoginGateOpen(true);
     }
     if (GM_SUPABASE_DATA) {
@@ -20244,10 +20251,17 @@
           if (typeof window.gmCalloutPromptRecoveryEmailIfNeeded === 'function') {
             void window.gmCalloutPromptRecoveryEmailIfNeeded();
           }
+        } else if (!gmCalloutIsTimeclockKiosk()) {
+          gmCalloutSetLoginGateOpen(true);
         }
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
+        if (!gmCalloutIsTimeclockKiosk()) {
+          gmCalloutSetLoginGateOpen(true);
+        }
       }
+    } else if (!gmCalloutIsTimeclockKiosk()) {
+      gmCalloutSetLoginGateOpen(true);
     }
     if (!gmCalloutIsTimeclockKiosk() && document.documentElement.classList.contains('authed')) {
       if (
