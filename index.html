@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-22" />
+  <link rel="stylesheet" href="styles.css?v=perf-25" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-19" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-22" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-15';
+    window.__GM_ASSET_V = 'perf-22';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -65,6 +65,64 @@
       });
       return chain;
     };
+    window.__gmManagerAppLoadPromise = null;
+    window.gmEnsureManagerAppLoaded = function () {
+      if (typeof window.gmCalloutManagerBootstrap === 'function') {
+        return Promise.resolve();
+      }
+      if (window.__gmManagerAppLoadPromise) return window.__gmManagerAppLoadPromise;
+      var loadChain =
+        typeof window.gmLoadScripts === 'function'
+          ? window.gmLoadScripts(['employee-leave.js', 'break-policy.js', 'app.js'])
+          : window.gmLoadScript('app.js');
+      window.__gmManagerAppLoadPromise = Promise.resolve(loadChain).then(function () {
+        return new Promise(function (resolve) {
+          if (typeof window.gmCalloutManagerBootstrap === 'function') {
+            resolve();
+            return;
+          }
+          var settled = false;
+          function done() {
+            if (settled) return;
+            settled = true;
+            resolve();
+          }
+          window.addEventListener('gm-callout-app-ready', done, { once: true });
+          var tries = 0;
+          (function poll() {
+            if (typeof window.gmCalloutManagerBootstrap === 'function') {
+              done();
+              return;
+            }
+            if (++tries > 400) {
+              done();
+              return;
+            }
+            setTimeout(poll, 25);
+          })();
+        });
+      });
+      return window.__gmManagerAppLoadPromise;
+    };
+    window.gmPrefetchManagerAppBundle = function () {
+      void window.gmEnsureManagerAppLoaded();
+    };
+    function gmLikelyHasStoredSession() {
+      try {
+        if (sessionStorage.getItem('gm-callout-session')) return true;
+      } catch (_ss) {
+        /* ignore */
+      }
+      try {
+        for (var i = 0; i < localStorage.length; i += 1) {
+          var k = localStorage.key(i);
+          if (k && k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) return true;
+        }
+      } catch (_ls) {
+        /* ignore */
+      }
+      return false;
+    }
   </script>
 </head>
 <body>
@@ -790,33 +848,39 @@
             <ul class="worker-list" id="editWorkerList"></ul>
           </div>
           <div class="shift-details-editor" id="shiftDetailsEditor">
+            <div class="shift-detail-master-template" id="shiftDetailMasterTemplateWrap" hidden>
+              <label class="shift-detail-field form-field-block">
+                <span class="shift-detail-field-label">Master Template shift</span>
+                <select id="shiftDetailMasterTemplateSelect" class="timecards-input" aria-label="Master Template shift"></select>
+              </label>
+            </div>
             <label class="shift-detail-dayoff-label">
               <input type="checkbox" id="shiftDetailDayOff" /> <span data-i18n="common.dayOff">Day off</span>
             </label>
-            <div class="shift-detail-times" id="shiftDetailTimesWrap">
-              <label class="shift-detail-field">
+            <div class="shift-detail-times timecards-datetime-row" id="shiftDetailTimesWrap">
+              <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="common.start">Start</span></span>
-                <input type="time" id="shiftDetailStart" step="60" />
+                <input type="time" id="shiftDetailStart" class="timecards-input timecards-input--time" step="60" />
               </label>
               <span class="draft-time-sep" aria-hidden="true">–</span>
-              <label class="shift-detail-field">
+              <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="common.end">End</span></span>
-                <input type="time" id="shiftDetailEnd" step="60" />
+                <input type="time" id="shiftDetailEnd" class="timecards-input timecards-input--time" step="60" />
               </label>
               <span class="shift-detail-hours" id="shiftDetailHours"></span>
             </div>
             <div class="shift-detail-break" id="shiftDetailBreakWrap">
-              <label class="shift-detail-field">
+              <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="schedule.breakOffice">Break / office</span></span>
-                <select id="shiftDetailBreakType" aria-label="Break label">
+                <select id="shiftDetailBreakType" class="timecards-input" aria-label="Break label">
                   <option value="BREAK TIME" data-i18n="schedule.breakTime">BREAK TIME</option>
                   <option value="OFFICE" data-i18n="schedule.office">OFFICE</option>
                   <option value="NO BREAK" data-i18n="schedule.noBreak">NO BREAK</option>
                 </select>
               </label>
-              <label class="shift-detail-field">
+              <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="schedule.assignedTime">Assigned time</span></span>
-                <select id="shiftDetailBreakTime" aria-label="Break time"></select>
+                <select id="shiftDetailBreakTime" class="timecards-input" aria-label="Break time"></select>
               </label>
             </div>
           </div>
@@ -1841,7 +1905,9 @@
           <button type="button" class="btn btn-primary" id="loadScheduleTemplateBtn">Load into editor</button>
           <button type="button" class="btn btn-secondary" id="newScheduleTemplateBtn">Use current schedule</button>
         </div>
-        <div id="scheduleTemplatePreviewMount" class="schedule-template-preview-mount"></div>
+        <div class="calendar-table-wrap schedule-template-preview-wrap">
+          <div id="scheduleTemplatePreviewMount" class="schedule-template-preview-mount" aria-label="Template schedule preview"></div>
+        </div>
         <button type="button" class="btn btn-primary btn-block" id="applyScheduleTemplateBtn">Apply template</button>
         <button type="button" class="btn btn-secondary btn-block" id="deleteScheduleTemplateBtn" disabled>Delete template</button>
         <label class="schedule-sheet-field">
@@ -2215,6 +2281,9 @@
     /* Minimal landing handlers so Log in / Create company work even if the
        larger auth IIFE is still parsing or failed partway through. */
     window.gmCalloutLandingLogIn = function () {
+      if (typeof window.gmPrefetchManagerAppBundle === 'function') {
+        window.gmPrefetchManagerAppBundle();
+      }
       if (typeof window.gmCalloutShowAccessCodePanel === 'function') {
         window.gmCalloutShowAccessCodePanel();
         return;
@@ -2300,6 +2369,9 @@
       var SESSION_COMPANY_NAME_KEY = 'gm-callout-company-name';
 
       function whenManagerAppReady() {
+        if (typeof window.gmEnsureManagerAppLoaded === 'function') {
+          return window.gmEnsureManagerAppLoaded();
+        }
         if (typeof window.gmCalloutManagerBootstrap === 'function') {
           return Promise.resolve();
         }
@@ -2719,7 +2791,7 @@
       }
 
       async function finishPortalLogin(role, displayName, companyPayload) {
-        await whenManagerAppReady();
+        var appReady = whenManagerAppReady();
         if (companyPayload) storeCompanySession(companyPayload);
         if (role === 'manager' || role === 'admin') {
           try {
@@ -2729,38 +2801,28 @@
           }
           setSession(role);
           applyAuthedShell(role);
-          if (typeof window.gmCalloutSupabaseHydrateFromRemote === 'function') {
-            try {
-              await window.gmCalloutSupabaseHydrateFromRemote();
-            } catch (_h) {
-              /* ignore */
-            }
-          }
-          if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-            window.gmCalloutManagerMessagingBootstrap();
-          } else if (typeof window.gmCalloutEnsureManagerMessaging === 'function') {
-            void window.gmCalloutEnsureManagerMessaging().then(function () {
-              if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
-                window.gmCalloutManagerMessagingBootstrap();
-              }
-            });
-          }
+          await appReady;
           if (typeof window.gmCalloutManagerBootstrap === 'function') {
             window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
           }
-          var startNotifs = function () {
-            if (
-              window.gmCalloutNotificationsCenter &&
-              typeof window.gmCalloutNotificationsCenter.start === 'function'
-            ) {
-              void window.gmCalloutNotificationsCenter.start();
-            }
-          };
-          if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
-            void window.gmCalloutEnsureNotificationsCenter().then(startNotifs);
-          } else {
-            startNotifs();
-          }
+          void appReady
+            .then(function () {
+              var hydrate =
+                typeof window.gmCalloutScheduleRemoteHydrate === 'function'
+                  ? window.gmCalloutScheduleRemoteHydrate
+                  : window.gmCalloutSupabaseHydrateFromRemote;
+              if (typeof hydrate !== 'function') return null;
+              return hydrate({ deferSecondary: true });
+            })
+            .then(function () {
+              if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
+                window.gmCalloutRunPostRemoteHydrate();
+              }
+            })
+            .catch(function (_hydr) {
+              /* ignore */
+            });
+          void promptRecoveryEmailIfNeeded();
           return;
         }
         if (role === 'employee') {
@@ -2771,13 +2833,7 @@
           }
           setSession('employee');
           applyAuthedShell('employee');
-          if (typeof window.gmCalloutSupabaseHydrateFromRemote === 'function') {
-            try {
-              await window.gmCalloutSupabaseHydrateFromRemote();
-            } catch (_h2) {
-              /* ignore */
-            }
-          }
+          await appReady;
           if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
             try {
               await window.gmCalloutEnsureEmployeeApp();
@@ -2788,19 +2844,24 @@
           if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
             window.gmCalloutEmployeeBootstrap();
           }
-          var startEmpNotifs = function () {
-            if (
-              window.gmCalloutNotificationsCenter &&
-              typeof window.gmCalloutNotificationsCenter.start === 'function'
-            ) {
-              void window.gmCalloutNotificationsCenter.start();
-            }
-          };
-          if (typeof window.gmCalloutEnsureNotificationsCenter === 'function') {
-            void window.gmCalloutEnsureNotificationsCenter().then(startEmpNotifs);
-          } else {
-            startEmpNotifs();
-          }
+          void appReady
+            .then(function () {
+              var hydrate =
+                typeof window.gmCalloutScheduleRemoteHydrate === 'function'
+                  ? window.gmCalloutScheduleRemoteHydrate
+                  : window.gmCalloutSupabaseHydrateFromRemote;
+              if (typeof hydrate !== 'function') return null;
+              return hydrate({ deferSecondary: true });
+            })
+            .then(function () {
+              if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
+                window.gmCalloutRunPostRemoteHydrate();
+              }
+            })
+            .catch(function (_hydr2) {
+              /* ignore */
+            });
+          void promptRecoveryEmailIfNeeded();
           return;
         }
         if (role === 'timeclock' && typeof window.gmCalloutApplySupabaseRole === 'function') {
@@ -3517,9 +3578,26 @@
       }
 
       if (loginForm && loginEmail && loginPassword) {
+        var loginSubmitBtn = loginForm.querySelector('.login-submit');
+        var loginSubmitDefaultLabel = loginSubmitBtn ? loginSubmitBtn.textContent : '';
+        function setLoginSubmitBusy(isBusy) {
+          if (!loginSubmitBtn) return;
+          loginSubmitBtn.disabled = !!isBusy;
+          loginSubmitBtn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+          if (isBusy) loginSubmitBtn.textContent = 'Signing in…';
+          else if (loginSubmitDefaultLabel) loginSubmitBtn.textContent = loginSubmitDefaultLabel;
+        }
+        function armLoginAppPrefetch() {
+          if (typeof window.gmPrefetchManagerAppBundle === 'function') {
+            window.gmPrefetchManagerAppBundle();
+          }
+        }
+        loginEmail.addEventListener('focus', armLoginAppPrefetch, { once: true, passive: true });
+        loginPassword.addEventListener('focus', armLoginAppPrefetch, { once: true, passive: true });
         loginForm.addEventListener('submit', function (e) {
           e.preventDefault();
           clearLoginError();
+          armLoginAppPrefetch();
           var rawLogin = loginEmail.value;
           var password = loginPassword.value || '';
 
@@ -3528,20 +3606,27 @@
 
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
-              await whenPortalAuthReady();
-              var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
-              if (!res.ok) {
-                if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
-                showLoginError(res.message || 'Sign in failed.');
-                return;
+              setLoginSubmitBusy(true);
+              var appPrefetch = whenManagerAppReady();
+              try {
+                await whenPortalAuthReady();
+                var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
+                if (!res.ok) {
+                  if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
+                  showLoginError(res.message || 'Sign in failed.');
+                  return;
+                }
+                await appPrefetch;
+                await finishPortalLogin(res.role, res.displayName, {
+                  companyId: res.companyId,
+                  companyName: res.companyName,
+                  accessCode: res.accessCode,
+                  teamStateId: res.teamStateId,
+                  restaurantsConfig: res.restaurantsConfig,
+                });
+              } finally {
+                setLoginSubmitBusy(false);
               }
-              await finishPortalLogin(res.role, res.displayName, {
-                companyId: res.companyId,
-                companyName: res.companyName,
-                accessCode: res.accessCode,
-                teamStateId: res.teamStateId,
-                restaurantsConfig: res.restaurantsConfig,
-              });
             })();
             return;
           }
@@ -3981,11 +4066,43 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-2"></script>
-  <script defer src="employee-leave.js?v=perf-2"></script>
-  <script defer src="break-policy.js?v=perf-2"></script>
   <script defer src="portal-auth-client.js?v=perf-2"></script>
   <script defer src="login-timeclock.js?v=perf-4"></script>
-  <script defer src="app.js?v=perf-19"></script>
+  <script>
+    /* Manager app (~770KB) loads on demand — keeps the login screen interactive fast. */
+    (function armManagerAppLoad() {
+      function maybeEagerLoad() {
+        if (typeof gmLikelyHasStoredSession === 'function' && gmLikelyHasStoredSession()) {
+          if (typeof window.gmEnsureManagerAppLoaded === 'function') {
+            void window.gmEnsureManagerAppLoaded();
+          }
+          return;
+        }
+        var idle =
+          typeof requestIdleCallback === 'function'
+            ? requestIdleCallback
+            : function (fn) {
+                setTimeout(fn, 3000);
+              };
+        idle(function () {
+          try {
+            var l = document.createElement('link');
+            l.rel = 'prefetch';
+            l.href = 'app.js?v=' + encodeURIComponent(window.__GM_ASSET_V || '1');
+            l.as = 'script';
+            document.head.appendChild(l);
+          } catch (_pf) {
+            /* ignore */
+          }
+        });
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', maybeEagerLoad);
+      } else {
+        maybeEagerLoad();
+      }
+    })();
+  </script>
   <script>
     /*
      * Role / feature modules after first paint:

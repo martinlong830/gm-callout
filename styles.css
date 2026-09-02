@@ -2423,52 +2423,34 @@ html.authed .header-signout-btn {
   flex: 1 1 160px;
 }
 
+.schedule-template-preview-wrap {
+  max-width: 100%;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .schedule-template-preview-mount {
+  max-width: 100%;
   overflow: auto;
-  max-height: 55vh;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
+  max-height: min(68vh, 760px);
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .schedule-template-preview-mount .calendar-matrix {
-  min-width: 760px;
-}
-
-.schedule-template-shift-select {
-  width: 100%;
-  min-width: 130px;
-  margin-top: 6px;
-  font-size: 0.72rem;
-}
-
-.schedule-template-time-editor {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin-top: 6px;
-}
-
-.schedule-template-time-input {
-  width: 5.5rem;
   min-width: 0;
+}
+
+.shift-detail-master-template {
+  margin-bottom: 10px;
+}
+
+.shift-detail-master-template select {
+  width: 100%;
   box-sizing: border-box;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 0.72rem;
-}
-
-.schedule-template-time-input:disabled {
-  color: var(--text-muted);
-  background: var(--surface-subtle);
-}
-
-.schedule-template-shift-hint {
-  font-size: 0.68rem;
-  line-height: 1.25;
-  color: var(--muted);
-  margin-top: 3px;
 }
 
 .schedule-template-subtitle {
@@ -2514,6 +2496,41 @@ html.authed .header-signout-btn {
   width: 100%;
   min-width: 74px;
   box-sizing: border-box;
+}
+
+.schedule-master-table .timecards-input--time {
+  min-width: 9rem;
+}
+
+.shift-detail-master-template .timecards-input,
+.shift-details-editor .timecards-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  box-sizing: border-box;
+  background: var(--surface);
+}
+
+.shift-details-editor .timecards-input--time {
+  flex: 0 0 9rem;
+  width: 9rem;
+  min-width: 9rem;
+  max-width: 100%;
+}
+
+.shift-details-editor .timecards-input--readonly,
+.shift-details-editor .timecards-input:disabled {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface) 88%, var(--hover-fill));
+}
+
+.shift-details-editor .timecards-datetime-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
 }
 
 .schedule-master-add {
