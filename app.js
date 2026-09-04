@@ -3453,9 +3453,16 @@
   var SCHEDULE_CONTENT_GUARD_MS = 90000;
   var scheduleLastPushHash = null;
   var scheduleLastPushUpdatedAt = null;
-  var SCHEDULE_REVISION_RETENTION = 60;
+  var SCHEDULE_REVISION_RETENTION = 150;
+  var SCHEDULE_REVISION_LIST_LIMIT = 100;
+  /** Wait for editing to settle before writing an auto-save checkpoint. */
+  var SCHEDULE_REVISION_AUTOSAVE_QUIET_MS = 8 * 60 * 1000;
+  /** Minimum gap between auto-save checkpoints (publish/revert always save). */
+  var SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS = 8 * 60 * 1000;
   var scheduleRevisionInsertTimer = null;
   var scheduleRevisionPending = null;
+  var scheduleRevisionLastAutoSaveAt = 0;
+  var scheduleRevisionRetryTimer = null;
   var tipPayrollPushTimer = null;
   /** Snapshot of tip/VL/SL stores last applied from (or confirmed to) Supabase — push only overlays session edits. */
   var tipPayrollRemoteBaseline = { tipPool: {}, dishwasher: {}, weekExtras: {} };
@@ -4727,30 +4734,61 @@
     return (h >>> 0).toString(16).padStart(8, '0') + ':' + String(raw.length);
   }
 
-  function formatScheduleRevisionLabel(source) {
-    var time = new Date().toLocaleString(undefined, {
+  function formatScheduleRevisionWhen(isoOrDate) {
+    var d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate || Date.now());
+    if (isNaN(d.getTime())) d = new Date();
+    return d.toLocaleString(undefined, {
+      weekday: 'short',
       month: 'short',
       day: 'numeric',
+      year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      second: '2-digit',
     });
-    if (source === 'publish') return time + ' · Publish';
-    if (source === 'hard_revert') return time + ' · Hard revert';
-    if (source === 'pre_revert') return time + ' · Before revert';
-    if (source === 'manual') return time + ' · Checkpoint';
-    return time + ' · Auto-save';
+  }
+
+  function scheduleRevisionSourceLabel(source) {
+    if (source === 'publish') return gmT('schedule.historySourcePublish') || 'Publish';
+    if (source === 'hard_revert') return gmT('schedule.historySourceHardRevert') || 'Hard revert';
+    if (source === 'pre_revert') return gmT('schedule.historySourceBeforeRevert') || 'Before revert';
+    if (source === 'manual') return gmT('schedule.historySourceCheckpoint') || 'Checkpoint';
+    return gmT('schedule.historySourceAutoSave') || 'Auto-save';
+  }
+
+  function formatScheduleRevisionLabel(source) {
+    return formatScheduleRevisionWhen(new Date()) + ' · ' + scheduleRevisionSourceLabel(source);
+  }
+
+  function isScheduleRevisionAutoSource(source) {
+    return !source || source === 'persist' || source === 'auto';
   }
 
   function queueScheduleRevisionInsert(opts) {
     opts = opts || {};
     scheduleRevisionPending = opts;
     if (scheduleRevisionInsertTimer) clearTimeout(scheduleRevisionInsertTimer);
+    if (scheduleRevisionRetryTimer) {
+      clearTimeout(scheduleRevisionRetryTimer);
+      scheduleRevisionRetryTimer = null;
+    }
+    var quietMs = isScheduleRevisionAutoSource(opts.source)
+      ? SCHEDULE_REVISION_AUTOSAVE_QUIET_MS
+      : 400;
     scheduleRevisionInsertTimer = setTimeout(function () {
       scheduleRevisionInsertTimer = null;
       var pending = scheduleRevisionPending;
       scheduleRevisionPending = null;
       if (pending) void insertScheduleRevisionRow(pending);
-    }, 1200);
+    }, quietMs);
+  }
+
+  function scheduleRevisionRetryAfterGap(opts, waitMs) {
+    if (scheduleRevisionRetryTimer) clearTimeout(scheduleRevisionRetryTimer);
+    scheduleRevisionRetryTimer = setTimeout(function () {
+      scheduleRevisionRetryTimer = null;
+      void insertScheduleRevisionRow(opts || {});
+    }, Math.max(1000, waitMs || SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS));
   }
 
   async function insertScheduleRevisionRow(opts) {
@@ -4763,18 +4801,58 @@
       opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore);
     var contentHash = hashScheduleBundle(assignments, draft);
     var source = opts.source || 'persist';
+    var isAuto = isScheduleRevisionAutoSource(source);
     try {
       if (opts.dedupe !== false) {
         var latest = await sb
           .from('team_state_schedule_revisions')
-          .select('id, content_hash')
+          .select('id, content_hash, created_at, source')
           .eq('team_state_id', teamStateId)
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
-        if (!latest.error && latest.data && latest.data.content_hash === contentHash) {
-          return { ok: true, skipped: true };
+        if (!latest.error && latest.data) {
+          if (latest.data.content_hash === contentHash) {
+            return { ok: true, skipped: true };
+          }
+          if (isAuto && latest.data.created_at) {
+            var latestAt = new Date(latest.data.created_at).getTime();
+            var gapLeft =
+              SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS - (Date.now() - latestAt);
+            if (!isNaN(latestAt) && gapLeft > 0) {
+              scheduleRevisionRetryAfterGap(
+                {
+                  source: source,
+                  assignments: assignments,
+                  draft: draft,
+                  published: opts.published,
+                  label: opts.label,
+                },
+                gapLeft + 250
+              );
+              return { ok: true, skipped: 'too_soon' };
+            }
+          }
         }
+      }
+      if (
+        isAuto &&
+        scheduleRevisionLastAutoSaveAt &&
+        Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
+      ) {
+        scheduleRevisionRetryAfterGap(
+          {
+            source: source,
+            assignments: assignments,
+            draft: draft,
+            published: opts.published,
+            label: opts.label,
+          },
+          SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
+            (Date.now() - scheduleRevisionLastAutoSaveAt) +
+            250
+        );
+        return { ok: true, skipped: 'too_soon' };
       }
       var uid = null;
       try {
@@ -4797,6 +4875,7 @@
         console.warn('gm-callout: schedule revision insert', ins.error);
         return { ok: false, error: ins.error.message };
       }
+      if (isAuto) scheduleRevisionLastAutoSaveAt = Date.now();
       void pruneScheduleRevisions(teamStateId);
       return { ok: true };
     } catch (e) {
@@ -5650,7 +5729,7 @@
     return computeScheduleWeekLaborBreakdown(visibleDays).byRow;
   }
 
-  function computeScheduleSectionWeekTotals(role, visibleDays) {
+  function computeScheduleSectionWeekTotals(role, visibleDays, laborMap) {
     var total = {
       hours: 0,
       paidHours: 0,
@@ -5658,7 +5737,7 @@
       otHours: 0,
       laborCost: 0,
     };
-    var rowTotals = computeScheduleWeekLaborTotals(visibleDays);
+    var rowTotals = laborMap || computeScheduleWeekLaborTotals(visibleDays);
     Object.keys(rowTotals).forEach(function (key) {
       if (key.indexOf(role + ':') !== 0) return;
       var row = rowTotals[key];
@@ -5673,8 +5752,9 @@
 
   function calendarPersonTotalsCellHtml(role, trIdx, visibleDays, opts) {
     opts = opts || {};
+    var laborMap = opts.laborMap || null;
     if (opts.section) {
-      var sectionTotal = computeScheduleSectionWeekTotals(role, visibleDays);
+      var sectionTotal = computeScheduleSectionWeekTotals(role, visibleDays, laborMap);
       return (
         '<td class="calendar-person-totals-col calendar-person-totals-col--section">' +
         '<div class="calendar-person-totals-section-cell" aria-label="' +
@@ -5704,7 +5784,15 @@
         '</td>'
       );
     }
-    var tot = computeScheduleRowWeekTotals(role, trIdx, visibleDays);
+    var tot = laborMap
+      ? laborMap[role + ':' + trIdx] || {
+          hours: 0,
+          paidHours: 0,
+          regHours: 0,
+          otHours: 0,
+          laborCost: 0,
+        }
+      : computeScheduleRowWeekTotals(role, trIdx, visibleDays);
     var afterTag = gmT('schedule.netHours') || 'Net Hours';
     return (
       '<td class="calendar-person-totals-col">' +
@@ -6912,13 +7000,32 @@
   /**
    * Rebuild SCHEDULE from draft slots + assignment store.
    * opts.weekIndex — only build that week (timecards pay-week snapshot; ~15× cheaper).
+   * opts.preserveOtherWeeks — with weekIndex, keep other weeks in SCHEDULE (UI edit path).
    * opts.skipRebind — skip rebinding the open shift editor (snapshot path).
    */
   function rebuildSchedule(opts) {
     opts = opts || {};
     var weekOnly =
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : null;
-    SCHEDULE.length = 0;
+    var preserveOtherWeeks = !!(opts.preserveOtherWeeks && weekOnly != null);
+    if (preserveOtherWeeks) {
+      var kept = [];
+      for (var si = 0; si < SCHEDULE.length; si += 1) {
+        var existing = SCHEDULE[si];
+        if (!existing) continue;
+        var gdi = -1;
+        var idMatch = /^shift-(\d+)-/.exec(String(existing.id || ''));
+        if (idMatch) gdi = Number(idMatch[1]);
+        else gdi = ALL_WEEK_DAYS.indexOf(existing.day);
+        if (gdi < 0) continue;
+        if (Math.floor(gdi / 7) === weekOnly) continue;
+        kept.push(existing);
+      }
+      SCHEDULE.length = 0;
+      for (var ki = 0; ki < kept.length; ki += 1) SCHEDULE.push(kept[ki]);
+    } else {
+      SCHEDULE.length = 0;
+    }
     var forceUnassigned = restaurantUsesDefaultUnassignedSchedule(currentRestaurantId);
     var storedRs = getCurrentRestaurantAssignments();
     ALL_WEEK_DAYS.forEach(function (dayStr, globalDayIdx) {
@@ -8170,7 +8277,10 @@
       flushTeamStateSyncNow();
     }
     rebuildEmployeeDerivedData();
-    rebuildSchedule();
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+    });
     if (!templateScratch) notifyTimecardsScheduleChanged();
     if (!opts.skipUiRefresh) {
       if (templateScratch) {
@@ -12994,33 +13104,38 @@
       });
       if (!inPool) pool = [selected].concat(pool);
     }
-    var opts =
-      '<option value="Unassigned"' +
-      (selected === 'Unassigned' ? ' selected' : '') +
-      '>' +
-      escapeHtml(gmDisplayUnassigned()) +
-      '</option>' +
-      pool
-        .map(function (n) {
-          var sel = normalizeWorkerKey(n) === normalizeWorkerKey(selected) ? ' selected' : '';
-          return (
-            '<option value="' +
-            escapeHtml(n) +
-            '"' +
-            sel +
-            '>' +
-            escapeHtml(n) +
+    var opts;
+    if (moveFlags && typeof moveFlags.optionsHtml === 'function') {
+      opts = moveFlags.optionsHtml(role, selected);
+    } else {
+      opts =
+        '<option value="Unassigned"' +
+        (selected === 'Unassigned' ? ' selected' : '') +
+        '>' +
+        escapeHtml(gmDisplayUnassigned()) +
+        '</option>' +
+        pool
+          .map(function (n) {
+            var sel = normalizeWorkerKey(n) === normalizeWorkerKey(selected) ? ' selected' : '';
+            return (
+              '<option value="' +
+              escapeHtml(n) +
+              '"' +
+              sel +
+              '>' +
+              escapeHtml(n) +
+              '</option>'
+            );
+          })
+          .join('') +
+        (employeesForScheduleBorrowPicker(role).length
+          ? '<option value="' +
+            SCHEDULE_BORROW_PERSON_VALUE +
+            '">' +
+            escapeHtml(gmT('schedule.borrowEmployee')) +
             '</option>'
-          );
-        })
-        .join('') +
-      (employeesForScheduleBorrowPicker(role).length
-        ? '<option value="' +
-          SCHEDULE_BORROW_PERSON_VALUE +
-          '">' +
-          escapeHtml(gmT('schedule.borrowEmployee')) +
-          '</option>'
-        : '');
+          : '');
+    }
     var canUp = moveFlags && moveFlags.up;
     var canDown = moveFlags && moveFlags.down;
     return (
@@ -13169,7 +13284,10 @@
       }
     }
     if (templateScratch) applyTemplateEditorAssignmentsToScratch();
-    rebuildSchedule();
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+    });
     refreshScheduleCalendarAfterEdit({ force: true });
     /* If a deferred path skipped rebuild, still paint the overlay for this row. */
     var personSelectRoot = templateScratch
@@ -13432,6 +13550,53 @@
     const showPersonTotals = showDayTotals;
     const dayColCount = visibleDays.length;
     const colCount = dayColCount + 1 + (showPersonTotals ? 1 : 0);
+    var laborMap = showPersonTotals ? computeScheduleWeekLaborTotals(visibleDays) : null;
+    var shiftByKey = Object.create(null);
+    for (var sxi = 0; sxi < SCHEDULE.length; sxi += 1) {
+      var sx = SCHEDULE[sxi];
+      if (!sx) continue;
+      shiftByKey[sx.day + '|' + sx.role + '|' + sx.trIdx] = sx;
+    }
+    var personPoolByRole = Object.create(null);
+    var borrowAvailableByRole = Object.create(null);
+    function personSelectOptionsHtml(role, selected) {
+      var pool = personPoolByRole[role];
+      if (!pool) {
+        pool = namesForScheduleRowPersonPicker(role, currentRestaurantId);
+        personPoolByRole[role] = pool;
+        borrowAvailableByRole[role] = employeesForScheduleBorrowPicker(role).length > 0;
+      }
+      var list = pool;
+      if (selected && selected !== 'Unassigned') {
+        var selKey = normalizeWorkerKey(selected);
+        var inPool = list.some(function (n) {
+          return normalizeWorkerKey(n) === selKey;
+        });
+        if (!inPool) list = [selected].concat(list);
+      }
+      return (
+        '<option value="Unassigned"' +
+        (selected === 'Unassigned' ? ' selected' : '') +
+        '>' +
+        escapeHtml(gmDisplayUnassigned()) +
+        '</option>' +
+        list
+          .map(function (n) {
+            var sel = normalizeWorkerKey(n) === normalizeWorkerKey(selected) ? ' selected' : '';
+            return (
+              '<option value="' + escapeHtml(n) + '"' + sel + '>' + escapeHtml(n) + '</option>'
+            );
+          })
+          .join('') +
+        (borrowAvailableByRole[role]
+          ? '<option value="' +
+            SCHEDULE_BORROW_PERSON_VALUE +
+            '">' +
+            escapeHtml(gmT('schedule.borrowEmployee')) +
+            '</option>'
+          : '')
+      );
+    }
     var totalsHeader = showPersonTotals
       ? '<th scope="col" class="calendar-person-totals-col">' +
         '<span class="calendar-th-full">' +
@@ -13497,7 +13662,12 @@
           '<td colspan="' +
           dayColCount +
           '" class="calendar-group-fill" aria-hidden="true">&nbsp;</td>' +
-          (showPersonTotals ? calendarPersonTotalsCellHtml(roleKey, 0, visibleDays, { section: true }) : '') +
+          (showPersonTotals
+            ? calendarPersonTotalsCellHtml(roleKey, 0, visibleDays, {
+                section: true,
+                laborMap: laborMap,
+              })
+            : '') +
           '</tr>'
       );
     }
@@ -13518,13 +13688,12 @@
         const personTd = buildCalendarRowPersonSelectHtml(rd.role, trIdx, rd, visibleDays, readOnly, {
           up: oi > 0,
           down: oi < slotOrder.length - 1,
+          optionsHtml: readOnly ? null : personSelectOptionsHtml,
         });
         var rowPerson = scheduleRowPrimaryPerson(rd.role, trIdx, visibleDays);
         const tds = visibleDays
           .map(function (dayStr) {
-            const shift = SCHEDULE.find(function (s) {
-              return s.day === dayStr && s.role === rd.role && s.trIdx === trIdx;
-            });
+            const shift = shiftByKey[dayStr + '|' + rd.role + '|' + trIdx];
             var slotMetaAttrs =
               ' data-role="' +
               escapeHtml(rd.role) +
@@ -13670,7 +13839,9 @@
             '">' +
             personTd +
             tds +
-            (showPersonTotals ? calendarPersonTotalsCellHtml(rd.role, trIdx, visibleDays) : '') +
+            (showPersonTotals
+              ? calendarPersonTotalsCellHtml(rd.role, trIdx, visibleDays, { laborMap: laborMap })
+              : '') +
             '</tr>'
         );
       }
@@ -14137,8 +14308,14 @@
         if (!salesDayIso || !weekMon) return;
         setScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso, salesInp.value);
         salesInp.value = getScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso);
-        /* Refresh labor % without collapsing panels. */
-        renderCalendar();
+        /* Refresh labor % without rebuilding the full calendar matrix. */
+        var readOnlySales =
+          document.documentElement.classList.contains('manager-app') &&
+          !managerCanEditCurrentRestaurant();
+        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnlySales, readOnlySales);
+        requestAnimationFrame(function () {
+          syncSchedulePanelColumnAlignment();
+        });
       }
     });
   }
@@ -14160,7 +14337,11 @@
       rootEl.style.setProperty('--calendar-thead-h', offset + 'px');
     };
     apply();
-    if (typeof requestAnimationFrame === 'function') {
+    /* Skip second layout pass on coarse pointers (tablets) — one measure is enough. */
+    var coarse =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+    if (!coarse && typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(function () {
         apply();
       });
@@ -18074,7 +18255,7 @@
       .select('id, created_at, source, label, content_hash')
       .eq('team_state_id', gmCalloutTeamStateRowId())
       .order('created_at', { ascending: false })
-      .limit(40);
+      .limit(SCHEDULE_REVISION_LIST_LIMIT);
     if (res.error) {
       if (scheduleHistoryList) {
         scheduleHistoryList.innerHTML =
@@ -18097,20 +18278,19 @@
     if (scheduleHistoryList) {
       scheduleHistoryList.innerHTML = rows
         .map(function (r) {
-          var label =
-            r.label ||
-            formatScheduleRevisionLabel(r.source) ||
-            String(r.created_at || '');
+          var when = formatScheduleRevisionWhen(r.created_at);
+          var kind = scheduleRevisionSourceLabel(r.source);
+          var secondary = when ? kind : r.label || kind;
           return (
             '<div class="schedule-history-row" role="listitem" data-revision-id="' +
             escapeHtml(r.id) +
             '">' +
             '<div class="schedule-history-row-meta">' +
             '<div class="schedule-history-row-label">' +
-            escapeHtml(label) +
+            escapeHtml(when || r.label || kind) +
             '</div>' +
             '<div class="schedule-history-row-source">' +
-            escapeHtml(String(r.source || 'persist')) +
+            escapeHtml(secondary) +
             '</div>' +
             '</div>' +
             '<button type="button" class="btn btn-secondary" data-hard-revert="' +

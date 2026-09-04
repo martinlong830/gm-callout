@@ -260,9 +260,14 @@ window.GM_I18N_EN = {
   'schedule.history': 'History',
   'schedule.historyTitle': 'View saved schedule versions and hard-revert',
   'schedule.historyHint':
-    'Saved schedule versions. Hard revert restores assignments and shift times for everyone.',
-  'schedule.historyEmpty': 'No saved versions yet. Edits are snapshotted after they sync.',
+    'Saved schedule versions (auto-saves about every 8 minutes while you edit, plus publish/revert). Hard revert restores assignments and shift times for everyone.',
+  'schedule.historyEmpty': 'No saved versions yet. Keep editing — checkpoints appear after a short pause.',
   'schedule.historyFailed': 'Could not load schedule history.',
+  'schedule.historySourcePublish': 'Publish',
+  'schedule.historySourceHardRevert': 'Hard revert',
+  'schedule.historySourceBeforeRevert': 'Before revert',
+  'schedule.historySourceCheckpoint': 'Checkpoint',
+  'schedule.historySourceAutoSave': 'Auto-save',
   'schedule.hardRevert': 'Hard revert',
   'schedule.hardRevertConfirm':
     'Hard revert the live schedule to this version for all managers? A safety snapshot of the current schedule is saved first.',

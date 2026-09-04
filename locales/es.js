@@ -259,9 +259,14 @@ window.GM_I18N_ES = {
   'schedule.history': 'Historial',
   'schedule.historyTitle': 'Ver versiones guardadas y revertir',
   'schedule.historyHint':
-    'Versiones guardadas del horario. La reversión fuerte restaura asignaciones y horarios para todos.',
-  'schedule.historyEmpty': 'Aún no hay versiones. Los cambios se guardan después de sincronizar.',
+    'Versiones guardadas (autoguardado ~cada 8 minutos al editar, más publicar/revertir). La reversión fuerte restaura asignaciones y horarios para todos.',
+  'schedule.historyEmpty': 'Aún no hay versiones. Sigue editando: los puntos de control aparecen tras una pausa.',
   'schedule.historyFailed': 'No se pudo cargar el historial del horario.',
+  'schedule.historySourcePublish': 'Publicar',
+  'schedule.historySourceHardRevert': 'Revertir',
+  'schedule.historySourceBeforeRevert': 'Antes de revertir',
+  'schedule.historySourceCheckpoint': 'Punto de control',
+  'schedule.historySourceAutoSave': 'Autoguardado',
   'schedule.hardRevert': 'Revertir',
   'schedule.hardRevertConfirm':
     '¿Revertir el horario en vivo a esta versión para todos los gerentes? Primero se guarda una copia de seguridad del horario actual.',

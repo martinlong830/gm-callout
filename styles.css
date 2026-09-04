@@ -4118,6 +4118,40 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     0 2px 8px -4px rgba(15, 23, 42, 0.18);
 }
 
+/* Tablets / touch: drop soft sticky shadows — big scroll win on Samsung Chromium. */
+@media (pointer: coarse), (max-width: 1023px) {
+  .calendar-matrix .time-col,
+  .calendar-matrix th.time-col,
+  .calendar-matrix td.calendar-row-person-col,
+  .calendar-matrix .calendar-person-totals-col,
+  #calendarGrid .calendar-matrix thead th,
+  #empCalendarGrid .calendar-matrix thead th {
+    box-shadow: none;
+  }
+
+  .calendar-matrix--redpoke .calendar-section-foh td.calendar-group-label {
+    box-shadow: inset 3px 0 0 #047857;
+  }
+
+  .calendar-matrix--redpoke .calendar-section-boh td.calendar-group-label {
+    box-shadow: inset 3px 0 0 #92400e;
+  }
+
+  .calendar-matrix--redpoke .calendar-section-delivery td.calendar-group-label {
+    box-shadow: inset 3px 0 0 #1d4ed8;
+  }
+
+  .calendar-matrix--redpoke .calendar-section-group-order td.calendar-group-label {
+    box-shadow: inset 3px 0 0 #64748b;
+  }
+
+  .calendar-matrix .calendar-slot-wrap,
+  .calendar-matrix .calendar-row-person-select,
+  .calendar-matrix .timecards-input {
+    transition: none;
+  }
+}
+
 .calendar-slot-wrap.calendar-slot-empty {
   cursor: default;
   background: rgba(255, 255, 255, 0.6);
@@ -7033,7 +7067,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .schedule-history-list {
-  max-height: min(50vh, 360px);
+  max-height: min(62vh, 520px);
   overflow: auto;
   display: flex;
   flex-direction: column;

@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-28" />
+  <link rel="stylesheet" href="styles.css?v=perf-30" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-25" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-27" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-26';
+    window.__GM_ASSET_V = 'perf-27';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -2235,7 +2235,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-9"></script>
+  <script src="locales/en.js?v=perf-10"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2247,7 +2247,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-8';
+      s.src = 'locales/es.js?v=perf-10';
       document.head.appendChild(s);
     })();
   </script>
@@ -4085,7 +4085,7 @@
   <script defer src="portal-auth-client.js?v=perf-2"></script>
   <script defer src="login-timeclock.js?v=perf-5"></script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-25"></script>
+  <script defer src="app.js?v=perf-27"></script>
   <script>
     /*
      * Role / feature modules after first paint:
