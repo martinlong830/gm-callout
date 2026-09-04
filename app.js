@@ -7819,6 +7819,10 @@
       if (!row) return;
       var worker = scheduleTemplateEditorState.workers[rowKey] || 'Unassigned';
       var list = worker === 'Unassigned' ? ['Unassigned'] : [worker];
+      var rowDirty = !!(
+        scheduleTemplateEditorState.dirtyPersonRows &&
+        scheduleTemplateEditorState.dirtyPersonRows[rowKey]
+      );
       visibleDays.forEach(function (dayStr) {
         var wk = weekdayKeyFromScheduleDay(dayStr);
         var di = WEEKDAY_KEYS.indexOf(wk);
@@ -7830,7 +7834,25 @@
           rs[shiftId] != null
             ? cloneScheduleAssignment(rs[shiftId])
             : { workers: ['Unassigned'] };
-        entry.workers = list.slice();
+        var existingPrimary = scheduleAssignmentPrimaryWorker(entry);
+        /*
+         * Never stamp the Person-column value onto every day blindly — that wiped
+         * day-specific people (e.g. Jon on Tue/Wed of a Maeve-primary row) on Apply.
+         * Only fill Unassigned, canonicalize the same person, or honor an explicit
+         * Person-column change (dirtyPersonRows).
+         */
+        if (rowDirty) {
+          entry.workers = list.slice();
+        } else if (!existingPrimary || existingPrimary === 'Unassigned') {
+          if (worker !== 'Unassigned') entry.workers = list.slice();
+        } else if (
+          worker !== 'Unassigned' &&
+          normalizeWorkerKey(existingPrimary) === normalizeWorkerKey(worker)
+        ) {
+          entry.workers = list.slice();
+        } else {
+          return;
+        }
         rs[shiftId] = entry;
       });
     });
@@ -12549,6 +12571,7 @@
       choices: choices,
       masterTemplateId: '',
       sourceTemplateId: '',
+      dirtyPersonRows: Object.create(null),
       assignmentScratch: scheduleTemplatePreviewSession
         ? JSON.parse(JSON.stringify(scheduleTemplatePreviewSession.assignments))
         : JSON.parse(JSON.stringify(loadScheduleAssignmentsStore())),
@@ -12987,6 +13010,7 @@
     if (!template) return;
     var state = currentTemplateEditorState();
     var pattern = normalizeWeekPatternKeys(template.weekPattern || {});
+    state.dirtyPersonRows = Object.create(null);
     Object.keys(pattern).forEach(function (key) {
       var slot = parseWeekPatternSlotKey(key);
       if (!slot) return;
@@ -12994,7 +13018,9 @@
       if (!role) return;
       var entry = normalizeScheduleAssignment(pattern[key]);
       var worker = scheduleAssignmentPrimaryWorker(entry) || 'Unassigned';
-      state.workers[templateEditorRowKey(role, slot.trIdx)] = worker;
+      var rowKey = templateEditorRowKey(role, slot.trIdx);
+      state.workers[rowKey] = worker;
+      state.dirtyPersonRows[rowKey] = true;
     });
     state.masterTemplateId = String(template.masterTemplateId || '');
     state.sourceTemplateId = String(template.id || '');
@@ -14014,6 +14040,10 @@
     var list = canon === 'Unassigned' ? ['Unassigned'] : [canon];
     if (templateScratch && scheduleTemplateEditorState) {
       scheduleTemplateEditorState.workers[templateEditorRowKey(role, trIdx)] = canon;
+      if (!scheduleTemplateEditorState.dirtyPersonRows) {
+        scheduleTemplateEditorState.dirtyPersonRows = Object.create(null);
+      }
+      scheduleTemplateEditorState.dirtyPersonRows[templateEditorRowKey(role, trIdx)] = true;
     }
     var visibleDays = getVisibleWeekDays();
     var roleIdx = roleIdxForDraftRole(role);

@@ -2022,12 +2022,40 @@ html.authed .header-signout-btn {
   z-index: 65;
 }
 
+/* Templates sheet: use almost the full viewport (base modal is ~26rem). */
+#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel {
+  width: min(98vw, 96rem);
+  max-width: min(98vw, 96rem);
+  max-height: min(96vh, 96dvh);
+  height: min(96vh, 96dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--space-block);
+  box-sizing: border-box;
+}
+
+#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .availability-modal-head,
+#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .availability-modal-meta {
+  flex-shrink: 0;
+}
+
+#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .schedule-sheet-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .draft-schedule-modal {
   z-index: 66;
 }
 
 .draft-schedule-panel.availability-modal-panel {
   max-width: min(96vw, 64rem);
+  width: min(96vw, 64rem);
+  height: auto;
+  max-height: min(92vh, 52rem);
 }
 
 .draft-role-chips {
@@ -2472,10 +2500,16 @@ html.authed .header-signout-btn {
   padding-right: 0;
 }
 
+.schedule-template-preview-stage {
+  position: relative;
+  isolation: isolate;
+  min-height: min(58vh, 520px);
+}
+
 .schedule-template-preview-mount {
   max-width: 100%;
   overflow: auto;
-  max-height: min(68vh, 760px);
+  max-height: min(72vh, 820px);
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   border: 0;
@@ -2487,10 +2521,13 @@ html.authed .header-signout-btn {
   min-width: 0;
 }
 
-.schedule-template-preview-stage {
-  position: relative;
-  isolation: isolate;
-  min-height: min(42vh, 360px);
+.schedule-template-preview-stage.template-shift-edit-open {
+  min-height: min(64vh, 600px);
+}
+
+.schedule-template-preview-stage.template-shift-edit-open .schedule-template-preview-mount {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .template-shift-edit-overlay {
@@ -2512,15 +2549,6 @@ html.authed .header-signout-btn {
 
 .template-shift-edit-overlay[hidden] {
   display: none !important;
-}
-
-.schedule-template-preview-stage.template-shift-edit-open {
-  min-height: min(52vh, 480px);
-}
-
-.schedule-template-preview-stage.template-shift-edit-open .schedule-template-preview-mount {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 .template-shift-edit-screen {
