@@ -14198,6 +14198,8 @@
     var matrix = calendarGrid.querySelector('table.calendar-matrix');
     var host = document.getElementById('scheduleBelowCalendar');
     if (!matrix || !host || host.hidden) return;
+    /* Skip expensive width sync when both panels are collapsed. */
+    if (!host.querySelector('.schedule-collapsible.is-open')) return;
     var srcThs = matrix.querySelectorAll('thead th');
     if (!srcThs.length) return;
     var widths = [];
