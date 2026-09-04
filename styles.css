@@ -45,6 +45,8 @@
   /* Person / Mon–Sun thead height — role section sticky top sits just below it.
      JS syncs this to the measured thead after each calendar render. */
   --calendar-thead-h: 3.75rem;
+  /* Sticky Person column + matching labor/group panel toggles (keep in sync). */
+  --calendar-person-col-w: 15rem;
 }
 
 html {
@@ -2208,6 +2210,15 @@ html.authed .header-signout-btn {
   flex: 1 1 7.5rem;
 }
 
+.shift-detail-times .shift-detail-field {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.shift-detail-times .shift-detail-field.form-field-block {
+  width: auto;
+}
+
 .shift-detail-field-label {
   font-size: 0.6875rem;
   font-weight: 600;
@@ -2233,6 +2244,12 @@ html.authed .header-signout-btn {
   border: 1px solid var(--border);
   background: var(--surface);
   height: 2.5rem;
+}
+
+.shift-detail-times .shift-detail-field input[type="time"] {
+  width: 7.5rem;
+  min-width: 7.5rem;
+  max-width: 7.5rem;
 }
 
 .shift-detail-field #shiftDetailBreakTime {
@@ -2403,6 +2420,10 @@ html.authed .header-signout-btn {
   min-width: 0;
 }
 
+.schedule-sheet-field[hidden] {
+  display: none !important;
+}
+
 .schedule-sheet-field .schedule-template-select,
 .schedule-sheet-field .schedule-template-name-input,
 .schedule-sheet-field .schedule-add-restaurant-input {
@@ -2421,6 +2442,28 @@ html.authed .header-signout-btn {
 
 .schedule-template-actions .btn {
   flex: 1 1 160px;
+}
+
+.schedule-template-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface));
+}
+
+.schedule-template-confirm[hidden] {
+  display: none !important;
+}
+
+.schedule-template-confirm-msg {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .schedule-template-preview-wrap {
@@ -2444,6 +2487,89 @@ html.authed .header-signout-btn {
   min-width: 0;
 }
 
+.schedule-template-preview-stage {
+  position: relative;
+  isolation: isolate;
+  min-height: min(42vh, 360px);
+}
+
+.template-shift-edit-overlay {
+  position: absolute;
+  inset: 0;
+  /* Above sticky Person / role bars in the preview grid (z-index 5–8). */
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--space-block);
+  box-sizing: border-box;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+
+.template-shift-edit-overlay[hidden] {
+  display: none !important;
+}
+
+.schedule-template-preview-stage.template-shift-edit-open {
+  min-height: min(52vh, 480px);
+}
+
+.schedule-template-preview-stage.template-shift-edit-open .schedule-template-preview-mount {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.template-shift-edit-screen {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 auto;
+}
+
+.template-shift-edit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-bottom: var(--space-block);
+}
+
+.template-shift-edit-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.template-shift-edit-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+}
+
+.template-shift-edit-overlay .shift-details-editor {
+  padding: 4px 2px 12px;
+}
+
+.template-shift-edit-overlay .screen-actions-footer {
+  margin-top: auto;
+}
+
+.template-shift-edit-overlay .panel-subtitle {
+  margin-bottom: var(--space-block);
+}
+
 .shift-detail-master-template {
   margin-bottom: 10px;
 }
@@ -2454,7 +2580,18 @@ html.authed .header-signout-btn {
 }
 
 .schedule-template-subtitle {
-  margin: 0;
+  margin: 0 0 4px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.schedule-template-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight);
 }
 
 .schedule-master-editor {
@@ -2463,8 +2600,13 @@ html.authed .header-signout-btn {
   gap: var(--space-block);
 }
 
+.schedule-master-editor[hidden] {
+  display: none !important;
+}
+
 .schedule-master-section h4 {
   margin: 0 0 6px;
+  font-size: 0.8125rem;
 }
 
 .schedule-master-table-wrap {
@@ -2472,16 +2614,18 @@ html.authed .header-signout-btn {
 }
 
 .schedule-master-table {
-  width: 100%;
-  min-width: 900px;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
   border-collapse: collapse;
   font-size: 0.78rem;
+  color: var(--text);
 }
 
 .schedule-master-table th,
 .schedule-master-table td {
   border: 1px solid var(--border);
-  padding: 5px;
+  padding: 4px 5px;
   text-align: left;
   vertical-align: middle;
 }
@@ -2489,17 +2633,52 @@ html.authed .header-signout-btn {
 .schedule-master-table th {
   background: var(--hover-fill);
   white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .schedule-master-table input,
 .schedule-master-table select {
   width: 100%;
-  min-width: 74px;
+  min-width: 0;
   box-sizing: border-box;
+  margin: 0;
+  font: inherit;
+  font-size: inherit;
+  line-height: 1.25;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  height: 1.85rem;
 }
 
-.schedule-master-table .timecards-input--time {
-  min-width: 9rem;
+.schedule-master-table .schedule-master-role,
+.schedule-master-table .schedule-master-shift {
+  width: 6.5rem;
+  min-width: 5.5rem;
+}
+
+.schedule-master-table .schedule-master-days {
+  width: 3.75rem;
+  min-width: 3.25rem;
+}
+
+.schedule-master-table .timecards-input--time,
+.schedule-master-table input[type="time"] {
+  width: 7.5rem;
+  min-width: 7.5rem;
+  max-width: 7.5rem;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  height: 1.85rem;
+}
+
+.schedule-master-table select[data-master-field="break"] {
+  width: 6.75rem;
+  min-width: 6.25rem;
+  font-size: inherit;
 }
 
 .shift-detail-master-template .timecards-input,
@@ -2514,10 +2693,13 @@ html.authed .header-signout-btn {
 }
 
 .shift-details-editor .timecards-input--time {
-  flex: 0 0 9rem;
-  width: 9rem;
-  min-width: 9rem;
-  max-width: 100%;
+  flex: none;
+  width: 7.5rem;
+  min-width: 7.5rem;
+  max-width: 7.5rem;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+  height: 2.5rem;
 }
 
 .shift-details-editor .timecards-input--readonly,
@@ -2914,6 +3096,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text);
 }
 
+.schedule-template-name-input--invalid,
+.schedule-template-name-input:invalid:focus {
+  border-color: #dc2626;
+  outline: 2px solid color-mix(in srgb, #dc2626 35%, transparent);
+  outline-offset: 1px;
+}
+
 .schedule-template-select {
   min-width: 0;
 }
@@ -3277,9 +3466,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   top: var(--calendar-thead-h);
   left: 0;
   z-index: 8;
-  width: 11rem;
-  min-width: 11rem;
-  max-width: 11rem;
+  width: var(--calendar-person-col-w);
+  min-width: var(--calendar-person-col-w);
+  max-width: var(--calendar-person-col-w);
   margin: 0;
   padding: 10px 12px;
   border: 0;
@@ -3377,9 +3566,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 /* Widths synced from calendar thead in JS; these match schedule tile mins as fallback.
    Sticky left like `.calendar-row-person-col` while #calendarGrid scrolls horizontally. */
 .schedule-panel-row-label {
-  width: 11rem;
-  min-width: 11rem;
-  max-width: 11rem;
+  width: var(--calendar-person-col-w);
+  min-width: var(--calendar-person-col-w);
+  max-width: var(--calendar-person-col-w);
   text-align: left !important;
   font-size: 0.78rem;
   font-weight: 600;
@@ -3416,16 +3605,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 @media (max-width: 1023px) {
-  .schedule-collapsible-toggle {
-    width: 9.5rem;
-    min-width: 9.5rem;
-    max-width: 9.5rem;
-  }
-
-  .schedule-panel-row-label {
-    width: 9.5rem;
-    min-width: 9.5rem;
-    max-width: 9.5rem;
+  :root {
+    --calendar-person-col-w: 13.75rem;
   }
 
   .schedule-panel-day-th,
@@ -3645,9 +3826,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .calendar-matrix .time-col,
 .calendar-matrix .calendar-row-person-col {
-  width: 11rem;
-  min-width: 11rem;
-  max-width: 11rem;
+  width: var(--calendar-person-col-w);
+  min-width: var(--calendar-person-col-w);
+  max-width: var(--calendar-person-col-w);
   font-weight: 600;
   background: var(--surface);
   position: sticky;
@@ -3723,19 +3904,20 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   bottom: 2px;
   left: 2px;
   z-index: 1;
-  display: block;
+  display: flex;
+  align-items: center;
   box-sizing: border-box;
-  padding: 0 1.75rem 0 8px;
+  padding: 2px 1.75rem 2px 8px;
   font-size: 0.8125rem;
   font-weight: 600;
-  /* Match select content box: min-height 2.625rem − 4px overlay inset. */
-  line-height: calc(2.625rem - 4px);
+  line-height: 1.2;
   color: var(--text);
   background: #fff;
   border-radius: calc(var(--radius-sm) - 1px);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   pointer-events: none;
 }
 
@@ -3751,9 +3933,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.3;
-  /* Match reorder column (~20+2+20px) so the control isn't shorter than siblings. */
-  min-height: 2.625rem;
-  height: 2.625rem;
+  /* Tall enough for two wrapped name lines in the ::after overlay. */
+  min-height: 3.35rem;
+  height: 3.35rem;
   padding: 0 1.75rem 0 8px;
   border: 1.5px solid color-mix(in srgb, var(--primary) 35%, var(--border));
   border-radius: var(--radius-sm);
@@ -3809,9 +3991,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   box-sizing: border-box;
 }
 
-.calendar-slot-wrap.calendar-slot-compact {
+.calendar-slot-wrap.calendar-slot-compact,
+.calendar-slot-wrap.calendar-slot-empty--timed {
   min-height: 5rem;
   position: relative;
+  /* Reserve a bottom strip so Ave flags never change tile/row height. */
+  padding-bottom: 1.4rem;
 }
 
 .calendar-slot-dayoff-btn {
@@ -4175,8 +4360,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-wrap.calendar-slot-empty--timed {
-  min-height: 5rem;
-  padding: 10px 10px;
+  padding: 10px 10px 1.4rem;
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
@@ -4186,9 +4370,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-rp--dayoff {
-  margin-bottom: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px dashed var(--border);
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
   opacity: 0.92;
 }
 
@@ -4198,16 +4382,22 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-slot-empty-label {
-  margin-top: auto;
+  margin-top: 2px;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-align: center;
   color: var(--text-muted);
+  line-height: 1.3;
 }
 
+/* Pin Ave flags to the same bottom strip on every day cell in the row. */
 .calendar-slot-other-store {
-  margin-top: 4px;
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 5px;
+  margin: 0;
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 0.625rem;
@@ -4217,20 +4407,27 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: #9a3412;
   background: color-mix(in srgb, #fdba74 35%, var(--surface));
   border: 1px solid color-mix(in srgb, #f97316 40%, transparent);
-  line-height: 1.35;
-  max-width: 100%;
+  line-height: 1.25;
+  max-width: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  box-sizing: border-box;
 }
 
-.calendar-slot-empty .calendar-slot-other-store {
-  margin-top: auto;
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) {
+  position: relative;
+  min-height: 5rem;
+  padding-bottom: 1.4rem;
 }
 
-.calendar-slot-rp .calendar-slot-other-store {
-  margin-top: 3px;
-  align-self: stretch;
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-empty-label {
+  margin-top: 0;
+}
+
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-other-store {
+  left: 10px;
+  right: 10px;
 }
 
 .calendar-slot-wrap.calendar-slot-empty:hover,
@@ -4557,22 +4754,37 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   gap: var(--space-tight);
 }
 
+.emp-form-danger-zone {
+  margin-top: var(--space-block);
+  padding-top: var(--space-block);
+  border-top: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+}
+
+.emp-form-danger-zone .emp-delete-hint {
+  margin: 8px 0 0;
+}
+
 .callout-footer-block {
   display: flex;
   flex-direction: column;
   gap: var(--space-tight);
 }
 
-/* Screen 2: Mode tabs (Edit vs Callout) */
+/* Screen 2: Mode tabs (Edit vs Callout) — retained for possible restore; keep hidden. */
 .mode-tabs {
   flex-shrink: 0;
-  display: flex;
+  display: none;
   gap: 0;
   margin: 0 0 var(--space-block);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface);
+}
+
+.mode-tabs[hidden],
+.mode-tabs.hidden {
+  display: none !important;
 }
 
 .mode-tab {
@@ -5694,9 +5906,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 600;
   line-height: 1.25;
   color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .calendar-matrix--readonly .calendar-slot-wrap,
@@ -5956,6 +6169,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     --space-block: 12px;
     --space-tight: 8px;
     --calendar-thead-h: 3.25rem;
+    --calendar-person-col-w: 12.75rem;
   }
 
   .title {
@@ -5983,15 +6197,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   .calendar-matrix .time-col,
   .calendar-matrix .calendar-row-person-col {
-    width: 9.5rem;
-    min-width: 9.5rem;
-    max-width: 9.5rem;
+    width: var(--calendar-person-col-w);
+    min-width: var(--calendar-person-col-w);
+    max-width: var(--calendar-person-col-w);
   }
 
   .schedule-collapsible-toggle {
-    width: 9.5rem;
-    min-width: 9.5rem;
-    max-width: 9.5rem;
+    width: var(--calendar-person-col-w);
+    min-width: var(--calendar-person-col-w);
+    max-width: var(--calendar-person-col-w);
   }
 
   .calendar-slot-wrap {
@@ -6000,8 +6214,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   .calendar-slot-wrap.calendar-slot-compact,
-  .calendar-slot-wrap.calendar-slot-empty--timed {
+  .calendar-slot-wrap.calendar-slot-empty--timed,
+  .calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) {
     min-height: 4.5rem;
+    padding-bottom: 1.3rem;
+  }
+
+  .calendar-slot-other-store {
+    left: 8px;
+    right: 8px;
+    bottom: 4px;
   }
 
   .calendar-slot-pills {

@@ -12,6 +12,8 @@ export type EmployeeRow = {
   usualRestaurant: string;
   hourlyRate?: number;
   tipPoint?: number;
+  /** Delivery/dishwasher tip take-home factor (0–1), e.g. 0.95. */
+  deliveryTipRetention?: number;
   clockPin?: string;
   weeklyGrid: Record<string, unknown>;
   meta?: Record<string, unknown>;
@@ -110,6 +112,12 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
   if (metaTip != null && !Number.isNaN(Number(metaTip))) {
     tipPoint = Number(metaTip);
   }
+  let deliveryTipRetention: number | undefined;
+  const metaRet = meta.deliveryTipRetention;
+  if (metaRet != null && !Number.isNaN(Number(metaRet))) {
+    const n = Number(metaRet);
+    deliveryTipRetention = n > 1 && n <= 100 ? Math.round((n / 100) * 10000) / 10000 : Math.round(n * 10000) / 10000;
+  }
   const clockPin = row.clock_pin != null ? String(row.clock_pin).trim() : undefined;
   const emailFromCol = row.email != null ? String(row.email).trim() : '';
   const emailFromMeta =
@@ -136,6 +144,22 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
 
   const staffType = normalizeEmployeeStaffType(row.staff_type) || String(row.staff_type ?? 'Kitchen');
 
+  if (staffType === 'Server' && deliveryTipRetention == null) {
+    const draft = {
+      staffType,
+      usualRestaurant: ur === 'both' ? 'both' : ur,
+      firstName,
+      lastName,
+      displayName,
+      meta,
+    };
+    const def = defaultDeliveryTipRetentionForEmployee(draft);
+    if (def != null) {
+      deliveryTipRetention = def;
+      meta.deliveryTipRetention = def;
+    }
+  }
+
   return {
     id: String(row.id),
     authUserId: row.auth_user_id ? String(row.auth_user_id) : undefined,
@@ -149,6 +173,7 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     usualRestaurant: ur === 'both' ? 'both' : ur,
     hourlyRate,
     tipPoint,
+    deliveryTipRetention,
     clockPin: clockPin || undefined,
     weeklyGrid: (row.weekly_grid as Record<string, unknown>) ?? {},
     meta,
@@ -175,6 +200,81 @@ export function formatHourlyRate(emp: EmployeeRow): string {
 export function formatTipPoint(emp: EmployeeRow): string {
   if (emp.tipPoint == null || Number.isNaN(emp.tipPoint)) return '—';
   return String(emp.tipPoint);
+}
+
+/** Accept 0.95 or 95 → store as factor 0–1. */
+export function normalizeDeliveryTipRetention(val: unknown): number | null {
+  if (val == null || val === '') return null;
+  const n = typeof val === 'number' ? val : parseFloat(String(val).trim());
+  if (!Number.isFinite(n) || n < 0) return null;
+  let factor = n;
+  if (factor > 1) {
+    if (factor > 100) return null;
+    factor = factor / 100;
+  }
+  return Math.round(factor * 10000) / 10000;
+}
+
+function isJuanEspinobarrosEmployee(emp: {
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+}): boolean {
+  const dn = String(emp.displayName || `${emp.firstName || ''} ${emp.lastName || ''}`)
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const ln = String(emp.lastName || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/\bESPINOBARROS\b/.test(dn) || /\bESPINOBARROS\b/.test(ln)) return true;
+  return /\bJUAN\b/.test(dn) && /\bESPINO/.test(dn);
+}
+
+export function defaultDeliveryTipRetentionForEmployee(emp: {
+  staffType?: string;
+  usualRestaurant?: string;
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+  meta?: Record<string, unknown>;
+}): number | null {
+  if (!emp || emp.staffType !== 'Server') return null;
+  if (isJuanEspinobarrosEmployee(emp)) return 0.95;
+  let loc = emp.usualRestaurant;
+  if (loc === 'both') {
+    const meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    loc = String(meta.primaryLocationId || meta.primaryRestaurantId || 'rp-9');
+  }
+  return loc === 'rp-8' ? 0.8 : 0.95;
+}
+
+export function deliveryTipRetentionFactorForEmployee(emp: EmployeeRow | null | undefined): number | null {
+  if (!emp || emp.staffType !== 'Server') return null;
+  const raw =
+    emp.deliveryTipRetention != null
+      ? emp.deliveryTipRetention
+      : emp.meta?.deliveryTipRetention != null
+        ? emp.meta.deliveryTipRetention
+        : null;
+  const n = normalizeDeliveryTipRetention(raw);
+  if (n != null) return n;
+  return defaultDeliveryTipRetentionForEmployee(emp);
+}
+
+/** Percent (e.g. 95) for dishwasher tip net math / labels. */
+export function tipTakehomePctForDishwasherEmployee(
+  emp: EmployeeRow | null | undefined,
+  restaurantId?: string | null,
+  storePctFallback?: number
+): number {
+  const factor = deliveryTipRetentionFactorForEmployee(emp ?? null);
+  if (factor != null) return Math.round(factor * 10000) / 100;
+  if (storePctFallback != null && Number.isFinite(storePctFallback)) return storePctFallback;
+  return restaurantId === 'rp-8' ? 80 : 95;
 }
 
 export function employeeDisplayName(e: EmployeeRow): string {

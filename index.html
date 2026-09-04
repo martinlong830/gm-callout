@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-30" />
+  <link rel="stylesheet" href="styles.css?v=perf-51" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-27" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-51" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-27';
+    window.__GM_ASSET_V = 'perf-51';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -779,6 +779,14 @@
               <button
                 type="button"
                 class="btn btn-secondary schedule-toolbar-btn"
+                id="scheduleClearAllBtn"
+                title="Clear all people and shift times for this week"
+              >
+                Clear all
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary schedule-toolbar-btn"
                 id="scheduleHistoryBtn"
                 title="View saved schedule versions and hard-revert"
                 data-i18n="schedule.history"
@@ -806,6 +814,15 @@
           <div class="schedule-notice hidden" id="scheduleNotice">
             <p class="schedule-notice-text" id="scheduleNoticeText">Schedule updates appear here.</p>
           </div>
+          <div class="schedule-template-confirm" id="scheduleClearAllConfirm" hidden>
+            <p class="schedule-template-confirm-msg" id="scheduleClearAllConfirmMsg">
+              Clear all people and shift times for this week at this location? This cannot be undone except with Undo.
+            </p>
+            <div class="schedule-template-actions">
+              <button type="button" class="btn btn-secondary" id="scheduleClearAllConfirmCancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="scheduleClearAllConfirmYes">Yes, clear all</button>
+            </div>
+          </div>
           <div id="calendarGrid" aria-label="Schedule calendar"></div>
         </div>
       </section>
@@ -817,15 +834,6 @@
           <div class="employee-filter-chips" id="slotLocationFilterChips" role="group" aria-labelledby="slotLocationFilterLabel"></div>
         </div>
         <div class="shift-context" id="eligibleShiftContext"></div>
-
-        <nav class="mode-tabs hidden" aria-label="Shift actions" hidden aria-hidden="true">
-          <button type="button" class="mode-tab active" id="editTabBtn" aria-current="page" data-i18n="schedule.editStaffing">
-            Edit Staffing
-          </button>
-          <button type="button" class="mode-tab" id="calloutTabBtn">
-            Coverage
-          </button>
-        </nav>
 
         <div class="mode-panel" id="editPanel">
           <p class="panel-subtitle" data-i18n="schedule.editShiftSubtitle">Edit shift time range and break for this slot</p>
@@ -1137,6 +1145,22 @@
               />
             </label>
           </div>
+          <label class="form-field form-field-block" id="empDeliveryTipRetentionWrap" hidden>
+            <span class="form-label">Delivery tip retention</span>
+            <input
+              type="number"
+              name="deliveryTipRetention"
+              id="empDeliveryTipRetention"
+              min="0"
+              max="1"
+              step="0.01"
+              inputmode="decimal"
+              placeholder="e.g. 0.95"
+            />
+            <span class="calendar-hint"
+              >Take-home share of dishwasher tips (e.g. 0.95 = 95%). Defaults: 0.95 on 9th Ave, 0.80 on 8th Ave.</span
+            >
+          </label>
 
           <div class="form-row">
             <label class="form-field">
@@ -1289,6 +1313,12 @@
           <div class="screen-actions screen-actions-split">
             <button type="button" class="btn btn-secondary" id="cancelEmployeeBtn" data-i18n="common.cancel">Cancel</button>
             <button type="submit" class="btn btn-primary" id="saveEmployeeBtn" data-i18n="common.save">Save</button>
+          </div>
+          <div class="emp-form-danger-zone" id="empDeleteZone" hidden>
+            <button type="button" class="btn btn-danger btn-block" id="deleteEmployeeBtn">Delete employee</button>
+            <p class="calendar-hint emp-delete-hint">
+              Removes this person from the roster, schedule, and timecards. Time clock punches are deleted. This cannot be undone.
+            </p>
           </div>
         </form>
       </section>
@@ -1882,71 +1912,114 @@
         </button>
       </div>
       <p class="availability-modal-meta">
-        Edit a copy of the schedule currently shown, use a Master Template to guide shift choices, or manage saved templates.
+        Preview this week’s staffing below. Pick a saved template to load it, edit people and shifts, then apply that preview to the live schedule — or save it for later.
       </p>
       <div class="schedule-sheet-stack">
-        <label class="schedule-sheet-field">
-          <span class="employee-filter-label">Saved normal template</span>
-          <select id="scheduleTemplateSelect" class="schedule-template-select" aria-label="Choose schedule template">
-            <option value="">Choose template…</option>
-          </select>
-        </label>
-        <label class="schedule-sheet-field">
-          <span class="employee-filter-label">Master Template starting point</span>
-          <select id="scheduleMasterTemplateSelect" class="schedule-template-select" aria-label="Choose Master Template">
-            <option value="">No Master Template restriction</option>
-          </select>
-        </label>
-        <div class="schedule-template-actions">
-          <button type="button" class="btn btn-primary" id="loadScheduleTemplateBtn">Load into editor</button>
-          <button type="button" class="btn btn-secondary" id="newScheduleTemplateBtn">Use current schedule</button>
-        </div>
-        <div class="calendar-table-wrap schedule-template-preview-wrap">
-          <div id="scheduleTemplatePreviewMount" class="schedule-template-preview-mount" aria-label="Template schedule preview"></div>
-        </div>
-        <button type="button" class="btn btn-primary btn-block" id="applyScheduleTemplateBtn">Apply template</button>
-        <button type="button" class="btn btn-secondary btn-block" id="deleteScheduleTemplateBtn" disabled>Delete template</button>
-        <label class="schedule-sheet-field">
-          <span class="employee-filter-label">Save edited copy as normal template</span>
-          <input
-            type="text"
-            id="scheduleTemplateNameInput"
-            class="schedule-template-name-input"
-            placeholder="Template name"
-            maxlength="80"
-            autocomplete="off"
-          />
-        </label>
-        <button type="button" class="btn btn-secondary btn-block" id="saveScheduleTemplateBtn">Save template</button>
-        <div class="schedule-sheet-divider"></div>
-        <div class="schedule-template-master-head">
-          <div>
-            <h3 class="schedule-template-subtitle">Master Templates</h3>
-            <p class="calendar-hint">Shared staffing guidelines for FOH, BOH, and Delivery/Dishwasher.</p>
+        <div class="schedule-template-section">
+          <h3 class="schedule-template-subtitle">Week template</h3>
+          <p class="calendar-hint">Starts from the week open on the schedule. Choosing a saved template replaces the preview.</p>
+          <label class="schedule-sheet-field">
+            <span class="employee-filter-label">Saved template</span>
+            <select id="scheduleTemplateSelect" class="schedule-template-select" aria-label="Choose schedule template">
+              <option value="">This week’s schedule</option>
+            </select>
+          </label>
+          <label class="schedule-sheet-field">
+            <span class="employee-filter-label">Master Template guide (optional)</span>
+            <select id="scheduleMasterTemplateSelect" class="schedule-template-select" aria-label="Choose Master Template">
+              <option value="">No Master Template restriction</option>
+            </select>
+          </label>
+          <div class="schedule-template-preview-stage" id="scheduleTemplatePreviewStage">
+            <div class="calendar-table-wrap schedule-template-preview-wrap">
+              <div id="scheduleTemplatePreviewMount" class="schedule-template-preview-mount" aria-label="Template schedule preview"></div>
+            </div>
+            <div
+              class="template-shift-edit-overlay"
+              id="templateShiftEditPanel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="templateShiftEditTitle"
+              hidden
+            >
+              <div class="template-shift-edit-screen">
+                <div class="template-shift-edit-toolbar">
+                  <button type="button" class="btn btn-secondary" id="templateShiftEditClose">Back</button>
+                  <h3 class="template-shift-edit-title" id="templateShiftEditTitle">Edit shift</h3>
+                </div>
+                <div class="shift-context" id="templateShiftEditContext"></div>
+                <p class="panel-subtitle">Edit shift time range and break for this slot</p>
+                <div class="template-shift-edit-body" id="templateShiftEditHost"></div>
+              </div>
+            </div>
           </div>
-          <button type="button" class="btn btn-secondary" id="newMasterScheduleTemplateBtn">New Master Template</button>
+          <div class="schedule-template-actions">
+            <button type="button" class="btn btn-primary" id="applyScheduleTemplateBtn">Apply preview to schedule</button>
+            <button type="button" class="btn btn-secondary" id="deleteScheduleTemplateBtn" disabled>Delete saved template</button>
+          </div>
+          <div class="schedule-template-confirm" id="applyScheduleTemplateConfirm" hidden>
+            <p class="schedule-template-confirm-msg" id="applyScheduleTemplateConfirmMsg">
+              Apply this preview to the live schedule? This replaces the current week’s staffing and shift times.
+            </p>
+            <div class="schedule-template-actions">
+              <button type="button" class="btn btn-secondary" id="applyScheduleTemplateConfirmCancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="applyScheduleTemplateConfirmYes">Yes, apply</button>
+            </div>
+          </div>
+          <div class="schedule-template-confirm" id="deleteScheduleTemplateConfirm" hidden>
+            <p class="schedule-template-confirm-msg" id="deleteScheduleTemplateConfirmMsg">
+              Delete this saved template? This cannot be undone.
+            </p>
+            <div class="schedule-template-actions">
+              <button type="button" class="btn btn-secondary" id="deleteScheduleTemplateConfirmCancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="deleteScheduleTemplateConfirmYes">Yes, delete</button>
+            </div>
+          </div>
+          <label class="schedule-sheet-field">
+            <span class="employee-filter-label">Save preview as a named template</span>
+            <input
+              type="text"
+              id="scheduleTemplateNameInput"
+              class="schedule-template-name-input"
+              placeholder="e.g. Summer weekday"
+              maxlength="80"
+              autocomplete="off"
+            />
+          </label>
+          <button type="button" class="btn btn-secondary btn-block" id="saveScheduleTemplateBtn">Save template</button>
         </div>
-        <label class="schedule-sheet-field">
-          <span class="employee-filter-label">Master Template</span>
-          <select id="masterScheduleTemplateSelect" class="schedule-template-select" aria-label="Choose Master Template to edit">
-            <option value="">Choose Master Template…</option>
-          </select>
-        </label>
-        <div id="masterScheduleTemplateEditor" class="schedule-master-editor" hidden></div>
-        <label class="schedule-sheet-field">
-          <span class="employee-filter-label">Master Template name</span>
-          <input
-            type="text"
-            id="masterScheduleTemplateNameInput"
-            class="schedule-template-name-input"
-            placeholder="Master Template name"
-            maxlength="80"
-            autocomplete="off"
-          />
-        </label>
-        <div class="schedule-template-actions">
-          <button type="button" class="btn btn-primary" id="saveMasterScheduleTemplateBtn" hidden>Save Master Template</button>
-          <button type="button" class="btn btn-secondary" id="deleteMasterScheduleTemplateBtn" disabled>Delete Master Template</button>
+        <div class="schedule-sheet-divider"></div>
+        <div class="schedule-template-section">
+          <div class="schedule-template-master-head">
+            <div>
+              <h3 class="schedule-template-subtitle">Master Templates</h3>
+              <p class="calendar-hint">Shared shift options for FOH, BOH, and Delivery/Dishwasher (used as a guide above).</p>
+            </div>
+            <button type="button" class="btn btn-secondary" id="newMasterScheduleTemplateBtn">New Master Template</button>
+          </div>
+          <label class="schedule-sheet-field">
+            <span class="employee-filter-label">Edit Master Template</span>
+            <select id="masterScheduleTemplateSelect" class="schedule-template-select" aria-label="Choose Master Template to edit">
+              <option value="">Choose Master Template…</option>
+            </select>
+          </label>
+          <div id="masterScheduleTemplateEditor" class="schedule-master-editor" hidden></div>
+          <label class="schedule-sheet-field" id="masterScheduleTemplateNameField" hidden>
+            <span class="employee-filter-label">Master Template name</span>
+            <input
+              type="text"
+              id="masterScheduleTemplateNameInput"
+              class="schedule-template-name-input"
+              placeholder="Master Template name (required)"
+              maxlength="80"
+              autocomplete="off"
+              required
+            />
+          </label>
+          <div class="schedule-template-actions">
+            <button type="button" class="btn btn-primary" id="saveMasterScheduleTemplateBtn" hidden>Save Master Template</button>
+            <button type="button" class="btn btn-secondary" id="deleteMasterScheduleTemplateBtn" disabled>Delete Master Template</button>
+          </div>
         </div>
       </div>
     </div>
@@ -3899,13 +3972,20 @@
       function hardSignOutNow() {
         (async function () {
           try {
-            var flush =
+            var flushTeam =
               typeof window.gmCalloutFlushTeamStateSyncNow === 'function'
                 ? window.gmCalloutFlushTeamStateSyncNow
                 : null;
-            if (flush) {
+            var flushTips =
+              typeof window.gmCalloutFlushTipPayrollSyncNow === 'function'
+                ? window.gmCalloutFlushTipPayrollSyncNow
+                : null;
+            var jobs = [];
+            if (flushTeam) jobs.push(Promise.resolve(flushTeam()));
+            if (flushTips) jobs.push(Promise.resolve(flushTips()));
+            if (jobs.length) {
               await Promise.race([
-                Promise.resolve(flush()),
+                Promise.all(jobs),
                 new Promise(function (resolve) {
                   setTimeout(resolve, 2500);
                 }),
@@ -4085,7 +4165,7 @@
   <script defer src="portal-auth-client.js?v=perf-2"></script>
   <script defer src="login-timeclock.js?v=perf-5"></script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-27"></script>
+  <script defer src="app.js?v=perf-51"></script>
   <script>
     /*
      * Role / feature modules after first paint:

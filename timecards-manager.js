@@ -1739,26 +1739,62 @@
     return 95;
   }
 
+  function findEmployeeByIdLocal(empId) {
+    if (!empId || !d().employees) return null;
+    var emps = d().employees;
+    for (var i = 0; i < emps.length; i += 1) {
+      if (emps[i] && emps[i].id === empId) return emps[i];
+    }
+    return null;
+  }
+
+  /** Person-specific delivery tip retention when set; else store tip take-home %. */
+  function tipTakehomePctForDishwasher(emp, restaurantId) {
+    if (d().tipTakehomePctForDishwasherEmployee) {
+      return d().tipTakehomePctForDishwasherEmployee(emp, restaurantId);
+    }
+    if (emp && isDeliveryDishwasherStaff(emp)) {
+      var raw =
+        emp.deliveryTipRetention != null
+          ? emp.deliveryTipRetention
+          : emp.meta && emp.meta.deliveryTipRetention != null
+            ? emp.meta.deliveryTipRetention
+            : null;
+      if (raw != null && raw !== '') {
+        var n = typeof raw === 'number' ? raw : parseFloat(String(raw));
+        if (Number.isFinite(n) && n >= 0) {
+          if (n > 1 && n <= 100) n = n / 100;
+          if (n <= 1) return Math.round(n * 10000) / 100;
+        }
+      }
+      if (d().defaultDeliveryTipRetentionForEmployee) {
+        var def = d().defaultDeliveryTipRetentionForEmployee(emp);
+        if (def != null && Number.isFinite(def)) return Math.round(def * 10000) / 100;
+      }
+    }
+    return tipTakehomePctForRestaurant(restaurantId);
+  }
+
   function tipTakehomeFactor(restaurantId) {
     return tipTakehomePctForRestaurant(restaurantId) / 100;
   }
 
   /** Net tip from gross using integer cents (round half up) — avoids float penny drift. */
-  function netTipAmount(gross, restaurantId) {
+  function netTipAmount(gross, restaurantId, emp) {
     var g = normalizeDishwasherTipAmount(gross);
     if (g <= 0) return 0;
     var grossCents = Math.round(g * 100);
     if (grossCents <= 0) return 0;
-    var pctHundredths = Math.round(tipTakehomePctForRestaurant(restaurantId) * 100);
+    var pctHundredths = Math.round(tipTakehomePctForDishwasher(emp, restaurantId) * 100);
     var netCents = Math.floor((grossCents * pctHundredths + 5000) / 10000);
     return netCents / 100;
   }
 
   /** Apply take-home % once per restaurant on summed gross (avoids penny drift from daily nets). */
-  function netFromGrossByRestaurant(grossByRestaurant) {
+  function netFromGrossByRestaurant(grossByRestaurant, emp) {
     var sumNet = 0;
     Object.keys(grossByRestaurant || {}).forEach(function (rid) {
-      sumNet += netTipAmount(Math.round(grossByRestaurant[rid] * 100) / 100, rid);
+      sumNet += netTipAmount(Math.round(grossByRestaurant[rid] * 100) / 100, rid, emp);
     });
     return Math.round(sumNet * 100) / 100;
   }
@@ -1837,7 +1873,11 @@
     bounds = bounds || payWeekBounds();
     if (!emp || !iso) return 0;
     if (restaurantId != null && restaurantId !== '') {
-      return netTipAmount(getEmployeeDayDishwasherTip(emp, iso, bounds, restaurantId), restaurantId);
+      return netTipAmount(
+        getEmployeeDayDishwasherTip(emp, iso, bounds, restaurantId),
+        restaurantId,
+        emp
+      );
     }
     var slice = getDishwasherTipsSlice(bounds);
     var grossByRestaurant = Object.create(null);
@@ -1847,7 +1887,7 @@
       grossByRestaurant[parsed.restaurantId] =
         (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
-    return netFromGrossByRestaurant(grossByRestaurant);
+    return netFromGrossByRestaurant(grossByRestaurant, emp);
   }
 
   function setEmployeeDayDishwasherTip(empId, iso, amount, bounds, restaurantId) {
@@ -1906,7 +1946,7 @@
       grossByRestaurant[parsed.restaurantId] =
         (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
-    return netFromGrossByRestaurant(grossByRestaurant);
+    return netFromGrossByRestaurant(grossByRestaurant, emp);
   }
 
   /** One pass over dishwasher-tip keys → per-employee week net tip pay for the active location filter. */
@@ -1930,28 +1970,21 @@
     });
     var byEmp = Object.create(null);
     Object.keys(grossByEmpRid).forEach(function (empId) {
-      byEmp[empId] = netFromGrossByRestaurant(grossByEmpRid[empId]);
+      byEmp[empId] = netFromGrossByRestaurant(
+        grossByEmpRid[empId],
+        findEmployeeByIdLocal(empId)
+      );
     });
     return byEmp;
   }
 
   function sumWeekDishwasherTips(bounds, locationFilter) {
-    bounds = bounds || payWeekBounds();
-    var slice = getDishwasherTipsSlice(bounds);
-    var weekStart = isoFromDate(bounds.start);
-    var weekEnd = isoFromDate(bounds.end);
-    var loc = locationFilter != null ? locationFilter : timecardsLocationFilter;
-    var grossByRestaurant = Object.create(null);
-    Object.keys(slice).forEach(function (k) {
-      var parsed = parseDishwasherTipStorageKey(k);
-      if (!parsed) return;
-      if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
-      if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
-      if (!dayHasBackingShiftForDishwasherTips(parsed.empId, parsed.iso)) return;
-      grossByRestaurant[parsed.restaurantId] =
-        (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
+    var byEmp = buildWeekDishwasherTipsByEmp(bounds, locationFilter);
+    var sum = 0;
+    Object.keys(byEmp).forEach(function (empId) {
+      sum += byEmp[empId] || 0;
     });
-    return netFromGrossByRestaurant(grossByRestaurant);
+    return Math.round(sum * 100) / 100;
   }
 
   function rosterGrandTotalMinutes(row) {
@@ -3097,7 +3130,15 @@
     var tipEl = document.getElementById('tcDishwasherTip');
     var rid =
       (tipEl && tipEl.getAttribute('data-timecard-restaurant-id')) || RP2_DELIVERY_TIP_LOCATION;
-    netEl.textContent = formatPayAmount(netTipAmount(readShiftDishwasherTipFromForm(), rid));
+    var empId = tipEl && tipEl.getAttribute('data-timecard-employee-id');
+    var emp = findEmployeeByIdLocal(empId);
+    var pct = tipTakehomePctForDishwasher(emp, rid);
+    var net = netTipAmount(readShiftDishwasherTipFromForm(), rid, emp);
+    netEl.innerHTML =
+      d().escapeHtml(formatPayAmount(net)) +
+      ' <span class="timecards-tip-takehome-hint">(× ' +
+      d().escapeHtml(String(pct)) +
+      '% take-home)</span>';
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -10667,7 +10708,7 @@
           dayTip > 0
             ? formatPayAmount(
                 dayTipRest
-                  ? netTipAmount(dayTip, dayTipRest)
+                  ? netTipAmount(dayTip, dayTipRest, emp)
                   : getEmployeeDayDishwasherTipNet(emp, row.iso)
               )
             : '—';
@@ -11127,9 +11168,9 @@
               d().escapeHtml(String(grossTip)) +
               '" /></dd></div>' +
               '<div><dt>Net dishwasher tips</dt><dd id="tcDishwasherTipNet">' +
-              d().escapeHtml(formatPayAmount(netTipAmount(grossTip, tipRest))) +
+              d().escapeHtml(formatPayAmount(netTipAmount(grossTip, tipRest, emp))) +
               ' <span class="timecards-tip-takehome-hint">(× ' +
-              d().escapeHtml(String(tipTakehomePctForRestaurant(tipRest))) +
+              d().escapeHtml(String(tipTakehomePctForDishwasher(emp, tipRest))) +
               '% take-home)</span></dd></div>'
             );
           })()
@@ -12109,6 +12150,22 @@
     return true;
   }
 
+  function onEmployeeDeleted(empId) {
+    if (timecardState.employeeId && String(timecardState.employeeId) === String(empId)) {
+      timecardState.employeeId = null;
+      timecardState.shiftRow = null;
+      if (timecardsEmployeeScreenActive() || timecardsShiftScreenActive()) {
+        if (typeof d().showScreen === 'function') d().showScreen(10);
+        renderRoster();
+      }
+    }
+    markRosterCacheRowsDirty();
+    invalidateDishwasherTipsSliceCache();
+    invalidateWeekExtrasSliceCache();
+    invalidateFullReportSheetsCache();
+    if (timecardsRosterScreenActive()) refreshRosterFromEmployees();
+  }
+
   function init(dependencies) {
     deps = dependencies;
     selectedPayWeekStartIso = loadSelectedPayWeekStartIso();
@@ -12162,6 +12219,7 @@
     refreshRosterFromEmployees: refreshRosterFromEmployees,
     rebuildRosterCacheRows: rebuildRosterCacheRows,
     markRosterCacheRowsDirty: markRosterCacheRowsDirty,
+    onEmployeeDeleted: onEmployeeDeleted,
     handleBack: handleBack,
     reloadWeek: loadWeekEntries,
     invalidateScheduleCache: invalidatePayWeekScheduleCache,

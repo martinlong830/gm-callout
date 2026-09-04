@@ -22,6 +22,7 @@ import {
   isDeliveryDishwasherStaff,
   netTipAmount,
   setEmployeeDayDishwasherTip,
+  tipTakehomePctForDishwasherEmployee,
   tipTakehomePctForRestaurant,
 } from '../../../../lib/timecards/dishwasherTips';
 import {
@@ -815,10 +816,20 @@ export default function TimecardsShiftScreen() {
             {formatPayAmount(
               netTipAmount(
                 Math.max(0, parseFloat(dishwasherTipText) || 0),
-                dishwasherTipRestaurantForShiftRow(shiftRow)
+                dishwasherTipRestaurantForShiftRow(shiftRow),
+                tipTakehomePctForDishwasherEmployee(
+                  emp,
+                  dishwasherTipRestaurantForShiftRow(shiftRow),
+                  tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))
+                )
               )
             )}{' '}
-            (tip × {tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))}
+            (tip ×{' '}
+            {tipTakehomePctForDishwasherEmployee(
+              emp,
+              dishwasherTipRestaurantForShiftRow(shiftRow),
+              tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))
+            )}
             % take-home)
           </Text>
         </>

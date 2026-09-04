@@ -1015,7 +1015,8 @@
 
   function getDraftScheduleRowsForWeek(weekIndex, restaurantId) {
     if (
-      scheduleTemplateModalIsOpen() &&
+      schedulePreferLiveDataDepth === 0 &&
+      scheduleTemplateScratchActive &&
       scheduleTemplateEditorState &&
       scheduleTemplateEditorState.draft
     ) {
@@ -1025,14 +1026,21 @@
         tplWi === resolveDraftWeekIndex(scheduleCalendarWeekIndex) &&
         tplRid === resolveDraftRestaurantId(currentRestaurantId)
       ) {
-        return cloneDraftSchedule(scheduleTemplateEditorState.draft);
+        /* Return by reference — callers that mutate must cloneDraftSchedule first.
+           Cloning here made every draftTimeSlotFor / rebuildSchedule catastrophically slow. */
+        return scheduleTemplateEditorState.draft;
       }
     }
     var wi = resolveDraftWeekIndex(weekIndex);
     var saved = draftScheduleByWeekStore[String(wi)];
     var layers = draftLayersFromWeekEntry(saved, restaurantId);
     if (layers) return layers;
-    if (wi !== SCHEDULE_TEMPLATE_WEEK_INDEX) {
+    /*
+     * Future empty weeks may inherit structure from the rolling "this week" draft.
+     * Past weeks must NOT — mirroring this week's rows onto Aug 24–30 (etc.) created
+     * phantom slots that then inherited this week's people (duplicate Maeve, etc.).
+     */
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
       var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
       layers = draftLayersFromWeekEntry(tplSaved, restaurantId);
       if (layers) return layers;
@@ -1064,8 +1072,8 @@
       if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
         draftScheduleDirty = true;
         persistTeamStateDirtyFlags();
+        /* Debounce cloud push — flushing on every tile edit made alt-copy / × feel 5–10s slow. */
         scheduleTeamStateDebouncedSync();
-        flushTeamStateSyncNow();
       }
     } catch (eDraftSave) {
       /* ignore */
@@ -1861,7 +1869,9 @@
     var newlyPublished = markScheduleWeekPublished(weekIso);
     var range = formatScheduleWeekRangeLabel(wi);
     try {
-      if (newlyPublished || schedulePublishedDirty) {
+      /* Always flush before notify — tile edits are debounced; Notify Again must not
+         push employees to a stale cloud schedule. */
+      if (teamStateHasDirtyFields() || newlyPublished || schedulePublishedDirty) {
         await flushTeamStateSyncNow();
       }
       var notifyResult = { ok: true, sent: 0 };
@@ -2485,6 +2495,97 @@
     employees.forEach(applyTipPointPresetIfMissing);
   }
 
+  /** Delivery/dishwasher tip take-home factor (0–1), e.g. 0.95 = 95%. */
+  function normalizeDeliveryTipRetention(val) {
+    if (val == null || val === '') return null;
+    var n = typeof val === 'number' ? val : parseFloat(String(val).trim());
+    if (!Number.isFinite(n) || n < 0) return null;
+    if (n > 1) {
+      if (n > 100) return null;
+      n = n / 100;
+    }
+    return Math.round(n * 10000) / 10000;
+  }
+
+  function isJuanEspinobarrosEmployee(emp) {
+    if (!emp) return false;
+    var dn = String(employeeDisplayName(emp) || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    var ln = String(emp.lastName || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (/\bESPINOBARROS\b/.test(dn) || /\bESPINOBARROS\b/.test(ln)) return true;
+    return /\bJUAN\b/.test(dn) && /\bESPINO/.test(dn);
+  }
+
+  function deliveryTipRetentionLocationId(emp) {
+    if (!emp) return 'rp-9';
+    var loc = emp.usualRestaurant;
+    if (loc === 'both') {
+      var meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+      loc = meta.primaryLocationId || meta.primaryRestaurantId || 'rp-9';
+    }
+    if (loc === 'rp-8' || loc === 'rp-9') return loc;
+    return 'rp-9';
+  }
+
+  function defaultDeliveryTipRetentionForEmployee(emp) {
+    if (!emp || emp.staffType !== 'Server') return null;
+    if (isJuanEspinobarrosEmployee(emp)) return 0.95;
+    return deliveryTipRetentionLocationId(emp) === 'rp-8' ? 0.8 : 0.95;
+  }
+
+  function deliveryTipRetentionFactorForEmployee(emp) {
+    if (!emp || emp.staffType !== 'Server') return null;
+    var raw =
+      emp.deliveryTipRetention != null
+        ? emp.deliveryTipRetention
+        : emp.meta && emp.meta.deliveryTipRetention != null
+          ? emp.meta.deliveryTipRetention
+          : null;
+    var n = normalizeDeliveryTipRetention(raw);
+    if (n != null) return n;
+    return defaultDeliveryTipRetentionForEmployee(emp);
+  }
+
+  /** Percent (e.g. 95) for dishwasher tip net labels / math. Falls back to store tip take-home %. */
+  function tipTakehomePctForDishwasherEmployee(emp, restaurantId) {
+    var factor = deliveryTipRetentionFactorForEmployee(emp);
+    if (factor != null) return Math.round(factor * 10000) / 100;
+    return tipTakehomePctForRestaurant(restaurantId);
+  }
+
+  function applyDeliveryTipRetentionDefaultIfMissing(emp) {
+    if (!emp || emp.staffType !== 'Server') return;
+    var existing =
+      emp.deliveryTipRetention != null
+        ? emp.deliveryTipRetention
+        : emp.meta && emp.meta.deliveryTipRetention != null
+          ? emp.meta.deliveryTipRetention
+          : null;
+    var n = normalizeDeliveryTipRetention(existing);
+    if (n != null) {
+      emp.deliveryTipRetention = n;
+      emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+      emp.meta.deliveryTipRetention = n;
+      return;
+    }
+    var def = defaultDeliveryTipRetentionForEmployee(emp);
+    if (def == null) return;
+    emp.deliveryTipRetention = def;
+    emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    emp.meta.deliveryTipRetention = def;
+  }
+
+  function applyDeliveryTipRetentionDefaultsToAllEmployees() {
+    employees.forEach(applyDeliveryTipRetentionDefaultIfMissing);
+  }
+
   const LEGACY_KITCHEN = TEAM_ROSTER_KITCHEN;
   const LEGACY_BARTENDER = TEAM_ROSTER_BARTENDER;
   const LEGACY_SERVER = TEAM_ROSTER_SERVER;
@@ -2616,6 +2717,17 @@
       meta.tipPoint = normalizeTipPointValue(emp.tipPoint);
     } else if ('tipPoint' in meta) {
       delete meta.tipPoint;
+    }
+    if (emp.staffType === 'Server') {
+      var tipRet =
+        emp.deliveryTipRetention != null
+          ? normalizeDeliveryTipRetention(emp.deliveryTipRetention)
+          : normalizeDeliveryTipRetention(meta.deliveryTipRetention);
+      if (tipRet == null) tipRet = defaultDeliveryTipRetentionForEmployee(emp);
+      if (tipRet != null) meta.deliveryTipRetention = tipRet;
+      else if ('deliveryTipRetention' in meta) delete meta.deliveryTipRetention;
+    } else if ('deliveryTipRetention' in meta) {
+      delete meta.deliveryTipRetention;
     }
     var emailVal = emp.email != null ? String(emp.email).trim() : '';
     if (emailVal) meta.email = emailVal;
@@ -3242,6 +3354,7 @@
     });
     applyHourlyRatePresetsToAllEmployees();
     applyTipPointPresetsToAllEmployees();
+    applyDeliveryTipRetentionDefaultsToAllEmployees();
     applyEmployeeInfoPresetsToAllEmployees();
     seedAllEmployeeLeaveBalances();
     try {
@@ -3556,6 +3669,9 @@
       /* ignore */
     }
     persistTeamStateDirtyFlags();
+    if (teamStateHasDirtyFields()) {
+      scheduleTeamStateDebouncedSync();
+    }
   }
 
   function isValidEmployeeChatPayload(o) {
@@ -3674,6 +3790,50 @@
     } catch (_we) {
       return {};
     }
+  }
+
+  /** Remove tip / leave-extra keys that reference a deleted employee id. */
+  function scrubEmployeeFromTimecardLocalStores(empId) {
+    if (!empId) return false;
+    var id = String(empId);
+    var changed = false;
+
+    function scrubNestedWeekMap(all) {
+      if (!all || typeof all !== 'object') return false;
+      var did = false;
+      Object.keys(all).forEach(function (weekKey) {
+        var slice = all[weekKey];
+        if (!slice || typeof slice !== 'object') return;
+        Object.keys(slice).forEach(function (k) {
+          if (k === id || k.indexOf(id + '@') === 0 || k.indexOf('|' + id + '|') >= 0 || k.indexOf(id + '|') === 0) {
+            delete slice[k];
+            did = true;
+          }
+        });
+      });
+      return did;
+    }
+
+    try {
+      var dw = loadTimecardDishwasherTipsStore();
+      if (scrubNestedWeekMap(dw)) {
+        localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(dw));
+        changed = true;
+      }
+    } catch (_dwScrub) {
+      /* ignore */
+    }
+    try {
+      var ex = loadTimecardWeekExtrasStore();
+      if (scrubNestedWeekMap(ex)) {
+        localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(ex));
+        changed = true;
+      }
+    } catch (_exScrub) {
+      /* ignore */
+    }
+    if (changed) scheduleTipPayrollDebouncedSync();
+    return changed;
   }
 
   function tipPayrollSliceJson(slice) {
@@ -6423,6 +6583,190 @@
     saveEmployees();
   }
 
+  async function removeEmployeePhotoStorageObjects(empId) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !empId || !isUuidCloudId(empId)) return;
+    try {
+      var paths = [empId + '.jpg', empId + '.jpeg', empId + '.png', empId + '.webp', empId + '.gif'];
+      await window.gmSupabase.storage.from('employee-photos').remove(paths);
+    } catch (_photoRm) {
+      /* best-effort */
+    }
+  }
+
+  function removePortalLocalAccountForEmployee(displayName) {
+    if (!displayName) return;
+    try {
+      var accounts = loadPortalEmployeeAccounts();
+      if (!Array.isArray(accounts) || !accounts.length) return;
+      var loginKey = normPortalLoginKey(displayName);
+      var next = accounts.filter(function (a) {
+        if (!a) return false;
+        if (a.loginKey && a.loginKey === loginKey) return false;
+        if (a.displayName && workerNamesMatch(a.displayName, displayName)) return false;
+        return true;
+      });
+      if (next.length !== accounts.length) savePortalEmployeeAccounts(next);
+    } catch (_portalRm) {
+      /* ignore */
+    }
+  }
+
+  async function removeStaffRequestsForDeletedEmployee(displayName, empId) {
+    var removedIds = [];
+    for (var i = staffRequests.length - 1; i >= 0; i -= 1) {
+      var r = staffRequests[i];
+      if (!r) continue;
+      var nameHit = r.employeeName && workerNamesMatch(r.employeeName, displayName);
+      var swapHit =
+        (empId && r.swapTargetEmployeeId && String(r.swapTargetEmployeeId) === String(empId)) ||
+        (r.swapTargetEmployeeName && workerNamesMatch(r.swapTargetEmployeeName, displayName));
+      if (!nameHit && !swapHit) continue;
+      removedIds.push(r.id);
+      staffRequests.splice(i, 1);
+    }
+    if (removedIds.length) {
+      persistStaffRequestStatuses();
+      if (typeof renderRequestsList === 'function') renderRequestsList();
+      if (typeof renderHistory === 'function') renderHistory();
+    }
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !removedIds.length) return;
+    try {
+      for (var j = 0; j < removedIds.length; j += 1) {
+        var id = removedIds[j];
+        if (!id || String(id).indexOf('local-') === 0) continue;
+        var res = await window.gmSupabase.from('staff_requests').delete().eq('id', id);
+        if (res.error) console.warn('gm-callout: staff_requests delete', res.error);
+      }
+    } catch (err) {
+      console.warn('gm-callout: staff_requests delete', err);
+    }
+  }
+
+  /**
+   * Delete an employee from roster + related schedule / tip / request refs.
+   * Time clock punches cascade from the employees row on Supabase.
+   */
+  async function deleteEmployeeCompletely(emp) {
+    if (!emp || !emp.id) return { ok: false, message: 'Employee not found.' };
+    var empId = emp.id;
+    var displayName = employeeDisplayName(emp);
+
+    clearWorkerFromResolvedSchedule(displayName);
+    scrubEmployeeFromTimecardLocalStores(empId);
+    await scrubEmployeeTipExtrasOnTeamState(empId);
+    await removeStaffRequestsForDeletedEmployee(displayName, empId);
+    removePortalLocalAccountForEmployee(displayName);
+    await removeEmployeePhotoStorageObjects(empId);
+
+    if (GM_SUPABASE_DATA && window.gmSupabase && isUuidCloudId(empId)) {
+      try {
+        var delRes = await window.gmSupabase.from('employees').delete().eq('id', empId);
+        if (delRes.error) {
+          return {
+            ok: false,
+            message: delRes.error.message || 'Could not delete employee from cloud roster.',
+          };
+        }
+      } catch (err) {
+        return {
+          ok: false,
+          message: (err && err.message) || 'Could not delete employee from cloud roster.',
+        };
+      }
+    }
+
+    var ix = employees.findIndex(function (e) {
+      return e && e.id === empId;
+    });
+    if (ix !== -1) employees.splice(ix, 1);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+    } catch (_lsDel) {
+      /* ignore */
+    }
+
+    rebuildEmployeeDerivedData();
+    if (typeof renderCalendar === 'function') renderCalendar();
+    if (scheduleBody && typeof renderSchedule === 'function') renderSchedule();
+    if (typeof renderEmployeeList === 'function') renderEmployeeList();
+    if (typeof renderManagerAvailabilityScreen === 'function' && currentScreen === 13) {
+      renderManagerAvailabilityScreen();
+    }
+    if (typeof renderManagerHomeShifts === 'function' && currentScreen === 14) {
+      renderManagerHomeShifts();
+    }
+    notifyTimecardsEmployeesChanged();
+    if (
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.onEmployeeDeleted === 'function'
+    ) {
+      window.gmCalloutTimecards.onEmployeeDeleted(empId);
+    }
+    flushTeamStateSyncNow();
+    flushTipPayrollPushToSupabase();
+    return { ok: true };
+  }
+
+  async function scrubEmployeeTipExtrasOnTeamState(empId) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !empId) return;
+    try {
+      var sb = window.gmSupabase;
+      var res = await sb
+        .from('team_state')
+        .select('timecard_dishwasher_tips, timecard_week_extras')
+        .eq('id', gmCalloutTeamStateRowId())
+        .maybeSingle();
+      if (res.error || !res.data) return;
+      var dw = res.data.timecard_dishwasher_tips;
+      var ex = res.data.timecard_week_extras;
+      var patch = { id: gmCalloutTeamStateRowId() };
+      var fields = [];
+      var id = String(empId);
+
+      function scrubMap(all) {
+        if (!all || typeof all !== 'object') return false;
+        var did = false;
+        Object.keys(all).forEach(function (weekKey) {
+          var slice = all[weekKey];
+          if (!slice || typeof slice !== 'object') return;
+          Object.keys(slice).forEach(function (k) {
+            if (
+              k === id ||
+              k.indexOf(id + '@') === 0 ||
+              k.indexOf('|' + id + '|') >= 0 ||
+              k.indexOf(id + '|') === 0
+            ) {
+              delete slice[k];
+              did = true;
+            }
+          });
+        });
+        return did;
+      }
+
+      if (dw && typeof dw === 'object') {
+        var dwClone = JSON.parse(JSON.stringify(dw));
+        if (scrubMap(dwClone)) {
+          patch.timecard_dishwasher_tips = dwClone;
+          fields.push('timecard_dishwasher_tips');
+        }
+      }
+      if (ex && typeof ex === 'object') {
+        var exClone = JSON.parse(JSON.stringify(ex));
+        if (scrubMap(exClone)) {
+          patch.timecard_week_extras = exClone;
+          fields.push('timecard_week_extras');
+        }
+      }
+      if (!fields.length) return;
+      var up = await sb.from('team_state').upsert(patch, { onConflict: 'id' });
+      if (up.error) console.warn('gm-callout: tip scrub on delete', up.error);
+      else void broadcastTeamStateChanged(fields);
+    } catch (err) {
+      console.warn('gm-callout: tip scrub on delete', err);
+    }
+  }
+
   function syncEmployeePhotoRemoveButton(emp) {
     var removeBtn = document.getElementById('empPhotoRemoveBtn');
     if (!removeBtn) return;
@@ -6827,6 +7171,23 @@
     } else if (e.meta && e.meta.tipPoint != null && !Number.isNaN(Number(e.meta.tipPoint))) {
       out.tipPoint = normalizeTipPointValue(e.meta.tipPoint);
     }
+    if (out.staffType === 'Server') {
+      var tipRetRaw =
+        e.deliveryTipRetention != null
+          ? e.deliveryTipRetention
+          : e.meta && e.meta.deliveryTipRetention != null
+            ? e.meta.deliveryTipRetention
+            : null;
+      var tipRet = normalizeDeliveryTipRetention(tipRetRaw);
+      if (tipRet == null) tipRet = defaultDeliveryTipRetentionForEmployee(out);
+      if (tipRet != null) {
+        out.deliveryTipRetention = tipRet;
+        out.meta = out.meta && typeof out.meta === 'object' ? out.meta : {};
+        out.meta.deliveryTipRetention = tipRet;
+      }
+    } else if (out.meta && out.meta.deliveryTipRetention != null) {
+      delete out.meta.deliveryTipRetention;
+    }
     applyKnownRosterDisplayRename(out);
     applyHourlyRatePresetIfMissing(out);
     applyTipPointPresetIfMissing(out);
@@ -7190,7 +7551,12 @@
         if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
         var role = ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role;
         if (!role) return;
-        var n = slotCountForRole(role, wi, r.id);
+        /* Use that week's own draft only — never the rolling-week fallback count. */
+        var weekEntry = draftScheduleByWeekStore[String(wi)];
+        var ownLayers = draftLayersFromWeekEntry(weekEntry, r.id);
+        if (!ownLayers) return;
+        var roleRows = ownLayers[role];
+        var n = roleRows && roleRows.length ? roleRows.length : 0;
         if (p.trIdx >= n) removeIds.push(shiftId);
       });
       removeIds.forEach(function (shiftId) {
@@ -7304,8 +7670,9 @@
     }
     if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
     scheduleTeamStateDebouncedSync();
-    /* Compact-during-delete must not flush mid-batch before draft/slotOrder are updated. */
-    if (!opts.skipFlush) flushTeamStateSyncNow();
+    /* Interactive tile edits must stay local+debounced. Pass flushNow for publish / sign-out
+       style paths that need an immediate cloud push. Compact-during-delete uses neither. */
+    if (opts.flushNow) flushTeamStateSyncNow();
     persistTeamStateDirtyFlags();
     notifyTimecardsScheduleChanged();
   }
@@ -7348,6 +7715,19 @@
   var scheduleTemplateEditorState = null;
   var scheduleMasterEditorState = null;
   var scheduleTemplatePreviewSession = null;
+  /** True only while the Templates modal owns scratch draft/assignments. */
+  var scheduleTemplateScratchActive = false;
+  /** When > 0, draft/assignment reads prefer live storage even if the template modal is open. */
+  var schedulePreferLiveDataDepth = 0;
+
+  function withLiveScheduleData(fn) {
+    schedulePreferLiveDataDepth += 1;
+    try {
+      return fn();
+    } finally {
+      schedulePreferLiveDataDepth -= 1;
+    }
+  }
 
   function scheduleTemplateModalIsOpen() {
     /* Query live — do not close over the later `const scheduleTemplateModal` (TDZ crash on boot). */
@@ -7357,30 +7737,40 @@
   }
 
   function scheduleTemplateEditsAreScratch() {
-    return scheduleTemplateModalIsOpen();
+    /* Require the active Templates session — leaked editor state must not hijack main schedule saves. */
+    return (
+      scheduleTemplateScratchActive &&
+      !!scheduleTemplateEditorState &&
+      schedulePreferLiveDataDepth === 0
+    );
   }
 
   function captureScheduleTemplatePreviewSession() {
     var rid = currentRestaurantId;
     var wi = scheduleCalendarWeekIndex;
-    scheduleTemplatePreviewSession = {
-      rid: rid,
-      wi: wi,
-      draft: cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid)),
-      assignments: JSON.parse(JSON.stringify(loadScheduleAssignmentsStore())),
-    };
+    scheduleTemplatePreviewSession = withLiveScheduleData(function () {
+      return {
+        rid: rid,
+        wi: wi,
+        draft: cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid)),
+        assignments: JSON.parse(JSON.stringify(loadScheduleAssignmentsStore())),
+      };
+    });
   }
 
   function restoreScheduleTemplatePreviewSession() {
     if (!scheduleTemplatePreviewSession) return;
     var s = scheduleTemplatePreviewSession;
+    scheduleTemplatePreviewSession = null;
     saveDraftScheduleRowsForWeek(s.wi, s.draft, s.rid);
     saveScheduleAssignmentsStore(s.assignments);
-    scheduleTemplatePreviewSession = null;
-    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    rebuildSchedule();
-    renderCalendar({ force: true });
-    if (scheduleBody) renderSchedule();
+    /* Prefer live reads — editor state may still be set until close clears it. */
+    withLiveScheduleData(function () {
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      rebuildSchedule();
+      renderCalendar({ force: true });
+      if (scheduleBody) renderSchedule();
+    });
   }
 
   function syncTemplateEditorWorkersFromAssignments() {
@@ -7417,19 +7807,24 @@
     if (!scratch[rid]) scratch[rid] = {};
     var rs = scratch[rid];
     var weekStart = wi * 7;
+    var draft = scheduleTemplateEditorState.draft || {};
     Object.keys(scheduleTemplateEditorState.workers || {}).forEach(function (rowKey) {
       var bits = rowKey.split(':');
       var role = bits[0];
       var trIdx = parseInt(bits[1], 10);
       var roleIdx = roleIdxForDraftRole(role);
       if (roleIdx < 0 || isNaN(trIdx)) return;
+      var roleRows = draft[role];
+      var row = roleRows && roleRows[trIdx];
+      if (!row) return;
       var worker = scheduleTemplateEditorState.workers[rowKey] || 'Unassigned';
       var list = worker === 'Unassigned' ? ['Unassigned'] : [worker];
       visibleDays.forEach(function (dayStr) {
         var wk = weekdayKeyFromScheduleDay(dayStr);
         var di = WEEKDAY_KEYS.indexOf(wk);
         if (di < 0) return;
-        if (!draftTimeSlotFor(role, wk, trIdx, wi, rid)) return;
+        var cell = row[di];
+        if (!cell || !cell[0] || !cell[1]) return;
         var shiftId = 'shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx;
         var entry =
           rs[shiftId] != null
@@ -7468,15 +7863,129 @@
     });
   }
 
-  function applyTemplateEditorStateToLiveScratch() {
+  function applyTemplateEditorStateToScratchOnly() {
     if (!scheduleTemplateEditorState) return;
     applyMasterTemplateChoicesToEditorDraft();
     applyTemplateEditorAssignmentsToScratch();
-    rebuildSchedule();
+  }
+
+  function restoreLiveScheduleAfterTemplatePreview() {
+    withLiveScheduleData(function () {
+      rebuildSchedule({
+        weekIndex: scheduleCalendarWeekIndex,
+        preserveOtherWeeks: true,
+        skipRebind: true,
+      });
+    });
+  }
+
+  function applyTemplateEditorStateToLiveScratch() {
+    /* Scratch assignments/draft only — preview paint rebuilds SCHEDULE from that scratch. */
+    applyTemplateEditorStateToScratchOnly();
+  }
+
+  var templateShiftEditorMountState = null;
+
+  function closeTemplateShiftEditPanel(opts) {
+    opts = opts || {};
+    var wasMounted = !!templateShiftEditorMountState;
+    var panel = document.getElementById('templateShiftEditPanel');
+    var editor = document.getElementById('shiftDetailsEditor');
+    var saveBtn = document.getElementById('saveScheduleBtn');
+    var actions = saveBtn && saveBtn.closest('.screen-actions');
+    var stage =
+      document.getElementById('scheduleTemplatePreviewStage') ||
+      (panel && panel.closest('.schedule-template-preview-stage'));
+    if (templateShiftEditorMountState && editor) {
+      var home = templateShiftEditorMountState;
+      if (home.editorParent) {
+        if (home.editorNext && home.editorNext.parentNode === home.editorParent) {
+          home.editorParent.insertBefore(editor, home.editorNext);
+        } else {
+          home.editorParent.appendChild(editor);
+        }
+      }
+      if (actions && home.actionsParent) {
+        if (home.actionsNext && home.actionsNext.parentNode === home.actionsParent) {
+          home.actionsParent.insertBefore(actions, home.actionsNext);
+        } else {
+          home.actionsParent.appendChild(actions);
+        }
+      }
+    }
+    templateShiftEditorMountState = null;
+    if (panel) panel.hidden = true;
+    if (stage) stage.classList.remove('template-shift-edit-open');
+    var ctx = document.getElementById('templateShiftEditContext');
+    if (ctx) ctx.textContent = '';
+    /*
+     * Only clear shift targets when the in-template editor was actually open.
+     * showScreen(2) always closes the Templates modal; wiping targets there made
+     * main-schedule Save a no-op (no target → silent return).
+     */
+    if (!opts.keepTargets && wasMounted) {
+      currentShift = null;
+      shiftDetailSlotTarget = null;
+    }
+  }
+
+  function mountShiftEditorInTemplatePanel(contextText) {
+    var panel = document.getElementById('templateShiftEditPanel');
+    var host = document.getElementById('templateShiftEditHost');
+    var editor = document.getElementById('shiftDetailsEditor');
+    var saveBtn = document.getElementById('saveScheduleBtn');
+    var actions = saveBtn && saveBtn.closest('.screen-actions');
+    var titleEl = document.getElementById('templateShiftEditTitle');
+    var ctx = document.getElementById('templateShiftEditContext');
+    var liveCtx = document.getElementById('eligibleShiftContext');
+    var stage =
+      document.getElementById('scheduleTemplatePreviewStage') ||
+      (panel && panel.closest('.schedule-template-preview-stage'));
+    if (!panel || !host || !editor) return false;
+    if (!templateShiftEditorMountState) {
+      templateShiftEditorMountState = {
+        editorParent: editor.parentNode,
+        editorNext: editor.nextSibling,
+        actionsParent: actions ? actions.parentNode : null,
+        actionsNext: actions ? actions.nextSibling : null,
+      };
+      host.appendChild(editor);
+      if (actions) host.appendChild(actions);
+    }
+    if (titleEl) titleEl.textContent = 'Edit shift';
+    if (ctx) {
+      ctx.textContent = contextText || (liveCtx && liveCtx.textContent) || '';
+    }
+    panel.hidden = false;
+    if (stage) stage.classList.add('template-shift-edit-open');
+    try {
+      panel.scrollTop = 0;
+    } catch (_scrollTpl) {
+      /* ignore */
+    }
+    var closeBtn = document.getElementById('templateShiftEditClose');
+    if (closeBtn && typeof closeBtn.focus === 'function') {
+      setTimeout(function () {
+        try {
+          closeBtn.focus();
+        } catch (_focusTpl) {
+          /* ignore */
+        }
+      }, 0);
+    }
+    return true;
+  }
+
+  function presentShiftDetailEditor(contextText) {
+    if (scheduleTemplateEditsAreScratch()) {
+      mountShiftEditorInTemplatePanel(contextText);
+      return;
+    }
+    showScreen(2);
   }
 
   function refreshScheduleCalendarAfterEdit(opts) {
-    if (scheduleTemplateModalIsOpen()) {
+    if (scheduleTemplateScratchActive && scheduleTemplateEditorState) {
       renderScheduleTemplatePreview();
       return;
     }
@@ -7513,7 +8022,7 @@
 
   function templateShiftMasterEnforced() {
     return !!(
-      scheduleTemplateModalIsOpen() &&
+      scheduleTemplateScratchActive &&
       scheduleTemplateEditorState &&
       scheduleTemplateEditorState.masterTemplateId
     );
@@ -8110,7 +8619,7 @@
       });
     });
     if (changed) {
-      saveScheduleAssignmentsStore(store, { skipFlush: true });
+      saveScheduleAssignmentsStore(store);
     }
     return changed;
   }
@@ -8263,36 +8772,34 @@
     }
     if (templateScratch) {
       scheduleTemplateEditorState.draft = rows;
-    } else {
-      var store = loadScheduleAssignmentsStore();
-      if (!store[rid]) store[rid] = {};
-      store[rid] = rs;
-      saveDraftScheduleRowsForWeek(wi, rows, rid);
-      saveScheduleAssignmentsStore(store);
-    }
-    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    if (!templateScratch) pruneScheduleAssignmentsInvalidSlots();
-    if (!templateScratch) {
-      scheduleTeamStateDebouncedSync();
-      flushTeamStateSyncNow();
-    }
-    rebuildEmployeeDerivedData();
-    rebuildSchedule({
-      weekIndex: scheduleCalendarWeekIndex,
-      preserveOtherWeeks: true,
-    });
-    if (!templateScratch) notifyTimecardsScheduleChanged();
-    if (!opts.skipUiRefresh) {
-      if (templateScratch) {
+      /* Template scratch must not rebuild live availability or double-paint:
+         refreshScheduleCalendarAfterEdit → renderScheduleTemplatePreview does one rebuild. */
+      if (!opts.skipUiRefresh) {
         var dayStr = getVisibleWeekDays()[dayInWeekN];
         if (!isDayOff && dayStr) {
           syncTemplateMasterChoiceFromShiftEdit(role, trIdx, dayStr, s, e);
         }
         refreshScheduleCalendarAfterEdit();
-      } else {
-        renderCalendar();
-        if (scheduleBody) renderSchedule();
       }
+      return true;
+    }
+    var store = loadScheduleAssignmentsStore();
+    if (!store[rid]) store[rid] = {};
+    store[rid] = rs;
+    saveDraftScheduleRowsForWeek(wi, rows, rid);
+    saveScheduleAssignmentsStore(store);
+    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    pruneScheduleAssignmentsInvalidSlots();
+    scheduleTeamStateDebouncedSync();
+    /* Week-scoped only — full rebuildEmployeeDerivedData() was multi-second on large rosters. */
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+    });
+    notifyTimecardsScheduleChanged();
+    if (!opts.skipUiRefresh) {
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
     }
     return true;
   }
@@ -8378,6 +8885,56 @@
       var btn = document.getElementById(id);
       if (btn) btn.disabled = !enabled;
     });
+  }
+
+  function clearCurrentWeekScheduleAll() {
+    if (!managerCanEditCurrentRestaurant()) {
+      showScheduleNotice(
+        gmT('schedule.viewOnlyOtherStoreHint') || 'View only at this location.',
+        false
+      );
+      return false;
+    }
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    var range = formatScheduleWeekRangeLabel(wi);
+    pushScheduleUndoSnapshot();
+    scheduleUndoSuppressPush = true;
+    try {
+      var draft = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+      ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+        var rows = Array.isArray(draft[role]) ? draft[role] : [];
+        draft[role] = rows.map(function () {
+          return makeNullDraftWeekRow();
+        });
+        if (!draft[role].length) {
+          draft[role] = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS)[role].map(function () {
+            return makeNullDraftWeekRow();
+          });
+        }
+      });
+      saveDraftScheduleRowsForWeek(wi, draft, rid);
+      var store = loadScheduleAssignmentsStore();
+      if (!store[rid]) store[rid] = {};
+      resetRestaurantWeekDirectAssignments(store, rid, wi, {});
+      saveScheduleAssignmentsStore(store);
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      pruneScheduleAssignmentsInvalidSlots();
+      rebuildEmployeeDerivedData();
+      rebuildSchedule({
+        weekIndex: wi,
+        preserveOtherWeeks: true,
+      });
+      renderCalendar({ force: true });
+      if (scheduleBody) renderSchedule();
+      notifyTimecardsScheduleChanged();
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
+    } finally {
+      scheduleUndoSuppressPush = false;
+    }
+    showScheduleNotice('Cleared all people and shift times for ' + range + '.', false);
+    return true;
   }
 
   function clearScheduleUndoStack() {
@@ -8938,12 +9495,11 @@
   function populateScheduleTemplateSelect(preferredId) {
     var sel = document.getElementById('scheduleTemplateSelect');
     if (!sel) return;
-    var applyBtn = document.getElementById('applyScheduleTemplateBtn');
     var deleteBtn = document.getElementById('deleteScheduleTemplateBtn');
     var prev = sel.value;
     var list = normalScheduleTemplates();
     sel.innerHTML =
-      '<option value="">Choose template…</option>' +
+      '<option value="">This week’s schedule</option>' +
       list
         .map(function (t) {
           return (
@@ -8951,33 +9507,61 @@
           );
         })
         .join('');
-    var pickId = preferredId || prev;
+    var pickId = preferredId != null ? preferredId : prev;
     if (pickId && list.some(function (t) { return t.id === pickId; })) {
       sel.value = pickId;
-    } else if (list.length) {
-      sel.value = list[0].id;
+    } else {
+      sel.value = '';
     }
     var hasSelection = !!(sel.value && list.some(function (t) { return t.id === sel.value; }));
-    if (applyBtn) applyBtn.disabled = !hasSelection;
     if (deleteBtn) deleteBtn.disabled = !hasSelection;
   }
 
   function populateMasterScheduleTemplateSelect(preferredId) {
-    var sel = document.getElementById('masterScheduleTemplateSelect');
-    if (!sel) return;
-    var prev = sel.value;
     var list = masterScheduleTemplates();
-    sel.innerHTML =
-      '<option value="">Choose Master Template…</option>' +
+    var optionsHtml =
       list
         .map(function (t) {
-          return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>';
+          return (
+            '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>'
+          );
         })
         .join('');
-    var pick = preferredId || prev;
-    if (pick && list.some(function (t) { return t.id === pick; })) sel.value = pick;
-    var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
-    if (deleteBtn) deleteBtn.disabled = !sel.value;
+
+    var editSel = document.getElementById('masterScheduleTemplateSelect');
+    if (editSel) {
+      var editPrev = preferredId != null ? preferredId : editSel.value;
+      editSel.innerHTML =
+        '<option value="">Choose Master Template…</option>' + optionsHtml;
+      if (editPrev && list.some(function (t) { return t.id === editPrev; })) {
+        editSel.value = editPrev;
+      } else {
+        editSel.value = '';
+      }
+      var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
+      if (deleteBtn) deleteBtn.disabled = !editSel.value;
+    }
+
+    /* Guide dropdown is separate from the edit dropdown — keep both in sync. */
+    var guideSel = document.getElementById('scheduleMasterTemplateSelect');
+    if (guideSel) {
+      var guidePrev = preferredId != null ? preferredId : guideSel.value;
+      guideSel.innerHTML =
+        '<option value="">No Master Template restriction</option>' + optionsHtml;
+      if (guidePrev && list.some(function (t) { return t.id === guidePrev; })) {
+        guideSel.value = guidePrev;
+      } else if (
+        scheduleTemplateEditorState &&
+        scheduleTemplateEditorState.masterTemplateId &&
+        list.some(function (t) {
+          return t.id === scheduleTemplateEditorState.masterTemplateId;
+        })
+      ) {
+        guideSel.value = scheduleTemplateEditorState.masterTemplateId;
+      } else {
+        guideSel.value = '';
+      }
+    }
   }
 
   function addRestaurantFromInput(nameStr, shortStr) {
@@ -9271,6 +9855,17 @@
     var directKeyPresent = stored[shiftId] != null;
     var direct = directKeyPresent ? normalizeScheduleAssignment(stored[shiftId]) : null;
     var pattern = lookupScheduleAssignmentPattern(stored, shiftId);
+    var p = parseShiftIdParts(shiftId);
+    var tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+    /*
+     * Past weeks must not inherit staffing from the rolling "this week" pattern.
+     * That path created duplicate people (e.g. second Maeve) when this week's layout
+     * grew and past weeks briefly shared structure via draft fallback.
+     */
+    if (p && p.globalDayIdx < tplStart) {
+      if (!directKeyPresent) return null;
+      return mergeScheduleAssignmentEntries(direct, pattern, true);
+    }
     return mergeScheduleAssignmentEntries(direct, pattern, directKeyPresent);
   }
 
@@ -9605,7 +10200,8 @@
 
   function getCurrentRestaurantAssignments() {
     if (
-      scheduleTemplateModalIsOpen() &&
+      schedulePreferLiveDataDepth === 0 &&
+      scheduleTemplateScratchActive &&
       scheduleTemplateEditorState &&
       scheduleTemplateEditorState.assignmentScratch
     ) {
@@ -9635,7 +10231,10 @@
     else entry.breakPaid = !!breakPaid;
     rs[shiftId] = entry;
     saveScheduleAssignmentsStore(store);
-    rebuildSchedule();
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+    });
     renderCalendar();
     if (scheduleBody) renderSchedule();
     scheduleTeamStateDebouncedSync();
@@ -9688,12 +10287,26 @@
 
   function saveScheduleAssignments(opts) {
     opts = opts || {};
+    /* Never stamp the live assignment store from in-memory SCHEDULE while the
+       Templates preview owns SCHEDULE as a scratch canvas. */
+    if (scheduleTemplateEditsAreScratch() && !opts.forceDuringTemplate) {
+      return;
+    }
     /* Trust in-memory SCHEDULE rows; do not sync from currentShift (stale Edit Staffing object). */
     if (!opts.skipUndo) pushScheduleUndoSnapshot();
     var store = loadScheduleAssignmentsStore();
     if (!store[currentRestaurantId]) store[currentRestaurantId] = {};
     var rs = store[currentRestaurantId];
+    var weekOnly =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex)
+        : scheduleCalendarWeekIndex;
+    var weekStart = resolveDraftWeekIndex(weekOnly) * 7;
+    var weekEnd = weekStart + 7;
     SCHEDULE.forEach(function (s) {
+      if (!s || !s.id) return;
+      var p = parseShiftIdParts(s.id);
+      if (p && (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd)) return;
       /* rebuildSchedule seeds Unassigned when a store key/pattern exists, then merge
          applies the real name — so SCHEDULE here is trustworthy for intentional edits
          (including assigning the sheet-default person back onto a row). */
@@ -10677,6 +11290,7 @@
     gmCalloutEmployeeDataReady = true;
     applyHourlyRatePresetsToAllEmployees();
     applyTipPointPresetsToAllEmployees();
+    applyDeliveryTipRetentionDefaultsToAllEmployees();
     applyEmployeeInfoPresetsToAllEmployees();
     seedAllEmployeeLeaveBalances();
     rebuildEmployeeDerivedData();
@@ -11143,9 +11757,14 @@
     );
   }
 
-  /** Block DOM rebuilds that would dismiss an open Person select or cell name editor. */
+  /** Block DOM rebuilds that would dismiss an open Person select or cell name editor.
+   *  Also pause main-calendar remote refresh while Templates owns SCHEDULE as scratch. */
   function calendarScheduleUiBlocksRender() {
-    return calendarInlineWorkerEditIsOpen() || calendarPersonSelectIsOpen();
+    return (
+      calendarInlineWorkerEditIsOpen() ||
+      calendarPersonSelectIsOpen() ||
+      scheduleTemplateScratchActive
+    );
   }
 
   function flushDeferredCalendarRemoteRefresh() {
@@ -11494,8 +12113,6 @@
   const applyScheduleTemplateBtn = document.getElementById('applyScheduleTemplateBtn');
   const deleteScheduleTemplateBtn = document.getElementById('deleteScheduleTemplateBtn');
   const saveScheduleTemplateBtn = document.getElementById('saveScheduleTemplateBtn');
-  const loadScheduleTemplateBtn = document.getElementById('loadScheduleTemplateBtn');
-  const newScheduleTemplateBtn = document.getElementById('newScheduleTemplateBtn');
   const scheduleMasterTemplateSelect = document.getElementById('scheduleMasterTemplateSelect');
   const masterScheduleTemplateSelect = document.getElementById('masterScheduleTemplateSelect');
   const newMasterScheduleTemplateBtn = document.getElementById('newMasterScheduleTemplateBtn');
@@ -11513,12 +12130,32 @@
   function closeScheduleTemplateModal(opts) {
     opts = opts || {};
     if (!scheduleTemplateModal) return;
+    closeTemplateShiftEditPanel();
+    scheduleTemplateScratchActive = false;
     if (opts.keepLiveSchedule) {
       scheduleTemplatePreviewSession = null;
+      /* Apply already wrote live storage + rebuilt; drop scratch without reverting. */
+      scheduleTemplateEditorState = null;
+      withLiveScheduleData(function () {
+        AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+        rebuildSchedule({
+          weekIndex: scheduleCalendarWeekIndex,
+          preserveOtherWeeks: true,
+        });
+        renderCalendar({ force: true });
+        if (scheduleBody) renderSchedule();
+      });
     } else {
       restoreScheduleTemplatePreviewSession();
+      scheduleTemplateEditorState = null;
     }
-    scheduleTemplateEditorState = null;
+    scheduleMasterEditorState = null;
+    var applyConfirm = document.getElementById('applyScheduleTemplateConfirm');
+    var deleteConfirm = document.getElementById('deleteScheduleTemplateConfirm');
+    if (applyConfirm) applyConfirm.hidden = true;
+    if (deleteConfirm) deleteConfirm.hidden = true;
+    window.__gmPendingDeleteTemplateId = '';
+    window.__gmPendingDeleteTemplateName = '';
     scheduleTemplateModal.hidden = true;
     scheduleTemplateModal.setAttribute('aria-hidden', 'true');
     refreshScheduleSheetBodyLock();
@@ -11927,11 +12564,31 @@
     var mount = document.getElementById('scheduleTemplatePreviewMount');
     if (!mount) return;
     if (!scheduleTemplateEditorState) scheduleTemplateEditorState = currentTemplateEditorState();
-    applyTemplateEditorStateToLiveScratch();
+    applyTemplateEditorStateToScratchOnly();
+    /* Paint from template scratch into SCHEDULE for the preview grid only.
+       Live draft/assignments stay in scheduleTemplatePreviewSession until Apply/close. */
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+      skipRebind: true,
+    });
     mount.innerHTML = '';
-    renderCalendarInto(mount, { readOnly: false, showDayTotals: true, force: true });
+    renderCalendarInto(mount, {
+      readOnly: false,
+      showDayTotals: true,
+      force: true,
+      /* Cross-store tile flags are live schedule noise — not part of the template. */
+      showOtherStoreBadges: false,
+      /* Preview mount — do not run main-grid interaction / deferred refresh side effects. */
+      skipMainCalendarSideEffects: true,
+    });
     ensureTemplateCalendarInteraction();
     syncCalendarTheadStickyOffset(mount);
+  }
+
+  function setMasterScheduleTemplateNameFieldVisible(visible) {
+    var field = document.getElementById('masterScheduleTemplateNameField');
+    if (field) field.hidden = !visible;
   }
 
   function renderMasterScheduleTemplateEditor() {
@@ -11940,6 +12597,7 @@
     if (!mount || !scheduleMasterEditorState) return;
     mount.hidden = false;
     if (saveBtn) saveBtn.hidden = false;
+    setMasterScheduleTemplateNameFieldVisible(true);
     var sections = ['FOH', 'BOH', 'Delivery/Dishwasher'];
     mount.innerHTML = sections
       .map(function (section) {
@@ -11959,10 +12617,10 @@
                 '<tr data-master-row="' +
                 index +
                 '">' +
-                '<td><input class="timecards-input" data-master-field="role" value="' +
+                '<td><input class="timecards-input schedule-master-role" data-master-field="role" value="' +
                 escapeHtml(row.role) +
                 '" placeholder="Role" /></td>' +
-                '<td><input class="timecards-input" data-master-field="shift" value="' +
+                '<td><input class="timecards-input schedule-master-shift" data-master-field="shift" value="' +
                 escapeHtml(row.shift) +
                 '" placeholder="Shift" /></td>' +
                 '<td><input type="time" class="timecards-input timecards-input--time" data-master-field="clockIn" value="' +
@@ -11982,9 +12640,9 @@
                 '<td data-master-after-break>' +
                 escapeHtml(String(row.hoursAfterBreak || 0)) +
                 '</td>' +
-                '<td><input class="timecards-input" data-master-field="daysPerWeek" value="' +
+                '<td><input class="timecards-input schedule-master-days" data-master-field="daysPerWeek" value="' +
                 escapeHtml(row.daysPerWeek) +
-                '" placeholder="Days/wk" inputmode="numeric" /></td>' +
+                '" placeholder="Days" inputmode="numeric" /></td>' +
                 '<td><button type="button" class="btn btn-secondary schedule-master-remove" data-master-remove>×</button></td>' +
                 '</tr>'
               );
@@ -12009,17 +12667,33 @@
       scheduleAddLocationModal.hidden = true;
       scheduleAddLocationModal.setAttribute('aria-hidden', 'true');
     }
-    populateScheduleTemplateSelect();
+    populateScheduleTemplateSelect('');
     populateMasterScheduleTemplateSelect();
     captureScheduleTemplatePreviewSession();
+    scheduleTemplateScratchActive = true;
     scheduleTemplateEditorState = currentTemplateEditorState();
+    scheduleTemplateEditorState.masterTemplateId = '';
+    scheduleTemplateEditorState.choices = {};
+    scheduleTemplateEditorState.sourceTemplateId = '';
     var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
     if (masterSelect) masterSelect.value = '';
     var masterEditor = document.getElementById('masterScheduleTemplateEditor');
     if (masterEditor) masterEditor.hidden = true;
     var masterSave = document.getElementById('saveMasterScheduleTemplateBtn');
     if (masterSave) masterSave.hidden = true;
+    setMasterScheduleTemplateNameFieldVisible(false);
+    var masterNameInput = document.getElementById('masterScheduleTemplateNameInput');
+    if (masterNameInput) masterNameInput.value = '';
+    var tplNameInp = document.getElementById('scheduleTemplateNameInput');
+    if (tplNameInp) tplNameInp.value = '';
     scheduleMasterEditorState = null;
+    var applyConfirmOpen = document.getElementById('applyScheduleTemplateConfirm');
+    var deleteConfirmOpen = document.getElementById('deleteScheduleTemplateConfirm');
+    if (applyConfirmOpen) applyConfirmOpen.hidden = true;
+    if (deleteConfirmOpen) deleteConfirmOpen.hidden = true;
+    window.__gmPendingDeleteTemplateId = '';
+    window.__gmPendingDeleteTemplateName = '';
+    closeTemplateShiftEditPanel();
     renderScheduleTemplatePreview();
     scheduleTemplateModal.hidden = false;
     scheduleTemplateModal.setAttribute('aria-hidden', 'false');
@@ -12030,6 +12704,115 @@
         sel.focus();
       }, 0);
     }
+  }
+
+  /**
+   * Replace only one week’s assignment keys for a restaurant. Other weeks stay untouched.
+   */
+  function mergeRestaurantWeekAssignmentsFromScratch(liveRs, scratchRs, weekIndex) {
+    var weekStart = resolveDraftWeekIndex(weekIndex) * 7;
+    var weekEnd = weekStart + 7;
+    var next = liveRs && typeof liveRs === 'object' ? JSON.parse(JSON.stringify(liveRs)) : {};
+    Object.keys(next).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      if (p.globalDayIdx >= weekStart && p.globalDayIdx < weekEnd) delete next[shiftId];
+    });
+    Object.keys(scratchRs || {}).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+      next[shiftId] = JSON.parse(JSON.stringify(scratchRs[shiftId]));
+    });
+    return next;
+  }
+
+  function commitScheduleTemplateEditorToLive() {
+    if (!managerCanEditCurrentRestaurant()) {
+      return { ok: false, reason: 'view_only', appliedSlots: 0 };
+    }
+    if (!scheduleTemplateEditorState) {
+      return { ok: false, reason: 'no_editor', appliedSlots: 0 };
+    }
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    applyMasterTemplateChoicesToEditorDraft();
+    applyTemplateEditorAssignmentsToScratch();
+    pushScheduleUndoSnapshot();
+    scheduleUndoSuppressPush = true;
+    var appliedSlots = 0;
+    try {
+      /* Draft times: this week only. */
+      saveDraftScheduleRowsForWeek(wi, scheduleTemplateEditorState.draft, rid);
+      var visibleDays = getVisibleWeekDays();
+      var weekPattern = {};
+      Object.keys(scheduleTemplateEditorState.workers || {}).forEach(function (rowKey) {
+        var bits = rowKey.split(':');
+        var role = bits[0];
+        var trIdx = parseInt(bits[1], 10);
+        var roleDef = ROLE_DEFS.find(function (r) {
+          return r.role === role;
+        });
+        if (!roleDef || isNaN(trIdx)) return;
+        var worker = scheduleTemplateEditorState.workers[rowKey] || 'Unassigned';
+        if (!worker || worker === 'Unassigned') return;
+        for (var dayIndex = 0; dayIndex < visibleDays.length; dayIndex += 1) {
+          var cell =
+            scheduleTemplateEditorState.draft[role] &&
+            scheduleTemplateEditorState.draft[role][trIdx] &&
+            scheduleTemplateEditorState.draft[role][trIdx][dayIndex];
+          if (!cell || !cell[0] || !cell[1]) continue;
+          var key = dayIndex + '-' + ROLE_DEFS.indexOf(roleDef) + '-' + trIdx;
+          weekPattern[key] = { workers: [worker] };
+          appliedSlots += 1;
+        }
+      });
+      if (scheduleTemplateEditorState.assignmentScratch) {
+        /*
+         * Templates are per-location and per-week. Merge only this restaurant’s
+         * current-week shift keys so Apply cannot rewrite sibling weeks (or
+         * freeze inherited names onto other weeks).
+         */
+        var liveStore = loadScheduleAssignmentsStore();
+        var nextStore = JSON.parse(JSON.stringify(liveStore));
+        var scratchRs = scheduleTemplateEditorState.assignmentScratch[rid] || {};
+        resetRestaurantWeekDirectAssignments(nextStore, rid, wi, weekPattern);
+        nextStore[rid] = mergeRestaurantWeekAssignmentsFromScratch(
+          nextStore[rid],
+          scratchRs,
+          wi
+        );
+        saveScheduleAssignmentsStore(nextStore);
+      }
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      syncAssignmentTimesFromDraftForWeek(wi, rid);
+      pruneScheduleAssignmentsInvalidSlots();
+      rebuildEmployeeDerivedData();
+      rebuildSchedule({
+        weekIndex: wi,
+        preserveOtherWeeks: true,
+      });
+      renderCalendar();
+      if (scheduleBody) renderSchedule();
+      notifyTimecardsScheduleChanged();
+      scheduleTeamStateDebouncedSync();
+      if (!appliedSlots && weekPatternHasStaffedSlots(weekPattern)) {
+        appliedSlots = Object.keys(weekPattern).length;
+      }
+    } finally {
+      scheduleUndoSuppressPush = false;
+    }
+    return { ok: true, appliedSlots: appliedSlots };
+  }
+
+  function resetScheduleTemplateEditorToCurrentWeek() {
+    scheduleTemplateEditorState = currentTemplateEditorState();
+    scheduleTemplateEditorState.masterTemplateId = '';
+    scheduleTemplateEditorState.choices = {};
+    scheduleTemplateEditorState.sourceTemplateId = '';
+    var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
+    if (masterSelect) masterSelect.value = '';
+    renderScheduleTemplatePreview();
   }
 
   function startMasterScheduleTemplateEditor(template) {
@@ -12047,12 +12830,31 @@
   }
 
   function saveMasterScheduleTemplateFromEditor() {
-    if (!managerCanEditCurrentRestaurant() || !scheduleMasterEditorState) return false;
+    if (!managerCanEditCurrentRestaurant() || !scheduleMasterEditorState) {
+      return { ok: false, reason: 'unavailable' };
+    }
     var nameInput = document.getElementById('masterScheduleTemplateNameInput');
-    var name = String(
-      (nameInput && nameInput.value) || scheduleMasterEditorState.name || ''
-    ).trim();
-    if (!name) return false;
+    var nameField = document.getElementById('masterScheduleTemplateNameField');
+    if (nameField) nameField.hidden = false;
+    var name = String((nameInput && nameInput.value) || '').trim();
+    if (!name) {
+      if (nameInput) {
+        nameInput.setAttribute('required', 'required');
+        nameInput.setAttribute('aria-invalid', 'true');
+        nameInput.classList.add('schedule-template-name-input--invalid');
+        try {
+          nameInput.focus();
+          if (typeof nameInput.reportValidity === 'function') nameInput.reportValidity();
+        } catch (_focusName) {
+          /* ignore */
+        }
+      }
+      return { ok: false, reason: 'name_required' };
+    }
+    if (nameInput) {
+      nameInput.removeAttribute('aria-invalid');
+      nameInput.classList.remove('schedule-template-name-input--invalid');
+    }
     var invalidTime = false;
     ['FOH', 'BOH', 'Delivery/Dishwasher'].forEach(function (section) {
       (scheduleMasterEditorState.sections[section] || []).forEach(function (row) {
@@ -12065,8 +12867,7 @@
       });
     });
     if (invalidTime) {
-      showScheduleNotice('Use HH:MM format for every clock-in and clock-out time.', false);
-      return false;
+      return { ok: false, reason: 'invalid_time' };
     }
     scheduleMasterEditorState.name = name;
     var list = loadScheduleTemplates().filter(function (t) {
@@ -12079,13 +12880,11 @@
     list.push(JSON.parse(JSON.stringify(scheduleMasterEditorState)));
     saveScheduleTemplatesList(list);
     populateMasterScheduleTemplateSelect(scheduleMasterEditorState.id);
-    var restriction = document.getElementById('scheduleMasterTemplateSelect');
-    if (restriction) restriction.value = scheduleMasterEditorState.id;
     if (scheduleTemplateEditorState) {
       scheduleTemplateEditorState.masterTemplateId = scheduleMasterEditorState.id;
       renderScheduleTemplatePreview();
     }
-    return scheduleMasterEditorState.id;
+    return { ok: true, id: scheduleMasterEditorState.id };
   }
 
   function saveScheduleTemplateFromEditor(name) {
@@ -12208,6 +13007,7 @@
     scheduleTemplateEditorState = state;
     var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
     if (masterSelect) masterSelect.value = state.masterTemplateId;
+    closeTemplateShiftEditPanel();
     renderScheduleTemplatePreview();
   }
 
@@ -12224,8 +13024,7 @@
       closeDraftScheduleModal();
     }
     if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
-      scheduleTemplateModal.hidden = true;
-      scheduleTemplateModal.setAttribute('aria-hidden', 'true');
+      closeScheduleTemplateModal();
     }
     var nameInp = document.getElementById('addRestaurantName');
     var shortInp = document.getElementById('addRestaurantShort');
@@ -13284,11 +14083,15 @@
       }
     }
     if (templateScratch) applyTemplateEditorAssignmentsToScratch();
-    rebuildSchedule({
-      weekIndex: scheduleCalendarWeekIndex,
-      preserveOtherWeeks: true,
-    });
-    refreshScheduleCalendarAfterEdit({ force: true });
+    if (templateScratch) {
+      refreshScheduleCalendarAfterEdit({ force: true });
+    } else {
+      rebuildSchedule({
+        weekIndex: scheduleCalendarWeekIndex,
+        preserveOtherWeeks: true,
+      });
+      refreshScheduleCalendarAfterEdit({ force: true });
+    }
     /* If a deferred path skipped rebuild, still paint the overlay for this row. */
     var personSelectRoot = templateScratch
       ? document.getElementById('scheduleTemplatePreviewMount')
@@ -13435,7 +14238,10 @@
     saveDraftScheduleRowsForWeek(wi, draft, rid);
     saveScheduleAssignmentsStore(store);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    rebuildSchedule();
+    rebuildSchedule({
+      weekIndex: scheduleCalendarWeekIndex,
+      preserveOtherWeeks: true,
+    });
     renderCalendar();
     if (scheduleBody) renderSchedule();
     notifyTimecardsScheduleChanged();
@@ -13536,7 +14342,9 @@
     }
     if (!SCHEDULE.length) {
       targetEl.innerHTML = '<p class="calendar-hint">' + escapeHtml(gmT('schedule.noShifts')) + '</p>';
-      if (!readOnly && !calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
+      if (!readOnly && !opts.skipMainCalendarSideEffects && !calendarScheduleUiBlocksRender()) {
+        flushDeferredCalendarRemoteRefresh();
+      }
       return;
     }
 
@@ -13546,7 +14354,10 @@
     }
 
     const visibleDays = getVisibleWeekDays();
-    const otherStoreDayLabels = buildOtherStoreDayLabelMap(visibleDays);
+    const showOtherStoreBadges = opts.showOtherStoreBadges !== false;
+    const otherStoreDayLabels = showOtherStoreBadges
+      ? buildOtherStoreDayLabelMap(visibleDays)
+      : Object.create(null);
     const showPersonTotals = showDayTotals;
     const dayColCount = visibleDays.length;
     const colCount = dayColCount + 1 + (showPersonTotals ? 1 : 0);
@@ -13718,7 +14529,7 @@
                 var rpTimeOff = redPokeShiftTimeLabel(trOff.start, trOff.end);
                 var dayOffLbl = displayDayOffLabel();
                 var offLabel =
-                  (otherLblOff || dayOffLbl) +
+                  (otherLblOff ? dayOffLbl + ' · ' + otherLblOff : dayOffLbl) +
                   ' · ' +
                   rd.groupLabel +
                   ' · ' +
@@ -13742,8 +14553,10 @@
                   escapeHtml(rpTimeOff) +
                   '</div>' +
                   '</div>' +
-                  (otherBadgeOff ||
-                    '<div class="calendar-slot-empty-label">' + escapeHtml(dayOffLbl) + '</div>') +
+                  '<div class="calendar-slot-empty-label">' +
+                  escapeHtml(dayOffLbl) +
+                  '</div>' +
+                  otherBadgeOff +
                   '</div></td>'
                 );
               }
@@ -13753,15 +14566,23 @@
                 (readOnly ? ' calendar-slot-readonly' : '') +
                 '"' +
                 (readOnly
-                  ? otherLblOff
-                    ? ' role="text" aria-label="' + escapeHtml(otherLblOff) + '"'
-                    : ' aria-hidden="true"'
+                  ? ' role="text" aria-label="' +
+                    escapeHtml(
+                      otherLblOff ? dayOffLbl + ' · ' + otherLblOff : dayOffLbl
+                    ) +
+                    '"'
                   : ' tabindex="0" role="button" aria-label="' +
-                    escapeHtml(otherLblOff || 'Day off — click to edit') +
+                    escapeHtml(
+                      (otherLblOff ? dayOffLbl + ' · ' + otherLblOff : dayOffLbl) +
+                        ' — click to edit'
+                    ) +
                     '" title="Click to edit shift times"') +
                 slotMetaAttrs +
                 '>' +
-                (otherBadgeOff || escapeHtml(displayDayOffLabel())) +
+                '<div class="calendar-slot-empty-label">' +
+                escapeHtml(displayDayOffLabel()) +
+                '</div>' +
+                otherBadgeOff +
                 '</div></td>'
               );
             }
@@ -13823,8 +14644,8 @@
               '<div class="calendar-slot-rp-hours">' +
               escapeHtml(rpHrs) +
               '</div>' +
-              otherBadgeShift +
               '</div>' +
+              otherBadgeShift +
               '</div>' +
               '</td>'
             );
@@ -13871,8 +14692,10 @@
     }
 
     if (!readOnly) {
-      ensureCalendarInteraction();
-      if (!calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
+      if (!opts.skipMainCalendarSideEffects) {
+        ensureCalendarInteraction();
+        if (!calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
+      }
     }
     syncCalendarTheadStickyOffset(targetEl);
   }
@@ -16791,6 +17614,8 @@
   const empRegeneratePinBtn = document.getElementById('empRegeneratePinBtn');
   const empHourlyRate = document.getElementById('empHourlyRate');
   const empTipPoint = document.getElementById('empTipPoint');
+  const empDeliveryTipRetention = document.getElementById('empDeliveryTipRetention');
+  const empDeliveryTipRetentionWrap = document.getElementById('empDeliveryTipRetentionWrap');
   const empPosition = document.getElementById('empPosition');
   const empHiringDate = document.getElementById('empHiringDate');
   const empEmergencyContact = document.getElementById('empEmergencyContact');
@@ -17083,6 +17908,7 @@
           ? String(emp.tipPoint)
           : '';
     }
+    syncEmployeeDeliveryTipRetentionField(emp);
     var empMeta = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
     if (empPosition) empPosition.value = empMeta.position ? String(empMeta.position) : '';
     if (empHiringDate) empHiringDate.value = empMeta.hiringDate ? String(empMeta.hiringDate) : '';
@@ -17131,6 +17957,8 @@
     refreshEmployeeDetailPanel(emp);
     renderEmployeeLeaveEditor(emp);
     refreshEmployeeProfileHeader(emp);
+    var empDeleteZone = document.getElementById('empDeleteZone');
+    if (empDeleteZone) empDeleteZone.hidden = !editingEmployeeId;
     showScreen(6);
     screenTitle.textContent = emp ? employeeDisplayName(emp) : 'Add employee';
   }
@@ -17387,7 +18215,9 @@
     if (shiftDetailStart) shiftDetailStart.value = defs[0];
     if (shiftDetailEnd) shiftDetailEnd.value = defs[1];
     ensureShiftDetailMasterTemplatePicker(role, trIdx, dayStr);
-    showScreen(2);
+    presentShiftDetailEditor(
+      eligibleShiftContext ? eligibleShiftContext.textContent : ''
+    );
   }
 
   function openShiftEdit() {
@@ -17428,7 +18258,9 @@
         ),
     });
     ensureShiftDetailMasterTemplatePicker(currentShift.role, currentShift.trIdx, currentShift.day);
-    showScreen(2);
+    presentShiftDetailEditor(
+      eligibleShiftContext ? eligibleShiftContext.textContent : ''
+    );
   }
 
   function openEligible() {
@@ -17647,12 +18479,16 @@
         showScheduleNotice('Could not save shift times.', false);
         return;
       }
+      if (scheduleTemplateScratchActive && templateShiftEditorMountState) {
+        closeTemplateShiftEditPanel();
+        refreshScheduleCalendarAfterEdit();
+        return;
+      }
+      /* Ensure Save control is back on the main shift screen if a prior template edit left it moved. */
+      if (templateShiftEditorMountState) closeTemplateShiftEditPanel({ keepTargets: true });
       currentShift = null;
       shiftDetailSlotTarget = null;
       showScreen(1);
-      if (scheduleTemplateModalIsOpen()) {
-        refreshScheduleCalendarAfterEdit();
-      }
     });
   }
 
@@ -17890,6 +18726,15 @@
     if (ev.key !== 'Escape') return;
     if (draftScheduleModal && !draftScheduleModal.hidden) {
       closeDraftScheduleModal();
+      ev.preventDefault();
+      return;
+    }
+    if (
+      scheduleTemplateModal &&
+      !scheduleTemplateModal.hidden &&
+      templateShiftEditorMountState
+    ) {
+      closeTemplateShiftEditPanel();
       ev.preventDefault();
       return;
     }
@@ -18233,6 +19078,59 @@
   if (scheduleUndoBtn) {
     scheduleUndoBtn.addEventListener('click', undoScheduleChange);
   }
+  var scheduleClearAllBtn = document.getElementById('scheduleClearAllBtn');
+  var scheduleClearAllConfirm = document.getElementById('scheduleClearAllConfirm');
+  var scheduleClearAllConfirmCancel = document.getElementById('scheduleClearAllConfirmCancel');
+  var scheduleClearAllConfirmYes = document.getElementById('scheduleClearAllConfirmYes');
+  var scheduleClearAllConfirmMsg = document.getElementById('scheduleClearAllConfirmMsg');
+  if (scheduleClearAllBtn) {
+    scheduleClearAllBtn.addEventListener('click', function () {
+      if (!managerCanEditCurrentRestaurant()) {
+        showScheduleNotice(
+          gmT('schedule.viewOnlyOtherStoreHint') || 'View only at this location.',
+          false
+        );
+        return;
+      }
+      var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
+      if (scheduleClearAllConfirmMsg) {
+        scheduleClearAllConfirmMsg.textContent =
+          'Clear all people and shift times for ' +
+          range +
+          ' at this location? This cannot be undone except with Undo.';
+      }
+      if (scheduleClearAllConfirm) {
+        scheduleClearAllConfirm.hidden = false;
+        if (scheduleClearAllConfirmYes) {
+          setTimeout(function () {
+            scheduleClearAllConfirmYes.focus();
+          }, 0);
+        }
+        return;
+      }
+      if (
+        !window.confirm(
+          'Clear all people and shift times for ' +
+            range +
+            ' at this location? This cannot be undone except with Undo.'
+        )
+      ) {
+        return;
+      }
+      clearCurrentWeekScheduleAll();
+    });
+  }
+  if (scheduleClearAllConfirmCancel) {
+    scheduleClearAllConfirmCancel.addEventListener('click', function () {
+      if (scheduleClearAllConfirm) scheduleClearAllConfirm.hidden = true;
+    });
+  }
+  if (scheduleClearAllConfirmYes) {
+    scheduleClearAllConfirmYes.addEventListener('click', function () {
+      if (scheduleClearAllConfirm) scheduleClearAllConfirm.hidden = true;
+      clearCurrentWeekScheduleAll();
+    });
+  }
   var scheduleHistoryBtn = document.getElementById('scheduleHistoryBtn');
   var scheduleHistoryModal = document.getElementById('scheduleHistoryModal');
   var scheduleHistoryList = document.getElementById('scheduleHistoryList');
@@ -18473,12 +19371,22 @@
   }
   if (scheduleTemplateModalBackdrop) {
     scheduleTemplateModalBackdrop.addEventListener('click', function () {
+      if (templateShiftEditorMountState) {
+        closeTemplateShiftEditPanel();
+        return;
+      }
       closeScheduleTemplateModal();
     });
   }
   if (scheduleTemplateModalClose) {
     scheduleTemplateModalClose.addEventListener('click', function () {
       closeScheduleTemplateModal();
+    });
+  }
+  var templateShiftEditCloseBtn = document.getElementById('templateShiftEditClose');
+  if (templateShiftEditCloseBtn) {
+    templateShiftEditCloseBtn.addEventListener('click', function () {
+      closeTemplateShiftEditPanel();
     });
   }
   if (scheduleAddLocationModalBackdrop) {
@@ -18492,80 +19400,137 @@
     });
   }
   if (applyScheduleTemplateBtn) {
-    applyScheduleTemplateBtn.addEventListener('click', function () {
-      var selTpl = document.getElementById('scheduleTemplateSelect');
-      var chosen = selTpl && selTpl.value ? selTpl.value : '';
-      if (!chosen) {
-        var list = loadScheduleTemplates();
-        if (list.length) chosen = list[0].id;
+    var applyConfirmPanel = document.getElementById('applyScheduleTemplateConfirm');
+    var applyConfirmMsg = document.getElementById('applyScheduleTemplateConfirmMsg');
+    var applyConfirmCancel = document.getElementById('applyScheduleTemplateConfirmCancel');
+    var applyConfirmYes = document.getElementById('applyScheduleTemplateConfirmYes');
+
+    function hideApplyScheduleTemplateConfirm() {
+      if (applyConfirmPanel) applyConfirmPanel.hidden = true;
+    }
+
+    function runApplyScheduleTemplatePreview() {
+      if (!scheduleTemplateEditorState) {
+        scheduleTemplateEditorState = currentTemplateEditorState();
       }
-      if (!chosen) return;
-      restoreScheduleTemplatePreviewSession();
-      scheduleTemplateEditorState = null;
-      var tplList = loadScheduleTemplates();
-      var tplMeta = tplList.find(function (t) {
-        return t && t.id === chosen;
-      });
-      var applyResult = applyScheduleTemplateById(chosen);
-      var appliedSlots = applyResult && applyResult.appliedSlots ? applyResult.appliedSlots : 0;
-      var shiftsAdded = applyResult && applyResult.shiftsAdded ? applyResult.shiftsAdded : 0;
-      if (!appliedSlots) {
-        var diag = describeTemplateApplyPattern(tplMeta);
-        var failMsg =
-          'Could not apply template to ' +
-          formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex) +
-          '.';
-        if (diag.patternKeys && !diag.normalizedKeys) {
-          failMsg += ' Template slot keys are not recognized (expected Mon–Sun keys like 0-0-0).';
-        } else if (diag.normalizedKeys && !diag.staffedSlots) {
-          failMsg += ' All template workers were filtered out (not on this location\'s team).';
-        } else if (!diag.patternKeys) {
-          failMsg += ' The template has no saved staffing pattern.';
-        } else {
-          failMsg += ' The template may be empty or its workers are not on this location\'s team.';
-        }
-        showScheduleNotice(failMsg, false);
-        return;
-      }
+      var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
       var applyBtn = applyScheduleTemplateBtn;
       if (applyBtn) applyBtn.disabled = true;
+      if (applyConfirmYes) applyConfirmYes.disabled = true;
+      hideApplyScheduleTemplateConfirm();
+      var applyResult = commitScheduleTemplateEditorToLive();
+      var appliedSlots = applyResult && applyResult.appliedSlots ? applyResult.appliedSlots : 0;
+      if (!applyResult || !applyResult.ok) {
+        if (applyResult && applyResult.reason === 'view_only') {
+          showScheduleNotice(gmT('schedule.viewOnlyOtherStoreHint') || 'View only at this location.', false);
+        } else {
+          showScheduleNotice('Could not apply the preview to this week.', false);
+        }
+        if (applyBtn) applyBtn.disabled = false;
+        if (applyConfirmYes) applyConfirmYes.disabled = false;
+        return;
+      }
       Promise.resolve(flushTeamStateSyncNow())
         .then(function () {
           var successMsg =
-            'Template applied to ' +
-            formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex) +
-            ' (' +
-            appliedSlots +
-            ' staffed slot' +
-            (appliedSlots === 1 ? '' : 's');
-          if (shiftsAdded) {
-            successMsg +=
-              ', ' + shiftsAdded + ' shift' + (shiftsAdded === 1 ? '' : 's') + ' added from day-off';
-          }
-          successMsg += ').';
+            'Preview applied to ' +
+            range +
+            (appliedSlots
+              ? ' (' +
+                appliedSlots +
+                ' staffed slot' +
+                (appliedSlots === 1 ? '' : 's') +
+                ').'
+              : '.');
           showScheduleNotice(successMsg, false);
           closeScheduleTemplateModal({ keepLiveSchedule: true });
         })
         .finally(function () {
           if (applyBtn) applyBtn.disabled = false;
+          if (applyConfirmYes) applyConfirmYes.disabled = false;
         });
+    }
+
+    applyScheduleTemplateBtn.addEventListener('click', function (ev) {
+      if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      var deleteConfirmPanel = document.getElementById('deleteScheduleTemplateConfirm');
+      if (deleteConfirmPanel) deleteConfirmPanel.hidden = true;
+      window.__gmPendingDeleteTemplateId = '';
+      window.__gmPendingDeleteTemplateName = '';
+      var range = formatScheduleWeekRangeLabel(scheduleCalendarWeekIndex);
+      if (applyConfirmMsg) {
+        applyConfirmMsg.textContent =
+          'Apply this preview to the live schedule for ' +
+          range +
+          '? This replaces the current week’s staffing and shift times.';
+      }
+      if (applyConfirmPanel) {
+        applyConfirmPanel.hidden = false;
+        if (applyConfirmYes) {
+          setTimeout(function () {
+            applyConfirmYes.focus();
+          }, 0);
+        }
+        return;
+      }
+      if (
+        !window.confirm(
+          'Apply this preview to the live schedule for ' +
+            range +
+            '? This replaces the current week’s staffing and shift times.'
+        )
+      ) {
+        return;
+      }
+      runApplyScheduleTemplatePreview();
     });
+    if (applyConfirmCancel) {
+      applyConfirmCancel.addEventListener('click', function () {
+        hideApplyScheduleTemplateConfirm();
+      });
+    }
+    if (applyConfirmYes) {
+      applyConfirmYes.addEventListener('click', function () {
+        runApplyScheduleTemplatePreview();
+      });
+    }
   }
   if (deleteScheduleTemplateBtn) {
-    deleteScheduleTemplateBtn.addEventListener('click', function () {
+    deleteScheduleTemplateBtn.addEventListener('click', function (ev) {
+      if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
       var selTpl = document.getElementById('scheduleTemplateSelect');
       var chosen = selTpl && selTpl.value ? selTpl.value : '';
       if (!chosen) return;
-      var list = loadScheduleTemplates();
-      var tpl = list.find(function (t) {
+      var tpl = normalScheduleTemplates().find(function (t) {
         return t && t.id === chosen;
       });
       if (!tpl) return;
+      var tplName = tpl.name || 'Untitled';
+      var applyConfirmPanel = document.getElementById('applyScheduleTemplateConfirm');
+      var deleteConfirmPanel = document.getElementById('deleteScheduleTemplateConfirm');
+      var deleteConfirmMsg = document.getElementById('deleteScheduleTemplateConfirmMsg');
+      if (applyConfirmPanel) applyConfirmPanel.hidden = true;
+      if (deleteConfirmMsg) {
+        deleteConfirmMsg.textContent =
+          'Delete saved template "' + tplName + '"? This cannot be undone.';
+      }
+      if (deleteConfirmPanel) {
+        window.__gmPendingDeleteTemplateId = chosen;
+        window.__gmPendingDeleteTemplateName = tplName;
+        deleteConfirmPanel.hidden = false;
+        var deleteConfirmYes = document.getElementById('deleteScheduleTemplateConfirmYes');
+        if (deleteConfirmYes) {
+          setTimeout(function () {
+            deleteConfirmYes.focus();
+          }, 0);
+        }
+        return;
+      }
       if (
-        !confirm(
-          'Delete template "' +
-            (tpl.name || 'Untitled') +
-            '"? This cannot be undone.'
+        !window.confirm(
+          'Delete saved template "' + tplName + '"? This cannot be undone.'
         )
       ) {
         return;
@@ -18576,40 +19541,53 @@
       }
       flushTeamStateSyncNow();
       populateScheduleTemplateSelect();
-      showScheduleNotice('Deleted template "' + (tpl.name || 'Untitled') + '".', false);
+      resetScheduleTemplateEditorToCurrentWeek();
+      showScheduleNotice('Deleted template "' + tplName + '".', false);
+    });
+  }
+  var deleteConfirmCancelEl = document.getElementById('deleteScheduleTemplateConfirmCancel');
+  var deleteConfirmYesEl = document.getElementById('deleteScheduleTemplateConfirmYes');
+  if (deleteConfirmCancelEl) {
+    deleteConfirmCancelEl.addEventListener('click', function () {
+      var panel = document.getElementById('deleteScheduleTemplateConfirm');
+      if (panel) panel.hidden = true;
+      window.__gmPendingDeleteTemplateId = '';
+      window.__gmPendingDeleteTemplateName = '';
+    });
+  }
+  if (deleteConfirmYesEl) {
+    deleteConfirmYesEl.addEventListener('click', function () {
+      var chosen = window.__gmPendingDeleteTemplateId || '';
+      var tplName = window.__gmPendingDeleteTemplateName || 'Untitled';
+      var panel = document.getElementById('deleteScheduleTemplateConfirm');
+      if (panel) panel.hidden = true;
+      window.__gmPendingDeleteTemplateId = '';
+      window.__gmPendingDeleteTemplateName = '';
+      if (!chosen) return;
+      if (!deleteScheduleTemplateById(chosen)) {
+        showScheduleNotice('Could not delete that template.', false);
+        return;
+      }
+      flushTeamStateSyncNow();
+      populateScheduleTemplateSelect();
+      resetScheduleTemplateEditorToCurrentWeek();
+      showScheduleNotice('Deleted template "' + tplName + '".', false);
     });
   }
   var scheduleTemplateSelectEl = document.getElementById('scheduleTemplateSelect');
   if (scheduleTemplateSelectEl) {
     scheduleTemplateSelectEl.addEventListener('change', function () {
-      var applyBtn = document.getElementById('applyScheduleTemplateBtn');
       var deleteBtn = document.getElementById('deleteScheduleTemplateBtn');
       var hasSelection = !!scheduleTemplateSelectEl.value;
-      if (applyBtn) applyBtn.disabled = !hasSelection;
       if (deleteBtn) deleteBtn.disabled = !hasSelection;
+      if (!hasSelection) {
+        resetScheduleTemplateEditorToCurrentWeek();
+        return;
+      }
       var chosen = normalScheduleTemplates().find(function (t) {
         return t && t.id === scheduleTemplateSelectEl.value;
       });
       if (chosen) loadNormalScheduleTemplateIntoEditor(chosen);
-    });
-  }
-  if (loadScheduleTemplateBtn) {
-    loadScheduleTemplateBtn.addEventListener('click', function () {
-      var sel = document.getElementById('scheduleTemplateSelect');
-      var chosen = normalScheduleTemplates().find(function (t) {
-        return t && t.id === (sel && sel.value);
-      });
-      if (chosen) loadNormalScheduleTemplateIntoEditor(chosen);
-    });
-  }
-  if (newScheduleTemplateBtn) {
-    newScheduleTemplateBtn.addEventListener('click', function () {
-      scheduleTemplateEditorState = currentTemplateEditorState();
-      scheduleTemplateEditorState.masterTemplateId = '';
-      scheduleTemplateEditorState.choices = {};
-      var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
-      if (masterSelect) masterSelect.value = '';
-      renderScheduleTemplatePreview();
     });
   }
   if (scheduleMasterTemplateSelect) {
@@ -18617,13 +19595,24 @@
       if (!scheduleTemplateEditorState) scheduleTemplateEditorState = currentTemplateEditorState();
       scheduleTemplateEditorState.masterTemplateId = scheduleMasterTemplateSelect.value || '';
       scheduleTemplateEditorState.choices = {};
+      closeTemplateShiftEditPanel();
       renderScheduleTemplatePreview();
     });
   }
   if (newMasterScheduleTemplateBtn) {
     newMasterScheduleTemplateBtn.addEventListener('click', function () {
       if (!managerCanEditCurrentRestaurant()) return;
+      var masterSel = document.getElementById('masterScheduleTemplateSelect');
+      if (masterSel) masterSel.value = '';
+      var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
+      if (deleteBtn) deleteBtn.disabled = true;
       startMasterScheduleTemplateEditor(null);
+      var nameInput = document.getElementById('masterScheduleTemplateNameInput');
+      if (nameInput) {
+        setTimeout(function () {
+          nameInput.focus();
+        }, 0);
+      }
     });
   }
   if (masterScheduleTemplateSelect) {
@@ -18633,7 +19622,21 @@
       });
       var deleteBtn = document.getElementById('deleteMasterScheduleTemplateBtn');
       if (deleteBtn) deleteBtn.disabled = !chosen;
-      if (chosen) startMasterScheduleTemplateEditor(chosen);
+      if (chosen) {
+        startMasterScheduleTemplateEditor(chosen);
+        return;
+      }
+      scheduleMasterEditorState = null;
+      var editor = document.getElementById('masterScheduleTemplateEditor');
+      if (editor) {
+        editor.hidden = true;
+        editor.innerHTML = '';
+      }
+      var saveBtn = document.getElementById('saveMasterScheduleTemplateBtn');
+      if (saveBtn) saveBtn.hidden = true;
+      setMasterScheduleTemplateNameFieldVisible(false);
+      var nameInput = document.getElementById('masterScheduleTemplateNameInput');
+      if (nameInput) nameInput.value = '';
     });
   }
   var masterEditorMount = document.getElementById('masterScheduleTemplateEditor');
@@ -18684,9 +19687,17 @@
   }
   if (saveMasterScheduleTemplateBtn) {
     saveMasterScheduleTemplateBtn.addEventListener('click', function () {
-      var saved = saveMasterScheduleTemplateFromEditor();
-      if (!saved) {
-        showScheduleNotice('Enter a Master Template name first.', false);
+      var result = saveMasterScheduleTemplateFromEditor();
+      if (!result || !result.ok) {
+        if (result && result.reason === 'invalid_time') {
+          showScheduleNotice('Use HH:MM format for every clock-in and clock-out time.', false);
+        } else {
+          showScheduleNotice(
+            gmT('schedule.masterTemplateNameRequired') ||
+              'Enter a Master Template name before saving.',
+            false
+          );
+        }
         return;
       }
       showScheduleNotice('Master Template saved.', false);
@@ -18696,7 +19707,16 @@
     deleteMasterScheduleTemplateBtn.addEventListener('click', function () {
       var id = masterScheduleTemplateSelect && masterScheduleTemplateSelect.value;
       var chosen = masterScheduleTemplates().find(function (t) { return t.id === id; });
-      if (!chosen || !confirm('Delete Master Template "' + chosen.name + '"?')) return;
+      if (!chosen) return;
+      if (
+        !confirm(
+          'Delete Master Template "' +
+            (chosen.name || 'Untitled') +
+            '"? This cannot be undone.'
+        )
+      ) {
+        return;
+      }
       saveScheduleTemplatesList(loadScheduleTemplates().filter(function (t) { return t.id !== id; }));
       scheduleMasterEditorState = null;
       populateMasterScheduleTemplateSelect();
@@ -18705,7 +19725,13 @@
         editor.hidden = true;
         editor.innerHTML = '';
       }
+      var saveBtn = document.getElementById('saveMasterScheduleTemplateBtn');
+      if (saveBtn) saveBtn.hidden = true;
+      setMasterScheduleTemplateNameFieldVisible(false);
+      var nameInput = document.getElementById('masterScheduleTemplateNameInput');
+      if (nameInput) nameInput.value = '';
       deleteMasterScheduleTemplateBtn.disabled = true;
+      showScheduleNotice('Deleted Master Template "' + (chosen.name || 'Untitled') + '".', false);
     });
   }
   if (saveScheduleTemplateBtn) {
@@ -18870,7 +19896,98 @@
   if (empUsualRestaurant) {
     empUsualRestaurant.addEventListener('change', function () {
       syncEmployeePrimaryLocationField();
+      syncEmployeeDeliveryTipRetentionField(null, { preferDefault: true });
     });
+  }
+
+  if (empStaffType) {
+    empStaffType.addEventListener('change', function () {
+      syncEmployeeDeliveryTipRetentionField(null, { preferDefault: true });
+    });
+  }
+
+  if (empFirstName) {
+    empFirstName.addEventListener('change', function () {
+      syncEmployeeDeliveryTipRetentionField(null, { preferDefault: true });
+    });
+  }
+  if (empLastName) {
+    empLastName.addEventListener('change', function () {
+      syncEmployeeDeliveryTipRetentionField(null, { preferDefault: true });
+    });
+  }
+
+  if (empPrimaryLocation) {
+    empPrimaryLocation.addEventListener('change', function () {
+      syncEmployeeDeliveryTipRetentionField(null, { preferDefault: true });
+    });
+  }
+
+  function buildEmployeeFormDraftForTipRetention() {
+    var first = empFirstName ? String(empFirstName.value || '').trim() : '';
+    var last = empLastName ? String(empLastName.value || '').trim() : '';
+    var st = empStaffType ? String(empStaffType.value || '').trim() : '';
+    var ur = empUsualRestaurant ? empUsualRestaurant.value : 'rp-9';
+    var meta = {};
+    if (empPrimaryLocation && empPrimaryLocationWrap && !empPrimaryLocationWrap.hidden) {
+      meta.primaryLocationId = empPrimaryLocation.value;
+    }
+    return {
+      firstName: first,
+      lastName: last,
+      displayName: (first + ' ' + last).trim(),
+      staffType: st,
+      usualRestaurant: ur,
+      meta: meta,
+    };
+  }
+
+  function syncEmployeeDeliveryTipRetentionField(emp, opts) {
+    opts = opts || {};
+    var isServer =
+      emp && emp.staffType
+        ? emp.staffType === 'Server'
+        : !!(empStaffType && empStaffType.value === 'Server');
+    if (empDeliveryTipRetentionWrap) empDeliveryTipRetentionWrap.hidden = !isServer;
+    if (!empDeliveryTipRetention) return;
+    if (!isServer) {
+      empDeliveryTipRetention.value = '';
+      return;
+    }
+    var draft = emp
+      ? {
+          firstName: emp.firstName,
+          lastName: emp.lastName,
+          displayName: employeeDisplayName(emp),
+          staffType: emp.staffType,
+          usualRestaurant: emp.usualRestaurant,
+          meta: emp.meta,
+          deliveryTipRetention: emp.deliveryTipRetention,
+        }
+      : buildEmployeeFormDraftForTipRetention();
+    var stored = normalizeDeliveryTipRetention(
+      emp && emp.deliveryTipRetention != null
+        ? emp.deliveryTipRetention
+        : emp && emp.meta && emp.meta.deliveryTipRetention != null
+          ? emp.meta.deliveryTipRetention
+          : empDeliveryTipRetention.value
+    );
+    var def = defaultDeliveryTipRetentionForEmployee(draft);
+    if (opts.preferDefault) {
+      var cur = normalizeDeliveryTipRetention(empDeliveryTipRetention.value);
+      /* Keep a custom value; refresh when empty or still on a standard store default. */
+      if (cur == null || cur === 0.8 || cur === 0.95) {
+        empDeliveryTipRetention.value = def != null ? String(def) : '';
+      }
+      return;
+    }
+    if (stored != null) {
+      empDeliveryTipRetention.value = String(stored);
+    } else if (def != null) {
+      empDeliveryTipRetention.value = String(def);
+    } else {
+      empDeliveryTipRetention.value = '';
+    }
   }
 
   (function wireEmployeePhotoControls() {
@@ -18928,6 +20045,38 @@
     cancelEmployeeBtn.addEventListener('click', function () {
       editingEmployeeId = null;
       showScreen(5);
+    });
+  }
+
+  var deleteEmployeeBtn = document.getElementById('deleteEmployeeBtn');
+  if (deleteEmployeeBtn) {
+    deleteEmployeeBtn.addEventListener('click', function () {
+      if (!editingEmployeeId) return;
+      var emp = employees.find(function (e) {
+        return e.id === editingEmployeeId;
+      });
+      if (!emp) return;
+      var label = employeeDisplayName(emp) || 'this employee';
+      var ok = window.confirm(
+        'Delete "' +
+          label +
+          '" from the team?\n\n' +
+          'They will be removed from the roster and schedule (shifts become Unassigned). ' +
+          'Timecard tip/leave extras for this person are cleared, and time clock punches are deleted. ' +
+          'This cannot be undone.'
+      );
+      if (!ok) return;
+      deleteEmployeeBtn.disabled = true;
+      void deleteEmployeeCompletely(emp).then(function (res) {
+        deleteEmployeeBtn.disabled = false;
+        if (!res || !res.ok) {
+          window.alert((res && res.message) || 'Could not delete employee.');
+          return;
+        }
+        editingEmployeeId = null;
+        showScreen(5);
+        screenTitle.textContent = 'Team';
+      });
     });
   }
 
@@ -18999,6 +20148,26 @@
       if (hrNum != null) rec.hourlyRate = Math.round(hrNum * 100) / 100;
       if (tpNum != null) {
         rec.tipPoint = normalizeTipPointValue(tpNum);
+      }
+      if (stSave === 'Server') {
+        var dtrRaw = empDeliveryTipRetention
+          ? String(empDeliveryTipRetention.value || '').trim()
+          : '';
+        var dtrNum = dtrRaw === '' ? null : normalizeDeliveryTipRetention(dtrRaw);
+        if (dtrNum == null) {
+          dtrNum = defaultDeliveryTipRetentionForEmployee({
+            firstName: first,
+            lastName: last,
+            displayName: (first + ' ' + last).trim(),
+            staffType: stSave,
+            usualRestaurant: urVal,
+            meta:
+              urVal === 'both' && empPrimaryLocation
+                ? { primaryLocationId: empPrimaryLocation.value }
+                : {},
+          });
+        }
+        if (dtrNum != null) rec.deliveryTipRetention = dtrNum;
       }
       var wasNew = !editingEmployeeId;
       var savedId = editingEmployeeId || rec.id;
@@ -19158,6 +20327,13 @@
         rec.meta.tipPoint = rec.tipPoint;
       } else if (rec.meta && rec.meta.tipPoint != null) {
         delete rec.meta.tipPoint;
+      }
+      if (rec.staffType === 'Server' && rec.deliveryTipRetention != null) {
+        rec.meta = rec.meta && typeof rec.meta === 'object' ? rec.meta : {};
+        rec.meta.deliveryTipRetention = rec.deliveryTipRetention;
+      } else if (rec.meta && rec.meta.deliveryTipRetention != null) {
+        delete rec.meta.deliveryTipRetention;
+        if (rec.deliveryTipRetention != null) delete rec.deliveryTipRetention;
       }
       var newDisplayName = employeeDisplayName(rec);
       if (previousDisplayName && !workerNamesMatch(previousDisplayName, newDisplayName)) {
@@ -20397,6 +21573,7 @@
   window.gmCalloutRunPostRemoteHydrate = gmCalloutRunPostRemoteHydrate;
   window.gmCalloutSetLoginGateOpen = gmCalloutSetLoginGateOpen;
   window.gmCalloutFlushTeamStateSyncNow = flushTeamStateSyncNow;
+  window.gmCalloutFlushTipPayrollSyncNow = flushTipPayrollPushToSupabase;
   window.gmCalloutSetupEmployeesRealtime = setupEmployeesRealtimeSubscription;
   window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
   window.gmCalloutManagerBootstrap = function (opts) {
@@ -20514,6 +21691,9 @@
       loadTipTakehomePctMap: loadTipTakehomePctMap,
       saveTipTakehomePctMap: saveTipTakehomePctMap,
       tipTakehomePctForRestaurant: tipTakehomePctForRestaurant,
+      tipTakehomePctForDishwasherEmployee: tipTakehomePctForDishwasherEmployee,
+      deliveryTipRetentionFactorForEmployee: deliveryTipRetentionFactorForEmployee,
+      defaultDeliveryTipRetentionForEmployee: defaultDeliveryTipRetentionForEmployee,
       scheduleTimecardPayrollDebouncedSync: scheduleTipPayrollDebouncedSync,
       flushTimecardPayrollSync: flushTipPayrollPushToSupabase,
       expandEmployeeRestaurantForPunch: expandEmployeeRestaurantForPunch,
@@ -20676,6 +21856,11 @@
       }
     });
     window.addEventListener('pagehide', function () {
+      flushTipPayrollPushToSupabase();
+      void flushTeamStateSyncNow();
+    });
+    window.addEventListener('beforeunload', function () {
+      persistTeamStateDirtyFlags();
       flushTipPayrollPushToSupabase();
       void flushTeamStateSyncNow();
     });

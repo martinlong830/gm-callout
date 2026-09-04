@@ -1570,6 +1570,7 @@ export function buildRosterRowSync(
         entries,
         extrasSlice,
         locationFilter: aggLoc,
+        emp,
       })
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
@@ -1806,6 +1807,7 @@ export async function buildRosterRow(
     ? sumEmployeeWeekDishwasherTipsSync(emp.id, bounds, tipsSlice, {
         entries,
         extrasSlice,
+        emp,
       })
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);

@@ -27,6 +27,23 @@ export function employeeToDbRow(
   } else if ('tipPoint' in meta) {
     delete meta.tipPoint;
   }
+  if (emp.staffType === 'Server') {
+    let tipRet =
+      emp.deliveryTipRetention != null
+        ? Number(emp.deliveryTipRetention)
+        : meta.deliveryTipRetention != null
+          ? Number(meta.deliveryTipRetention)
+          : NaN;
+    if (!Number.isFinite(tipRet)) tipRet = NaN;
+    if (Number.isFinite(tipRet)) {
+      if (tipRet > 1 && tipRet <= 100) tipRet = tipRet / 100;
+      meta.deliveryTipRetention = Math.round(tipRet * 10000) / 10000;
+    } else if ('deliveryTipRetention' in meta) {
+      delete meta.deliveryTipRetention;
+    }
+  } else if ('deliveryTipRetention' in meta) {
+    delete meta.deliveryTipRetention;
+  }
   const emailVal = emp.email != null ? String(emp.email).trim() : '';
   if (emailVal) meta.email = emailVal;
   else if ('email' in meta) delete meta.email;

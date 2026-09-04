@@ -59,15 +59,24 @@ export function tipTakehomeFactor(restaurantId?: string | null): number {
 }
 
 /**
- * Net tip pay from gross dollars at a store’s take-home %.
+ * Net tip pay from gross dollars at a take-home %.
  * Uses integer cents (round half up) so float paths like `gross * 0.95`
  * cannot drop a cent (e.g. 0.30 → 0.28).
+ * @param takehomePctOverride optional percent (e.g. 95) — person delivery tip retention
  */
-export function netTipAmount(gross: number, restaurantId?: string | null): number {
+export function netTipAmount(
+  gross: number,
+  restaurantId?: string | null,
+  takehomePctOverride?: number | null
+): number {
   if (gross == null || Number.isNaN(gross) || gross <= 0) return 0;
   const grossCents = Math.round(Number(gross) * 100);
   if (grossCents <= 0) return 0;
-  const pctHundredths = Math.round(tipTakehomePctForRestaurant(restaurantId) * 100);
+  const pct =
+    takehomePctOverride != null && Number.isFinite(takehomePctOverride)
+      ? takehomePctOverride
+      : tipTakehomePctForRestaurant(restaurantId);
+  const pctHundredths = Math.round(pct * 100);
   // round(grossCents * pct / 100) via integer half-up
   const netCents = Math.floor((grossCents * pctHundredths + 5000) / 10000);
   return netCents / 100;

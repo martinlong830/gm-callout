@@ -8,10 +8,15 @@ import {
 } from './tipPayrollSync';
 import { getEmployeeDayLeaveSync, type WeekExtrasSlice } from './weekExtras';
 import type { LocationFilter } from './restaurantAttribution';
-import { netTipAmount } from './tipTakehome';
+import { netTipAmount, tipTakehomePctForRestaurant } from './tipTakehome';
 import type { PayWeekBounds, TimeClockEntry } from './types';
+import {
+  tipTakehomePctForDishwasherEmployee,
+  type EmployeeRow,
+} from '../employees';
 
 export { netTipAmount, tipTakehomePctForRestaurant, tipTakehomeFactor } from './tipTakehome';
+export { tipTakehomePctForDishwasherEmployee };
 
 const RP2_DELIVERY_TIP_LOCATION = 'rp-8';
 export function dishwasherTipRestaurantForShiftRow(
@@ -150,10 +155,14 @@ export function getEmployeeDayDishwasherTipSync(
 }
 
 /** Apply take-home % once per restaurant on summed gross (avoids penny drift from daily nets). */
-function netFromGrossByRestaurant(grossByRestaurant: Record<string, number>): number {
+function netFromGrossByRestaurant(
+  grossByRestaurant: Record<string, number>,
+  emp?: EmployeeRow | null
+): number {
   let sumNet = 0;
   for (const rid of Object.keys(grossByRestaurant)) {
-    sumNet += netTipAmount(Math.round(grossByRestaurant[rid] * 100) / 100, rid);
+    const pct = tipTakehomePctForDishwasherEmployee(emp, rid, tipTakehomePctForRestaurant(rid));
+    sumNet += netTipAmount(Math.round(grossByRestaurant[rid] * 100) / 100, rid, pct);
   }
   return Math.round(sumNet * 100) / 100;
 }
@@ -163,7 +172,8 @@ export function getEmployeeDayDishwasherTipNetSync(
   empId: string,
   iso: string,
   slice: Record<string, number>,
-  restaurantId?: string
+  restaurantId?: string,
+  emp?: EmployeeRow | null
 ): number {
   if (restaurantId == null || restaurantId === '') {
     const grossByRestaurant: Record<string, number> = {};
@@ -173,11 +183,17 @@ export function getEmployeeDayDishwasherTipNetSync(
       grossByRestaurant[parsed.restaurantId] =
         (grossByRestaurant[parsed.restaurantId] || 0) + normalizeTipAmount(slice[k]);
     }
-    return netFromGrossByRestaurant(grossByRestaurant);
+    return netFromGrossByRestaurant(grossByRestaurant, emp);
   }
+  const pct = tipTakehomePctForDishwasherEmployee(
+    emp,
+    restaurantId,
+    tipTakehomePctForRestaurant(restaurantId)
+  );
   return netTipAmount(
     getEmployeeDayDishwasherTipSync(empId, iso, slice, restaurantId),
-    restaurantId
+    restaurantId,
+    pct
   );
 }
 
@@ -234,6 +250,7 @@ export function sumEmployeeWeekDishwasherTipsSync(
     locationFilter?: LocationFilter;
     /** When false, return gross tip dollars. Default true (pay totals). */
     asNet?: boolean;
+    emp?: EmployeeRow | null;
   }
 ): number {
   const weekStart = isoFromDate(bounds.start);
@@ -262,19 +279,28 @@ export function sumEmployeeWeekDishwasherTipsSync(
     }
   }
   if (!asNet) return Math.round(sumGross * 100) / 100;
-  return netFromGrossByRestaurant(grossByRestaurant);
+  return netFromGrossByRestaurant(grossByRestaurant, options?.emp);
 }
 
-export function sumWeekDishwasherTipsSync(bounds: PayWeekBounds, slice: Record<string, number>): number {
+export function sumWeekDishwasherTipsSync(
+  bounds: PayWeekBounds,
+  slice: Record<string, number>,
+  employeesById?: Record<string, EmployeeRow | null | undefined>
+): number {
   const weekStart = isoFromDate(bounds.start);
   const weekEnd = isoFromDate(bounds.end);
-  const grossByRestaurant: Record<string, number> = {};
+  const grossByEmpRid: Record<string, Record<string, number>> = {};
   for (const k of Object.keys(slice)) {
     const parsed = parseDishwasherTipStorageKey(k);
     if (!parsed) continue;
     if (parsed.iso < weekStart || parsed.iso > weekEnd) continue;
-    grossByRestaurant[parsed.restaurantId] =
-      (grossByRestaurant[parsed.restaurantId] || 0) + normalizeTipAmount(slice[k]);
+    if (!grossByEmpRid[parsed.empId]) grossByEmpRid[parsed.empId] = {};
+    grossByEmpRid[parsed.empId][parsed.restaurantId] =
+      (grossByEmpRid[parsed.empId][parsed.restaurantId] || 0) + normalizeTipAmount(slice[k]);
   }
-  return netFromGrossByRestaurant(grossByRestaurant);
+  let sum = 0;
+  for (const empId of Object.keys(grossByEmpRid)) {
+    sum += netFromGrossByRestaurant(grossByEmpRid[empId], employeesById?.[empId]);
+  }
+  return Math.round(sum * 100) / 100;
 }

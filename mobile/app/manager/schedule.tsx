@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  type AppStateStatus,
   Dimensions,
   FlatList,
   InteractionManager,
@@ -36,6 +38,10 @@ import { readStoredTeamStateId } from '../../lib/companySession';
 import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
 import { isManagerLikeRole } from '../../lib/roles';
+import {
+  flushPendingScheduleEdits,
+  registerPendingScheduleFlush,
+} from '../../lib/schedulePersistFlush';
 import { formatScheduleWeekRangeLabel } from '../../lib/schedule/employeeShiftDisplay';
 import {
   fetchScheduleRevision,
@@ -219,7 +225,7 @@ type ScheduleUndoSnap = {
 };
 
 const SCHEDULE_UNDO_MAX = 40;
-const PERSIST_DEBOUNCE_MS = 3000;
+const PERSIST_DEBOUNCE_MS = 1200;
 const PERSIST_RETRY_MS = 5000;
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -424,6 +430,8 @@ export default function ManagerScheduleScreen() {
         if (!supabase) return;
         setPublishing(true);
         try {
+          /* Tile edits are debounced — flush before publish/notify so cloud matches the grid. */
+          await flushPendingScheduleEdits();
           const map = { ...publishedMap, [selectedWeekMonday]: true as const };
           const payload = schedulePublishedPayload(map);
           const teamStateId = await readStoredTeamStateId();
@@ -697,15 +705,37 @@ export default function ManagerScheduleScreen() {
     persistCloudRef.current = persistCloud;
   }, [persistCloud]);
 
+  const flushPendingNow = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const latestStore = pendingStoreRef.current;
+    if (!latestStore) return;
+    await persistCloudRef.current?.(latestStore, pendingDraftRef.current);
+  }, []);
+
+  useEffect(() => {
+    registerPendingScheduleFlush(() => flushPendingNow());
+    return () => {
+      registerPendingScheduleFlush(null);
+    };
+  }, [flushPendingNow]);
+
+  useEffect(() => {
+    const onAppState = (state: AppStateStatus) => {
+      if (state === 'background' || state === 'inactive') {
+        void flushPendingNow();
+      }
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => sub.remove();
+  }, [flushPendingNow]);
+
   /* Leaving the screen inside the debounce window must still save the edit. */
   useEffect(
     () => () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-      }
-      const latestStore = pendingStoreRef.current;
-      if (latestStore) void persistCloudRef.current?.(latestStore, pendingDraftRef.current);
+      void flushPendingScheduleEdits();
     },
     []
   );
@@ -2957,8 +2987,8 @@ const CalendarCellView = memo(function CalendarCellView({
       breakTime: t('schedule.breakTime'),
       office: t('schedule.office'),
     });
-  const otherStoreBadge = (label: string, onShift?: boolean) => (
-    <View style={[styles.otherStorePill, onShift && styles.otherStorePillOnShift]}>
+  const otherStoreBadge = (label: string) => (
+    <View style={styles.otherStorePill}>
       <Text style={styles.otherStorePillText} numberOfLines={1}>
         {label}
       </Text>
@@ -2979,10 +3009,11 @@ const CalendarCellView = memo(function CalendarCellView({
         borderLeftColor: pill.fg,
       },
     ];
-    const body = cell.otherStoreLabel ? (
-      otherStoreBadge(cell.otherStoreLabel)
-    ) : (
-      <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
+    const body = (
+      <>
+        <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
+        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+      </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
     return (
@@ -3014,14 +3045,9 @@ const CalendarCellView = memo(function CalendarCellView({
     ];
     const body = (
       <>
-        <View style={styles.dayoffTimeBlock}>
-          <Text style={styles.slotTimeMuted}>{cell.timeLabel}</Text>
-        </View>
-        {cell.otherStoreLabel ? (
-          otherStoreBadge(cell.otherStoreLabel)
-        ) : (
-          <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
-        )}
+        <Text style={styles.slotTimeMuted}>{cell.timeLabel}</Text>
+        <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
+        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
       </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
@@ -3058,7 +3084,7 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
       ) : null}
       {cell.hours ? <Text style={styles.slotHours}>{cell.hours}</Text> : null}
-      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel, true) : null}
+      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
     </>
   );
   if (!editable) return <View style={filledStyle}>{filledBody}</View>;
@@ -3538,18 +3564,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderLeftWidth: 3,
     borderRadius: 6,
-    paddingVertical: 6,
+    paddingTop: 6,
     paddingHorizontal: 6,
+    paddingBottom: 22,
     position: 'relative',
   },
   cellInnerEmpty: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     borderWidth: 1,
     borderLeftWidth: 3,
     borderRadius: 6,
-    paddingVertical: 6,
+    paddingTop: 6,
     paddingHorizontal: 6,
+    paddingBottom: 22,
+    position: 'relative',
   },
   cellInnerEmptyTimed: {
     justifyContent: 'flex-start',
@@ -3557,10 +3586,9 @@ const styles = StyleSheet.create({
   slotTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
   slotTimeMuted: { fontSize: 12, fontWeight: '600', color: '#64748b' },
   dayoffTimeBlock: {
-    marginBottom: 4,
-    paddingBottom: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#cbd5e1',
+    marginBottom: 0,
+    paddingBottom: 0,
+    borderBottomWidth: 0,
   },
   slotBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },
   slotHours: { fontSize: 11, fontWeight: '700', color: '#334155', marginTop: 1 },
@@ -3577,20 +3605,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.75)',
   },
   cellDayOffBtnText: { fontSize: 16, fontWeight: '700', color: '#94a3b8', lineHeight: 18 },
-  dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 6 },
+  dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 2 },
   dayoffSmall: { fontSize: 11, fontWeight: '700', color: '#cbd5e1', textAlign: 'center' },
   otherStorePill: {
-    marginTop: 4,
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
     backgroundColor: '#ffedd5',
     borderWidth: 1,
     borderColor: '#fdba74',
-    alignSelf: 'stretch',
-  },
-  otherStorePillOnShift: {
-    marginTop: 3,
   },
   otherStorePillText: {
     fontSize: 10,

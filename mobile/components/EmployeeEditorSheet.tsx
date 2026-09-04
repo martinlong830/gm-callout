@@ -26,12 +26,15 @@ import {
   saveEmployeeRow,
   setEmployeeClockPin,
 } from '../lib/employeeSave';
+import { deleteEmployeeCompletely } from '../lib/employeeDelete';
 import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
+  defaultDeliveryTipRetentionForEmployee,
   employeeDisplayName,
   employeeIsMultiLocation,
   employeePrimaryLocationId,
   isCloudEmployeeId,
+  normalizeDeliveryTipRetention,
   type EmployeeRow,
 } from '../lib/employees';
 import { isPortalAuthConfigured, portalCreateEmployeeAccount, portalGetAccount } from '../lib/portalAuth';
@@ -136,6 +139,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [primaryLocationId, setPrimaryLocationId] = useState('rp-9');
   const [hourlyRate, setHourlyRate] = useState('');
   const [tipPoint, setTipPoint] = useState('');
+  const [deliveryTipRetention, setDeliveryTipRetention] = useState('');
   const [breakPolicy, setBreakPolicy] = useState<'paid' | 'unpaid'>('unpaid');
   const [weeklyGrid, setWeeklyGrid] = useState<WeeklyGridNormalized>(() =>
     normalizeWeeklyGrid({}, 'Kitchen', { Kitchen: [], Bartender: [], Server: [] })
@@ -166,6 +170,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setPrimaryLocationId('rp-9');
     setHourlyRate('');
     setTipPoint('');
+    setDeliveryTipRetention('');
     setBreakPolicy('unpaid');
     setWeeklyGrid(normalizeWeeklyGrid({}, '', draftRows));
     setClockPin('');
@@ -218,6 +223,15 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       setPrimaryLocationId(employeePrimaryLocationId(emp) || 'rp-9');
       setHourlyRate(emp.hourlyRate != null ? String(emp.hourlyRate) : '');
       setTipPoint(emp.tipPoint != null ? String(emp.tipPoint) : '');
+      {
+        const ret =
+          emp.deliveryTipRetention != null
+            ? emp.deliveryTipRetention
+            : emp.meta?.deliveryTipRetention != null
+              ? Number(emp.meta.deliveryTipRetention)
+              : defaultDeliveryTipRetentionForEmployee(emp);
+        setDeliveryTipRetention(ret != null ? String(ret) : '');
+      }
       setBreakPolicy(emp.meta?.breakPolicy === 'paid' ? 'paid' : 'unpaid');
       setWeeklyGrid(normalizeWeeklyGrid(emp.weeklyGrid ?? {}, emp.staffType, draftRows));
       setClockPin(emp.clockPin || '');
@@ -277,6 +291,34 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   function onStaffTypeChange(next: string) {
     setStaffType(next);
     setWeeklyGrid((g) => normalizeWeeklyGrid(g, next, draftRows));
+    if (next === 'Server') {
+      const def = defaultDeliveryTipRetentionForEmployee({
+        staffType: next,
+        usualRestaurant,
+        firstName,
+        lastName,
+        displayName: `${firstName} ${lastName}`.trim(),
+        meta: usualRestaurant === 'both' ? { primaryLocationId } : undefined,
+      });
+      setDeliveryTipRetention(def != null ? String(def) : '');
+    } else {
+      setDeliveryTipRetention('');
+    }
+  }
+
+  function applyLocationRetentionDefault(nextUsual: string, nextPrimary: string) {
+    if (staffType !== 'Server') return;
+    const cur = normalizeDeliveryTipRetention(deliveryTipRetention);
+    if (cur != null && cur !== 0.8 && cur !== 0.95) return;
+    const def = defaultDeliveryTipRetentionForEmployee({
+      staffType: 'Server',
+      usualRestaurant: nextUsual,
+      firstName,
+      lastName,
+      displayName: `${firstName} ${lastName}`.trim(),
+      meta: nextUsual === 'both' ? { primaryLocationId: nextPrimary } : undefined,
+    });
+    setDeliveryTipRetention(def != null ? String(def) : '');
   }
 
   async function handleAssignRandomPin() {
@@ -305,6 +347,35 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setClockPin(res.pin);
     setPinDraft(res.pin);
     setStatusMsg('Time clock PIN saved.');
+  }
+
+  async function handleDeleteEmployee() {
+    if (isCreate || !employee || !supabase) return;
+    const label = employeeDisplayName(employee) || 'this employee';
+    Alert.alert(
+      'Delete employee',
+      `Delete "${label}" from the team?\n\nThey will be removed from the roster and schedule (shifts become Unassigned). Timecard tip/leave extras for this person are cleared, and time clock punches are deleted. This cannot be undone.`,
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              setBusy(true);
+              const res = await deleteEmployeeCompletely(supabase, employee);
+              setBusy(false);
+              if (!res.ok) {
+                Alert.alert('Delete', res.message);
+                return;
+              }
+              onSaved();
+              onClose();
+            })();
+          },
+        },
+      ]
+    );
   }
 
   async function handleSaveEmployee() {
@@ -345,6 +416,29 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     if (tpNum != null && (Number.isNaN(tpNum) || tpNum < 0)) {
       Alert.alert('Profile', 'Enter a valid tip point.');
       return;
+    }
+    let dtrNum: number | undefined;
+    if (staffType === 'Server') {
+      const dtrRaw = deliveryTipRetention.trim();
+      const parsed = dtrRaw === '' ? null : normalizeDeliveryTipRetention(dtrRaw);
+      dtrNum =
+        parsed ??
+        defaultDeliveryTipRetentionForEmployee({
+          staffType,
+          usualRestaurant,
+          firstName: first,
+          lastName: last,
+          displayName: `${first} ${last}`.trim(),
+          meta:
+            usualRestaurant === 'both'
+              ? { primaryLocationId }
+              : undefined,
+        }) ??
+        undefined;
+      if (dtrNum == null || dtrNum < 0 || dtrNum > 1) {
+        Alert.alert('Profile', 'Enter a valid delivery tip retention (e.g. 0.95).');
+        return;
+      }
     }
 
     let authUserId = employee?.authUserId;
@@ -442,6 +536,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       usualRestaurant,
       hourlyRate: hrNum != null ? Math.round(hrNum * 100) / 100 : undefined,
       tipPoint: tpNum != null ? tpNum : undefined,
+      deliveryTipRetention: staffType === 'Server' ? dtrNum : undefined,
       weeklyGrid: normalizeWeeklyGrid(weeklyGrid, staffType, draftRows) as unknown as Record<
         string,
         unknown
@@ -668,9 +763,14 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                   value={usualRestaurant}
                   onChange={(v) => {
                     setUsualRestaurant(v);
+                    const nextPrimary =
+                      v === 'both' && primaryLocationId !== 'rp-8' && primaryLocationId !== 'rp-9'
+                        ? 'rp-9'
+                        : primaryLocationId;
                     if (v === 'both' && primaryLocationId !== 'rp-8' && primaryLocationId !== 'rp-9') {
                       setPrimaryLocationId('rp-9');
                     }
+                    applyLocationRetentionDefault(v, nextPrimary);
                   }}
                 />
                 {employeeIsMultiLocation(usualRestaurant) ? (
@@ -679,7 +779,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     <ChipRow
                       options={PRIMARY_LOCATIONS}
                       value={primaryLocationId === 'rp-8' ? 'rp-8' : 'rp-9'}
-                      onChange={setPrimaryLocationId}
+                      onChange={(v) => {
+                        setPrimaryLocationId(v);
+                        applyLocationRetentionDefault(usualRestaurant, v);
+                      }}
                     />
                     <Text style={styles.photoHint}>
                       Stored for multi-location staff; does not change payroll assignment yet.
@@ -708,6 +811,22 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     />
                   </View>
                 </View>
+                {staffType === 'Server' ? (
+                  <>
+                    <FieldLabel>Delivery tip retention</FieldLabel>
+                    <TextInput
+                      style={styles.input}
+                      value={deliveryTipRetention}
+                      onChangeText={setDeliveryTipRetention}
+                      keyboardType="decimal-pad"
+                      placeholder="0.95"
+                    />
+                    <Text style={styles.photoHint}>
+                      Take-home share of dishwasher tips (e.g. 0.95 = 95%). Defaults: 0.95 on 9th
+                      Ave, 0.80 on 8th Ave.
+                    </Text>
+                  </>
+                ) : null}
                 {isCreate ? (
                   <>
                     {canCreateManager ? (
@@ -896,6 +1015,15 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
               <Pressable style={styles.ghostBtn} onPress={onClose} disabled={busy}>
                 <Text style={styles.ghostBtnText}>{t('editor.closeWithoutSaving')}</Text>
               </Pressable>
+              {!isCreate && employee ? (
+                <Pressable
+                  style={[styles.dangerBtn, busy && styles.btnDisabled]}
+                  onPress={() => void handleDeleteEmployee()}
+                  disabled={busy}
+                >
+                  <Text style={styles.dangerBtnText}>{t('common.delete')} employee</Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         </View>
@@ -1068,5 +1196,13 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   ghostBtn: { paddingVertical: 10, alignItems: 'center' },
   ghostBtnText: { fontSize: 15, color: '#64748b', fontWeight: '600' },
+  dangerBtn: {
+    marginTop: 4,
+    backgroundColor: '#b00020',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  dangerBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   btnDisabled: { opacity: 0.6 },
 });

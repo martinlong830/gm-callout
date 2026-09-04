@@ -18,7 +18,9 @@ import {
 import { isInvalidAuthTokenError } from '../lib/authErrors';
 import { createEmployeeRosterRow, type RegisterEmployeeInput } from '../lib/registerEmployee';
 import { isAppRole, type AppRole } from '../lib/roles';
+import { flushPendingScheduleEdits } from '../lib/schedulePersistFlush';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { flushTipPayrollPushToSupabase } from '../lib/timecards/tipPayrollSync';
 
 export type { AppRole };
 
@@ -281,6 +283,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     if (!supabase) return;
+    try {
+      await Promise.race([
+        Promise.all([
+          flushPendingScheduleEdits(),
+          flushTipPayrollPushToSupabase(supabase),
+        ]),
+        new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+      ]);
+    } catch {
+      /* still sign out */
+    }
     await supabase.auth.signOut();
     await applySession(null);
   }, [applySession]);

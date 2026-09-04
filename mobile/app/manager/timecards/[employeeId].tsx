@@ -437,7 +437,7 @@ function ShiftRowCard({
   const showDishwasherTips = isDeliveryDishwasherStaff(emp);
   const tipRest = dishwasherTipRestaurantForShiftRow(row);
   const dayDishwasherTipNet = showDishwasherTips
-    ? getEmployeeDayDishwasherTipNetSync(empId, row.iso, dishwasherTipsSlice, tipRest)
+    ? getEmployeeDayDishwasherTipNetSync(empId, row.iso, dishwasherTipsSlice, tipRest, emp)
     : 0;
   const dayCoverage = getEmployeeDayAdditionalCashTipSync(empId, row.iso, extrasSlice);
 

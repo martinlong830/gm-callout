@@ -262,13 +262,13 @@ export function queueTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
   }, TIP_PAYROLL_PUSH_DEBOUNCE_MS);
 }
 
-export function flushTipPayrollPushToSupabase(sb: SupabaseClient | null): void {
-  if (!sb) return;
+export function flushTipPayrollPushToSupabase(sb: SupabaseClient | null): Promise<void> {
+  if (!sb) return Promise.resolve();
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
-  void pushTipPayrollToSupabase(sb);
+  return pushTipPayrollToSupabase(sb);
 }
 
 export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void> {

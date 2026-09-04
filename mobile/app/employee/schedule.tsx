@@ -656,11 +656,6 @@ const CalendarCellView = memo(function CalendarCellView({
   );
   if (cell.kind === 'empty') {
     const pill = pillForRole(cell.role);
-    const body = cell.otherStoreLabel ? (
-      otherStoreBadge(cell.otherStoreLabel)
-    ) : (
-      <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-    );
     return (
       <View
         style={[
@@ -672,7 +667,8 @@ const CalendarCellView = memo(function CalendarCellView({
           },
         ]}
       >
-        {body}
+        <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
+        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
       </View>
     );
   }
@@ -690,16 +686,11 @@ const CalendarCellView = memo(function CalendarCellView({
           },
         ]}
       >
-        <View style={styles.dayoffTimeBlock}>
-          <Text style={styles.cellTimeMuted} numberOfLines={1}>
-            {cell.timeLabel}
-          </Text>
-        </View>
-        {cell.otherStoreLabel ? (
-          otherStoreBadge(cell.otherStoreLabel)
-        ) : (
-          <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-        )}
+        <Text style={styles.cellTimeMuted} numberOfLines={1}>
+          {cell.timeLabel}
+        </Text>
+        <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
+        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
       </View>
     );
   }
@@ -917,18 +908,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderLeftWidth: 3,
     borderRadius: 6,
-    paddingVertical: 6,
+    paddingTop: 6,
     paddingHorizontal: 6,
+    paddingBottom: 22,
     overflow: 'hidden',
+    position: 'relative',
   },
   cellInnerEmpty: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     borderWidth: 1,
     borderLeftWidth: 3,
     borderRadius: 6,
-    paddingVertical: 6,
+    paddingTop: 6,
     paddingHorizontal: 6,
+    paddingBottom: 22,
+    position: 'relative',
   },
   cellInnerEmptyTimed: {
     justifyContent: 'flex-start',
@@ -936,21 +931,23 @@ const styles = StyleSheet.create({
   cellTime: { fontSize: 12, fontWeight: '700', color: '#0f172a' },
   cellTimeMuted: { fontSize: 12, fontWeight: '600', color: '#64748b' },
   dayoffTimeBlock: {
-    marginBottom: 4,
-    paddingBottom: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#cbd5e1',
+    marginBottom: 0,
+    paddingBottom: 0,
+    borderBottomWidth: 0,
   },
-  cellDayoffLabel: { fontSize: 10, color: '#64748b', marginTop: 4, fontWeight: '700' },
+  cellDayoffLabel: { fontSize: 10, color: '#64748b', marginTop: 2, fontWeight: '700' },
   otherStorePill: {
-    marginTop: 4,
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
     backgroundColor: '#ffedd5',
     borderWidth: 1,
     borderColor: '#fdba74',
-    alignSelf: 'stretch',
   },
   otherStorePillText: {
     fontSize: 10,
