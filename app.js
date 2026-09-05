@@ -7411,10 +7411,15 @@
    * When applying a remote assignment store, never blank a staffed local slot with
    * Unassigned from cloud (stale echo / tip-only bump / sanitize wipe). Peer renames
    * and real reassignments still win when remote is staffed.
+   *
+   * Only applies while this browser has unpushed assignment edits. Otherwise cloud
+   * Unassigned (intentional clear) must win — protecting a clean local copy and then
+   * dirty-pushing it resurrects removed names in a bounce loop.
    */
   function protectStaffedAssignmentsFromRemoteWipe(localStore, remoteStore) {
     if (!remoteStore || typeof remoteStore !== 'object') return remoteStore;
     if (!localStore || typeof localStore !== 'object') return remoteStore;
+    if (!scheduleAssignmentsDirty) return remoteStore;
     var out = JSON.parse(JSON.stringify(remoteStore));
     Object.keys(localStore).forEach(function (rid) {
       var localRs = localStore[rid];
@@ -8464,12 +8469,11 @@
             mig.store
           );
           var schedChanged = mig.changed;
-          if (
-            JSON.stringify(mergedSched) !== JSON.stringify(mig.store) &&
-            gmCalloutSessionIsManager
-          ) {
-            schedChanged = true;
-          }
+          /*
+           * protectStaffed may keep local names over remote Unassigned while dirty.
+           * Do not treat that as a change that must be pushed — pushing resurrects
+           * people the cloud just cleared (Karl Santiago bounce, etc.).
+           */
           if (absorbOrphanDayOffAssignmentsOnce(mergedSched, { force: true })) {
             schedChanged = true;
           }
@@ -24075,22 +24079,6 @@
       e.preventDefault();
       e.stopPropagation();
       resolveScheduleConflictKeepMine();
-    });
-  }
-  var schedulePushLocalToCloudBtn = document.getElementById('schedulePushLocalToCloudBtn');
-  if (schedulePushLocalToCloudBtn) {
-    schedulePushLocalToCloudBtn.addEventListener('click', function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!managerCanEditCurrentRestaurant()) {
-        showScheduleNotice(
-          gmT('schedule.viewOnlyOtherStoreHint') ||
-            'You can view this store’s schedule but only edit your own store.',
-          false
-        );
-        return;
-      }
-      void forcePushLocalScheduleToCloud();
     });
   }
   if (scheduleConflictTakeCloudBtn) {
