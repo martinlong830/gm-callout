@@ -5847,6 +5847,13 @@
   var teamStateForcePushIgnoreVersionSticky = false;
   /** True while forcePushLocalScheduleToCloud is running — bypass conflict short-circuit. */
   var teamStateForcePushActive = false;
+  /**
+   * Hold first schedule paint until team_state hydrate finishes so a stale localStorage
+   * snapshot (e.g. Maeve) cannot flash before cloud (Jon) applies.
+   */
+  var scheduleUiAwaitingInitialCloudHydrate = !!(
+    typeof GM_SUPABASE_DATA !== 'undefined' && GM_SUPABASE_DATA
+  );
   /** Allow one remote schedule apply even if local guard would refuse (manager chose cloud). */
   var forceAcceptRemoteScheduleOnce = false;
   /** Pending remote team_state row when local edits conflict with a newer cloud version. */
@@ -6191,6 +6198,91 @@
   }
 
   /**
+   * Align confirmed snapshots + dirty flags with the live local schedule bundle.
+   * Use after a successful push, or when live already matches the last push / cloud hash.
+   */
+  function syncScheduleConfirmedFromLiveLocal() {
+    try {
+      var assignRaw = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
+      if (assignRaw) setScheduleAssignmentsConfirmedJson(assignRaw);
+    } catch (_a) {
+      /* ignore */
+    }
+    try {
+      setDraftScheduleConfirmedJson(
+        JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore))
+      );
+    } catch (_d) {
+      /* ignore */
+    }
+    scheduleAssignmentsDirty = false;
+    draftScheduleDirty = false;
+    persistTeamStateDirtyFlags();
+  }
+
+  function liveScheduleBundleHash() {
+    try {
+      return hashScheduleBundle(
+        loadScheduleAssignmentsStore(),
+        draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+      );
+    } catch (_h) {
+      return null;
+    }
+  }
+
+  /** If local already matches cloud (or our last push), drop dirty so refresh does not re-prompt. */
+  function clearScheduleDirtyIfAlreadySynced(remoteRow) {
+    var liveHash = liveScheduleBundleHash();
+    if (!liveHash) return false;
+    if (scheduleLastPushHash && liveHash === scheduleLastPushHash) {
+      syncScheduleConfirmedFromLiveLocal();
+      return true;
+    }
+    if (remoteRow && typeof remoteRow === 'object') {
+      try {
+        if (
+          remoteRow.schedule_assignments == null &&
+          remoteRow.draft_schedule == null
+        ) {
+          return false;
+        }
+        var remoteHash = hashScheduleBundle(
+          remoteRow.schedule_assignments != null
+            ? remoteRow.schedule_assignments
+            : loadScheduleAssignmentsStore(),
+          remoteRow.draft_schedule != null
+            ? draftSchedulePayloadFromRemote(remoteRow.draft_schedule) ||
+                remoteRow.draft_schedule
+            : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+        );
+        if (remoteHash && remoteHash === liveHash) {
+          syncScheduleConfirmedFromLiveLocal();
+          if (remoteRow.updated_at != null) {
+            rememberSchedulePushGuard(liveHash, remoteRow.updated_at, { localPush: false });
+          }
+          return true;
+        }
+      } catch (_r) {
+        /* ignore */
+      }
+    }
+    return false;
+  }
+
+  function releaseScheduleCloudHydrateGate() {
+    if (!scheduleUiAwaitingInitialCloudHydrate) return;
+    scheduleUiAwaitingInitialCloudHydrate = false;
+    try {
+      if (typeof rebuildSchedule === 'function') rebuildSchedule();
+      if (typeof renderCalendar === 'function') renderCalendar({ force: true });
+      if (scheduleBody && typeof renderSchedule === 'function') renderSchedule();
+    } catch (_rel) {
+      /* ignore */
+    }
+  }
+
+  /**
    * After refresh, dirty flags are gone but localStorage may still be ahead of the last
    * confirmed cloud snapshot. Re-dirty so hydrate refuses stale remote and re-pushes.
    * Only compare when a confirmed snapshot exists — missing confirmed means prefer remote apply.
@@ -6233,12 +6325,26 @@
     }
     try {
       if (localDraftScheduleHasContent()) {
-        var localDraftJson = JSON.stringify(
-          draftSchedulePayloadFromStore(draftScheduleByWeekStore)
-        );
         var confDraft = getDraftScheduleConfirmedJson();
-        if (confDraft && confDraft !== localDraftJson) {
-          draftScheduleDirty = true;
+        if (confDraft) {
+          var confDraftObj = null;
+          try {
+            confDraftObj = JSON.parse(confDraft);
+          } catch (_pj) {
+            confDraftObj = null;
+          }
+          var localByWeekJson = JSON.stringify(draftScheduleByWeekStore);
+          var confByWeekJson =
+            confDraftObj && confDraftObj.byWeek
+              ? JSON.stringify(confDraftObj.byWeek)
+              : '';
+          /*
+           * Only byWeek (row times) counts as unpushed draft work. windowMondayIso /
+           * slot-order seed / group-order merge noise must not force an upload prompt.
+           */
+          if (confByWeekJson && confByWeekJson !== localByWeekJson) {
+            draftScheduleDirty = true;
+          }
         }
       }
     } catch (_recDraft) {
@@ -6256,28 +6362,16 @@
     } catch (_recTpl) {
       /* ignore */
     }
-    /* After deploy reload, local may still match the last confirmed push while dirty flags
-       were cleared — keep dirty so hydrate refuses a stale cloud row and re-pushes. */
+    /*
+     * If live content still matches the last successful push hash, confirmed JSON string
+     * drift is cosmetic (slot-order seed, key order, etc.). Clear dirty and refresh
+     * confirmed — otherwise every refresh re-prompts "upload to cloud".
+     */
     try {
-      if (scheduleLastPushHash && !scheduleAssignmentsDirty && !draftScheduleDirty) {
-        var liveHash = hashScheduleBundle(
-          loadScheduleAssignmentsStore(),
-          draftSchedulePayloadFromStore(draftScheduleByWeekStore)
-        );
-        if (liveHash === scheduleLastPushHash) {
-          var confAssignLive = getScheduleAssignmentsConfirmedJson();
-          var confDraftLive = getDraftScheduleConfirmedJson();
-          var localAssignLive = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
-          var localDraftLive = JSON.stringify(
-            draftSchedulePayloadFromStore(draftScheduleByWeekStore)
-          );
-          if (
-            (confAssignLive && localAssignLive && confAssignLive !== localAssignLive) ||
-            (confDraftLive && confDraftLive !== localDraftLive)
-          ) {
-            scheduleAssignmentsDirty = true;
-            draftScheduleDirty = true;
-          }
+      if (scheduleLastPushHash) {
+        var liveHash = liveScheduleBundleHash();
+        if (liveHash && liveHash === scheduleLastPushHash) {
+          syncScheduleConfirmedFromLiveLocal();
         }
       }
     } catch (_recGuard) {
@@ -7521,12 +7615,10 @@
       'local'
     );
     persistGroupOrderPotentialStore({ skipDirty: true });
-    if (
-      bootGroupRaw &&
-      JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(bootConfirmedGroup)
-    ) {
-      draftScheduleDirty = true;
-    }
+    /*
+     * Boot merges group-order / net-sales for display. Do not mark draft dirty — that
+     * re-opened "upload to cloud" on every refresh even when people/times were synced.
+     */
     var bootLocalSales = loadScheduleNetSalesStore();
     scheduleNetSalesByWeekStore = mergeScheduleNetSalesByWeekMaps(
       bootConfirmedSales,
@@ -7534,12 +7626,6 @@
       'local'
     );
     persistScheduleNetSalesStore({ skipDirty: true });
-    if (
-      bootGroupRaw &&
-      JSON.stringify(scheduleNetSalesByWeekStore) !== JSON.stringify(bootConfirmedSales)
-    ) {
-      draftScheduleDirty = true;
-    }
     recoverUnpushedScheduleEdits();
   } catch (_bootGroup) {
     try {
@@ -8396,11 +8482,17 @@
             scheduleLastPushUpdatedAt = String(res.data.updated_at);
           }
           persistSchedulePushGuard();
-          if (
-            !scheduleAssignmentsDirty &&
-            !draftScheduleDirty &&
-            (pushedAssignJson != null || pushedDraftJson != null)
-          ) {
+          if (!scheduleAssignmentsDirty && !draftScheduleDirty) {
+            /*
+             * Refresh confirmed from live so the next page load does not see cosmetic
+             * JSON drift and re-prompt upload.
+             */
+            syncScheduleConfirmedFromLiveLocal();
+            var liveAfterPush = liveScheduleBundleHash();
+            if (liveAfterPush) {
+              scheduleLastPushHash = liveAfterPush;
+              persistSchedulePushGuard();
+            }
             queueScheduleRevisionInsert({
               source: pushedPublished ? 'publish' : 'persist',
               assignments: guardAssign,
@@ -8434,6 +8526,14 @@
 
     if (row.updated_at != null) {
       teamStateCachedUpdatedAt = String(row.updated_at);
+    }
+
+    /*
+     * Local already matches cloud (or our last push) — drop sticky dirty so hydrate
+     * never re-opens "upload to cloud" after a successful override.
+     */
+    if (isMgr && (scheduleAssignmentsDirty || draftScheduleDirty)) {
+      clearScheduleDirtyIfAlreadySynced(row);
     }
 
     var forceAccept = !!(ctx.forceAcceptRemote || forceAcceptRemoteScheduleOnce);
@@ -17001,6 +17101,12 @@
     if (!gmCalloutSessionIsManager) return;
     if (scheduleConflictResolveLock) return;
     if (Date.now() < scheduleConflictSuppressOfferUntil) return;
+    /* Already in sync — never prompt to upload. */
+    if (clearScheduleDirtyIfAlreadySynced(row)) return;
+    if (!scheduleBundleContentDiffersFromRemoteRow(row)) {
+      syncScheduleConfirmedFromLiveLocal();
+      return;
+    }
     /*
      * Manager already chose "Load cloud schedule" — keep preferring cloud across refresh
      * without showing the banner again. Apply remote silently; migrate repairs may dirty
@@ -17198,6 +17304,13 @@
         /* Do not leave sticky ignore-version on after a failed override. */
         teamStateForcePushIgnoreVersionSticky = false;
         teamStateForcePushIgnoreVersion = false;
+      } else {
+        syncScheduleConfirmedFromLiveLocal();
+        var liveHash = liveScheduleBundleHash();
+        if (liveHash) {
+          scheduleLastPushHash = liveHash;
+          persistSchedulePushGuard();
+        }
       }
       recoverScheduleUiAfterConflictResolve();
     }
@@ -17872,6 +17985,7 @@
   }
 
   function renderSchedule() {
+    if (scheduleUiAwaitingInitialCloudHydrate) return;
     var visibleSet = {};
     getVisibleWeekDays().forEach(function (d) {
       visibleSet[d] = true;
@@ -19855,6 +19969,9 @@
 
   function renderCalendar(opts) {
     opts = opts || {};
+    if (scheduleUiAwaitingInitialCloudHydrate && !opts.forceCloudPending) {
+      return;
+    }
     var readOnly =
       document.documentElement.classList.contains('manager-app') &&
       !managerCanEditCurrentRestaurant();
@@ -26962,11 +27079,20 @@
 
   async function gmCalloutSupabaseHydrateFromRemote(opts) {
     opts = opts || {};
-    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false, reason: 'disabled' };
-    if (gmCalloutIsTimeclockKiosk()) return { ok: true, skipped: 'timeclock' };
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+      releaseScheduleCloudHydrateGate();
+      return { ok: false, reason: 'disabled' };
+    }
+    if (gmCalloutIsTimeclockKiosk()) {
+      releaseScheduleCloudHydrateGate();
+      return { ok: true, skipped: 'timeclock' };
+    }
     var sb = window.gmSupabase;
     var session = await gmCalloutEnsureSupabaseSession(sb);
-    if (!session) return { ok: false, reason: 'no_session' };
+    if (!session) {
+      releaseScheduleCloudHydrateGate();
+      return { ok: false, reason: 'no_session' };
+    }
     var sessRes = { data: { session: session } };
     var empRes;
     var profRes;
@@ -26980,6 +27106,7 @@
       profRes = batch[1];
     } catch (fetchErr) {
       console.warn('gm-callout: hydrate fetch', fetchErr);
+      releaseScheduleCloudHydrateGate();
       return { ok: false, reason: 'fetch_failed' };
     }
     if (empRes.error) console.warn('gm-callout: employees select', empRes.error);
@@ -27109,7 +27236,9 @@
     } else {
       rebuildEmployeeDerivedData();
     }
-    renderCalendar();
+    /* First paint after cloud SoT is applied — avoids Maeve→Jon blink from stale cache. */
+    releaseScheduleCloudHydrateGate();
+    renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
@@ -27129,11 +27258,17 @@
     if (gmCalloutHydrateCoalescePromise && !opts.force) {
       return gmCalloutHydrateCoalescePromise;
     }
-    gmCalloutHydrateCoalescePromise = gmCalloutSupabaseHydrateFromRemote(opts).finally(function () {
-      window.setTimeout(function () {
-        gmCalloutHydrateCoalescePromise = null;
-      }, 400);
-    });
+    gmCalloutHydrateCoalescePromise = gmCalloutSupabaseHydrateFromRemote(opts)
+      .catch(function (err) {
+        console.warn('gm-callout: hydrate', err);
+        return { ok: false, reason: 'error', error: err };
+      })
+      .finally(function () {
+        releaseScheduleCloudHydrateGate();
+        window.setTimeout(function () {
+          gmCalloutHydrateCoalescePromise = null;
+        }, 400);
+      });
     return gmCalloutHydrateCoalescePromise;
   }
 
