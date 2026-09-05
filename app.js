@@ -5845,6 +5845,8 @@
   var teamStateForcePushIgnoreVersion = false;
   /** Keep ignoring version until a schedule bundle push actually succeeds. */
   var teamStateForcePushIgnoreVersionSticky = false;
+  /** True while forcePushLocalScheduleToCloud is running — bypass conflict short-circuit. */
+  var teamStateForcePushActive = false;
   /** Allow one remote schedule apply even if local guard would refuse (manager chose cloud). */
   var forceAcceptRemoteScheduleOnce = false;
   /** Pending remote team_state row when local edits conflict with a newer cloud version. */
@@ -7991,6 +7993,8 @@
     /* forceAcceptRemoteScheduleOnce is consumed in applyTeamStateRowFromRemoteInner so it
        can also unlock the schedule bundle merge for publish-notification opens. */
     if (forceAcceptRemoteScheduleOnce) return false;
+    /* Never paint cloud over a local→cloud override mid-flight. */
+    if (teamStateForcePushActive) return true;
     var remoteAt = row.updated_at != null ? String(row.updated_at) : null;
     var localAt = scheduleLastPushUpdatedAt || teamStateCachedUpdatedAt;
     var remoteNewer = !!(remoteAt && localAt && remoteAt > String(localAt));
@@ -8073,7 +8077,9 @@
       await teamStatePushPromise;
       if (
         teamStateHasDirtyFields() &&
-        !scheduleSyncConflictActive &&
+        (!scheduleSyncConflictActive ||
+          teamStateForcePushActive ||
+          teamStateForcePushIgnoreVersionSticky) &&
         teamStatePushChainDepth < 4
       ) {
         teamStatePushChainDepth += 1;
@@ -8085,11 +8091,17 @@
       }
       return;
     }
-    if (!teamStateHasDirtyFields()) return;
+    if (!teamStateHasDirtyFields() && !teamStateForcePushActive) return;
     teamStatePushPromise = (async function () {
       try {
         var guard = 0;
-        while (teamStateHasDirtyFields() && !scheduleSyncConflictActive && guard < 8) {
+        while (
+          teamStateHasDirtyFields() &&
+          (!scheduleSyncConflictActive ||
+            teamStateForcePushActive ||
+            teamStateForcePushIgnoreVersionSticky) &&
+          guard < 8
+        ) {
           guard += 1;
           var before = [
             !!scheduleAssignmentsDirty,
@@ -8122,7 +8134,17 @@
 
   async function pushTeamStateToSupabaseOnce() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
-    if (scheduleSyncConflictActive) return;
+    /*
+     * Normal sync stops while a conflict dialog is open. Force-push must still run so
+     * "Keep my schedule" / Save to cloud can overwrite cloud.
+     */
+    if (
+      scheduleSyncConflictActive &&
+      !teamStateForcePushActive &&
+      !teamStateForcePushIgnoreVersionSticky
+    ) {
+      return;
+    }
     if (
       !scheduleAssignmentsDirty &&
       !scheduleTemplatesDirty &&
@@ -8130,7 +8152,8 @@
       !schedulePublishedDirty &&
       !companyHolidaysDirty &&
       !scheduleReviewsDirty &&
-      !teamStateMetaDirty
+      !teamStateMetaDirty &&
+      !teamStateForcePushActive
     ) {
       return;
     }
@@ -8155,21 +8178,29 @@
       var pushedReviewsJson = null;
       var pushedMeta = false;
       var pushedMetaRestaurantId = null;
-      if (scheduleAssignmentsDirty) {
-        payload.schedule_assignments = loadScheduleAssignmentsStore();
+      /*
+       * Assignments + draft are one unit. Pushing people without row times (or the reverse)
+       * lets other clients prune staffed FOH rows. Always send both when either side is dirty
+       * or when force-pushing local over cloud.
+       */
+      var pushScheduleBundle =
+        teamStateForcePushActive || scheduleAssignmentsDirty || draftScheduleDirty;
+      if (pushScheduleBundle) {
+        var bundleAssign = prepareLocalScheduleBundleForCloudPush();
+        payload.schedule_assignments = bundleAssign;
         pushedAssignJson = JSON.stringify(payload.schedule_assignments);
         pushedFields.push('schedule_assignments');
+        payload.draft_schedule = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
+        pushedDraftJson = JSON.stringify(payload.draft_schedule);
+        pushedFields.push('draft_schedule');
+        scheduleAssignmentsDirty = true;
+        draftScheduleDirty = true;
       }
       if (scheduleTemplatesDirty) {
         var templates = loadScheduleTemplates();
         payload.schedule_templates = Array.isArray(templates) ? templates : [];
         pushedTemplatesJson = JSON.stringify(payload.schedule_templates);
         pushedFields.push('schedule_templates');
-      }
-      if (draftScheduleDirty) {
-        payload.draft_schedule = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
-        pushedDraftJson = JSON.stringify(payload.draft_schedule);
-        pushedFields.push('draft_schedule');
       }
       if (schedulePublishedDirty) {
         payload.schedule_published = schedulePublishedPayload();
@@ -8217,7 +8248,9 @@
       var pushingScheduleBundle = pushedAssignJson != null || pushedDraftJson != null;
       var expectedAt = teamStateCachedUpdatedAt || scheduleLastPushUpdatedAt;
       var forceIgnore =
-        teamStateForcePushIgnoreVersion || teamStateForcePushIgnoreVersionSticky;
+        teamStateForcePushIgnoreVersion ||
+        teamStateForcePushIgnoreVersionSticky ||
+        teamStateForcePushActive;
       teamStateForcePushIgnoreVersion = false;
       var res = { data: null, error: null };
 
@@ -8585,7 +8618,7 @@
             flushTeamStateSyncNow();
           }
         } else {
-          var remoteDraftPayload = draftSchedulePayloadFromRemote(dr);
+            var remoteDraftPayload = draftSchedulePayloadFromRemote(dr);
           if (remoteDraftPayload && remoteDraftPayload.byWeek) {
             /*
              * Echo check BEFORE slot-order merge. Merging local+remote slotOrder into the
@@ -8608,6 +8641,22 @@
               localDraftJson === remoteDraftJsonPreMerge ||
               JSON.stringify(localDraftPayload.byWeek) === remoteByWeekJson ||
               prevLocalByWeek === remoteByWeekJson;
+
+            /*
+             * Grow remote draft rows to fit staffed assignments already applied (or local).
+             * Prevents a 4-row cloud draft from hiding a 5th person after sync.
+             * If we had to grow, mark dirty so the expanded draft is pushed back — otherwise
+             * the next client pulls the short cloud draft and the row vanishes again.
+             */
+            var draftExpandedForStaffed = false;
+            try {
+              draftExpandedForStaffed = !!ensureByWeekCoversStaffedAssignments(
+                remoteDraftPayload.byWeek,
+                loadScheduleAssignmentsStore()
+              );
+            } catch (_expDraft) {
+              draftExpandedForStaffed = false;
+            }
 
             var remoteSlotOnly = sanitizeSlotOrderByWeek(remoteDraftPayload.slotOrderByWeek);
             /* Keep this device's ↑↓ order stable across refresh/push. Only accept remote
@@ -8681,8 +8730,17 @@
                 writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
               }
               /* Local-only weeks survived an empty/partial remote map — push so SoT catches up. */
-              if (preservedLocalSlotOrder && isMgr && GM_SUPABASE_DATA && window.gmSupabase) {
+              if (
+                (preservedLocalSlotOrder || draftExpandedForStaffed) &&
+                isMgr &&
+                GM_SUPABASE_DATA &&
+                window.gmSupabase
+              ) {
                 draftScheduleDirty = true;
+                if (draftExpandedForStaffed) {
+                  /* Assignments without matching draft rows are incomplete on cloud too. */
+                  scheduleAssignmentsDirty = true;
+                }
               }
               persistTeamStateDirtyFlags();
             } catch (_d) {
@@ -8798,6 +8856,9 @@
       try {
         syncAllAssignmentTimesFromDraft();
         pruneScheduleAssignmentsInvalidSlots({ preserveStaffed: true });
+        if (ensureDraftRowsCoverStaffedAssignments(loadScheduleAssignmentsStore())) {
+          /* Expanded draft after prune — endTeamStateRemoteApply will schedule the push. */
+        }
       } catch (_p) {
         /* ignore */
       }
@@ -10979,14 +11040,15 @@
   }
 
   /**
-   * If assignments reference trIdx beyond the draft row count, grow the draft so the
-   * calendar shows that row (and prune cannot treat it as an orphan).
+   * Grow byWeek draft role arrays so every staffed assignment trIdx has a visible row.
+   * Mutates byWeekStore in place. Does not touch dirty flags / localStorage.
    */
-  function ensureDraftRowsCoverStaffedAssignments(store) {
-    if (!store || typeof store !== 'object') return false;
+  function ensureByWeekCoversStaffedAssignments(byWeekStore, assignStore) {
+    if (!byWeekStore || typeof byWeekStore !== 'object') return false;
+    if (!assignStore || typeof assignStore !== 'object') return false;
     var changed = false;
-    restaurantsList.forEach(function (r) {
-      var rs = store[r.id];
+    Object.keys(assignStore).forEach(function (rid) {
+      var rs = assignStore[rid];
       if (!rs || typeof rs !== 'object') return;
       var maxTrByWeekRole = {};
       Object.keys(rs).forEach(function (shiftId) {
@@ -10996,39 +11058,89 @@
         if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
         var role = ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role;
         if (!role) return;
-        var key = String(wi) + '|' + role;
+        var key = String(wi) + '\0' + rid + '\0' + role;
         if (maxTrByWeekRole[key] == null || p.trIdx > maxTrByWeekRole[key]) {
           maxTrByWeekRole[key] = p.trIdx;
         }
       });
       Object.keys(maxTrByWeekRole).forEach(function (key) {
-        var parts = key.split('|');
-        var wi = parseInt(parts[0], 10);
-        var role = parts[1];
+        var parts = key.split('\0');
+        var weekKey = parts[0];
+        var restId = parts[1];
+        var role = parts[2];
         var need = maxTrByWeekRole[key] + 1;
-        var rows = getDraftScheduleRowsForWeek(wi, r.id);
-        var roleRows = rows[role];
-        if (!Array.isArray(roleRows)) roleRows = [];
-        if (roleRows.length >= need) return;
-        var def = (DEFAULT_DRAFT_SCHEDULE_ROWS[role] || []).slice();
-        while (roleRows.length < need) {
-          var src = def[roleRows.length] || def[def.length - 1] || [
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-          ];
-          roleRows.push(JSON.parse(JSON.stringify(src)));
+        if (!byWeekStore[weekKey] || typeof byWeekStore[weekKey] !== 'object') {
+          byWeekStore[weekKey] = {};
         }
-        rows[role] = roleRows;
-        saveDraftScheduleRowsForWeek(wi, rows, r.id);
-        changed = true;
+        var weekEntry = byWeekStore[weekKey];
+        var layers;
+        if (draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
+          if (!weekEntry[restId] || typeof weekEntry[restId] !== 'object') {
+            weekEntry[restId] = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+            changed = true;
+          }
+          layers = weekEntry[restId];
+        } else {
+          layers = sanitizeDraftScheduleLayers(weekEntry);
+          /* Promote to per-restaurant so we can grow one store without stomping others. */
+          var perRest = {};
+          restaurantsList.forEach(function (r) {
+            perRest[r.id] = cloneDraftSchedule(layers);
+          });
+          byWeekStore[weekKey] = perRest;
+          weekEntry = perRest;
+          layers = weekEntry[restId];
+          changed = true;
+        }
+        if (!layers || typeof layers !== 'object') return;
+        if (!Array.isArray(layers[role])) layers[role] = [];
+        var roleRows = layers[role];
+        if (roleRows.length >= need) return;
+        var def = DEFAULT_DRAFT_SCHEDULE_ROWS[role] || [];
+        while (roleRows.length < need) {
+          var src =
+            def[roleRows.length] ||
+            def[def.length - 1] || [null, null, null, null, null, null, null];
+          roleRows.push(JSON.parse(JSON.stringify(src)));
+          changed = true;
+        }
       });
     });
     return changed;
+  }
+
+  /**
+   * If assignments reference trIdx beyond the draft row count, grow the draft so the
+   * calendar shows that row (and prune cannot treat it as an orphan).
+   */
+  function ensureDraftRowsCoverStaffedAssignments(store) {
+    if (!store || typeof store !== 'object') return false;
+    var changed = ensureByWeekCoversStaffedAssignments(draftScheduleByWeekStore, store);
+    if (!changed) return false;
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+    } catch (_e) {
+      /* ignore */
+    }
+    if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
+      draftScheduleDirty = true;
+      persistTeamStateDirtyFlags();
+    }
+    return true;
+  }
+
+  /** Prepare local assignments+draft so a cloud push cannot orphan staffed rows. */
+  function prepareLocalScheduleBundleForCloudPush() {
+    var store = loadScheduleAssignmentsStore();
+    ensureDraftRowsCoverStaffedAssignments(store);
+    /* Never strip staffed names just before upload — that is how Eugene disappeared. */
+    pruneOrphanScheduleAssignmentsBeyondDraft(store, { preserveStaffed: true });
+    try {
+      localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(store));
+    } catch (_prep) {
+      /* ignore */
+    }
+    return store;
   }
 
   /**
@@ -17059,7 +17171,8 @@
 
   /**
    * Force-upload this browser's schedule (assignments + draft/slot order) to Supabase
-   * so shiflow.app matches what you see locally. Ignores dirty flags and version races.
+   * so every client matches what you see here. Always sends both fields together and
+   * ignores version races / open conflict dialogs.
    */
   function forcePushLocalScheduleToCloud(opts) {
     opts = opts || {};
@@ -17078,44 +17191,87 @@
       );
       return Promise.resolve({ ok: false, reason: 'not_manager' });
     }
-    clearAcceptedCloudConflict();
-    setPreferCloudOnConflict(false);
-    clearScheduleSyncConflictState();
-    scheduleConflictSuppressOfferUntil = Date.now() + 15000;
-    if (scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
-      scheduleAssignmentsDirty = true;
+
+    function finishForcePushFlags(ok) {
+      teamStateForcePushActive = false;
+      if (!ok) {
+        /* Do not leave sticky ignore-version on after a failed override. */
+        teamStateForcePushIgnoreVersionSticky = false;
+        teamStateForcePushIgnoreVersion = false;
+      }
+      recoverScheduleUiAfterConflictResolve();
     }
-    if (localDraftScheduleHasContent()) draftScheduleDirty = true;
-    if (!scheduleAssignmentsDirty && !draftScheduleDirty) {
+
+    function runForcePushAttempt() {
+      clearAcceptedCloudConflict();
+      setPreferCloudOnConflict(false);
+      clearScheduleSyncConflictState();
+      scheduleConflictSuppressOfferUntil = Date.now() + 30000;
+      prepareLocalScheduleBundleForCloudPush();
       scheduleAssignmentsDirty = true;
       draftScheduleDirty = true;
+      persistTeamStateDirtyFlags();
+      teamStateForcePushIgnoreVersion = true;
+      teamStateForcePushIgnoreVersionSticky = true;
+      teamStateForcePushActive = true;
+      return Promise.resolve(flushTeamStateSyncNow()).then(function () {
+        var stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
+        if (scheduleSyncConflictActive) {
+          return { ok: false, reason: 'conflict' };
+        }
+        if (stillDirty) {
+          return { ok: false, reason: 'incomplete' };
+        }
+        return { ok: true };
+      });
     }
-    persistTeamStateDirtyFlags();
-    teamStateForcePushIgnoreVersion = true;
-    teamStateForcePushIgnoreVersionSticky = true;
+
     if (!opts.silent) {
       showScheduleNotice(
         gmT('schedule.pushCloudSaving') || 'Saving your local schedule to the cloud…',
         false
       );
     }
-    return Promise.resolve(flushTeamStateSyncNow())
-      .then(function () {
-        recoverScheduleUiAfterConflictResolve();
-        if (scheduleSyncConflictActive) {
-          return { ok: false, reason: 'conflict' };
+
+    return runForcePushAttempt()
+      .then(function (first) {
+        if (first && first.ok) {
+          finishForcePushFlags(true);
+          if (!opts.silent) {
+            showScheduleNotice(
+              gmT('schedule.pushCloudDone') ||
+                'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
+              true
+            );
+          }
+          return first;
         }
-        if (!opts.silent) {
-          showScheduleNotice(
-            gmT('schedule.pushCloudDone') ||
-              'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
-            true
-          );
-        }
-        return { ok: true };
+        /* One automatic retry — covers mid-flight conflict / coalesce races. */
+        return runForcePushAttempt().then(function (second) {
+          var result = second || first || { ok: false, reason: 'incomplete' };
+          finishForcePushFlags(!!(result && result.ok));
+          if (result && result.ok) {
+            if (!opts.silent) {
+              showScheduleNotice(
+                gmT('schedule.pushCloudDone') ||
+                  'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
+                true
+              );
+            }
+            return result;
+          }
+          if (!opts.silent) {
+            showScheduleNotice(
+              gmT('schedule.pushCloudFailed') ||
+                'Could not save to the cloud. Check your connection and try again.',
+              false
+            );
+          }
+          return result;
+        });
       })
       .catch(function (err) {
-        recoverScheduleUiAfterConflictResolve();
+        finishForcePushFlags(false);
         console.warn('gm-callout: force push local schedule', err);
         if (!opts.silent) {
           showScheduleNotice(
@@ -24146,6 +24302,30 @@
       e.preventDefault();
       e.stopPropagation();
       resolveScheduleConflictKeepMine();
+    });
+  }
+  var schedulePushLocalToCloudBtn = document.getElementById('schedulePushLocalToCloudBtn');
+  if (schedulePushLocalToCloudBtn) {
+    try {
+      var pushHost = String((location && location.hostname) || '');
+      if (pushHost === 'localhost' || pushHost === '127.0.0.1') {
+        schedulePushLocalToCloudBtn.hidden = false;
+      }
+    } catch (_hostPush) {
+      /* leave hidden */
+    }
+    schedulePushLocalToCloudBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!managerCanEditCurrentRestaurant()) {
+        showScheduleNotice(
+          gmT('schedule.viewOnlyOtherStoreHint') ||
+            'You can view this store’s schedule but only edit your own store.',
+          false
+        );
+        return;
+      }
+      void forcePushLocalScheduleToCloud();
     });
   }
   if (scheduleConflictTakeCloudBtn) {
