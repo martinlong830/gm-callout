@@ -10945,6 +10945,9 @@
   function pruneOrphanScheduleAssignmentsBeyondDraft(store, opts) {
     opts = opts || {};
     if (!store || typeof store !== 'object') return false;
+    /* Always keep staffed names — a shorter local draft must not delete a 5th FOH
+       person (Eugene) and then dirty-push that wipe to cloud. */
+    var preserveStaffed = opts.preserveStaffed !== false;
     var changed = false;
     restaurantsList.forEach(function (r) {
       var rs = store[r.id];
@@ -10964,12 +10967,64 @@
         var roleRows = ownLayers[role];
         var n = roleRows && roleRows.length ? roleRows.length : 0;
         if (p.trIdx < n) return;
-        /* Remote/partial drafts must not delete staffed names beyond a shorter row count. */
-        if (opts.preserveStaffed && scheduleAssignmentHasStaffedWorkers(rs[shiftId])) return;
+        if (preserveStaffed && scheduleAssignmentHasStaffedWorkers(rs[shiftId])) return;
         removeIds.push(shiftId);
       });
       removeIds.forEach(function (shiftId) {
         delete rs[shiftId];
+        changed = true;
+      });
+    });
+    return changed;
+  }
+
+  /**
+   * If assignments reference trIdx beyond the draft row count, grow the draft so the
+   * calendar shows that row (and prune cannot treat it as an orphan).
+   */
+  function ensureDraftRowsCoverStaffedAssignments(store) {
+    if (!store || typeof store !== 'object') return false;
+    var changed = false;
+    restaurantsList.forEach(function (r) {
+      var rs = store[r.id];
+      if (!rs || typeof rs !== 'object') return;
+      var maxTrByWeekRole = {};
+      Object.keys(rs).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p || !scheduleAssignmentHasStaffedWorkers(rs[shiftId])) return;
+        var wi = Math.floor(p.globalDayIdx / 7);
+        if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
+        var role = ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role;
+        if (!role) return;
+        var key = String(wi) + '|' + role;
+        if (maxTrByWeekRole[key] == null || p.trIdx > maxTrByWeekRole[key]) {
+          maxTrByWeekRole[key] = p.trIdx;
+        }
+      });
+      Object.keys(maxTrByWeekRole).forEach(function (key) {
+        var parts = key.split('|');
+        var wi = parseInt(parts[0], 10);
+        var role = parts[1];
+        var need = maxTrByWeekRole[key] + 1;
+        var rows = getDraftScheduleRowsForWeek(wi, r.id);
+        var roleRows = rows[role];
+        if (!Array.isArray(roleRows)) roleRows = [];
+        if (roleRows.length >= need) return;
+        var def = (DEFAULT_DRAFT_SCHEDULE_ROWS[role] || []).slice();
+        while (roleRows.length < need) {
+          var src = def[roleRows.length] || def[def.length - 1] || [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ];
+          roleRows.push(JSON.parse(JSON.stringify(src)));
+        }
+        rows[role] = roleRows;
+        saveDraftScheduleRowsForWeek(wi, rows, r.id);
         changed = true;
       });
     });
@@ -12046,6 +12101,7 @@
     opts = opts || {};
     var store = loadScheduleAssignmentsStore();
     var changed = false;
+    if (ensureDraftRowsCoverStaffedAssignments(store)) changed = true;
     Object.keys(store).forEach(function (rid) {
       var rs = store[rid];
       if (!rs || typeof rs !== 'object') return;
