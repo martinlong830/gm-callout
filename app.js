@@ -127,6 +127,17 @@
         null,
       ],
       [null, null, null, ['12:00', '21:30'], null, null, null],
+      /* 5th FOH row (Eugene / extra) — without this, drafts stay at 4 rows and a
+         fifth person has nowhere to live, so their shifts collide on row 3. */
+      [
+        ['11:30', '21:30'],
+        ['11:30', '21:30'],
+        ['11:30', '21:30'],
+        ['11:00', '20:30'],
+        ['11:30', '21:30'],
+        null,
+        null,
+      ],
     ],
     Kitchen: [
       [
