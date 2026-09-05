@@ -5966,7 +5966,7 @@
       row.draft_schedule != null
         ? draftSchedulePayloadFromRemote(row.draft_schedule) || row.draft_schedule
         : draftSchedulePayloadFromStore(draftScheduleByWeekStore);
-    var hash = hashScheduleBundle(assign, draftPayload);
+    var hash = scheduleConflictStableBundleHash(assign, draftPayload);
     rememberSchedulePushGuard(hash, row.updated_at, { localPush: false });
   }
 
@@ -6166,17 +6166,21 @@
   function scheduleBundleContentDiffersFromRemoteRow(row) {
     if (!row || typeof row !== 'object') return false;
     if (row.schedule_assignments == null && row.draft_schedule == null) return false;
-    var remoteHash = hashScheduleBundle(
+    /*
+     * Must use key-order-stable hashing. PostgREST key order vs localStorage JSON.stringify
+     * otherwise always "differs" and reopens Keep/Load cloud on every refresh.
+     */
+    var remoteHash = scheduleConflictStableBundleHash(
       row.schedule_assignments != null ? row.schedule_assignments : loadScheduleAssignmentsStore(),
       row.draft_schedule != null
         ? draftSchedulePayloadFromRemote(row.draft_schedule) || row.draft_schedule
         : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
     );
-    var localHash = hashScheduleBundle(
+    var localHash = scheduleConflictStableBundleHash(
       loadScheduleAssignmentsStore(),
       draftSchedulePayloadFromStore(draftScheduleByWeekStore)
     );
-    return remoteHash !== localHash;
+    return !!(remoteHash && localHash && remoteHash !== localHash);
   }
 
   function restoreTeamStateDirtyFlagsFromStorage() {
@@ -6222,7 +6226,7 @@
 
   function liveScheduleBundleHash() {
     try {
-      return hashScheduleBundle(
+      return scheduleConflictStableBundleHash(
         loadScheduleAssignmentsStore(),
         draftSchedulePayloadFromStore(draftScheduleByWeekStore)
       );
@@ -6237,6 +6241,7 @@
     if (!liveHash) return false;
     if (scheduleLastPushHash && liveHash === scheduleLastPushHash) {
       syncScheduleConfirmedFromLiveLocal();
+      clearScheduleSyncConflictState();
       return true;
     }
     if (remoteRow && typeof remoteRow === 'object') {
@@ -6247,7 +6252,7 @@
         ) {
           return false;
         }
-        var remoteHash = hashScheduleBundle(
+        var remoteHash = scheduleConflictStableBundleHash(
           remoteRow.schedule_assignments != null
             ? remoteRow.schedule_assignments
             : loadScheduleAssignmentsStore(),
@@ -6261,6 +6266,7 @@
           if (remoteRow.updated_at != null) {
             rememberSchedulePushGuard(liveHash, remoteRow.updated_at, { localPush: false });
           }
+          clearScheduleSyncConflictState();
           return true;
         }
       } catch (_r) {
@@ -8100,7 +8106,7 @@
     if (scheduleLastPushUpdatedAt && remoteAt && remoteAt < scheduleLastPushUpdatedAt) return true;
     if (!(row.schedule_assignments != null || row.draft_schedule != null)) return false;
 
-    var remoteHash = hashScheduleBundle(
+    var remoteHash = scheduleConflictStableBundleHash(
       row.schedule_assignments != null ? row.schedule_assignments : loadScheduleAssignmentsStore(),
       row.draft_schedule != null
         ? draftSchedulePayloadFromRemote(row.draft_schedule) || row.draft_schedule
@@ -8108,7 +8114,7 @@
     );
     var localHash = null;
     try {
-      localHash = hashScheduleBundle(
+      localHash = scheduleConflictStableBundleHash(
         loadScheduleAssignmentsStore(),
         draftSchedulePayloadFromStore(draftScheduleByWeekStore)
       );
@@ -8546,7 +8552,7 @@
             pushedDraftJson != null
               ? JSON.parse(pushedDraftJson)
               : draftSchedulePayloadFromStore(draftScheduleByWeekStore);
-          scheduleLastPushHash = hashScheduleBundle(guardAssign, guardDraft);
+          scheduleLastPushHash = scheduleConflictStableBundleHash(guardAssign, guardDraft);
           if (res.data && res.data.updated_at != null) {
             scheduleLastPushUpdatedAt = String(res.data.updated_at);
           }
@@ -8562,6 +8568,7 @@
               scheduleLastPushHash = liveAfterPush;
               persistSchedulePushGuard();
             }
+            clearScheduleSyncConflictState();
             queueScheduleRevisionInsert({
               source: pushedPublished ? 'publish' : 'persist',
               assignments: guardAssign,
@@ -11500,10 +11507,16 @@
 
   function saveScheduleAssignmentsStore(store, opts) {
     opts = opts || {};
+    var nextJson = '';
     try {
-      localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(store));
+      nextJson = JSON.stringify(store);
+      localStorage.setItem(SCHEDULE_ASSIGN_KEY, nextJson);
     } catch (err) {
       /* ignore */
+    }
+    if (opts.skipDirty) {
+      notifyTimecardsScheduleChanged();
+      return;
     }
     if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
     scheduleTeamStateDebouncedSync();
@@ -14139,7 +14152,11 @@
     });
     /* Do not re-copy current week onto W+1/W+2 on every edit — that stomps manager future-week edits.
        Furthest-week seeding runs via ensureRollingFutureScheduleWeeks on schedule load / Monday roll. */
-    saveScheduleAssignmentsStore(store);
+    saveScheduleAssignmentsStore(store, {
+      skipDirty: !!opts.skipDirty,
+      flushNow: !!opts.flushNow,
+      writeThrough: opts.writeThrough,
+    });
   }
 
   function applyScheduleAssignmentsMerge() {
@@ -14228,7 +14245,12 @@
   function switchRestaurant(restaurantId) {
     if (!restaurantsList.some(function (r) { return r.id === restaurantId; })) return;
     if (restaurantId === currentRestaurantId) return;
-    if (gmCalloutSessionIsManager) saveScheduleAssignments({ skipUndo: true });
+    /*
+     * Persist in-memory SCHEDULE for the store we are leaving, but do not mark the
+     * schedule dirty — tile edits already write-through. Dirty-on-switch reopened the
+     * Keep/Load cloud banner on every restaurant chip click.
+     */
+    if (gmCalloutSessionIsManager) saveScheduleAssignments({ skipUndo: true, skipDirty: true });
     clearScheduleUndoStack();
     /* Soft-close approvals UI only — full rebuild happens below for the new store. */
     if (typeof scheduleReviewModalIsOpen === 'function' && scheduleReviewModalIsOpen()) {
@@ -14281,11 +14303,13 @@
       }
       if (gmCalloutSessionIsManager && GM_SUPABASE_DATA && window.gmSupabase) {
         teamStateMetaDirty = true;
+        persistTeamStateDirtyFlags();
         try {
           flushTipPayrollPushToSupabase();
         } catch (_tip) {
           /* ignore */
         }
+        /* Meta-only flush — do not reopen schedule conflict for a restaurant chip click. */
         void flushTeamStateSyncNow();
       }
     });
