@@ -200,10 +200,11 @@ export function mergeSlotOrderByWeekMaps(
         const remList = roleOrderList(remoteRest, rid, role);
         if (locList && remList) {
           roleOut[role] = preferWhenBoth === 'local' ? locList : remList;
+        } else if (locList) {
+          /* Keep local ↑↓ order when remote omitted this role. */
+          roleOut[role] = locList;
         } else if (remList) {
           roleOut[role] = remList;
-        } else if (locList) {
-          roleOut[role] = locList;
         }
       });
       if (Object.keys(roleOut).length) restOut[rid] = roleOut;
@@ -285,7 +286,8 @@ export function mergeDraftScheduleSlotOrderFromRemote(
     mergeSlotOrderByWeekMaps(
       readSlotOrderByWeek(localDraft),
       readSlotOrderByWeek(remoteDraft),
-      'remote'
+      /* Prefer local arrangement on hydrate so refresh/push cannot reshuffle ↑↓ order. */
+      'local'
     )
   );
   /* Keep legacy global fallback if remote omitted it but local still has it. */

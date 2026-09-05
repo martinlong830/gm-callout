@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-103" />
+  <link rel="stylesheet" href="styles.css?v=perf-108" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-103" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-108" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-103';
+    window.__GM_ASSET_V = 'perf-108';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -1176,15 +1176,11 @@
             />
             <span class="calendar-hint">Account / profile email (not the sign-in username).</span>
           </label>
-          <label class="form-field form-field-block">
-            <span class="form-label"><span data-i18n="common.location">Location</span></span>
-            <select name="usualRestaurant" id="empUsualRestaurant" required></select>
-          </label>
-          <label class="form-field form-field-block" id="empPrimaryLocationWrap" hidden>
+          <label class="form-field form-field-block" id="empPrimaryLocationWrap">
             <span class="form-label"><span data-i18n="team.primaryLocation">Primary location</span></span>
-            <select name="primaryLocationId" id="empPrimaryLocation"></select>
-            <span class="calendar-hint">Stored for multi-location staff; does not change payroll assignment yet.</span>
+            <select name="primaryLocationId" id="empPrimaryLocation" required></select>
           </label>
+          <select name="usualRestaurant" id="empUsualRestaurant" hidden aria-hidden="true" tabindex="-1"></select>
           <div class="form-row">
             <label class="form-field">
               <span class="form-label">Hourly rate ($)</span>
@@ -2499,7 +2495,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-103"></script>
+  <script src="locales/en.js?v=perf-108"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2511,7 +2507,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-103';
+      s.src = 'locales/es.js?v=perf-108';
       document.head.appendChild(s);
     })();
   </script>
@@ -4403,11 +4399,11 @@
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
   <script defer src="employee-leave.js?v=perf-69"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-103"></script>
+  <script defer src="portal-auth-client.js?v=perf-108"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
-  <script defer src="availability-paint.js?v=perf-103"></script>
+  <script defer src="availability-paint.js?v=perf-108"></script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-103"></script>
+  <script defer src="app.js?v=perf-108"></script>
   <script>
     /*
      * Role / feature modules after first paint:

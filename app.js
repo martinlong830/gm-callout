@@ -765,6 +765,78 @@
    * Merge per-week slot orders. Non-empty wins when the other side is missing/empty.
    * When both have a role list, preferWhenBoth chooses ('local' | 'remote').
    */
+  /**
+   * Merge slot orders week-by-week without reshuffling a device's known arrangement.
+   * Prefer local whenever this device has an order for a role, unless local already
+   * matches the last confirmed push and remote differs (another manager reordered).
+   */
+  function mergeSlotOrderByWeekMapsStable(localRaw, remoteRaw, confirmedRaw) {
+    var local = sanitizeSlotOrderByWeek(localRaw);
+    var remote = sanitizeSlotOrderByWeek(remoteRaw);
+    var confirmed = sanitizeSlotOrderByWeek(confirmedRaw);
+    var out = {};
+    var weekKeys = {};
+    Object.keys(local).forEach(function (k) {
+      weekKeys[k] = true;
+    });
+    Object.keys(remote).forEach(function (k) {
+      weekKeys[k] = true;
+    });
+    Object.keys(weekKeys).forEach(function (mon) {
+      var localRest = local[mon] || {};
+      var remoteRest = remote[mon] || {};
+      var confRest = confirmed[mon] || {};
+      var restOut = {};
+      var rids = {};
+      Object.keys(localRest).forEach(function (r) {
+        rids[r] = true;
+      });
+      Object.keys(remoteRest).forEach(function (r) {
+        rids[r] = true;
+      });
+      Object.keys(rids).forEach(function (rid) {
+        var roleOut = {};
+        var confRoles = confRest[rid] || {};
+        ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+          var locList =
+            localRest[rid] && Array.isArray(localRest[rid][role]) && localRest[rid][role].length
+              ? localRest[rid][role]
+              : null;
+          var remList =
+            remoteRest[rid] && Array.isArray(remoteRest[rid][role]) && remoteRest[rid][role].length
+              ? remoteRest[rid][role]
+              : null;
+          var confList =
+            confRoles[role] && Array.isArray(confRoles[role]) && confRoles[role].length
+              ? confRoles[role]
+              : null;
+          if (locList && remList) {
+            var locJson = JSON.stringify(locList);
+            var remJson = JSON.stringify(remList);
+            var confJson = confList ? JSON.stringify(confList) : '';
+            var holdLocalEdits =
+              draftScheduleDirty ||
+              scheduleAssignmentsDirty ||
+              teamStateSyncTimer ||
+              teamStatePushInFlight ||
+              (confJson && locJson !== confJson) ||
+              (!confJson && locJson !== remJson);
+            /* Peer reorder: we already pushed this local order, remote differs. */
+            var peerReorder = confJson && locJson === confJson && remJson !== confJson;
+            roleOut[role] = (peerReorder && !holdLocalEdits ? remList : locList).slice();
+          } else if (locList) {
+            roleOut[role] = locList.slice();
+          } else if (remList) {
+            roleOut[role] = remList.slice();
+          }
+        });
+        if (Object.keys(roleOut).length) restOut[rid] = roleOut;
+      });
+      if (Object.keys(restOut).length) out[mon] = restOut;
+    });
+    return out;
+  }
+
   function mergeSlotOrderByWeekMaps(localRaw, remoteRaw, preferWhenBoth) {
     var local = sanitizeSlotOrderByWeek(localRaw);
     var remote = sanitizeSlotOrderByWeek(remoteRaw);
@@ -801,10 +873,10 @@
               : null;
           if (locList && remList) {
             roleOut[role] = (prefer === 'local' ? locList : remList).slice();
-          } else if (remList) {
-            roleOut[role] = remList.slice();
           } else if (locList) {
             roleOut[role] = locList.slice();
+          } else if (remList) {
+            roleOut[role] = remList.slice();
           }
         });
         if (Object.keys(roleOut).length) restOut[rid] = roleOut;
@@ -7335,6 +7407,31 @@
     });
   }
 
+  /**
+   * When applying a remote assignment store, never blank a staffed local slot with
+   * Unassigned from cloud (stale echo / tip-only bump / sanitize wipe). Peer renames
+   * and real reassignments still win when remote is staffed.
+   */
+  function protectStaffedAssignmentsFromRemoteWipe(localStore, remoteStore) {
+    if (!remoteStore || typeof remoteStore !== 'object') return remoteStore;
+    if (!localStore || typeof localStore !== 'object') return remoteStore;
+    var out = JSON.parse(JSON.stringify(remoteStore));
+    Object.keys(localStore).forEach(function (rid) {
+      var localRs = localStore[rid];
+      if (!localRs || typeof localRs !== 'object') return;
+      if (!out[rid] || typeof out[rid] !== 'object') out[rid] = {};
+      Object.keys(localRs).forEach(function (shiftId) {
+        var localEntry = normalizeScheduleAssignment(localRs[shiftId]);
+        if (!scheduleAssignmentHasStaffedWorkers(localEntry)) return;
+        var remoteEntry =
+          out[rid][shiftId] != null ? normalizeScheduleAssignment(out[rid][shiftId]) : null;
+        if (remoteEntry && scheduleAssignmentHasStaffedWorkers(remoteEntry)) return;
+        out[rid][shiftId] = cloneScheduleAssignment(localEntry);
+      });
+    });
+    return out;
+  }
+
   function getScheduleAssignmentsConfirmedJson() {
     try {
       return localStorage.getItem(SCHEDULE_ASSIGN_CONFIRMED_JSON_KEY) || '';
@@ -8323,8 +8420,7 @@
         if (scheduleAssignmentsDirty || draftScheduleDirty) {
           offerScheduleSyncConflict(row);
         } else {
-          /* Peer wrote newer cloud while we only had an echo/meta lock — accept it. */
-          forceAcceptRemoteScheduleOnce = true;
+          /* Allow apply with staffed-slot protection — never silent forceAccept wipe. */
           refuseStaleSchedule = false;
         }
       } else {
@@ -8359,11 +8455,21 @@
         }
       } else {
         try {
+          var localAssignBeforeRemote = loadScheduleAssignmentsStore();
           var mig = migrateScheduleAssignmentsForPastWeeks(
             mergeAssignmentStoreWithShell(assignmentStoreShell(), sched)
           );
-          var mergedSched = mig.store;
+          var mergedSched = protectStaffedAssignmentsFromRemoteWipe(
+            localAssignBeforeRemote,
+            mig.store
+          );
           var schedChanged = mig.changed;
+          if (
+            JSON.stringify(mergedSched) !== JSON.stringify(mig.store) &&
+            gmCalloutSessionIsManager
+          ) {
+            schedChanged = true;
+          }
           if (absorbOrphanDayOffAssignmentsOnce(mergedSched, { force: true })) {
             schedChanged = true;
           }
@@ -8489,17 +8595,24 @@
               prevLocalByWeek === remoteByWeekJson;
 
             var remoteSlotOnly = sanitizeSlotOrderByWeek(remoteDraftPayload.slotOrderByWeek);
-            /* Prefer local week orders when this device has unpushed draft edits; otherwise
-               accept remote so peers' reorders land. Prefer-remote-on-both was wiping ↑↓
-               order when dirty flags were briefly clear during navigate. */
-            var slotPrefer =
-              draftScheduleDirty || scheduleAssignmentsDirty || teamStateSyncTimer || teamStatePushInFlight
-                ? 'local'
-                : 'remote';
-            var mergedRemoteSlotOrder = mergeSlotOrderByWeekMaps(
+            /* Keep this device's ↑↓ order stable across refresh/push. Only accept remote
+               reorders for weeks that already match the last confirmed push (peers). */
+            var confirmedSlotOrder = {};
+            try {
+              var confirmedDraftRaw = getDraftScheduleConfirmedJson();
+              if (confirmedDraftRaw) {
+                var confirmedDraftObj = JSON.parse(confirmedDraftRaw);
+                confirmedSlotOrder = sanitizeSlotOrderByWeek(
+                  confirmedDraftObj && confirmedDraftObj.slotOrderByWeek
+                );
+              }
+            } catch (_confSlot) {
+              confirmedSlotOrder = {};
+            }
+            var mergedRemoteSlotOrder = mergeSlotOrderByWeekMapsStable(
               slotOrderByWeekStore,
               remoteSlotOnly,
-              slotPrefer
+              confirmedSlotOrder
             );
             remoteDraftPayload.slotOrderByWeek = mergedRemoteSlotOrder;
             var remoteGroupOnly = sanitizeGroupOrderPotentialByWeek(
@@ -8669,7 +8782,7 @@
       rememberSchedulePushGuardFromRemoteRow(row);
       try {
         syncAllAssignmentTimesFromDraft();
-        pruneScheduleAssignmentsInvalidSlots();
+        pruneScheduleAssignmentsInvalidSlots({ preserveStaffed: true });
       } catch (_p) {
         /* ignore */
       }
@@ -10814,7 +10927,8 @@
    * leftovers from deleted FOH rows and resurrect phantom duplicate shifts.
    * Returns true when the in-memory store was mutated (caller persists / marks dirty).
    */
-  function pruneOrphanScheduleAssignmentsBeyondDraft(store) {
+  function pruneOrphanScheduleAssignmentsBeyondDraft(store, opts) {
+    opts = opts || {};
     if (!store || typeof store !== 'object') return false;
     var changed = false;
     restaurantsList.forEach(function (r) {
@@ -10834,7 +10948,10 @@
         if (!ownLayers) return;
         var roleRows = ownLayers[role];
         var n = roleRows && roleRows.length ? roleRows.length : 0;
-        if (p.trIdx >= n) removeIds.push(shiftId);
+        if (p.trIdx < n) return;
+        /* Remote/partial drafts must not delete staffed names beyond a shorter row count. */
+        if (opts.preserveStaffed && scheduleAssignmentHasStaffedWorkers(rs[shiftId])) return;
+        removeIds.push(shiftId);
       });
       removeIds.forEach(function (shiftId) {
         delete rs[shiftId];
@@ -11910,7 +12027,8 @@
     return any;
   }
 
-  function pruneScheduleAssignmentsInvalidSlots() {
+  function pruneScheduleAssignmentsInvalidSlots(opts) {
+    opts = opts || {};
     var store = loadScheduleAssignmentsStore();
     var changed = false;
     Object.keys(store).forEach(function (rid) {
@@ -11926,7 +12044,7 @@
         }
       });
     });
-    if (pruneOrphanScheduleAssignmentsBeyondDraft(store)) changed = true;
+    if (pruneOrphanScheduleAssignmentsBeyondDraft(store, opts)) changed = true;
     if (changed) saveScheduleAssignmentsStore(store);
   }
 
@@ -13651,10 +13769,21 @@
       if (!s || !s.id) return;
       var p = parseShiftIdParts(s.id);
       if (p && (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd)) return;
-      /* rebuildSchedule seeds Unassigned when a store key/pattern exists, then merge
-         applies the real name — so SCHEDULE here is trustworthy for intentional edits
-         (including assigning the sheet-default person back onto a row). */
-      rs[s.id] = buildDirectAssignmentEntryFromShiftRow(rs, s);
+      var nextEntry = buildDirectAssignmentEntryFromShiftRow(rs, s);
+      var prevEntry = rs[s.id] != null ? normalizeScheduleAssignment(rs[s.id]) : null;
+      /*
+       * Display merge can briefly show Unassigned while the store still has a person.
+       * Never persist that display glitch over a staffed slot unless explicitly allowed.
+       */
+      if (
+        !opts.allowUnassign &&
+        prevEntry &&
+        scheduleAssignmentHasStaffedWorkers(prevEntry) &&
+        !scheduleAssignmentHasStaffedWorkers(nextEntry)
+      ) {
+        return;
+      }
+      rs[s.id] = nextEntry;
     });
     /* Do not re-copy current week onto W+1/W+2 on every edit — that stomps manager future-week edits.
        Furthest-week seeding runs via ensureRollingFutureScheduleWeeks on schedule load / Monday roll. */
@@ -13727,6 +13856,8 @@
 
   function employeeLocationLine(emp) {
     if (!emp) return '';
+    var primary = employeeHomeOrPrimaryRestaurantId(emp);
+    if (primary === 'rp-8' || primary === 'rp-9') return restaurantLabel(primary);
     var u = emp.usualRestaurant || 'both';
     if (u === 'both') return 'Both';
     var r = restaurantsList.find(function (x) {
@@ -13986,13 +14117,26 @@
 
   function sanitizeScheduleAssignmentEntry(entry, restaurantId) {
     var normalized = normalizeScheduleAssignment(entry);
-    var valid = (normalized.workers || []).filter(function (n) {
+    var rawWorkers = (normalized.workers || []).filter(function (n) {
+      return n && n !== 'Unassigned';
+    });
+    var valid = rawWorkers.filter(function (n) {
       return scheduleWorkerIsOnTeam(n, restaurantId);
     });
-    if (!valid.length) {
-      return { workers: ['Unassigned'] };
+    /*
+     * Never wipe a staffed slot to Unassigned because of a transient on-team /
+     * week-borrow mismatch — that pushed silent rollbacks to the cloud.
+     * Keep the original name(s); canonicalize only when we have a roster match.
+     */
+    var workers;
+    if (valid.length) {
+      workers = canonicalizeScheduleWorkerList(valid, restaurantId);
+    } else if (rawWorkers.length) {
+      workers = rawWorkers.slice();
+    } else {
+      workers = ['Unassigned'];
     }
-    var out = { workers: canonicalizeScheduleWorkerList(valid, restaurantId) };
+    var out = { workers: workers };
     if (normalized.break) out.break = normalized.break;
     if (normalized.hours != null && normalized.hours !== '') out.hours = normalized.hours;
     if (normalized.timeLabel) out.timeLabel = normalized.timeLabel;
@@ -14610,17 +14754,21 @@
   }
 
   function syncEmployeePrimaryLocationField(preferredId) {
-    if (!empPrimaryLocationWrap || !empUsualRestaurant) return;
-    var multi = employeeIsMultiLocation(empUsualRestaurant.value);
-    empPrimaryLocationWrap.hidden = !multi;
-    if (multi) {
-      var pref =
-        preferredId != null
-          ? preferredId
-          : empPrimaryLocation && empPrimaryLocation.value
-            ? empPrimaryLocation.value
-            : defaultPrimaryLocationId();
-      renderEmployeePrimaryLocationOptions(pref);
+    if (!empPrimaryLocationWrap) return;
+    empPrimaryLocationWrap.hidden = false;
+    var pref =
+      preferredId != null && preferredId !== ''
+        ? preferredId
+        : empPrimaryLocation && empPrimaryLocation.value
+          ? empPrimaryLocation.value
+          : defaultPrimaryLocationId();
+    renderEmployeePrimaryLocationOptions(pref);
+    /* Keep hidden usualRestaurant in sync for legacy readers / tip retention. */
+    if (empUsualRestaurant) {
+      var ur = empUsualRestaurant.value;
+      if (ur !== 'both' && ur !== 'rp-8' && ur !== 'rp-9') {
+        empUsualRestaurant.value = 'both';
+      }
     }
   }
 
@@ -16460,33 +16608,133 @@
 
   function loadNormalScheduleTemplateIntoEditor(template) {
     if (!template) return;
-    var state = currentTemplateEditorState();
-    var pattern = normalizeWeekPatternKeys(template.weekPattern || {});
-    state.dirtyPersonRows = Object.create(null);
-    Object.keys(pattern).forEach(function (key) {
-      var slot = parseWeekPatternSlotKey(key);
-      if (!slot) return;
-      var role = ROLE_DEFS[slot.roleIdx] && ROLE_DEFS[slot.roleIdx].role;
-      if (!role) return;
-      var entry = normalizeScheduleAssignment(pattern[key]);
-      var worker = scheduleAssignmentPrimaryWorker(entry) || 'Unassigned';
-      var rowKey = templateEditorRowKey(role, slot.trIdx);
-      state.workers[rowKey] = worker;
-      state.dirtyPersonRows[rowKey] = true;
-    });
-    state.masterTemplateId = String(template.masterTemplateId || '');
-    state.sourceTemplateId = String(template.id || '');
-    state.choices = template.masterShiftChoices && typeof template.masterShiftChoices === 'object'
-      ? JSON.parse(JSON.stringify(template.masterShiftChoices))
-      : {};
-    if (template.draftSchedule && draftScheduleJsonHasLayers(template.draftSchedule)) {
-      state.draft = cloneDraftSchedule(template.draftSchedule);
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    var pattern = null;
+    if (template.weekPattern && typeof template.weekPattern === 'object') {
+      pattern = sanitizeWeekPatternWorkers(
+        normalizeWeekPatternKeys(template.weekPattern),
+        rid
+      );
     }
-    scheduleTemplateEditorState = state;
+    if (
+      !weekPatternHasStaffedSlots(pattern) &&
+      template.assignments &&
+      typeof template.assignments === 'object'
+    ) {
+      var rsTpl = template.assignments[rid] || template.assignments[currentRestaurantId];
+      if (rsTpl && typeof rsTpl === 'object') {
+        var srcWeekFromAssign =
+          template.sourceWeekIndex != null ? template.sourceWeekIndex : SCHEDULE_TEMPLATE_WEEK_INDEX;
+        pattern = sanitizeWeekPatternWorkers(
+          normalizeWeekPatternKeys(
+            buildWeekPatternFromAssignmentSlice(rsTpl, srcWeekFromAssign, rid)
+          ),
+          rid
+        );
+      }
+    }
+    if (!pattern) pattern = {};
+    var srcWeekIndex =
+      template.sourceWeekIndex != null ? template.sourceWeekIndex : SCHEDULE_TEMPLATE_WEEK_INDEX;
+
+    /* Build draft from the saved template (or flesh out times for legacy weekPattern-only saves). */
+    var nextDraft;
+    if (template.draftSchedule && draftScheduleJsonHasLayers(template.draftSchedule)) {
+      nextDraft = cloneDraftSchedule(sanitizeDraftScheduleLayers(template.draftSchedule));
+    } else {
+      var baseDraft = withLiveScheduleData(function () {
+        return cloneDraftSchedule(
+          scheduleTemplatePreviewSession
+            ? scheduleTemplatePreviewSession.draft
+            : getDraftScheduleRowsForWeek(wi, rid)
+        );
+      });
+      nextDraft = withLiveScheduleData(function () {
+        return ensureDraftSlotsForWeekPattern(baseDraft, pattern, srcWeekIndex, rid);
+      });
+    }
+
+    var assignmentScratch = JSON.parse(
+      JSON.stringify(
+        scheduleTemplatePreviewSession
+          ? scheduleTemplatePreviewSession.assignments
+          : loadScheduleAssignmentsStore()
+      )
+    );
+    if (!assignmentScratch[rid]) assignmentScratch[rid] = {};
+
+    /*
+     * Install editor draft first so slotCountForRole / reset use the template's row counts,
+     * then replace this week's scratch assignments with the saved weekPattern.
+     */
+    scheduleTemplateScratchActive = true;
+    scheduleTemplateEditorState = {
+      workers: {},
+      choices:
+        template.masterShiftChoices && typeof template.masterShiftChoices === 'object'
+          ? JSON.parse(JSON.stringify(template.masterShiftChoices))
+          : {},
+      masterTemplateId: String(template.masterTemplateId || ''),
+      sourceTemplateId: String(template.id || ''),
+      dirtyPersonRows: Object.create(null),
+      assignmentScratch: assignmentScratch,
+      draft: nextDraft,
+    };
+
+    resetRestaurantWeekDirectAssignments(assignmentScratch, rid, wi, pattern);
+    var targetStart = wi * 7;
+    Object.keys(pattern).forEach(function (k) {
+      var slot = parseWeekPatternSlotKey(k);
+      if (!slot) return;
+      var targetShiftId =
+        'shift-' + (targetStart + slot.dayInWeek) + '-' + slot.roleIdx + '-' + slot.trIdx;
+      assignmentScratch[rid][targetShiftId] = cloneScheduleAssignment(
+        sanitizeScheduleAssignmentEntry(pattern[k], rid)
+      );
+    });
+
+    /* Apply saved break grid onto scratch only — never write the live assignment store. */
+    var breakSchedule = template.draftBreakSchedule;
+    if (!draftBreakScheduleHasLayers(breakSchedule) && weekPatternHasStaffedSlots(pattern)) {
+      breakSchedule = buildBreakScheduleFromWeekPattern(pattern, wi, rid);
+    }
+    if (draftBreakScheduleHasLayers(breakSchedule)) {
+      var rsBreak = assignmentScratch[rid];
+      ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+        var roleIdx = roleIdxForDraftRole(role);
+        if (roleIdx < 0) return;
+        var tRows = nextDraft[role] || [];
+        var bRows = breakSchedule[role] || [];
+        tRows.forEach(function (row, trIdx) {
+          if (!Array.isArray(row)) return;
+          for (var di = 0; di < 7; di += 1) {
+            if (!row[di]) continue;
+            var brk = bRows[trIdx] && bRows[trIdx][di];
+            if (brk == null) continue;
+            var shiftId = 'shift-' + (targetStart + di) + '-' + roleIdx + '-' + trIdx;
+            var entry = normalizeScheduleAssignment(
+              rsBreak[shiftId] || { workers: ['Unassigned'] }
+            );
+            entry.break = brk;
+            rsBreak[shiftId] = entry;
+          }
+        });
+      });
+    }
+
+    scheduleTemplateEditorState.assignmentScratch = assignmentScratch;
+
     var masterSelect = document.getElementById('scheduleMasterTemplateSelect');
-    if (masterSelect) masterSelect.value = state.masterTemplateId;
+    if (masterSelect) masterSelect.value = scheduleTemplateEditorState.masterTemplateId || '';
+    var nameInput = document.getElementById('scheduleTemplateNameInput');
+    if (nameInput && template.name) nameInput.value = String(template.name);
+    var deleteBtn = document.getElementById('deleteScheduleTemplateBtn');
+    if (deleteBtn) deleteBtn.disabled = !template.id;
     closeTemplateShiftEditPanel();
+    /* Paint preview from scratch first, then sync Person-column workers from that paint. */
     renderScheduleTemplatePreview();
+    syncTemplateEditorWorkersFromAssignments();
   }
 
   function closeScheduleAddLocationModal() {
@@ -17966,7 +18214,9 @@
     /* Assignment rebuild paints current SoT — drop any deferred remote refresh. */
     calendarInlineEditDeferredRemoteRefresh = false;
     if (anyShift) {
-      if (!templateScratch) saveScheduleAssignments();
+      if (!templateScratch) {
+        saveScheduleAssignments({ allowUnassign: canon === 'Unassigned' });
+      }
     } else if (!templateScratch) {
       pushScheduleUndoSnapshot();
     }
@@ -21556,7 +21806,9 @@
           phoneLine +
           '</span></li>' +
           '<li class="employee-card-meta-row">' +
-          '<span class="employee-card-label">Location</span>' +
+          '<span class="employee-card-label">' +
+          escapeHtml(gmT('team.primaryLocation') || 'Primary location') +
+          '</span>' +
           '<span class="employee-card-value">' +
           locLine +
           '</span></li>' +
@@ -22420,13 +22672,17 @@
         emp && emp.clockPin ? String(emp.clockPin) : '----';
     }
     if (empClockPinInput) empClockPinInput.value = '';
-    if (empUsualRestaurant) {
+    if (empUsualRestaurant || empPrimaryLocation) {
       var urPref = emp && emp.usualRestaurant ? emp.usualRestaurant : 'both';
       renderEmployeeLocationSelectOptions(urPref);
       var empMetaForPrimary = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
       var primaryPref =
-        empMetaForPrimary.primaryLocationId || empMetaForPrimary.primaryRestaurantId || '';
-      syncEmployeePrimaryLocationField(primaryPref);
+        empMetaForPrimary.primaryLocationId ||
+        empMetaForPrimary.primaryRestaurantId ||
+        employeeHomeOrPrimaryRestaurantId(emp) ||
+        '';
+      if (!primaryPref && (urPref === 'rp-8' || urPref === 'rp-9')) primaryPref = urPref;
+      syncEmployeePrimaryLocationField(primaryPref || defaultPrimaryLocationId());
     }
     if (empHourlyRate) {
       empHourlyRate.value =
@@ -24400,7 +24656,15 @@
       var chosen = normalScheduleTemplates().find(function (t) {
         return t && t.id === scheduleTemplateSelectEl.value;
       });
-      if (chosen) loadNormalScheduleTemplateIntoEditor(chosen);
+      if (chosen) {
+        loadNormalScheduleTemplateIntoEditor(chosen);
+        showScheduleNotice(
+          'Loaded template "' + (chosen.name || 'Untitled') + '" into the editor.',
+          true
+        );
+        return;
+      }
+      showScheduleNotice('Could not find that saved template.', false);
     });
   }
   if (scheduleMasterTemplateSelect) {
@@ -24740,11 +25004,12 @@
     var first = empFirstName ? String(empFirstName.value || '').trim() : '';
     var last = empLastName ? String(empLastName.value || '').trim() : '';
     var st = empStaffType ? String(empStaffType.value || '').trim() : '';
-    var ur = empUsualRestaurant ? empUsualRestaurant.value : 'rp-9';
-    var meta = {};
-    if (empPrimaryLocation && empPrimaryLocationWrap && !empPrimaryLocationWrap.hidden) {
-      meta.primaryLocationId = empPrimaryLocation.value;
-    }
+    var primaryId = normalizePrimaryLocationId(
+      empPrimaryLocation ? empPrimaryLocation.value : ''
+    );
+    if (!primaryId) primaryId = defaultPrimaryLocationId();
+    var ur = 'both';
+    var meta = { primaryLocationId: primaryId, primaryRestaurantId: primaryId };
     return {
       firstName: first,
       lastName: last,
@@ -24932,13 +25197,15 @@
         existingEmp && existingEmp.weeklyGrid
           ? normalizeWeeklyGrid(existingEmp.weeklyGrid, stSave)
           : defaultWeeklyGridAllOpenForStaffType(stSave);
-      var urVal = empUsualRestaurant ? empUsualRestaurant.value : 'both';
-      if (
-        urVal !== 'both' &&
-        !restaurantsList.some(function (r) { return r.id === urVal; })
-      ) {
-        urVal = 'both';
-      }
+      /* Primary location is SoT on Team — always both + primary so staff stay schedulable
+         at either store while home/payroll attribution uses primary. */
+      var primarySave = normalizePrimaryLocationId(
+        empPrimaryLocation ? empPrimaryLocation.value : ''
+      );
+      if (!primarySave) primarySave = defaultPrimaryLocationId();
+      var urVal = 'both';
+      if (empUsualRestaurant) empUsualRestaurant.value = 'both';
+      if (empPrimaryLocation) empPrimaryLocation.value = primarySave;
       var hrRaw = empHourlyRate ? String(empHourlyRate.value || '').trim() : '';
       var hrNum = hrRaw === '' ? null : parseFloat(hrRaw);
       if (hrNum != null && (Number.isNaN(hrNum) || hrNum < 0)) hrNum = null;
@@ -24974,10 +25241,7 @@
             displayName: (first + ' ' + last).trim(),
             staffType: stSave,
             usualRestaurant: urVal,
-            meta:
-              urVal === 'both' && empPrimaryLocation
-                ? { primaryLocationId: empPrimaryLocation.value }
-                : {},
+            meta: { primaryLocationId: primarySave },
           });
         }
         if (dtrNum != null) rec.deliveryTipRetention = dtrNum;
@@ -25097,9 +25361,9 @@
       }
       if (employeeIsMultiLocation(urVal)) {
         var primaryId = normalizePrimaryLocationId(
-          empPrimaryLocation ? empPrimaryLocation.value : ''
+          empPrimaryLocation ? empPrimaryLocation.value : primarySave
         );
-        if (!primaryId) primaryId = defaultPrimaryLocationId();
+        if (!primaryId) primaryId = primarySave || defaultPrimaryLocationId();
         rec.meta.primaryLocationId = primaryId;
         rec.meta.primaryRestaurantId = primaryId;
       } else {

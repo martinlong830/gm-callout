@@ -34,8 +34,8 @@ import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
   defaultDeliveryTipRetentionForEmployee,
   employeeDisplayName,
-  employeeIsMultiLocation,
   employeePrimaryLocationId,
+  employeeHomeOrPrimaryRestaurantId,
   isCloudEmployeeId,
   normalizeDeliveryTipRetention,
   type EmployeeRow,
@@ -142,7 +142,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [employmentStatus, setEmploymentStatus] = useState<'part-time' | 'full-time'>('full-time');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [usualRestaurant, setUsualRestaurant] = useState('rp-9');
+  const [usualRestaurant, setUsualRestaurant] = useState('both');
   const [primaryLocationId, setPrimaryLocationId] = useState('rp-9');
   const [hourlyRate, setHourlyRate] = useState('');
   const [tipPoint, setTipPoint] = useState('');
@@ -178,7 +178,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setEmploymentStatus('full-time');
     setPhone('');
     setEmail('');
-    setUsualRestaurant('rp-9');
+    setUsualRestaurant('both');
     setPrimaryLocationId('rp-9');
     setHourlyRate('');
     setTipPoint('');
@@ -263,12 +263,12 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       setEmploymentStatus(emp.employmentStatus === 'full-time' ? 'full-time' : 'part-time');
       setPhone(emp.phone || '');
       setEmail(emp.email || '');
-      setUsualRestaurant(
-        emp.usualRestaurant === 'both' || emp.usualRestaurant === 'rp-8'
-          ? emp.usualRestaurant
-          : 'rp-9'
+      setUsualRestaurant('both');
+      setPrimaryLocationId(
+        employeePrimaryLocationId(emp) ||
+          employeeHomeOrPrimaryRestaurantId(emp) ||
+          'rp-9'
       );
-      setPrimaryLocationId(employeePrimaryLocationId(emp) || 'rp-9');
       setHourlyRate(emp.hourlyRate != null ? String(emp.hourlyRate) : '');
       setTipPoint(emp.tipPoint != null ? String(emp.tipPoint) : '');
       {
@@ -389,11 +389,11 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     if (next === 'Server') {
       const def = defaultDeliveryTipRetentionForEmployee({
         staffType: next,
-        usualRestaurant,
+        usualRestaurant: 'both',
         firstName,
         lastName,
         displayName: `${firstName} ${lastName}`.trim(),
-        meta: usualRestaurant === 'both' ? { primaryLocationId } : undefined,
+        meta: { primaryLocationId },
       });
       setDeliveryTipRetention(def != null ? String(def) : '');
     } else {
@@ -401,17 +401,17 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     }
   }
 
-  function applyLocationRetentionDefault(nextUsual: string, nextPrimary: string) {
+  function applyLocationRetentionDefault(nextPrimary: string) {
     if (staffType !== 'Server') return;
     const cur = normalizeDeliveryTipRetention(deliveryTipRetention);
     if (cur != null && cur !== 0.8 && cur !== 0.95) return;
     const def = defaultDeliveryTipRetentionForEmployee({
       staffType: 'Server',
-      usualRestaurant: nextUsual,
+      usualRestaurant: 'both',
       firstName,
       lastName,
       displayName: `${firstName} ${lastName}`.trim(),
-      meta: nextUsual === 'both' ? { primaryLocationId: nextPrimary } : undefined,
+      meta: { primaryLocationId: nextPrimary },
     });
     setDeliveryTipRetention(def != null ? String(def) : '');
   }
@@ -520,14 +520,11 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
         parsed ??
         defaultDeliveryTipRetentionForEmployee({
           staffType,
-          usualRestaurant,
+          usualRestaurant: 'both',
           firstName: first,
           lastName: last,
           displayName: `${first} ${last}`.trim(),
-          meta:
-            usualRestaurant === 'both'
-              ? { primaryLocationId }
-              : undefined,
+          meta: { primaryLocationId },
         }) ??
         undefined;
       if (dtrNum == null || dtrNum < 0 || dtrNum > 1) {
@@ -566,7 +563,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
         lastName: last,
         phone: phoneTrim,
         staffType,
-        usualRestaurant,
+        usualRestaurant: 'both',
         role: accountRole,
         employeeId: rosterId,
       };
@@ -621,15 +618,10 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     meta.breakPolicy = breakPolicy;
     if (emailTrim) meta.email = emailTrim;
     else if ('email' in meta) delete meta.email;
-    if (employeeIsMultiLocation(usualRestaurant)) {
-      const primary =
-        primaryLocationId === 'rp-8' || primaryLocationId === 'rp-9' ? primaryLocationId : 'rp-9';
-      meta.primaryLocationId = primary;
-      meta.primaryRestaurantId = primary;
-    } else {
-      delete meta.primaryLocationId;
-      delete meta.primaryRestaurantId;
-    }
+    const primary =
+      primaryLocationId === 'rp-8' || primaryLocationId === 'rp-9' ? primaryLocationId : 'rp-9';
+    meta.primaryLocationId = primary;
+    meta.primaryRestaurantId = primary;
     applyLeaveAllowancesToMeta(meta, {
       vacAllowanceDays,
       sickAllowanceDays,
@@ -650,7 +642,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       employmentStatus,
       phone: phoneTrim,
       email: emailTrim || undefined,
-      usualRestaurant,
+      usualRestaurant: 'both',
       hourlyRate: hrNum != null ? Math.round(hrNum * 100) / 100 : undefined,
       tipPoint: tpNum != null ? tpNum : undefined,
       deliveryTipRetention: staffType === 'Server' ? dtrNum : undefined,
@@ -874,38 +866,16 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                   placeholder="name@example.com"
                 />
                 <Text style={styles.photoHint}>Account / profile email (not the sign-in username).</Text>
-                <FieldLabel>Location</FieldLabel>
+                <FieldLabel>Primary location</FieldLabel>
                 <ChipRow
-                  options={LOCATIONS}
-                  value={usualRestaurant}
+                  options={PRIMARY_LOCATIONS}
+                  value={primaryLocationId === 'rp-8' ? 'rp-8' : 'rp-9'}
                   onChange={(v) => {
-                    setUsualRestaurant(v);
-                    const nextPrimary =
-                      v === 'both' && primaryLocationId !== 'rp-8' && primaryLocationId !== 'rp-9'
-                        ? 'rp-9'
-                        : primaryLocationId;
-                    if (v === 'both' && primaryLocationId !== 'rp-8' && primaryLocationId !== 'rp-9') {
-                      setPrimaryLocationId('rp-9');
-                    }
-                    applyLocationRetentionDefault(v, nextPrimary);
+                    setPrimaryLocationId(v);
+                    setUsualRestaurant('both');
+                    applyLocationRetentionDefault(v);
                   }}
                 />
-                {employeeIsMultiLocation(usualRestaurant) ? (
-                  <>
-                    <FieldLabel>Primary location</FieldLabel>
-                    <ChipRow
-                      options={PRIMARY_LOCATIONS}
-                      value={primaryLocationId === 'rp-8' ? 'rp-8' : 'rp-9'}
-                      onChange={(v) => {
-                        setPrimaryLocationId(v);
-                        applyLocationRetentionDefault(usualRestaurant, v);
-                      }}
-                    />
-                    <Text style={styles.photoHint}>
-                      Stored for multi-location staff; does not change payroll assignment yet.
-                    </Text>
-                  </>
-                ) : null}
                 <View style={styles.row2}>
                   <View style={styles.fieldHalf}>
                     <FieldLabel>Hourly rate ($)</FieldLabel>

@@ -305,6 +305,13 @@ export function employeeUsualLocationLine(usualRestaurant: string): string {
   return LOCATION_NAMES[u] || u;
 }
 
+/** Team card line: primary/home store (SoT), not raw usualRestaurant "Both". */
+export function employeePrimaryLocationLine(emp: EmployeeRow | null | undefined): string {
+  const primary = employeeHomeOrPrimaryRestaurantId(emp);
+  if (primary === 'rp-8' || primary === 'rp-9') return LOCATION_NAMES[primary] || primary;
+  return employeeUsualLocationLine(emp?.usualRestaurant || 'both');
+}
+
 export function employeeIsMultiLocation(usualRestaurant: string): boolean {
   return String(usualRestaurant || '') === 'both';
 }
