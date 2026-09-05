@@ -17456,9 +17456,15 @@
             return result;
           }
           if (!opts.silent) {
+            var failReason =
+              (result && result.reason) || (first && first.reason) || 'incomplete';
+            console.warn('gm-callout: force push failed', failReason, result || first);
             showScheduleNotice(
-              gmT('schedule.pushCloudFailed') ||
-                'Could not save to the cloud. Check your connection and try again.',
+              failReason === 'conflict'
+                ? gmT('schedule.syncConflict') ||
+                    'You and another manager edited the schedule at the same time. Keep yours, or load theirs.'
+                : gmT('schedule.pushCloudFailed') ||
+                    'Could not save to the cloud. Check your connection and try again.',
               false
             );
           }
