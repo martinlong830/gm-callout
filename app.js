@@ -17198,6 +17198,12 @@
     if (clearScheduleDirtyIfAlreadySynced(row)) return;
     if (!scheduleBundleContentDiffersFromRemoteRow(row)) {
       syncScheduleConfirmedFromLiveLocal();
+      clearScheduleSyncConflictState();
+      if (row.updated_at != null) {
+        rememberSchedulePushGuard(liveScheduleBundleHash(), row.updated_at, {
+          localPush: false,
+        });
+      }
       return;
     }
     /*
