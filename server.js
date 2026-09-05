@@ -206,6 +206,7 @@ const LONG_CACHE_ASSETS = new Set([
   "timeclock-app.js",
   "break-policy.js",
   "employee-leave.js",
+  "availability-paint.js",
   "portal-auth-client.js",
   "employee-app.js",
   "manager-messaging.js",

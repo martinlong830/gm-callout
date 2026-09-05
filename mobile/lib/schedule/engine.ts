@@ -16,7 +16,7 @@ import type {
 } from './types';
 import { compareEmployeesBySeniority } from './rosterOrder';
 import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } from './slotOrder';
-import { normalizeEmployeeStaffType } from '../employees';
+import { normalizeEmployeeStaffType, employeeHomeOrPrimaryRestaurantId } from '../employees';
 
 function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
   return normalizeEmployeeStaffType(emp.staffType);
@@ -270,6 +270,26 @@ export function redPokeShiftTimeLabel(start: string, end: string): string {
   return fmt(s.h, s.m) + '-' + fmt(e.h, e.m);
 }
 
+/** Inverse of redPokeShiftTimeLabel — tolerates optional spaces. */
+export function parseRedPokeTimeLabel(
+  label: unknown
+): { start: string; end: string } | null {
+  const s = String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  if (!s || s === 'rp2') return null;
+  const m = s.match(/^(\d{1,2}):(\d{2})(am|pm)-(\d{1,2}):(\d{2})(am|pm)$/);
+  if (!m) return null;
+  function to24(h: string, min: string, ampm: string) {
+    let hour = parseInt(h, 10);
+    if (ampm === 'pm' && hour !== 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+    return `${String(hour).padStart(2, '0')}:${min}`;
+  }
+  return { start: to24(m[1], m[2], m[3]), end: to24(m[4], m[5], m[6]) };
+}
+
 export function redPokeShiftHoursDecimal(start: string, end: string): string {
   function toMin(t: string) {
     const p = String(t || '').split(':');
@@ -467,7 +487,11 @@ export function loadDraftFromTeamState(raw: unknown, weekIndex?: number, restaur
     const weekLayers = byWeek[wi];
     const layers = draftLayersFromWeekEntry(weekLayers, restaurantId);
     if (layers) return layers;
-    if (wi !== String(SCHEDULE_TEMPLATE_WEEK_INDEX)) {
+    /*
+     * Future empty weeks may inherit structure from the rolling "this week" draft.
+     * Past weeks must NOT — same as web getDraftScheduleRowsForWeek.
+     */
+    if (Number(wi) > SCHEDULE_TEMPLATE_WEEK_INDEX) {
       const tplLayers = byWeek[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
       const tplDraft = draftLayersFromWeekEntry(tplLayers, restaurantId);
       if (tplDraft) return tplDraft;
@@ -723,12 +747,19 @@ function mergeScheduleAssignmentEntries(
 }
 
 /** Per-shift assignment; inherits break/hours/time from template week when missing. */
-function lookupScheduleAssignment(
+export function lookupScheduleAssignment(
   stored: Record<string, ScheduleAssignmentEntry>,
   shiftId: string
 ): NormalizedScheduleAssignment | null {
   const direct = stored[shiftId] != null ? normalizeScheduleAssignment(stored[shiftId]) : null;
   const pattern = lookupScheduleAssignmentPattern(stored, shiftId);
+  const p = parseShiftIdParts(shiftId);
+  const tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+  /* Past weeks must not inherit staffing from the rolling template week pattern. */
+  if (p && p.globalDayIdx < tplStart) {
+    if (stored[shiftId] == null) return null;
+    return mergeScheduleAssignmentEntries(direct, pattern);
+  }
   return mergeScheduleAssignmentEntries(direct, pattern);
 }
 
@@ -2041,24 +2072,81 @@ export function buildCalendarBody(
   slotOrderByRestaurant?: SlotOrderByRestaurant | null,
   assignmentStore?: AssignmentStore | null,
   weekIndex?: number,
-  otherStoreDayLabels?: Map<string, string> | null
+  otherStoreDayLabels?: Map<string, string> | null,
+  abbreviateForManagedStoreId?: string | null
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
   const otherMap = otherStoreDayLabels || null;
+  const abbreviate =
+    !!abbreviateForManagedStoreId &&
+    !!restaurantId &&
+    abbreviateForManagedStoreId !== restaurantId;
+
+  function liteByName(name: string): EmployeeLite | undefined {
+    const key = String(name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+    if (!key) return undefined;
+    return employees.find((e) => {
+      const dn = String(e.displayName || `${e.firstName} ${e.lastName}`)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+      return dn === key || workerNamesMatch(dn, key);
+    });
+  }
+
+  function restaurantWeekHasNamedWorker(rid: string, wi: number, workerName: string): boolean {
+    const nameKey = String(workerName || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+    if (!nameKey || nameKey === 'unassigned' || !assignmentStore) return false;
+    const rs = assignmentStore[rid] || {};
+    for (let roleIdx = 0; roleIdx < SCHEDULE_GRID_ROLE_ORDER.length; roleIdx += 1) {
+      const role = SCHEDULE_GRID_ROLE_ORDER[roleIdx];
+      const slotN = slotCountForRoleWithAssignments(draftRows, role, assignmentStore, rid, wi);
+      for (let trIdx = 0; trIdx < slotN; trIdx += 1) {
+        for (let day = 0; day < 7; day += 1) {
+          const shiftId = `shift-${wi * 7 + day}-${roleIdx}-${trIdx}`;
+          const entry = lookupScheduleAssignment(rs, shiftId);
+          if (!entry) continue;
+          if (
+            (entry.workers || []).some((w) => {
+              if (!w || w === 'Unassigned') return false;
+              const wk = String(w).trim().toLowerCase().replace(/\s+/g, ' ');
+              return wk === nameKey || workerNamesMatch(w, workerName);
+            })
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  function shouldShowWorker(workerName: string): boolean {
+    if (!abbreviate || !abbreviateForManagedStoreId) return true;
+    if (!workerName || workerName === 'Unassigned') return false;
+    const emp = liteByName(workerName);
+    const primary = employeeHomeOrPrimaryRestaurantId(emp);
+    if (primary === abbreviateForManagedStoreId) return true;
+    if (
+      primary === restaurantId &&
+      weekIndex != null &&
+      restaurantWeekHasNamedWorker(abbreviateForManagedStoreId, weekIndex, workerName)
+    ) {
+      return true;
+    }
+    return false;
+  }
 
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {
     const rd = ROLE_DEFS.find((r) => r.role === roleKey);
     if (!rd) return;
-    if (rd.role === 'Bartender') {
-      bodyRows.push({ kind: 'section', title: 'FRONT OF THE HOUSE', variant: 'foh' });
-    }
-    if (rd.role === 'Server') {
-      bodyRows.push({ kind: 'section', title: 'DELIVERY/DISHWASHER', variant: 'delivery' });
-    }
-    if (rd.role === 'Kitchen') {
-      bodyRows.push({ kind: 'section', title: 'BACK OF THE HOUSE', variant: 'boh' });
-    }
 
     /* Include all-null draft rows and stub-only empty slots (Person assigned, no times yet). */
     const slotN = slotCountForRoleWithAssignments(
@@ -2079,8 +2167,34 @@ export function buildCalendarBody(
       assignmentStore,
       weekIndex
     );
-    for (let oi = 0; oi < slotOrder.length; oi += 1) {
-      const trIdx = slotOrder[oi];
+    const visibleSlotOrder = slotOrder.filter((trIdx) => {
+      if (!abbreviate) return true;
+      const rowPerson = scheduleRowPrimaryPerson(
+        schedule,
+        rd.role,
+        trIdx,
+        visibleDays,
+        employees,
+        restaurantId,
+        assignmentStore,
+        weekIndex
+      );
+      return shouldShowWorker(rowPerson);
+    });
+    if (!visibleSlotOrder.length) return;
+
+    if (rd.role === 'Bartender') {
+      bodyRows.push({ kind: 'section', title: 'FRONT OF THE HOUSE', variant: 'foh' });
+    }
+    if (rd.role === 'Server') {
+      bodyRows.push({ kind: 'section', title: 'DELIVERY/DISHWASHER', variant: 'delivery' });
+    }
+    if (rd.role === 'Kitchen') {
+      bodyRows.push({ kind: 'section', title: 'BACK OF THE HOUSE', variant: 'boh' });
+    }
+
+    for (let oi = 0; oi < visibleSlotOrder.length; oi += 1) {
+      const trIdx = visibleSlotOrder[oi];
       const rowPerson = scheduleRowPrimaryPerson(
         schedule,
         rd.role,
@@ -2401,7 +2515,7 @@ export function getWorkerScheduleBuckets(params: {
    * (parity with web `getWorkerScheduleBuckets` when not on employee-app).
    */
   respectUsualRestaurant?: boolean;
-}): { today: WorkerShiftRow[]; upcoming: WorkerShiftRow[] } {
+}): { today: WorkerShiftRow[]; upcoming: WorkerShiftRow[]; past: WorkerShiftRow[] } {
   const {
     workerName,
     weekMeta,
@@ -2435,6 +2549,7 @@ export function getWorkerScheduleBuckets(params: {
   const todayIso = localTodayISO();
   const today: WorkerShiftRow[] = [];
   const upcoming: WorkerShiftRow[] = [];
+  const past: WorkerShiftRow[] = [];
   for (const o of all) {
     if (windowStartIso && o.iso && o.iso < windowStartIso) continue;
     if (windowEndIso && o.iso && o.iso > windowEndIso) continue;
@@ -2449,13 +2564,18 @@ export function getWorkerScheduleBuckets(params: {
     }
     if (o.iso === todayIso) today.push(o);
     else if (o.iso && o.iso > todayIso) upcoming.push(o);
+    else if (o.iso && o.iso < todayIso) past.push(o);
   }
   upcoming.sort((a, b) => {
     if (a.iso !== b.iso) return a.iso.localeCompare(b.iso);
     return a.start.localeCompare(b.start);
   });
   today.sort((a, b) => a.start.localeCompare(b.start));
-  return { today, upcoming };
+  past.sort((a, b) => {
+    if (a.iso !== b.iso) return b.iso.localeCompare(a.iso);
+    return a.start.localeCompare(b.start);
+  });
+  return { today, upcoming, past };
 }
 
 export function normalizeSchedulePublishedMap(raw: unknown): Record<string, true> {
@@ -2715,13 +2835,10 @@ export function patchDraftScheduleForWeek(
   const layers = cloneDraftSchedule(nextLayers);
 
   if (!weekEntry || typeof weekEntry !== 'object' || draftScheduleJsonHasLayers(weekEntry)) {
-    const shared =
-      weekEntry && draftScheduleJsonHasLayers(weekEntry)
-        ? loadDraftFromTeamState(weekEntry)
-        : cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
     const perRest: Record<string, DraftGrid> = {};
     rests.forEach((r) => {
-      perRest[r.id] = cloneDraftSchedule(shared);
+      /* Seed each store from effective draft (template fallback), not bare DEFAULT. */
+      perRest[r.id] = loadDraftFromTeamState(raw, weekIndex, r.id);
     });
     weekEntry = perRest;
   }

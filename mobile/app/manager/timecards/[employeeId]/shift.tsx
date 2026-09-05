@@ -26,27 +26,12 @@ import {
   tipTakehomePctForRestaurant,
 } from '../../../../lib/timecards/dishwasherTips';
 import {
-  getEmployeeDayAdditionalCashTip,
-  getEmployeeDayMissingHours,
-  setEmployeeDayAdditionalCashTip,
-  setEmployeeDayMissingHours,
-} from '../../../../lib/timecards/weekExtras';
-import { deleteTimeClockEntries, saveManagerPunch } from '../../../../lib/timecards/entriesApi';
-import {
-  employeeBreakPolicy,
-  formatBreakPolicyLabel,
-  resolveBreakPaid,
-} from '../../../../lib/timecards/breakPolicy';
-import { removeShiftDay } from '../../../../lib/timecards/shiftDayCleanup';
-import {
   buildShiftsForEmployeeInWeek,
   buildScheduledMinutesByDayForEmployee,
   buildScheduleContext,
-  getEmployeeDayLeave,
   getSuggestedDayLeave,
   getEffectiveDayLeaveSync,
   loadWeekExtrasSlice,
-  setEmployeeDayLeave,
   dailyRecordedMinutesForEmployeeAtRestaurant,
   decimalHoursFromMinutes,
   entriesForShiftDayCleanup,
@@ -75,6 +60,20 @@ import {
   shiftRowAttributionRestaurant,
   type ShiftDayRow,
 } from '../../../../lib/timecards/engine';
+import {
+  getEmployeeDayAdditionalCashTip,
+  getEmployeeDayMissingHours,
+  setEmployeeDayAdditionalCashTip,
+  setEmployeeDayLeave,
+  setEmployeeDayMissingHours,
+} from '../../../../lib/timecards/weekExtras';
+import { deleteTimeClockEntries, saveManagerPunch } from '../../../../lib/timecards/entriesApi';
+import {
+  employeeBreakPolicy,
+  formatBreakPolicyLabel,
+  resolveBreakPaid,
+} from '../../../../lib/timecards/breakPolicy';
+import { removeShiftDay } from '../../../../lib/timecards/shiftDayCleanup';
 import {
   dateToIso,
   isMidnightOnShiftDate,
@@ -363,8 +362,6 @@ export default function TimecardsShiftScreen() {
     setBreakEndDate(null);
     setEntryId(null);
     setPunchesCleared(true);
-    setVlText('0');
-    setSlText('0');
     setDishwasherTipText('0');
     setCoverageText('0');
     setMissingHoursText('0');
@@ -753,32 +750,22 @@ export default function TimecardsShiftScreen() {
 
       <Text style={styles.sectionTitle}>VL / SL (this day)</Text>
       <Text style={styles.hint}>
-        Saved per-day only — week totals may include other days or approved time off. Clear both
-        fields to 0 to remove leave from this day.
+        Vacation / sick hours are entered on the Schedule shift editor. Values here are read-only
+        and flow into week grand totals.
       </Text>
       {suggestedLeave && (suggestedLeave.vl > 0 || suggestedLeave.sl > 0) ? (
         <Text style={styles.hint}>
           Approved time off suggests{' '}
           {suggestedLeave.vl > 0 ? `VL ${suggestedLeave.vl}h` : ''}
           {suggestedLeave.vl > 0 && suggestedLeave.sl > 0 ? ' · ' : ''}
-          {suggestedLeave.sl > 0 ? `SL ${suggestedLeave.sl}h` : ''} for this day (not saved until
-          you enter it below).
+          {suggestedLeave.sl > 0 ? `SL ${suggestedLeave.sl}h` : ''} for this day (edit on Schedule to
+          save).
         </Text>
       ) : null}
       <Text style={styles.fieldLabel}>VL (hrs)</Text>
-      <TextInput
-        style={styles.input}
-        value={vlText}
-        onChangeText={setVlText}
-        keyboardType="decimal-pad"
-      />
+      <Text style={styles.readonlyValue}>{vlText}</Text>
       <Text style={styles.fieldLabel}>SL (hrs)</Text>
-      <TextInput
-        style={styles.input}
-        value={slText}
-        onChangeText={setSlText}
-        keyboardType="decimal-pad"
-      />
+      <Text style={styles.readonlyValue}>{slText}</Text>
       <Text style={styles.fieldLabel}>Missing hours</Text>
       <Text style={styles.hint}>
         Makeup hours from a prior week. Pay uses prior-week OT (hours past 40h at OT rate). Full
@@ -853,7 +840,9 @@ export default function TimecardsShiftScreen() {
             : ''}
         </Text>
       ) : hasPunchTimes ? null : (
-        <Text style={styles.preview}>No punch times — save VL/SL below for vacation or sick days.</Text>
+        <Text style={styles.preview}>
+          No punch times — enter VL/SL on the Schedule shift editor for vacation or sick days.
+        </Text>
       )}
 
       <Pressable style={styles.btnPrimary} disabled={busy} onPress={() => void save()}>
@@ -937,6 +926,13 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     backgroundColor: '#fff',
     fontSize: 16,
+  },
+  readonlyValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 10,
+    paddingVertical: 6,
   },
   preview: { fontSize: 13, color: '#475569', marginTop: 10 },
   btnPrimary: {

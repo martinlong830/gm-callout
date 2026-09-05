@@ -53,6 +53,9 @@ window.GM_I18N_EN = {
   'common.location': 'Location',
   'common.start': 'Start',
   'common.end': 'End',
+  'schedule.start': 'Start',
+  'schedule.end': 'End',
+  'schedule.break': 'Break / office',
   'common.type': 'Type',
   'common.notes': 'Notes',
   'common.optional': '(optional)',
@@ -123,6 +126,7 @@ window.GM_I18N_EN = {
   'status.declined': 'Declined',
   'status.pending': 'Pending',
   'status.awaiting_cover': 'Awaiting cover',
+  'status.pending_approval': 'Pending approval',
   'status.draft': 'Draft',
   'status.submitted': 'Submitted',
 
@@ -239,7 +243,9 @@ window.GM_I18N_EN = {
 
   'schedule.publishNotify': 'Publish / Notify',
   'schedule.viewOnlyOtherStoreHint':
-    'You can view this store’s schedule but only edit your own store.',
+    'Abbreviated view of the other store — only people tied to your store this week. View only.',
+  'schedule.dragMoveHint':
+    'Drag a shift to move it. Hold Option/Alt while dragging to copy times.',
   'schedule.publishNotifyTitle': "Publish this week's schedule and choose who to notify",
   'schedule.publishNotifyAdmins': 'Publish / notify admin accounts',
   'schedule.publishNotifyEmployees': 'Publish / notify employees',
@@ -257,10 +263,33 @@ window.GM_I18N_EN = {
   'schedule.downloadWeekFailed': 'Could not download this week’s schedule.',
   'schedule.undo': 'Undo',
   'schedule.undoTitle': 'Undo last schedule or shift time change',
+  'schedule.refresh': 'Refresh',
+  'schedule.refreshTitle': 'Pull the latest schedule from the cloud (other managers’ edits)',
+  'schedule.refreshing': 'Refreshing schedule from cloud…',
+  'schedule.refreshDone': 'Schedule refreshed. All managers share this cloud copy.',
+  'schedule.refreshFailed': 'Could not refresh schedule.',
+  'schedule.peerUpdated':
+    'Schedule updated from another manager. Your view now matches the cloud.',
   'schedule.history': 'History',
   'schedule.historyTitle': 'View saved schedule versions and hard-revert',
+  'schedule.holidays': 'Holidays',
+  'schedule.holidaysTitle': 'Add or edit company holidays',
+  'schedule.holidaysHint':
+    'Holidays appear on everyone’s schedule calendar and on Home for the next 4 weeks.',
+  'schedule.holidayDate': 'Date',
+  'schedule.holidayName': 'Name',
+  'schedule.addHoliday': 'Add holiday',
+  'schedule.noHolidaysYet': 'No holidays yet.',
+  'schedule.holidayInvalid': 'Enter a valid date and name.',
+  'schedule.holidayAdded': 'Holiday saved.',
+  'common.done': 'Done',
+  'common.remove': 'Remove',
+  'employee.upcomingHolidays': 'Upcoming holidays',
+  'employee.noUpcomingHolidays': 'No upcoming holidays.',
+  'employee.pastShifts': 'Past shifts',
+  'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
-    'Saved schedule versions (auto-saves about every 8 minutes while you edit, plus publish/revert). Hard revert restores assignments and shift times for everyone.',
+    'Saved schedule versions (auto-saves about every 15 minutes when the schedule changed, plus publish/revert). Hard revert restores assignments and shift times for everyone.',
   'schedule.historyEmpty': 'No saved versions yet. Keep editing — checkpoints appear after a short pause.',
   'schedule.historyFailed': 'Could not load schedule history.',
   'schedule.historySourcePublish': 'Publish',
@@ -272,6 +301,14 @@ window.GM_I18N_EN = {
   'schedule.hardRevertConfirm':
     'Hard revert the live schedule to this version for all managers? A safety snapshot of the current schedule is saved first.',
   'schedule.hardRevertDone': 'Schedule restored from history.',
+  'schedule.syncConflict':
+    'You and another manager edited the schedule at the same time. Keep yours (overwrites the cloud), or load theirs (discards your unsaved edits).',
+  'schedule.syncConflictKeepMine': 'Keep my schedule',
+  'schedule.syncConflictTakeCloud': 'Load cloud schedule',
+  'schedule.syncConflictKeptMine': 'Keeping your schedule and saving it to the cloud…',
+  'schedule.syncConflictKeptMineDone': 'Your schedule was saved to the cloud.',
+  'schedule.syncConflictTookCloud':
+    'Loaded the cloud schedule. Your conflicting local edits were discarded.',
   'schedule.markDayOff': 'Mark day off',
   'schedule.dayOffToolbarTitle': 'Mark the hovered or focused shift as day off',
   'schedule.dayOffNeedHover': 'Hover or focus a shift on the calendar, then click Day off.',
@@ -345,6 +382,74 @@ window.GM_I18N_EN = {
   'schedule.pastWeek': 'Past week',
   'schedule.pastWeekHint': 'Cannot publish or notify for a week that has already passed',
   'schedule.viewOnly': 'View only',
+  'schedule.sendForApproval': 'Send for approval',
+  'schedule.sendForApprovalTitle': 'Send this week’s schedule to an admin for approval',
+  'schedule.reviewChanges': 'Review changes',
+  'schedule.reviewChangesTitle': 'Review proposed schedule changes',
+  'schedule.approvals': 'Schedule Approvals',
+  'schedule.approvalsTitle': 'Send or review schedule approvals',
+  'schedule.approvalsSendTitle': 'Send for approval',
+  'schedule.approvalsSendWeek': 'Send this week for approval',
+  'schedule.approvalsEmptyManagerMeta':
+    'No proposals waiting. You can send this week’s schedule to an admin for approval.',
+  'schedule.approvalsEmptyManagerHint': 'Use the button below to preview and send this week.',
+  'schedule.approvalsEmptyManagerTitle': 'Nothing pending',
+  'schedule.approvalsEmptyManagerBody':
+    'No proposals are waiting for you. Send this week’s schedule to an admin when it’s ready for review.',
+  'schedule.approvalsPendingWeekMeta':
+    'This week is already submitted. Wait for send-back, or accept and apply when ready.',
+  'schedule.approvalsPendingWeekHint':
+    'Use Send back / Accept when the other party returns this week.',
+  'schedule.approvalsPendingWeekTitle': 'Already submitted',
+  'schedule.approvalsPendingWeekBody':
+    'This week’s schedule is already out for approval. You’ll see actions here when it’s sent back.',
+  'schedule.reviewComposeMeta':
+    'Preview this week’s schedule, then confirm to send a frozen copy to an admin.',
+  'schedule.reviewNetNewMeta': 'Full proposed schedule (net new).',
+  'schedule.reviewDeltaMeta': 'Proposed schedule with change suggestions marked in red.',
+  'schedule.reviewComposeHint':
+    'Live schedule is unchanged until an admin accepts and applies.',
+  'schedule.reviewHint':
+    'Click a tile to suggest a time change (optional note) or approve an open suggestion. Red = open change.',
+  'schedule.reviewHistory': 'Change history',
+  'schedule.reviewNoHistory': 'No suggestions yet.',
+  'schedule.reviewNote': 'Note (optional)',
+  'schedule.reviewApproveSuggestion': 'Approve suggestion',
+  'schedule.reviewSuggestChange': 'Suggest change',
+  'schedule.reviewComposeReadOnly':
+    'Confirm send below to submit this frozen copy to an admin.',
+  'schedule.reviewBulkApprove': 'Approve all open changes',
+  'schedule.reviewSendToManager': 'Send back to manager',
+  'schedule.reviewSendToAdmin': 'Send back to admin',
+  'schedule.reviewConfirmSend': 'Confirm send to admin',
+  'schedule.reviewSending': 'Sending…',
+  'schedule.reviewApplying': 'Applying…',
+  'schedule.reviewConfirmed': 'Confirmed',
+  'schedule.reviewConfirmedMeta': 'Confirmed — sent to admin for approval.',
+  'schedule.reviewConfirmedToManagerMeta': 'sent to manager.',
+  'schedule.reviewConfirmedToAdminMeta': 'sent to admin.',
+  'schedule.reviewConfirmedApplyMeta': 'Confirmed — applied to the live schedule.',
+  'schedule.reviewSent':
+    'Sent to admin for approval. Your live schedule is unchanged until they accept.',
+  'schedule.reviewSyncUnavailable':
+    'Could not sync this approval to the cloud. Apply the schedule_reviews database migration, then send again.',
+  'schedule.reviewSyncFailed': 'Could not send to admin. Check your connection and try again.',
+  'schedule.reviewSentBack': 'Sent back for the other party to review.',
+  'schedule.reviewSentBackToManager': 'Sent back to the manager for review.',
+  'schedule.reviewSentBackToAdmin': 'Sent back to an admin for review.',
+  'schedule.reviewApplied': 'Proposal applied to the live schedule.',
+  'schedule.reviewAcceptApply': 'Accept and apply to live schedule',
+  'schedule.reviewAcceptConfirm':
+    'Apply this proposed schedule to the live week for this location?',
+  'schedule.reviewAcceptOpenWarn':
+    'There are still open suggestions. Accept and apply the proposal as-is?',
+  'schedule.reviewInboxEmpty': 'No pending schedule reviews.',
+  'schedule.reviewInboxEmptyMeta': 'No schedules have been submitted for review yet.',
+  'schedule.reviewInboxEmptyHint':
+    'When a manager sends a week for approval, it will show up here.',
+  'schedule.reviewInboxEmptyTitle': 'No submitted schedules yet',
+  'schedule.reviewInboxEmptyBody':
+    'Managers haven’t sent any schedules for approval yet. When they do, those proposals will appear here.',
 
   'team.search': 'Search team',
   'team.searchPlaceholder': 'Search name or phone',
@@ -362,15 +467,31 @@ window.GM_I18N_EN = {
   'team.employmentStatus': 'Employment status',
   'team.partTime': 'Part-time',
   'team.fullTime': 'Full-time',
+  'team.accountType': 'App account',
+  'team.accountManager': 'Manager',
+  'team.accountTeamMember': 'Team member',
+  'team.accountAdmin': 'Admin',
+  'team.accountNotLinked': 'No app login',
+
+  'empForm.accountType': 'Account type',
+  'empForm.accountTeamMember': 'Team member',
+  'empForm.accountManager': 'Manager',
+  'empForm.accountTypeHintCreate':
+    'Only an admin or the company creator can create manager accounts.',
+  'empForm.accountTypeHintEdit':
+    'Managers use the manager app. Team members use the employee app and permissions.',
+  'empForm.accountTypeAdminLocked': 'Admin accounts cannot be changed here.',
+  'empForm.appLoginLinked': 'App login: linked to portal account',
+  'empForm.appLoginNotLinked': 'App login: not linked',
 
   'availability.checkAll': 'Check all',
   'availability.save': 'Save availability',
   'availability.submit': 'Submit availability',
   'availability.noEmployees': 'No employees on the roster yet.',
   'availability.managerHint':
-    "View or edit each employee's week. Drag a time block onto another day to copy it (hold Shift while dropping to move). Approve pending submissions when ready.",
+    'View or edit each employee’s week on the paint grid (drag to mark available times). Use Clear under a day to wipe it. Approve pending submissions when ready.',
   'availability.employeeHint':
-    'Mark when you can work for the selected week. Drag a time onto another day to copy it (Shift+drop to move), then submit for your manager.',
+    'Drag across times you’re available. Save/submit still maps to your scheduled shift lines.',
   'availability.weekNav': 'Availability week',
   'availability.pendingLabel': 'Pending',
   'availability.submissionTitle': 'Availability submission',
@@ -548,6 +669,7 @@ window.GM_I18N_EN = {
   'employee.noUpcomingShiftsOption': 'No upcoming shifts available',
   'employee.noSwapOffers': 'No open shift swap offers',
   'employee.swapAwaitingCover': 'Waiting for a teammate to accept before you can approve.',
+  'employee.swapPendingApproval': 'Cover accepted — approve to place them on the schedule.',
   'employee.swapNeedsCover': 'A cover worker must accept this swap before you can approve it.',
   'employee.swapTarget': 'Requested cover',
   'employee.swapTargetEveryone': 'Sent to everyone',

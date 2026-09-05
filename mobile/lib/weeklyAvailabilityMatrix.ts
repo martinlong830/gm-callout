@@ -52,6 +52,28 @@ export function buildAvailabilitySlotRangesUnion(draftRows: DraftGrid): TimeSlot
   });
 }
 
+/** Unique draft (or union) slots for projecting paint ↔ weeklyGrid. */
+export function listAvailabilitySlotsForStaffType(
+  staffType: string,
+  draftRows: DraftGrid
+): TimeSlot[] {
+  const role = asRoleKey(staffType);
+  if (!role) return buildAvailabilitySlotRangesUnion(draftRows);
+  const u: Record<string, TimeSlot> = {};
+  for (const wk of WEEKDAY_KEYS) {
+    const n = slotCountForRole(draftRows, role);
+    for (let i = 0; i < n; i += 1) {
+      const tr = draftTimeSlotFor(draftRows, role, wk, i);
+      if (!tr) continue;
+      if (!u[tr.slotKey]) u[tr.slotKey] = tr;
+    }
+  }
+  return Object.values(u).sort((a, b) => {
+    if (a.start !== b.start) return a.start.localeCompare(b.start);
+    return a.end.localeCompare(b.end);
+  });
+}
+
 export function normalizeWeeklyGrid(
   grid: unknown,
   staffType: string,

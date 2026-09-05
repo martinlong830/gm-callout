@@ -13,11 +13,14 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { AvailabilityMatrixEditor } from './AvailabilityMatrixEditor';
+import { AvailabilityPaintGrid } from './AvailabilityPaintGrid';
 import { EmployeePhoto } from './EmployeePhoto';
 import {
+  computeLeaveBalance,
   ensureEmployeeLeaveBalance,
-  leaveSummaryLines,
+  formatLeaveHours,
+  formatUsDate,
+  listLeavePeriodsFromEntries,
   normalizeLeaveBalance,
 } from '../lib/employeeLeave';
 import {
@@ -37,11 +40,13 @@ import {
   normalizeDeliveryTipRetention,
   type EmployeeRow,
 } from '../lib/employees';
-import { isPortalAuthConfigured, portalCreateEmployeeAccount, portalGetAccount } from '../lib/portalAuth';
+import { isPortalAuthConfigured, portalCreateEmployeeAccount, portalGetAccount, portalGetLinkedAccount, portalUpdateEmployeeRole } from '../lib/portalAuth';
 import type { DraftGrid } from '../lib/schedule/types';
 import { employeePhotoUploadHint, clearEmployeePhoto, uploadEmployeePhotoFromUri } from '../lib/uploadEmployeePhoto';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { useI18n } from '../contexts/LocaleContext';
+import { isAdminRole } from '../lib/roles';
 import { normalizeWeeklyGrid, type WeeklyGridNormalized } from '../lib/weeklyAvailabilityMatrix';
 
 const STAFF_TYPES = [
@@ -122,6 +127,8 @@ type Props = {
 
 export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, onClose, onSaved }: Props) {
   const { t, staffTypeLabel: staffTypeLabelI18n } = useI18n();
+  const { role: sessionRole, refreshRole } = useAuth();
+  const isAdmin = isAdminRole(sessionRole);
   const { height: windowHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(windowHeight * 0.9);
 
@@ -150,10 +157,15 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [sickAllowanceDays, setSickAllowanceDays] = useState('5');
   const [sickAllowanceHours, setSickAllowanceHours] = useState('');
   const [sickHoursRemaining, setSickHoursRemaining] = useState('');
+  const [vacPeriodKey, setVacPeriodKey] = useState<string | null>(null);
+  const [sickPeriodKey, setSickPeriodKey] = useState<string | null>(null);
   const [portalPassword, setPortalPassword] = useState('pass');
   const [portalRecoveryEmail, setPortalRecoveryEmail] = useState('');
   const [portalAccountType, setPortalAccountType] = useState<'employee' | 'manager'>('employee');
   const [canCreateManager, setCanCreateManager] = useState(false);
+  const [linkedPortalRole, setLinkedPortalRole] = useState<string | null>(null);
+  const [canEditLinkedRole, setCanEditLinkedRole] = useState(false);
+  const [linkedRoleLoading, setLinkedRoleLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -179,9 +191,14 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setSickAllowanceDays('5');
     setSickAllowanceHours('');
     setSickHoursRemaining('');
+    setVacPeriodKey(null);
+    setSickPeriodKey(null);
     setPortalPassword('pass');
     setPortalRecoveryEmail('');
     setPortalAccountType('employee');
+    setLinkedPortalRole(null);
+    setCanEditLinkedRole(false);
+    setLinkedRoleLoading(false);
     setStatusMsg('');
   }, [draftRows]);
 
@@ -193,12 +210,43 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     let cancelled = false;
     void portalGetAccount().then((acct) => {
       if (cancelled) return;
-      setCanCreateManager(!!(acct.ok && acct.isCompanyCreator));
+      setCanCreateManager(!!(acct.ok && (acct.isCompanyCreator || isAdminRole(acct.role))));
     });
     return () => {
       cancelled = true;
     };
   }, [visible, isCreate]);
+
+  useEffect(() => {
+    if (!visible || isCreate || !employee?.authUserId || !isAdmin || !isPortalAuthConfigured()) {
+      setLinkedPortalRole(null);
+      setCanEditLinkedRole(false);
+      setLinkedRoleLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLinkedRoleLoading(true);
+    void portalGetLinkedAccount({
+      employeeId: employee.id,
+      authUserId: employee.authUserId,
+    }).then((linked) => {
+      if (cancelled) return;
+      setLinkedRoleLoading(false);
+      if (!linked.ok || !linked.linked) {
+        setLinkedPortalRole(null);
+        setCanEditLinkedRole(false);
+        return;
+      }
+      setLinkedPortalRole(linked.role);
+      setCanEditLinkedRole(!!linked.canChangeRole);
+      if (linked.role === 'manager' || linked.role === 'employee') {
+        setPortalAccountType(linked.role);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, isCreate, employee?.id, employee?.authUserId, isAdmin]);
 
   useEffect(() => {
     setProfileEmployee(employee);
@@ -244,6 +292,11 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       setSickHoursRemaining(
         bal.sick.hoursRemaining != null ? String(bal.sick.hoursRemaining) : ''
       );
+      const hiringDate =
+        emp.meta?.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
+      const computed = computeLeaveBalance(bal, { hiringDate });
+      setVacPeriodKey(computed.vacationPeriod?.key || null);
+      setSickPeriodKey(computed.sickPeriod?.key || null);
       setStatusMsg('');
     },
     [draftRows]
@@ -263,8 +316,13 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     [weeklyGrid, staffType, draftRows]
   );
 
-  const leaveLines = useMemo(() => {
-    if (!employee) return [];
+  const hiringDateStr = useMemo(() => {
+    const src = profileEmployee ?? employee;
+    return src?.meta?.hiringDate != null ? String(src.meta.hiringDate).trim() : '';
+  }, [profileEmployee, employee]);
+
+  const leavePreview = useMemo(() => {
+    if (!employee) return null;
     const preview: EmployeeRow = {
       ...employee,
       firstName,
@@ -277,7 +335,35 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       sickAllowanceHours,
       sickHoursRemaining,
     });
-    return leaveSummaryLines(preview);
+    const bal = normalizeLeaveBalance(preview.meta?.leaveBalance);
+    const c = computeLeaveBalance(bal, {
+      hiringDate: hiringDateStr,
+      vacationPeriodKey: vacPeriodKey || undefined,
+      sickPeriodKey: sickPeriodKey || undefined,
+    });
+    const vacPeriods = listLeavePeriodsFromEntries(
+      'vacation',
+      bal.vacation.entries,
+      hiringDateStr
+    );
+    const sickPeriods = listLeavePeriodsFromEntries('sick', bal.sick.entries, hiringDateStr);
+    const lines: string[] = [
+      `Vacation: ${c.vacation.usedDays}/${c.vacation.allowanceDays} days used (${formatLeaveHours(c.vacation.usedHours)} hrs)`,
+      `Sick: ${c.sick.usedDays}/${c.sick.allowanceDays} days used (${formatLeaveHours(c.sick.usedHours)} hrs)`,
+    ];
+    for (const e of c.vacation.entries) {
+      lines.push(`  · Vacation ${formatUsDate(e.date)} — ${formatLeaveHours(e.hours)} hrs`);
+    }
+    for (const e of c.sick.entries) {
+      lines.push(`  · Sick ${formatUsDate(e.date)} — ${formatLeaveHours(e.hours)} hrs`);
+    }
+    if (c.sick.note) lines.push(`  · ${c.sick.note}`);
+    if (c.sick.remainingHours != null && bal.sick.allowanceHours != null) {
+      lines.push(
+        `  · ${formatLeaveHours(c.sick.remainingHours)} sick hrs remaining (of ${formatLeaveHours(c.sick.allowanceHours)} hr bank)`
+      );
+    }
+    return { lines, vacPeriods, sickPeriods, vacKey: c.vacationPeriod?.key, sickKey: c.sickPeriod?.key };
   }, [
     employee,
     firstName,
@@ -286,7 +372,16 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     sickAllowanceDays,
     sickAllowanceHours,
     sickHoursRemaining,
+    hiringDateStr,
+    vacPeriodKey,
+    sickPeriodKey,
   ]);
+
+  useEffect(() => {
+    if (!leavePreview) return;
+    if (!vacPeriodKey && leavePreview.vacKey) setVacPeriodKey(leavePreview.vacKey);
+    if (!sickPeriodKey && leavePreview.sickKey) setSickPeriodKey(leavePreview.sickKey);
+  }, [leavePreview, vacPeriodKey, sickPeriodKey]);
 
   function onStaffTypeChange(next: string) {
     setStaffType(next);
@@ -498,6 +593,28 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       }
     } else if (!employee) {
       return;
+    } else if (
+      isAdmin &&
+      employee.authUserId &&
+      canEditLinkedRole &&
+      (linkedPortalRole === 'manager' || linkedPortalRole === 'employee') &&
+      portalAccountType !== linkedPortalRole
+    ) {
+      setBusy(true);
+      const roleRes = await portalUpdateEmployeeRole({
+        employeeId: employee.id,
+        authUserId: employee.authUserId,
+        role: portalAccountType,
+      });
+      if (!roleRes.ok) {
+        setBusy(false);
+        Alert.alert('Account type', roleRes.message || 'Could not update account type.');
+        return;
+      }
+      setLinkedPortalRole(portalAccountType);
+      if (roleRes.self) {
+        await refreshRole();
+      }
     }
 
     const meta = { ...(employee?.meta ?? {}) } as Record<string, unknown>;
@@ -831,11 +948,11 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                   <>
                     {canCreateManager ? (
                       <>
-                        <FieldLabel>Account type</FieldLabel>
+                        <FieldLabel>{t('editor.accountType')}</FieldLabel>
                         <ChipRow
                           options={[
-                            { value: 'employee', label: 'Employee' },
-                            { value: 'manager', label: 'Manager' },
+                            { value: 'employee', label: t('team.accountTeamMember') },
+                            { value: 'manager', label: t('team.accountManager') },
                           ]}
                           value={portalAccountType}
                           onChange={(v) =>
@@ -873,20 +990,53 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     ) : null}
                   </>
                 ) : employee?.authUserId ? (
-                  <Text style={styles.readOnlyNote}>App login: linked to portal account</Text>
+                  <>
+                    {isAdmin && linkedRoleLoading ? (
+                      <Text style={styles.readOnlyNote}>{t('editor.loadingAccount')}</Text>
+                    ) : isAdmin && canEditLinkedRole ? (
+                      <>
+                        <FieldLabel>{t('editor.accountType')}</FieldLabel>
+                        <ChipRow
+                          options={[
+                            { value: 'employee', label: t('team.accountTeamMember') },
+                            { value: 'manager', label: t('team.accountManager') },
+                          ]}
+                          value={portalAccountType}
+                          onChange={(v) =>
+                            setPortalAccountType(v === 'manager' ? 'manager' : 'employee')
+                          }
+                        />
+                        <Text style={styles.photoHint}>{t('editor.accountTypeHintEdit')}</Text>
+                      </>
+                    ) : isAdmin && linkedPortalRole === 'admin' ? (
+                      <Text style={styles.readOnlyNote}>{t('editor.accountTypeAdminLocked')}</Text>
+                    ) : (
+                      <Text style={styles.readOnlyNote}>
+                        {t('editor.loginLinked')}
+                        {linkedPortalRole
+                          ? ` (${
+                              linkedPortalRole === 'manager'
+                                ? t('team.accountManager')
+                                : linkedPortalRole === 'employee'
+                                  ? t('team.accountTeamMember')
+                                  : linkedPortalRole
+                            })`
+                          : ''}
+                      </Text>
+                    )}
+                  </>
                 ) : (
-                  <Text style={styles.readOnlyNote}>App login: not linked</Text>
+                  <Text style={styles.readOnlyNote}>{t('editor.loginNotLinked')}</Text>
                 )}
               </SectionBlock>
 
               <SectionBlock title="Schedule">
-                <Text style={styles.sectionHint}>Weekly availability (tap cells to toggle).</Text>
-                <AvailabilityMatrixEditor
+                <Text style={styles.sectionHint}>Drag to paint when you are available.</Text>
+                <AvailabilityPaintGrid
                   staffType={staffType}
                   draftRows={draftRows}
                   normalized={normalizedGrid}
                   onChange={setWeeklyGrid}
-                  embedInParentScroll
                 />
               </SectionBlock>
 
@@ -943,18 +1093,59 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
 
               <SectionBlock title="Vacation & sick leave">
                 <Text style={styles.sectionHint}>
-                  Allowances save with the employee. Used-day entries match web (read-only here).
+                  Allowances save with the employee. Used-day entries match the selected period
+                  (vacation = hire anniversary; sick = calendar year). Other periods are kept on
+                  save.
                 </Text>
-                <View style={styles.row2}>
-                  <View style={styles.fieldHalf}>
-                    <FieldLabel>Vacation allowance (days)</FieldLabel>
-                    <TextInput
-                      style={styles.input}
-                      value={vacAllowanceDays}
-                      onChangeText={setVacAllowanceDays}
-                      keyboardType="number-pad"
+                {leavePreview && leavePreview.vacPeriods.length >= 2 ? (
+                  <>
+                    <FieldLabel>Vacation period</FieldLabel>
+                    <ChipRow
+                      options={leavePreview.vacPeriods.map((p) => ({
+                        value: p.key,
+                        label: p.label,
+                      }))}
+                      value={vacPeriodKey || leavePreview.vacKey || ''}
+                      onChange={setVacPeriodKey}
                     />
-                  </View>
+                  </>
+                ) : (
+                  <Text style={styles.sectionHint}>
+                    Vacation resets on hiring anniversary each year
+                    {hiringDateStr ? ` (${hiringDateStr})` : ''}
+                    {leavePreview?.vacPeriods[0]
+                      ? ` · Viewing ${leavePreview.vacPeriods[0].label}`
+                      : ''}
+                  </Text>
+                )}
+                <FieldLabel>Vacation allowance (days)</FieldLabel>
+                <TextInput
+                  style={styles.input}
+                  value={vacAllowanceDays}
+                  onChangeText={setVacAllowanceDays}
+                  keyboardType="number-pad"
+                />
+                {leavePreview && leavePreview.sickPeriods.length >= 2 ? (
+                  <>
+                    <FieldLabel>Sick year</FieldLabel>
+                    <ChipRow
+                      options={leavePreview.sickPeriods.map((p) => ({
+                        value: p.key,
+                        label: p.label,
+                      }))}
+                      value={sickPeriodKey || leavePreview.sickKey || ''}
+                      onChange={setSickPeriodKey}
+                    />
+                  </>
+                ) : (
+                  <Text style={styles.sectionHint}>
+                    Sick leave resets January 1 each year
+                    {leavePreview?.sickPeriods[0]
+                      ? ` · Viewing ${leavePreview.sickPeriods[0].label}`
+                      : ''}
+                  </Text>
+                )}
+                <View style={styles.row2}>
                   <View style={styles.fieldHalf}>
                     <FieldLabel>Sick allowance (days)</FieldLabel>
                     <TextInput
@@ -964,8 +1155,6 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       keyboardType="number-pad"
                     />
                   </View>
-                </View>
-                <View style={styles.row2}>
                   <View style={styles.fieldHalf}>
                     <FieldLabel>Sick bank (hours, optional)</FieldLabel>
                     <TextInput
@@ -976,18 +1165,16 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                       placeholder="—"
                     />
                   </View>
-                  <View style={styles.fieldHalf}>
-                    <FieldLabel>Sick remaining (hrs, optional)</FieldLabel>
-                    <TextInput
-                      style={styles.input}
-                      value={sickHoursRemaining}
-                      onChangeText={setSickHoursRemaining}
-                      keyboardType="decimal-pad"
-                      placeholder="—"
-                    />
-                  </View>
                 </View>
-                {leaveLines.map((line) => (
+                <FieldLabel>Sick remaining (hrs, optional)</FieldLabel>
+                <TextInput
+                  style={styles.input}
+                  value={sickHoursRemaining}
+                  onChangeText={setSickHoursRemaining}
+                  keyboardType="decimal-pad"
+                  placeholder="—"
+                />
+                {(leavePreview?.lines || []).map((line) => (
                   <Text key={line} style={styles.leaveLine}>
                     {line}
                   </Text>

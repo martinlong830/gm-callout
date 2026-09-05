@@ -93,10 +93,40 @@ function coverageStatusLine(
   return { word: t('requests.covered'), tone: 'ok' };
 }
 
-function matchesSearch(r: { employeeName?: string; summary?: string }, q: string): boolean {
+function matchesSearch(
+  r: {
+    employeeName?: string;
+    summary?: string;
+    role?: string;
+    status?: string;
+    offeredShiftLabel?: string;
+    swapTargetEmployeeName?: string;
+    leaveType?: string;
+  },
+  q: string
+): boolean {
   if (!q) return true;
-  const blob = `${r.employeeName || ''} ${r.summary || ''}`.toLowerCase();
-  return blob.includes(q);
+  const blob = [
+    r.employeeName,
+    r.summary,
+    r.role,
+    r.status,
+    r.offeredShiftLabel,
+    r.swapTargetEmployeeName,
+    r.leaveType,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const needle = q
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!needle) return true;
+  return blob.includes(needle);
 }
 
 function matchesCoverageSearch(item: CalloutHistoryEntry, q: string, contactLabel: string): boolean {
@@ -143,7 +173,7 @@ const TYPE_CHIPS: { id: ActionTypeFilter; labelKey: string }[] = [
 ];
 
 export default function ManagerRequests() {
-  const { staffRequests, teamState, loading, error, refetch, employees, myEmployee, applyLocalScheduleAssignments } =
+  const { staffRequests, teamState, loading, error, refetch, employees, myEmployee, applyLocalScheduleAssignments, noteLocalSchedulePush } =
     useAppData();
   const { role } = useAuth();
   const { t, staffTypeLabel, statusLabel } = useI18n();
@@ -293,7 +323,18 @@ export default function ManagerRequests() {
       setBusyId(null);
       if (!res.ok) Alert.alert(t('requests.updateFailed'), res.message);
       else {
-        if (res.store) applyLocalScheduleAssignments(res.store, undefined, { markDirty: false });
+        if (res.store) {
+          if (res.scheduleHash || res.updatedAt) {
+            noteLocalSchedulePush({
+              hash: res.scheduleHash,
+              updatedAt: res.updatedAt,
+            });
+          }
+          applyLocalScheduleAssignments(res.store, res.draftSchedule, {
+            markDirty: false,
+            pushedUpdatedAt: res.updatedAt,
+          });
+        }
         void refetch({ silent: true });
       }
     } catch (err) {
@@ -392,7 +433,11 @@ export default function ManagerRequests() {
         ? styles.status_ok
         : r.status === 'declined'
           ? styles.status_bad
-          : styles.status_pending;
+          : displayStatus === 'awaiting_cover'
+            ? styles.status_awaiting
+            : displayStatus === 'pending_approval'
+              ? styles.status_approval
+              : styles.status_pending;
     const canApprove =
       r.status === 'pending' && (r.type !== 'swap' || swapRequestCanManagerApprove(r));
 
@@ -430,6 +475,9 @@ export default function ManagerRequests() {
         {r.type === 'swap' && displayStatus === 'awaiting_cover' ? (
           <Text style={styles.mutedLine}>{t('requests.swapAwaitingCover')}</Text>
         ) : null}
+        {r.type === 'swap' && displayStatus === 'pending_approval' ? (
+          <Text style={styles.mutedLine}>{t('requests.swapPendingApproval')}</Text>
+        ) : null}
         <Text style={styles.notes}>{r.summary}</Text>
         {r.status === 'pending' ? (
           <View style={styles.actions}>
@@ -461,6 +509,16 @@ export default function ManagerRequests() {
   return (
     <View style={styles.screen}>
       {error ? <Text style={styles.err}>{error}</Text> : null}
+      <TextInput
+        style={styles.search}
+        value={search}
+        onChangeText={setSearch}
+        placeholder={t('requests.searchEmployee')}
+        placeholderTextColor="#888"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+      />
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -500,15 +558,6 @@ export default function ManagerRequests() {
           ))}
         </View>
       </View>
-      <TextInput
-        style={styles.search}
-        value={search}
-        onChangeText={setSearch}
-        placeholder={t('requests.searchEmployee')}
-        placeholderTextColor="#888"
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
       {loading && !staffRequests.length ? (
         <ActivityIndicator style={{ marginTop: 24 }} />
       ) : (
@@ -613,6 +662,8 @@ const styles = StyleSheet.create({
   rolePill: { fontSize: 13, fontWeight: '600', color: '#0f172a', flex: 1 },
   statusPill: { fontSize: 12, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   status_pending: { backgroundColor: '#fef3c7', color: '#92400e' },
+  status_awaiting: { backgroundColor: '#f1f5f9', color: '#475569' },
+  status_approval: { backgroundColor: '#dbeafe', color: '#1d4ed8' },
   status_ok: { backgroundColor: '#d1fae5', color: '#047857' },
   status_bad: { backgroundColor: '#fee2e2', color: '#b91c1c' },
   status_muted: { backgroundColor: '#f1f5f9', color: '#64748b' },

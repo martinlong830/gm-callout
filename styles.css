@@ -198,10 +198,13 @@ html.authed.employee-app #empCalendarGrid {
   overscroll-behavior: contain;
 }
 
-html.authed .login-screen {
+html.authed .login-screen,
+html.authed .login-screen:not([hidden]) {
   display: none !important;
   visibility: hidden !important;
   pointer-events: none !important;
+  z-index: -1 !important;
+  opacity: 0 !important;
 }
 
 .login-screen {
@@ -223,7 +226,9 @@ html.authed .login-screen {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   touch-action: manipulation;
-  pointer-events: auto !important;
+  /* Do NOT force pointer-events:auto here — when signed in, html.authed rules must win
+     so a stale gate cannot grey out / steal clicks from the schedule. */
+  pointer-events: none;
   /* Force light form controls so password bullets stay dark under OS dark mode. */
   color-scheme: light;
 }
@@ -2308,8 +2313,10 @@ html.authed .header-signout-btn {
   padding-bottom: 0;
 }
 
-.shift-detail-break--no-time #shiftDetailBreakTime {
+.shift-detail-break--no-time #shiftDetailBreakTime,
+.shift-detail-break--no-time #scheduleReviewCellBreakTimeField {
   opacity: 0.45;
+  pointer-events: none;
 }
 
 .calendar-section-actions {
@@ -2333,6 +2340,27 @@ html.authed .header-signout-btn {
   color: var(--text-muted);
   cursor: pointer;
   white-space: nowrap;
+}
+
+/* Invisible stand-ins so view-only / other-store rows keep the same height as editable rows. */
+.calendar-add-slot-btn--spacer,
+.calendar-delete-slot-btn--spacer {
+  visibility: hidden;
+  pointer-events: none !important;
+  user-select: none;
+  display: inline-block;
+  min-height: 1.4em;
+  box-sizing: border-box;
+}
+
+.calendar-section-actions[aria-hidden='true'] {
+  pointer-events: none !important;
+}
+
+.calendar-delete-slot-btn--spacer {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
 }
 
 .calendar-add-slot-btn:hover,
@@ -2519,6 +2547,29 @@ html.authed .header-signout-btn {
 
 .schedule-template-preview-mount .calendar-matrix {
   min-width: 0;
+}
+
+.schedule-review-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-height: min(40vh, 280px);
+  padding: 28px 24px;
+  box-sizing: border-box;
+}
+
+.schedule-review-empty-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.schedule-review-empty .calendar-hint {
+  margin: 0;
+  max-width: 36rem;
 }
 
 .schedule-template-preview-stage.template-shift-edit-open {
@@ -3031,28 +3082,37 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .schedule-toolbar-compact {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-start;
   gap: var(--space-tight) var(--space-block);
   flex-wrap: wrap;
   margin-bottom: var(--space-block);
 }
 
 .schedule-toolbar-left {
-  flex: 1;
-  min-width: min(100%, 200px);
+  display: inline-flex;
+  /* Full first row so action buttons wrap below instead of overlapping the week nav. */
+  flex: 1 1 100%;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .schedule-toolbar-left .employee-filter-label {
-  display: block;
-  margin-bottom: 6px;
+  display: inline;
+  margin-bottom: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .schedule-week-nav {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px 8px;
+  min-width: 0;
 }
 
 .schedule-week-nav-btn.btn {
@@ -3091,9 +3151,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .schedule-toolbar-actions {
   display: flex;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: var(--space-tight);
   align-items: center;
+  max-width: 100%;
 }
 
 /* Compact type for the schedule toolbar */
@@ -3216,6 +3278,17 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   line-height: 1.4;
 }
 
+.schedule-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.schedule-notice-actions[hidden] {
+  display: none !important;
+}
+
 .calendar-wrap {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -3255,6 +3328,124 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   color: var(--text-muted);
   letter-spacing: 0.02em;
   text-transform: none;
+}
+
+.calendar-th-holiday {
+  background: #fff7ed;
+}
+
+.calendar-th-holiday-flag {
+  margin-top: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #c2410c;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emp-holiday-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.emp-holiday-date {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #c2410c;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.emp-holiday-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.emp-history-section {
+  padding-top: 4px;
+}
+
+.emp-history-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.emp-history-chevron {
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.emp-history-toggle.is-open .emp-history-chevron {
+  transform: rotate(180deg);
+}
+
+.company-holidays-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.company-holidays-empty,
+.company-holidays-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.company-holidays-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.company-holidays-row:last-child,
+.company-holidays-empty:last-child {
+  border-bottom: 0;
+}
+
+.company-holidays-add {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.company-holidays-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.company-holidays-field input {
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .calendar-matrix--redpoke .calendar-section-foh td,
@@ -4090,27 +4281,79 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: color-mix(in srgb, var(--role-bg) 65%, var(--hover-fill));
 }
 
-.calendar-matrix--alt-drag-active {
+/* Open schedule-review suggestions (manager ↔ admin) */
+.calendar-slot-wrap.calendar-slot-review-open {
+  box-shadow: inset 0 0 0 2px #b91c1c;
+  background: color-mix(in srgb, #fecaca 55%, var(--role-bg, #fff)) !important;
+  border-color: #b91c1c !important;
+}
+
+.calendar-slot-wrap.calendar-slot-review-open:hover,
+.calendar-slot-wrap.calendar-slot-review-open:focus-visible {
+  background: color-mix(in srgb, #fecaca 70%, var(--hover-fill)) !important;
+}
+
+.schedule-review-history {
+  margin-bottom: 1rem;
+}
+
+.schedule-review-history h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.schedule-review-history-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.65rem;
+  font-size: 0.9rem;
+}
+
+.schedule-review-cell-body .form-textarea {
+  width: 100%;
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
+.calendar-matrix--alt-drag-active,
+.calendar-matrix--cell-drag-active {
   user-select: none;
   -webkit-user-select: none;
+}
+
+.calendar-matrix--cell-drag-move {
+  cursor: grabbing;
+}
+
+.calendar-matrix--cell-drag-move .calendar-slot-wrap {
+  cursor: grabbing;
+}
+
+.calendar-matrix--alt-drag-active,
+.calendar-matrix--cell-drag-copy {
   cursor: copy;
 }
 
-.calendar-matrix--alt-drag-active .calendar-slot-wrap {
+.calendar-matrix--alt-drag-active .calendar-slot-wrap,
+.calendar-matrix--cell-drag-copy .calendar-slot-wrap {
   cursor: copy;
 }
 
-.calendar-matrix--alt-drag-active .calendar-slot-wrap.calendar-slot-empty {
-  cursor: copy;
+.calendar-matrix--alt-drag-active .calendar-slot-wrap.calendar-slot-empty,
+.calendar-matrix--cell-drag-active .calendar-slot-wrap.calendar-slot-empty {
+  cursor: inherit;
 }
 
-.calendar-slot-wrap.calendar-slot-alt-source {
+.calendar-slot-wrap.calendar-slot-alt-source,
+.calendar-slot-wrap.calendar-slot-drag-source {
   outline: 2px solid var(--primary);
   outline-offset: 0;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 
-.calendar-slot-wrap.calendar-slot-alt-target {
+.calendar-slot-wrap.calendar-slot-alt-target,
+.calendar-slot-wrap.calendar-slot-drag-target {
   outline: 2px dashed color-mix(in srgb, var(--primary) 70%, #22c55e);
   outline-offset: 0;
   background: color-mix(in srgb, #22c55e 12%, #fff);
@@ -5036,6 +5279,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-color: #fde68a;
 }
 
+.history-item-status.awaiting {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+
+.history-item-status.pending-approval {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
 .history-item-status.declined {
   background: #fef2f2;
   color: #b91c1c;
@@ -5222,6 +5477,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   margin-bottom: var(--space-block);
 }
 
+#screen-requests .employees-controls {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-top: 2px;
+  padding-bottom: 10px;
+  background: var(--bg, var(--surface));
+}
+
 .employee-search-wrap {
   display: block;
 }
@@ -5233,11 +5497,22 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-radius: var(--radius-sm);
   font: inherit;
   background: var(--surface);
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-.employee-search-input:focus {
-  outline: 1px solid var(--primary);
-  outline-offset: 0;
+.employee-search-input::-webkit-search-decoration,
+.employee-search-input::-webkit-search-cancel-button,
+.employee-search-input::-webkit-search-results-button,
+.employee-search-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
+
+.employee-search-input:focus,
+.employee-search-input:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
 /* Messages tab search: no heavy focus ring (browser / type="search" defaults). */
@@ -5924,6 +6199,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   margin: 0 0 10px;
 }
 
+.schedule-drag-hint {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
 .emp-schedule-unpublished {
   padding: 16px 4px;
 }
@@ -6190,6 +6471,166 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   opacity: 0.9;
 }
 
+/* WhenIsGood-style employee paint grid (30-min cells, 9a–11p). */
+.avail-paint {
+  width: 100%;
+  max-width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.avail-paint-scroll {
+  width: 100%;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  touch-action: none;
+  max-height: min(70vh, 560px);
+}
+
+.avail-paint-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.65rem;
+  table-layout: fixed;
+}
+
+.avail-paint-corner {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 2.4rem;
+  min-width: 2.4rem;
+  background: var(--hover-fill);
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.avail-paint-dayhead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-width: 2.6rem;
+  width: 2.6rem;
+  padding: 4px 2px 6px;
+  text-align: center;
+  vertical-align: bottom;
+  background: var(--hover-fill);
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  color: var(--text);
+}
+
+.avail-paint-dayhead-dow {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+}
+
+.avail-paint-dayhead-sum {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.55rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  line-height: 1.15;
+  max-height: 2.4em;
+  overflow: hidden;
+}
+
+.avail-paint-clear-day {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent, #c41230);
+  font-size: 0.58rem;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.avail-paint-clear-day:hover {
+  text-decoration: underline;
+}
+
+.avail-paint-time {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 2.4rem;
+  min-width: 2.4rem;
+  padding: 0 3px;
+  text-align: right;
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--hover-fill);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  height: 16px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.avail-paint-cell {
+  width: 2.6rem;
+  min-width: 2.6rem;
+  height: 16px;
+  padding: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: #fff;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.avail-paint-table tbody tr:nth-child(even) .avail-paint-cell:not(.is-on) {
+  background: #f8fafc;
+}
+
+.avail-paint-cell.is-on {
+  background: #22c55e;
+}
+
+.avail-paint-cell:focus-visible {
+  outline: 2px solid var(--accent, #c41230);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.avail-paint--readonly .avail-paint-cell {
+  cursor: default;
+}
+
+@media (max-width: 520px) {
+  .avail-paint-time,
+  .avail-paint-corner {
+    width: 2rem;
+    min-width: 2rem;
+    font-size: 0.52rem;
+  }
+
+  .avail-paint-dayhead,
+  .avail-paint-cell {
+    width: 2.15rem;
+    min-width: 2.15rem;
+  }
+
+  .avail-paint-cell,
+  .avail-paint-time {
+    height: 14px;
+    line-height: 14px;
+  }
+}
+
 /* Phones / small screens: fit width, reduce padding, keep calendar usable via horizontal scroll */
 @media (max-width: 640px) {
   :root {
@@ -6289,12 +6730,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   .schedule-toolbar-left {
+    flex: 0 0 auto;
     min-width: 0;
+    max-width: 100%;
   }
 
   .schedule-toolbar-actions {
     width: 100%;
-    justify-content: stretch;
+    justify-content: flex-start;
   }
 
   .btn.schedule-toolbar-btn {

@@ -753,6 +753,125 @@ export async function portalCreateEmployeeAccount(
   };
 }
 
+export type PortalAccountRole = 'manager' | 'employee' | 'admin' | 'timeclock';
+
+/** Admin-only: list portal roles for Team badges. */
+export async function portalListCompanyAccountRoles(): Promise<
+  | {
+      ok: true;
+      accounts: Array<{
+        authUserId: string;
+        role: string;
+        displayName?: string;
+        loginName?: string;
+        employeeId?: string | null;
+      }>;
+    }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    accounts?: Array<{
+      authUserId: string;
+      role: string;
+      displayName?: string;
+      loginName?: string;
+      employeeId?: string | null;
+    }>;
+  }>('GET', '/api/portal/admin/company-account-roles');
+  if (!r.ok) return r;
+  return { ok: true, accounts: Array.isArray(r.accounts) ? r.accounts : [] };
+}
+
+/** Admin-only: load linked portal role for a roster employee. */
+export async function portalGetLinkedAccount(opts: {
+  employeeId?: string;
+  authUserId?: string;
+}): Promise<
+  | {
+      ok: true;
+      linked: boolean;
+      authUserId: string | null;
+      role: string | null;
+      displayName?: string;
+      loginName?: string;
+      employeeId?: string | null;
+      staffType?: string | null;
+      canChangeRole?: boolean;
+    }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const qs: string[] = [];
+  if (opts.employeeId) qs.push(`employeeId=${encodeURIComponent(opts.employeeId)}`);
+  if (opts.authUserId) qs.push(`authUserId=${encodeURIComponent(opts.authUserId)}`);
+  const path =
+    '/api/portal/admin/linked-account' + (qs.length ? `?${qs.join('&')}` : '');
+  const r = await portalAuthedFetch<{
+    linked?: boolean;
+    authUserId?: string | null;
+    role?: string | null;
+    displayName?: string;
+    loginName?: string;
+    employeeId?: string | null;
+    staffType?: string | null;
+    canChangeRole?: boolean;
+  }>('GET', path);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    linked: !!r.linked,
+    authUserId: r.authUserId || null,
+    role: r.role || null,
+    displayName: r.displayName || '',
+    loginName: r.loginName || '',
+    employeeId: r.employeeId || null,
+    staffType: r.staffType || null,
+    canChangeRole: !!r.canChangeRole,
+  };
+}
+
+/** Admin-only: set linked account to manager or employee (team member). */
+export async function portalUpdateEmployeeRole(payload: {
+  employeeId?: string;
+  authUserId?: string;
+  role: 'manager' | 'employee';
+}): Promise<
+  | {
+      ok: true;
+      role: string;
+      authUserId?: string;
+      self?: boolean;
+      unchanged?: boolean;
+      message?: string;
+    }
+  | { ok: false; message: string }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    role?: string;
+    authUserId?: string;
+    self?: boolean;
+    unchanged?: boolean;
+    message?: string;
+  }>('POST', '/api/portal/admin/update-role', payload as unknown as Record<string, unknown>);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    role: r.role || payload.role,
+    authUserId: r.authUserId,
+    self: !!r.self,
+    unchanged: !!r.unchanged,
+    message: r.message || 'Account type updated.',
+  };
+}
+
 export async function portalUpdateRecoveryEmail(
   recoveryEmail: string
 ): Promise<{ ok: true; recoveryEmail: string; message: string } | { ok: false; message: string }> {
@@ -990,6 +1109,40 @@ export async function portalNotifySchedulePublished(payload: {
     recipients: r.recipients != null ? Number(r.recipients) : 0,
     inAppCreated: r.inAppCreated != null ? Number(r.inAppCreated) : 0,
     audience: r.audience,
+    message: r.message,
+  };
+}
+
+/** Expo-push managers/admins after a staff_request insert (in-app via DB trigger). */
+export async function notifyManagersOfStaffRequest(payload: {
+  kind: string;
+  title?: string;
+  body?: string;
+  restaurantId?: string | null;
+  data?: Record<string, unknown>;
+}): Promise<
+  | { ok: true; sent?: number; recipients?: number; message?: string }
+  | { ok: false; message: string; needsSignIn?: boolean }
+> {
+  if (!isPortalAuthConfigured()) {
+    return { ok: false, message: 'Portal auth is not configured (EXPO_PUBLIC_GM_WEB_URL).' };
+  }
+  const r = await portalAuthedFetch<{
+    sent?: number;
+    recipients?: number;
+    message?: string;
+  }>('POST', '/api/portal/staff-request/notify-managers', {
+    kind: payload.kind,
+    title: payload.title || '',
+    body: payload.body || '',
+    restaurantId: payload.restaurantId || '',
+    data: payload.data || {},
+  });
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    sent: r.sent != null ? Number(r.sent) : 0,
+    recipients: r.recipients != null ? Number(r.recipients) : 0,
     message: r.message,
   };
 }

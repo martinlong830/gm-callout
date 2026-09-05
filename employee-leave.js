@@ -209,6 +209,124 @@
     };
   }
 
+  function formatUsDate(iso) {
+    if (!iso) return '';
+    var p = String(iso).split('-');
+    if (p.length !== 3) return iso;
+    return pad2(parseInt(p[1], 10)) + '/' + pad2(parseInt(p[2], 10)) + '/' + p[0];
+  }
+
+  function formatHours(h) {
+    var n = Math.round(h * 100) / 100;
+    if (Math.abs(n - Math.round(n)) < 0.01) return String(Math.round(n));
+    return n.toFixed(1);
+  }
+
+  function todayIsoLocal() {
+    var d = new Date();
+    return isoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  }
+
+  /** Parse Team hiring date strings like "3/25/2023" or ISO. */
+  function parseHiringMonthDay(hiringDateStr) {
+    var s = String(hiringDateStr || '').trim();
+    if (!s) return null;
+    var isoM = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoM) {
+      return {
+        year: parseInt(isoM[1], 10),
+        month: parseInt(isoM[2], 10),
+        day: parseInt(isoM[3], 10),
+      };
+    }
+    var us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (us) {
+      var y = parseInt(us[3], 10);
+      if (y < 100) y += 2000;
+      return { year: y, month: parseInt(us[1], 10), day: parseInt(us[2], 10) };
+    }
+    return null;
+  }
+
+  function filterEntriesInRange(entries, startIso, endIso) {
+    var start = String(startIso || '').slice(0, 10);
+    var end = String(endIso || '').slice(0, 10);
+    return (entries || []).filter(function (e) {
+      var d = String(e.date || '').slice(0, 10);
+      if (!d) return false;
+      if (start && d < start) return false;
+      if (end && d > end) return false;
+      return true;
+    });
+  }
+
+  /** Sick leave period = calendar year (resets Jan 1). */
+  function sickPeriodForAsOf(asOfIso) {
+    var y = parseInt(String(asOfIso || todayIsoLocal()).slice(0, 4), 10);
+    if (!y || isNaN(y)) y = new Date().getFullYear();
+    return {
+      key: String(y),
+      start: isoDate(y, 1, 1),
+      end: isoDate(y, 12, 31),
+      label: String(y),
+    };
+  }
+
+  /**
+   * Vacation period = hire-anniversary year (resets on hiring month/day each year).
+   * Falls back to calendar year when hiring date is missing.
+   */
+  function vacationPeriodForAsOf(hiringDateStr, asOfIso) {
+    var asOf = String(asOfIso || todayIsoLocal()).slice(0, 10);
+    var hire = parseHiringMonthDay(hiringDateStr);
+    if (!hire || !hire.month || !hire.day) {
+      return sickPeriodForAsOf(asOf);
+    }
+    var asOfY = parseInt(asOf.slice(0, 4), 10);
+    var asOfM = parseInt(asOf.slice(5, 7), 10);
+    var asOfD = parseInt(asOf.slice(8, 10), 10);
+    var pastAnniversary =
+      asOfM > hire.month || (asOfM === hire.month && asOfD >= hire.day);
+    var startY = pastAnniversary ? asOfY : asOfY - 1;
+    var endY = startY + 1;
+    var start = isoDate(startY, hire.month, hire.day);
+    var endDate = new Date(endY, hire.month - 1, hire.day);
+    endDate.setDate(endDate.getDate() - 1);
+    var end = isoDate(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
+    return {
+      key: start,
+      start: start,
+      end: end,
+      label: formatUsDate(start) + ' – ' + formatUsDate(end),
+    };
+  }
+
+  function leavePeriodForKind(kind, hiringDateStr, asOfIso) {
+    return kind === 'vacation'
+      ? vacationPeriodForAsOf(hiringDateStr, asOfIso)
+      : sickPeriodForAsOf(asOfIso);
+  }
+
+  function listLeavePeriodsFromEntries(kind, entries, hiringDateStr, asOfIso) {
+    var asOf = String(asOfIso || todayIsoLocal()).slice(0, 10);
+    var current = leavePeriodForKind(kind, hiringDateStr, asOf);
+    var byKey = {};
+    byKey[current.key] = current;
+    (entries || []).forEach(function (e) {
+      var d = String(e.date || '').slice(0, 10);
+      if (!d) return;
+      var p = leavePeriodForKind(kind, hiringDateStr, d);
+      if (!byKey[p.key]) byKey[p.key] = p;
+    });
+    return Object.keys(byKey)
+      .map(function (k) {
+        return byKey[k];
+      })
+      .sort(function (a, b) {
+        return String(b.start).localeCompare(String(a.start));
+      });
+  }
+
   function usedDaysFromEntries(entries, hoursPerDay) {
     var hpd = hoursPerDay > 0 ? hoursPerDay : HOURS_PER_DAY;
     var hrs = sumEntryHours(entries);
@@ -216,11 +334,12 @@
     return Math.round((hrs / hpd) * 100) / 100;
   }
 
-  function computeSide(side) {
+  function computeSide(side, periodEntries) {
+    var entries = periodEntries != null ? periodEntries : side.entries || [];
     var allowanceDays = side.allowanceDays || 0;
     var hoursPerDay = side.hoursPerDay || HOURS_PER_DAY;
-    var usedHours = sumEntryHours(side.entries);
-    var usedDays = usedDaysFromEntries(side.entries, hoursPerDay);
+    var usedHours = sumEntryHours(entries);
+    var usedDays = usedDaysFromEntries(entries, hoursPerDay);
     var allowanceHours =
       side.allowanceHours != null ? side.allowanceHours : allowanceDays * hoursPerDay;
     var remainingHours =
@@ -234,16 +353,54 @@
       allowanceHours: allowanceHours,
       remainingHours: remainingHours,
       hoursPerDay: hoursPerDay,
-      entries: side.entries || [],
+      entries: entries,
       note: side.note || '',
     };
   }
 
-  function computeBalance(balance) {
+  /**
+   * Current-period used hours by default (SL calendar year; VL hire anniversary).
+   * Pass vacationPeriodKey / sickPeriodKey to view a prior period.
+   */
+  function computeBalance(balance, opts) {
+    opts = opts || {};
     var b = normalizeBalance(balance);
+    var asOf = opts.asOfIso || todayIsoLocal();
+    var hiringDate = opts.hiringDate || '';
+    var vacPeriod = vacationPeriodForAsOf(hiringDate, asOf);
+    var sickPeriod = sickPeriodForAsOf(asOf);
+    if (opts.vacationPeriodKey) {
+      var vacList = listLeavePeriodsFromEntries('vacation', b.vacation.entries, hiringDate, asOf);
+      for (var vi = 0; vi < vacList.length; vi += 1) {
+        if (vacList[vi].key === opts.vacationPeriodKey) {
+          vacPeriod = vacList[vi];
+          break;
+        }
+      }
+    }
+    if (opts.sickPeriodKey) {
+      var sickList = listLeavePeriodsFromEntries('sick', b.sick.entries, hiringDate, asOf);
+      var foundSick = false;
+      for (var si = 0; si < sickList.length; si += 1) {
+        if (sickList[si].key === opts.sickPeriodKey) {
+          sickPeriod = sickList[si];
+          foundSick = true;
+          break;
+        }
+      }
+      if (!foundSick) sickPeriod = sickPeriodForAsOf(String(opts.sickPeriodKey) + '-01-01');
+    }
     return {
-      vacation: computeSide(b.vacation),
-      sick: computeSide(b.sick),
+      vacation: computeSide(
+        b.vacation,
+        filterEntriesInRange(b.vacation.entries, vacPeriod.start, vacPeriod.end)
+      ),
+      sick: computeSide(
+        b.sick,
+        filterEntriesInRange(b.sick.entries, sickPeriod.start, sickPeriod.end)
+      ),
+      vacationPeriod: vacPeriod,
+      sickPeriod: sickPeriod,
     };
   }
 
@@ -267,19 +424,6 @@
       if (ensureEmployeeLeaveBalance(emp, displayNameFn)) n += 1;
     });
     return n;
-  }
-
-  function formatUsDate(iso) {
-    if (!iso) return '';
-    var p = String(iso).split('-');
-    if (p.length !== 3) return iso;
-    return pad2(parseInt(p[1], 10)) + '/' + pad2(parseInt(p[2], 10)) + '/' + p[0];
-  }
-
-  function formatHours(h) {
-    var n = Math.round(h * 100) / 100;
-    if (Math.abs(n - Math.round(n)) < 0.01) return String(Math.round(n));
-    return n.toFixed(1);
   }
 
   function leaveHoursInWeek(balance, weekStartIso, weekEndIso) {
@@ -333,6 +477,51 @@
     return { addedHours: addedHours, addedDates: addedDates };
   }
 
+  /**
+   * Set VL or SL hours for a date (replace). hours <= 0 removes the entry.
+   */
+  function upsertLeaveBalanceEntry(emp, leaveType, dateIso, hours) {
+    if (!emp) return { changed: false };
+    ensureEmployeeLeaveBalance(emp);
+    var date = String(dateIso || '').slice(0, 10);
+    if (!date) return { changed: false };
+    var hrs = Math.max(0, parseFloat(hours) || 0);
+    var bal = normalizeBalance(emp.meta.leaveBalance);
+    var side = leaveType === 'sick' ? bal.sick : bal.vacation;
+    var entries = side.entries || [];
+    var idx = -1;
+    var prevHours = 0;
+    for (var i = 0; i < entries.length; i += 1) {
+      if (String(entries[i].date || '').slice(0, 10) === date) {
+        idx = i;
+        prevHours = Math.max(0, parseFloat(entries[i].hours) || 0);
+        break;
+      }
+    }
+    var changed = false;
+    if (hrs <= 0) {
+      if (idx >= 0) {
+        entries.splice(idx, 1);
+        changed = true;
+      }
+    } else if (idx >= 0) {
+      if (prevHours !== hrs) {
+        entries[idx] = { date: date, hours: hrs };
+        changed = true;
+      }
+    } else {
+      entries.push({ date: date, hours: hrs });
+      changed = true;
+    }
+    side.entries = entries;
+    if (changed && leaveType === 'sick' && side.hoursRemaining != null) {
+      var delta = hrs - prevHours;
+      side.hoursRemaining = Math.max(0, Number(side.hoursRemaining) - delta);
+    }
+    emp.meta.leaveBalance = bal;
+    return { changed: changed, previousHours: prevHours, hours: hrs };
+  }
+
   global.gmEmployeeLeave = {
     HOURS_PER_DAY: HOURS_PER_DAY,
     SEED_VERSION: SEED_VERSION,
@@ -348,5 +537,13 @@
     sumEntryHours: sumEntryHours,
     leaveHoursInWeek: leaveHoursInWeek,
     appendLeaveBalanceEntries: appendLeaveBalanceEntries,
+    upsertLeaveBalanceEntry: upsertLeaveBalanceEntry,
+    parseHiringMonthDay: parseHiringMonthDay,
+    sickPeriodForAsOf: sickPeriodForAsOf,
+    vacationPeriodForAsOf: vacationPeriodForAsOf,
+    leavePeriodForKind: leavePeriodForKind,
+    listLeavePeriodsFromEntries: listLeavePeriodsFromEntries,
+    filterEntriesInRange: filterEntriesInRange,
+    todayIsoLocal: todayIsoLocal,
   };
 })(typeof window !== 'undefined' ? window : global);

@@ -10,7 +10,10 @@ import {
   Text,
   View,
 } from 'react-native';
-import { AvailabilityMatrixEditor, availabilityCheckAll } from './AvailabilityMatrixEditor';
+import {
+  AvailabilityPaintGrid,
+  availabilityPaintCheckAll,
+} from './AvailabilityPaintGrid';
 import { ScheduleWeekPicker } from './ScheduleWeekPicker';
 import { useAppData } from '../contexts/AppDataContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -101,6 +104,9 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [paintGestureActive, setPaintGestureActive] = useState(false);
+  const [paintEpoch, setPaintEpoch] = useState(0);
+  const [paintSeedMode, setPaintSeedMode] = useState<'slots' | 'all'>('slots');
   const skipNextHydrate = useRef(false);
 
   const draftRows = useMemo(
@@ -254,6 +260,8 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
       }
       setWeekIndex(nextWi);
       setFeedback('');
+      setPaintSeedMode('slots');
+      setPaintEpoch((n) => n + 1);
     },
     [weekIndex, activeEmployee, grid, mode, status, submittedAt, persistWeekOverlay]
   );
@@ -281,8 +289,10 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
 
   const onCheckAll = useCallback(() => {
     if (!activeEmployee || !grid) return;
-    const next = availabilityCheckAll(activeEmployee.staffType || 'Kitchen', draftRows, grid);
-    onGridChange(next);
+    const st = activeEmployee.staffType || 'Kitchen';
+    setPaintSeedMode('all');
+    setPaintEpoch((n) => n + 1);
+    onGridChange(availabilityPaintCheckAll(st, draftRows, grid));
   }, [activeEmployee, grid, draftRows, onGridChange]);
 
   const onManagerSave = useCallback(async () => {
@@ -396,7 +406,11 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        scrollEnabled={!paintGestureActive}
+      >
         {mode === 'manager' ? (
           <View style={styles.pickerBlock}>
             <Text style={styles.fieldLabel}>{t('availability.employee')}</Text>
@@ -457,12 +471,14 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
         </View>
 
         {grid ? (
-          <AvailabilityMatrixEditor
+          <AvailabilityPaintGrid
+            key={`${activeEmployee.id}-${weekIndex}-${paintEpoch}`}
             staffType={staffType}
             draftRows={draftRows}
             normalized={grid}
             onChange={onGridChange}
-            embedInParentScroll
+            onPaintGestureChange={setPaintGestureActive}
+            seedMode={paintSeedMode}
           />
         ) : null}
 

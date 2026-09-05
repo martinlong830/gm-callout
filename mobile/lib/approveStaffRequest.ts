@@ -32,7 +32,13 @@ function isCalloutRequest(request: StaffRequestUi): boolean {
 }
 
 export type ApproveStaffRequestResult =
-  | { ok: true; store?: AssignmentStore }
+  | {
+      ok: true;
+      store?: AssignmentStore;
+      draftSchedule?: unknown;
+      updatedAt?: string;
+      scheduleHash?: string;
+    }
   | { ok: false; message: string };
 
 /** Approve a request and run side effects (availability, swap, timeoff/callout schedule + leave). */
@@ -58,7 +64,11 @@ export async function approveStaffRequest(
       sb,
       request,
       opts?.allRequests || [],
-      opts?.assignmentStore
+      opts?.assignmentStore,
+      {
+        draftScheduleRaw: opts?.draftScheduleRaw,
+        employees,
+      }
     );
   }
 

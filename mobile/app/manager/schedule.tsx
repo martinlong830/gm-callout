@@ -20,9 +20,11 @@ import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { ScheduleTemplatesSheet } from '../../components/ScheduleTemplatesSheet';
+import { CompanyHolidaysSheet } from '../../components/CompanyHolidaysSheet';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { holidayOnIso, normalizeCompanyHolidays } from '../../lib/companyHolidays';
 import {
   employeeDisplayName,
   employeePrimaryLocationId,
@@ -37,7 +39,7 @@ import {
 import { readStoredTeamStateId } from '../../lib/companySession';
 import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
-import { isManagerLikeRole } from '../../lib/roles';
+import { isAdminRole, isManagerLikeRole } from '../../lib/roles';
 import {
   flushPendingScheduleEdits,
   registerPendingScheduleFlush,
@@ -52,6 +54,7 @@ import {
   type ScheduleRevisionRow,
 } from '../../lib/schedule/scheduleRevisions';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
+import { fetchTeamStateUpdatedAt } from '../../lib/teamStateColumns';
 import { supabase } from '../../lib/supabase';
 import type {
   AssignmentStore,
@@ -114,6 +117,7 @@ import {
   assignmentShell,
   WEEKDAY_KEYS,
   weekdayKeyFromScheduleDay,
+  weekStartMondayIsoFromDayIso,
   type BreakAnnotationType,
   type CalendarBodyRow,
   type CalendarCell,
@@ -124,8 +128,15 @@ import {
   type NormalTemplate,
   type ScheduleTemplate,
 } from '../../lib/schedule/templates';
+import { upsertLeaveBalanceEntry } from '../../lib/employeeLeave';
+import { saveEmployeeRow } from '../../lib/employeeSave';
 import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
 import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
+import {
+  buildScheduledMinutesByDayForEmployee,
+  getEffectiveDayLeaveSync,
+  setEmployeeDayLeave,
+} from '../../lib/timecards/engine';
 import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
 import {
   getEmployeeBorrowedRestaurantSync,
@@ -225,7 +236,7 @@ type ScheduleUndoSnap = {
 };
 
 const SCHEDULE_UNDO_MAX = 40;
-const PERSIST_DEBOUNCE_MS = 1200;
+const PERSIST_DEBOUNCE_MS = 700;
 const PERSIST_RETRY_MS = 5000;
 
 function toLite(e: EmployeeRow): EmployeeLite {
@@ -271,7 +282,17 @@ export default function ManagerScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { role, session } = useAuth();
   const { t, staffTypeLabel } = useI18n();
-  const { employees, teamState, refetch, loading, applyLocalScheduleAssignments, myEmployee, setSchedulePushInFlight, noteLocalSchedulePush } = useAppData();
+  const {
+    employees,
+    staffRequests,
+    teamState,
+    refetch,
+    loading,
+    applyLocalScheduleAssignments,
+    myEmployee,
+    setSchedulePushInFlight,
+    noteLocalSchedulePush,
+  } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
@@ -303,6 +324,8 @@ export default function ManagerScheduleScreen() {
   const [editBreakType, setEditBreakType] = useState<BreakAnnotationType>('BREAK TIME');
   const [editBreakTime, setEditBreakTime] = useState('15:00');
   const [editWorker, setEditWorker] = useState('Unassigned');
+  const [editVl, setEditVl] = useState('0');
+  const [editSl, setEditSl] = useState('0');
   const [shiftPersonBorrowMode, setShiftPersonBorrowMode] = useState(false);
   const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
@@ -317,6 +340,7 @@ export default function ManagerScheduleScreen() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [holidaysOpen, setHolidaysOpen] = useState(false);
   const [, setTemplateSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Keeps a pending draft payload across debounced assignment saves (e.g. Monday window roll). */
@@ -361,7 +385,9 @@ export default function ManagerScheduleScreen() {
         break;
       }
     }
-  }, [params.weekMondayIso, weekMeta]);
+    /* Deep-link from publish notification — pull latest cloud schedule. */
+    void refetch({ silent: true });
+  }, [params.weekMondayIso, weekMeta, refetch]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
@@ -372,6 +398,11 @@ export default function ManagerScheduleScreen() {
   const selectedWeekMonday = weekMeta[weekIndex * 7]?.iso || '';
   const selectedWeekPublished = !!(
     selectedWeekMonday && isScheduleWeekPublished(publishedMap, selectedWeekMonday)
+  );
+
+  const companyHolidays = useMemo(
+    () => normalizeCompanyHolidays(teamState?.company_holidays),
+    [teamState?.company_holidays]
   );
   const selectedWeekIsPast = weekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
   const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
@@ -435,8 +466,20 @@ export default function ManagerScheduleScreen() {
           const map = { ...publishedMap, [selectedWeekMonday]: true as const };
           const payload = schedulePublishedPayload(map);
           const teamStateId = await readStoredTeamStateId();
+          /* Always write the live schedule bundle with publish — not only schedule_published.
+             Otherwise Notify Again can leave cloud on an older assignments/draft while
+             admins open the notification and see a reverted schedule. */
+          const assignPayload = JSON.parse(JSON.stringify(assignmentStoreRef.current || {}));
+          const draftPayload = JSON.parse(
+            JSON.stringify(draftScheduleRawRef.current ?? draftScheduleRaw ?? {})
+          );
           const up = await supabase.from('team_state').upsert(
-            { id: teamStateId, schedule_published: payload },
+            {
+              id: teamStateId,
+              schedule_assignments: assignPayload,
+              draft_schedule: draftPayload,
+              schedule_published: payload,
+            },
             { onConflict: 'id' }
           );
           if (up.error) {
@@ -446,7 +489,7 @@ export default function ManagerScheduleScreen() {
           await broadcastTeamStateChanged(
             supabase,
             teamStateId,
-            ['schedule_published'],
+            ['schedule_assignments', 'draft_schedule', 'schedule_published'],
             session?.user?.id
           );
           /* Snapshot publish in revision history (matches web). */
@@ -590,12 +633,41 @@ export default function ManagerScheduleScreen() {
   const persistCloud = useCallback(
     async (store: AssignmentStore, draftSchedule?: unknown) => {
       if (!supabase || !isManagerLikeRole(role)) return;
-      setSaving(true);
       setSchedulePushInFlight(true);
+      /* Delay saving chrome so fast saves do not re-render the whole schedule grid. */
+      const savingTimer = setTimeout(() => {
+        setSaving(true);
+      }, 450);
       try {
-        const toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
+        let toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
         purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
         const teamStateId = await readStoredTeamStateId();
+        /*
+         * Store-scoped: only pull/merge the full remote blob when cloud is newer than our
+         * cache — otherwise every keystroke-save paid for a full schedule download.
+         */
+        const managedScope = managerManagedRestaurantId(myEmployee, role);
+        if (managedScope === 'rp-8' || managedScope === 'rp-9') {
+          try {
+            const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
+            const remoteAt = await fetchTeamStateUpdatedAt(supabase, teamStateId);
+            if (remoteAt && knownAt && remoteAt > knownAt) {
+              const remoteRes = await supabase
+                .from('team_state')
+                .select('schedule_assignments, updated_at')
+                .eq('id', teamStateId)
+                .maybeSingle();
+              const remoteAssign = remoteRes.data?.schedule_assignments;
+              if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
+                const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
+                merged[managedScope] = toSave[managedScope] || {};
+                toSave = merged;
+              }
+            }
+          } catch (mergeErr) {
+            console.warn('schedule remote merge before save', mergeErr);
+          }
+        }
         const draftToSave =
           draftSchedule !== undefined ? draftSchedule : pendingDraftRef.current;
         const pushedAssignJson = JSON.stringify(toSave);
@@ -610,11 +682,61 @@ export default function ManagerScheduleScreen() {
           payload.draft_schedule = draftToSave;
           fields.push('draft_schedule');
         }
-        const up = await supabase
-          .from('team_state')
-          .upsert(payload, { onConflict: 'id' })
-          .select('id, updated_at')
-          .single();
+        const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
+        let up = knownAt
+          ? await supabase
+              .from('team_state')
+              .update(payload)
+              .eq('id', teamStateId)
+              .eq('updated_at', knownAt)
+              .select('id, updated_at')
+              .maybeSingle()
+          : await supabase
+              .from('team_state')
+              .upsert(payload, { onConflict: 'id' })
+              .select('id, updated_at')
+              .single();
+        /* Version conflict — re-fetch remote, merge our store slice, then upsert once.
+         * Never blind-upsert a stale full blob (that rolls back the other restaurant). */
+        if (knownAt && !up.error && !up.data) {
+          try {
+            const remoteRes = await supabase
+              .from('team_state')
+              .select('schedule_assignments, draft_schedule, updated_at')
+              .eq('id', teamStateId)
+              .maybeSingle();
+            const remoteAssign = remoteRes.data?.schedule_assignments;
+            if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
+              const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
+              if (managedScope === 'rp-8' || managedScope === 'rp-9') {
+                merged[managedScope] = toSave[managedScope] || {};
+              } else {
+                /* Admin / company-wide: overlay every restaurant we have locally. */
+                Object.keys(toSave).forEach((rid) => {
+                  if (toSave[rid] != null) merged[rid] = toSave[rid];
+                });
+              }
+              toSave = merged;
+              payload.schedule_assignments = toSave;
+            }
+            if (
+              draftToSave === undefined &&
+              remoteRes.data?.draft_schedule != null &&
+              payload.draft_schedule === undefined
+            ) {
+              /* keep remote draft when we were not pushing draft */
+            } else if (draftToSave !== undefined) {
+              payload.draft_schedule = draftToSave;
+            }
+          } catch (conflictMergeErr) {
+            console.warn('schedule conflict merge', conflictMergeErr);
+          }
+          up = await supabase
+            .from('team_state')
+            .upsert(payload, { onConflict: 'id' })
+            .select('id, updated_at')
+            .single();
+        }
         if (up.error) {
           console.warn('team_state upsert', up.error);
           /* Stays dirty so remote cannot win; retry or the edit is lost on the next fetch. */
@@ -628,7 +750,7 @@ export default function ManagerScheduleScreen() {
               : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
           const pushHash = hashScheduleBundle(toSave, draftForHash);
           noteLocalSchedulePush({ hash: pushHash, updatedAt: pushedUpdatedAt });
-          await broadcastTeamStateChanged(
+          void broadcastTeamStateChanged(
             supabase,
             teamStateId,
             fields,
@@ -684,6 +806,7 @@ export default function ManagerScheduleScreen() {
           }
         }
       } finally {
+        clearTimeout(savingTimer);
         setSchedulePushInFlight(false);
         setSaving(false);
       }
@@ -692,6 +815,8 @@ export default function ManagerScheduleScreen() {
       role,
       restaurants,
       session?.user?.id,
+      myEmployee,
+      teamState?.updated_at,
       teamState?.draft_schedule,
       teamState?.schedule_published,
       applyLocalScheduleAssignments,
@@ -1109,6 +1234,14 @@ export default function ManagerScheduleScreen() {
 
   const calendarBody = useMemo(() => {
     try {
+      const managedScope =
+        role === 'admin' ? null : managerManagedRestaurantId(myEmployee, role);
+      const abbreviateForManagedStoreId =
+        managedScope &&
+        (managedScope === 'rp-8' || managedScope === 'rp-9') &&
+        managedScope !== currentRestaurantId
+          ? managedScope
+          : null;
       return buildCalendarBody(
         schedule,
         visibleDays,
@@ -1118,7 +1251,8 @@ export default function ManagerScheduleScreen() {
         slotOrderByRestaurant,
         assignmentStore,
         weekIndex,
-        otherStoreDayLabels
+        otherStoreDayLabels,
+        abbreviateForManagedStoreId
       );
     } catch (err) {
       console.warn('buildCalendarBody', err);
@@ -1134,6 +1268,8 @@ export default function ManagerScheduleScreen() {
     assignmentStore,
     weekIndex,
     otherStoreDayLabels,
+    role,
+    myEmployee,
   ]);
 
   /** Display position within role section → enable ↑/↓. */
@@ -1277,12 +1413,64 @@ export default function ManagerScheduleScreen() {
     return true;
   }
 
+  function dayIsoForShiftDayStr(dayStr: string): string {
+    const meta = weekMeta.find((m) => m.label === dayStr);
+    return meta?.iso ? String(meta.iso).slice(0, 10) : '';
+  }
+
+  async function loadShiftEditorLeave(workerName: string, dayStr: string) {
+    const dayIso = dayIsoForShiftDayStr(dayStr);
+    if (!dayIso || !workerName || workerName === 'Unassigned') {
+      setEditVl('0');
+      setEditSl('0');
+      return;
+    }
+    const emp = employees.find((e) => employeeDisplayName(e) === workerName) || null;
+    if (!emp) {
+      setEditVl('0');
+      setEditSl('0');
+      return;
+    }
+    const monIso =
+      selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(monIso)) {
+      setEditVl('0');
+      setEditSl('0');
+      return;
+    }
+    try {
+      const bounds = getPayWeekBoundsForMonday(new Date(`${monIso}T12:00:00`));
+      const slice = await loadWeekExtrasSlice(bounds);
+      const schedMinsByDay = buildScheduledMinutesByDayForEmployee(
+        emp,
+        (teamState as Record<string, unknown> | null) || null,
+        lites,
+        bounds
+      );
+      const dayLeave = getEffectiveDayLeaveSync(
+        emp,
+        employeeDisplayName(emp),
+        dayIso,
+        bounds,
+        staffRequests || [],
+        schedMinsByDay,
+        slice
+      );
+      setEditVl(String(dayLeave.vl || 0));
+      setEditSl(String(dayLeave.sl || 0));
+    } catch {
+      setEditVl('0');
+      setEditSl('0');
+    }
+  }
+
   function openShiftEditor(target: ShiftEditTarget) {
     if (!scheduleEditable) return;
     captureScheduleScroll();
     setShiftPersonBorrowMode(false);
     const wk = weekdayKeyFromScheduleDay(target.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
+    let nextWorker = 'Unassigned';
     if (target.shift) {
       const parsed = parseBreakAnnotation(target.shift.redPokeBreak || '');
       setEditDayOff(false);
@@ -1303,7 +1491,7 @@ export default function ManagerScheduleScreen() {
           : breakAnnotationTimeToHHMM(breakLabel) || '15:00'
       );
       const w = (target.shift.workers || []).find((n) => n && n !== 'Unassigned');
-      setEditWorker(w || 'Unassigned');
+      nextWorker = w || 'Unassigned';
     } else {
       const defs = defaultTimesForDraftCell(draftRows, target.role, target.trIdx, di < 0 ? 0 : di);
       setEditDayOff(true);
@@ -1321,9 +1509,13 @@ export default function ManagerScheduleScreen() {
         assignmentStoreRef.current,
         weekIndex
       );
-      setEditWorker(rowPerson && rowPerson !== 'Unassigned' ? rowPerson : 'Unassigned');
+      nextWorker = rowPerson && rowPerson !== 'Unassigned' ? rowPerson : 'Unassigned';
     }
+    setEditWorker(nextWorker);
+    setEditVl('0');
+    setEditSl('0');
     setShiftEditor(target);
+    void loadShiftEditorLeave(nextWorker, target.dayStr);
   }
 
   function onCellPress(target: ShiftEditTarget) {
@@ -1489,6 +1681,11 @@ export default function ManagerScheduleScreen() {
     const breakText = formatBreakAnnotation(breakLabel || '3:00PM', breakType);
     const list =
       editWorker === 'Unassigned' ? ['Unassigned'] : [editWorker].filter(Boolean);
+    const dayIso = dayIsoForShiftDayStr(shiftEditor.dayStr);
+    const leavePerson =
+      editWorker && editWorker !== 'Unassigned' && editWorker !== SCHEDULE_BORROW_PERSON_VALUE
+        ? editWorker
+        : '';
     void (async () => {
       if (!editDayOff && editWorker !== 'Unassigned') {
         const emp = employees.find((e) => employeeDisplayName(e) === editWorker) || null;
@@ -1507,6 +1704,31 @@ export default function ManagerScheduleScreen() {
       if (!ok) {
         Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
         return;
+      }
+      if (leavePerson && dayIso && supabase) {
+        const leaveEmp =
+          employees.find((e) => employeeDisplayName(e) === leavePerson) || null;
+        if (leaveEmp) {
+          const vl = Math.max(0, parseFloat(editVl) || 0);
+          const sl = Math.max(0, parseFloat(editSl) || 0);
+          upsertLeaveBalanceEntry(leaveEmp, 'vacation', dayIso, vl);
+          upsertLeaveBalanceEntry(leaveEmp, 'sick', dayIso, sl);
+          try {
+            await saveEmployeeRow(supabase, leaveEmp);
+          } catch {
+            /* leaveBalance still updated in-memory */
+          }
+          const monIso =
+            selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(monIso)) {
+            const bounds = getPayWeekBoundsForMonday(new Date(`${monIso}T12:00:00`));
+            try {
+              await setEmployeeDayLeave(leaveEmp.id, dayIso, vl, sl, bounds);
+            } catch {
+              /* week-extras best-effort */
+            }
+          }
+        }
       }
       setShiftPersonBorrowMode(false);
       setShiftEditor(null);
@@ -1912,6 +2134,16 @@ export default function ManagerScheduleScreen() {
                         : t('schedule.publishNotify')}
               </Text>
             </Pressable>
+            {isAdminRole(role) ? (
+              <Pressable
+                onPress={() => setHolidaysOpen(true)}
+                style={styles.undoBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('schedule.holidays')}
+              >
+                <Text style={styles.undoBtnText}>{t('schedule.holidays')}</Text>
+              </Pressable>
+            ) : null}
             {isManagerLikeRole(role) ? (
               <Pressable
                 onPress={() => setTemplatesOpen(true)}
@@ -2069,8 +2301,16 @@ export default function ManagerScheduleScreen() {
                       const parts = dayStr.split(' ');
                       const dow = parts[0] || '';
                       const rest = parts.slice(1).join(' ');
+                      const hol = meta?.iso ? holidayOnIso(companyHolidays, meta.iso) : null;
                       return (
-                        <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                        <View
+                          key={dayStr}
+                          style={[
+                            styles.th,
+                            { width: CELL_MIN },
+                            hol ? styles.thHoliday : null,
+                          ]}
+                        >
                           <Text style={styles.thFull}>
                             {t(
                               (
@@ -2087,6 +2327,11 @@ export default function ManagerScheduleScreen() {
                             )}
                           </Text>
                           <Text style={styles.thSub}>{rest}</Text>
+                          {hol ? (
+                            <Text style={styles.thHolidayFlag} numberOfLines={1}>
+                              {hol.name}
+                            </Text>
+                          ) : null}
                         </View>
                       );
                     })}
@@ -2438,6 +2683,8 @@ export default function ManagerScheduleScreen() {
         t={t}
       />
 
+      <CompanyHolidaysSheet visible={holidaysOpen} onClose={() => setHolidaysOpen(false)} />
+
       <Modal visible={historyOpen} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setHistoryOpen(false)}>
           <Pressable style={[styles.modalPanel, styles.modalPanelTall]} onPress={(e) => e.stopPropagation()}>
@@ -2666,6 +2913,7 @@ export default function ManagerScheduleScreen() {
                             }
                             setEditWorker(name);
                             if (shiftPersonBorrowMode) setShiftPersonBorrowMode(false);
+                            if (shiftEditor) void loadShiftEditorLeave(name, shiftEditor.dayStr);
                           }}
                           style={[
                             styles.editChip,
@@ -2693,6 +2941,46 @@ export default function ManagerScheduleScreen() {
                     </View>
                   </>
                 ) : null}
+                <Text style={[styles.editFieldLabel, { marginTop: 12 }]}>VL / SL (this day)</Text>
+                <Text style={styles.modalSub} numberOfLines={3}>
+                  {editWorker && editWorker !== 'Unassigned'
+                    ? `VL / SL for ${editWorker}${
+                        shiftEditor
+                          ? ` on ${dayIsoForShiftDayStr(shiftEditor.dayStr) || shiftEditor.dayStr}`
+                          : ''
+                      }. Saved into Timecards totals and Team leave history.`
+                    : 'Assign a person on this shift to record vacation / sick hours for the day.'}
+                </Text>
+                <View style={styles.editTimesRow}>
+                  <View style={styles.editField}>
+                    <Text style={styles.editFieldLabel}>VL (hrs)</Text>
+                    <TextInput
+                      style={[
+                        styles.editInput,
+                        (!editWorker || editWorker === 'Unassigned') && styles.editInputLocked,
+                      ]}
+                      value={editVl}
+                      onChangeText={setEditVl}
+                      editable={!!editWorker && editWorker !== 'Unassigned'}
+                      keyboardType="decimal-pad"
+                      placeholder="0"
+                    />
+                  </View>
+                  <View style={styles.editField}>
+                    <Text style={styles.editFieldLabel}>SL (hrs)</Text>
+                    <TextInput
+                      style={[
+                        styles.editInput,
+                        (!editWorker || editWorker === 'Unassigned') && styles.editInputLocked,
+                      ]}
+                      value={editSl}
+                      onChangeText={setEditSl}
+                      editable={!!editWorker && editWorker !== 'Unassigned'}
+                      keyboardType="decimal-pad"
+                      placeholder="0"
+                    />
+                  </View>
+                </View>
                 <Pressable style={styles.saveBtn} onPress={applyShiftDetailsSave}>
                   <Text style={styles.saveBtnText}>{t('schedule.saveShift')}</Text>
                 </Pressable>
@@ -3347,6 +3635,13 @@ const styles = StyleSheet.create({
   },
   thFull: { fontSize: 11, fontWeight: '800', color: '#0f172a', letterSpacing: 0.6 },
   thSub: { marginTop: 4, fontSize: 11, color: '#64748b', fontWeight: '500' },
+  thHoliday: { backgroundColor: '#fff7ed' },
+  thHolidayFlag: {
+    marginTop: 3,
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#c2410c',
+  },
   sectionText: {
     fontSize: 10,
     fontWeight: '700',

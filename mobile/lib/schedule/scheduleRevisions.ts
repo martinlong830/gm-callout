@@ -121,11 +121,10 @@ export async function listScheduleRevisions(
   const id = String(teamStateId || '').trim();
   if (!id) return { ok: false, rows: [], error: 'missing team_state_id' };
   try {
+    /* Metadata only — full assignment blobs are ~200KB each and break History load. */
     const res = await sb
       .from('team_state_schedule_revisions')
-      .select(
-        'id, team_state_id, created_at, created_by, source, label, content_hash, schedule_assignments, draft_schedule, schedule_published'
-      )
+      .select('id, team_state_id, created_at, created_by, source, label, content_hash')
       .eq('team_state_id', id)
       .order('created_at', { ascending: false })
       .limit(Math.max(1, Math.min(100, limit)));

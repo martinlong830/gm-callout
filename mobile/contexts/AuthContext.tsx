@@ -54,6 +54,7 @@ type AuthState = {
     | { ok: false; message: string }
   >;
   signOut: () => Promise<void>;
+  refreshRole: () => Promise<AppRole | null>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -171,6 +172,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .then((m) => m.scheduleDevicePushTokenRegistration(0))
       .catch(() => undefined);
   }, [session, role]);
+
+  useEffect(() => {
+    if (!supabase || !session?.user?.id) return;
+    const uid = session.user.id;
+    const channel = supabase
+      .channel(`self_profile_role_${uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${uid}`,
+        },
+        (payload) => {
+          const next = (payload.new as { role?: string; display_name?: string } | null)?.role;
+          if (!next || !isAppRole(next)) return;
+          setRole(next);
+          const name = (payload.new as { display_name?: string } | null)?.display_name;
+          if (name) setDisplayName(String(name).trim());
+        }
+      )
+      .subscribe();
+    return () => {
+      if (supabase) void supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
+
+  const refreshRole = useCallback(async () => {
+    if (!session?.user?.id) return null;
+    const prof = await fetchProfile(session.user.id);
+    if (!prof || 'invalidToken' in prof) return null;
+    setRole(prof.role);
+    if (prof.displayName) setDisplayName(prof.displayName);
+    return prof.role;
+  }, [fetchProfile, session?.user?.id]);
 
   const signIn = useCallback(
     async (loginName: string, password: string, companyId?: string, accessCode?: string) => {
@@ -308,8 +345,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn,
       signUp,
       signOut,
+      refreshRole,
     }),
-    [session, user, role, displayName, loading, signIn, signUp, signOut]
+    [session, user, role, displayName, loading, signIn, signUp, signOut, refreshRole]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

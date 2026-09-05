@@ -465,6 +465,58 @@
         upcomingWeekCursor = upcomingWeekStarts.length - 1;
       }
       renderUpcomingWeekPager(listUp, t('employee.noUpcoming'));
+
+      var listHol = document.getElementById('empHolidaysUpcoming');
+      if (listHol) {
+        var hols =
+          bridge.getUpcomingCompanyHolidays && typeof bridge.getUpcomingCompanyHolidays === 'function'
+            ? bridge.getUpcomingCompanyHolidays(28)
+            : [];
+        if (!hols.length) {
+          listHol.innerHTML =
+            '<li class="emp-shift-empty">' +
+            escapeHtml(t('employee.noUpcomingHolidays') || 'No upcoming holidays.') +
+            '</li>';
+        } else {
+          listHol.innerHTML = hols
+            .map(function (h) {
+              var dateLabel =
+                bridge.formatCompanyHolidayDateLabel
+                  ? bridge.formatCompanyHolidayDateLabel(h.iso)
+                  : h.iso;
+              return (
+                '<li class="emp-holiday-item">' +
+                '<span class="emp-holiday-date">' +
+                escapeHtml(dateLabel) +
+                '</span>' +
+                '<span class="emp-holiday-name">' +
+                escapeHtml(h.name) +
+                '</span>' +
+                '</li>'
+              );
+            })
+            .join('');
+        }
+      }
+
+      var listPast = document.getElementById('empShiftsPast');
+      var histToggle = document.getElementById('empHistoryToggle');
+      if (listPast) {
+        renderShiftList(
+          listPast,
+          buckets.past || [],
+          t('employee.noPastShifts') || 'No past shifts in this window.'
+        );
+      }
+      if (histToggle && !histToggle._gmWired) {
+        histToggle._gmWired = true;
+        histToggle.addEventListener('click', function () {
+          var open = histToggle.getAttribute('aria-expanded') === 'true';
+          histToggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+          if (listPast) listPast.hidden = open;
+          histToggle.classList.toggle('is-open', !open);
+        });
+      }
     }
 
     var mgr = bridge.getManagerContact();
@@ -772,6 +824,13 @@
         }
         renderMasterScheduleScreen();
         showEmpNav('schedule');
+        if (bridge.refreshTeamStateFromRemote) {
+          void Promise.resolve(bridge.refreshTeamStateFromRemote({ forceAccept: true })).then(
+            function () {
+              renderMasterScheduleScreen();
+            }
+          );
+        }
         return;
       }
       var formKey = 'timeoff';
@@ -845,8 +904,15 @@
     }
 
     function collectAvailabilityGridFromDom() {
+      if (!empAvailGrid) return currentAvailGrid || {};
+      var roleCode = bridge.getWorkerRoleCode(WORKER);
+      if (bridge.collectAvailabilityPaintFromRoot && bridge.projectAvailabilityPaint) {
+        var paint = bridge.collectAvailabilityPaintFromRoot(empAvailGrid);
+        if (paint) {
+          return bridge.projectAvailabilityPaint(paint, roleCode, availWeekIndex, currentAvailGrid);
+        }
+      }
       var out = {};
-      if (!empAvailGrid) return out;
       empAvailGrid.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
         var wk = inp.getAttribute('data-wk');
         var sk = inp.getAttribute('data-slot-key');
@@ -864,8 +930,15 @@
       setEmpAvailStatusBadge('draft');
     }
 
+    function bindEmpAvailPaint() {
+      if (!empAvailGrid || !bridge.bindAvailabilityPaintGrid) return;
+      bridge.bindAvailabilityPaintGrid(empAvailGrid, function () {
+        persistEmpAvailabilityDraft();
+      });
+    }
+
     function renderEmployeeAvailabilityTab() {
-      if (!empAvailGrid || !bridge.renderAvailabilityGridEditor) return;
+      if (!empAvailGrid) return;
       var roleCode = bridge.getWorkerRoleCode(WORKER);
       var entry =
         bridge.getWorkerAvailabilityWeek && typeof bridge.getWorkerAvailabilityWeek === 'function'
@@ -879,16 +952,61 @@
             : {};
       setEmpAvailStatusBadge(entry && entry.status ? entry.status : 'draft');
       updateEmpAvailWeekNav();
-      empAvailGrid.innerHTML = bridge.renderAvailabilityGridEditor(
-        currentAvailGrid,
-        (entry && entry.staffType) || roleCode,
-        availWeekIndex
-      );
-      if (bridge.bindAvailabilityGridDragDrop) bridge.bindAvailabilityGridDragDrop(empAvailGrid);
+      var st = (entry && entry.staffType) || roleCode;
+      if (bridge.renderAvailabilityPaintEditor) {
+        empAvailGrid.innerHTML = bridge.renderAvailabilityPaintEditor(
+          currentAvailGrid,
+          st,
+          availWeekIndex
+        );
+        bindEmpAvailPaint();
+      } else if (bridge.renderAvailabilityGridEditor) {
+        empAvailGrid.innerHTML = bridge.renderAvailabilityGridEditor(
+          currentAvailGrid,
+          st,
+          availWeekIndex
+        );
+        if (bridge.bindAvailabilityGridDragDrop) bridge.bindAvailabilityGridDragDrop(empAvailGrid);
+      }
     }
 
     function checkAllAvailabilityGrid() {
       if (!empAvailGrid) return;
+      var paintRoot = empAvailGrid.querySelector('[data-avail-paint-root]');
+      if (
+        paintRoot &&
+        bridge.paintAvailabilityAllOn &&
+        bridge.projectAvailabilityPaint &&
+        bridge.renderAvailabilityPaintEditor
+      ) {
+        var roleCode = bridge.getWorkerRoleCode(WORKER);
+        var P = window.gmAvailabilityPaint;
+        var currentPaint =
+          bridge.collectAvailabilityPaintFromRoot &&
+          bridge.collectAvailabilityPaintFromRoot(empAvailGrid);
+        var seed =
+          currentPaint || (P && typeof P.emptyPaintGrid === 'function' ? P.emptyPaintGrid() : null);
+        if (!seed) return;
+        var allOn = bridge.paintAvailabilityAllOn(seed);
+        currentAvailGrid = bridge.projectAvailabilityPaint(
+          allOn,
+          roleCode,
+          availWeekIndex,
+          currentAvailGrid
+        );
+        if (P && typeof P.renderAvailabilityPaintHtml === 'function') {
+          empAvailGrid.innerHTML = P.renderAvailabilityPaintHtml(allOn, { readOnly: false });
+        } else {
+          empAvailGrid.innerHTML = bridge.renderAvailabilityPaintEditor(
+            currentAvailGrid,
+            roleCode,
+            availWeekIndex
+          );
+        }
+        bindEmpAvailPaint();
+        persistEmpAvailabilityDraft();
+        return;
+      }
       empAvailGrid.querySelectorAll('input.availability-grid-cb').forEach(function (inp) {
         inp.checked = true;
       });

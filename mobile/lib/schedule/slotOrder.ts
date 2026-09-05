@@ -89,7 +89,8 @@ export function readSlotOrderByWeek(draftRaw: unknown): SlotOrderByWeek {
 
 /**
  * Restaurant→role order for one week.
- * Week-specific roles win; missing roles fall back to legacy global `slotOrderByRestaurant`.
+ * Week-specific only — do not fall back to legacy global `slotOrderByRestaurant`
+ * (that fallback made row order jump after navigate/sync when a week key was missing).
  */
 export function readSlotOrderByRestaurantForWeek(
   draftRaw: unknown,
@@ -97,20 +98,13 @@ export function readSlotOrderByRestaurantForWeek(
 ): SlotOrderByRestaurant {
   const mon = normalizeMondayIso(weekMondayIso);
   const weekMap = mon ? readSlotOrderByWeek(draftRaw)[mon] || {} : {};
-  const legacy = readLegacySlotOrderByRestaurant(draftRaw);
   const out: SlotOrderByRestaurant = {};
-  const rids = new Set([...Object.keys(legacy), ...Object.keys(weekMap)]);
-  rids.forEach((rid) => {
+  Object.keys(weekMap).forEach((rid) => {
     const roleMap: SlotOrderByRole = {};
     ROLE_KEYS.forEach((role) => {
       const weekList = weekMap[rid]?.[role];
       if (Array.isArray(weekList) && weekList.length) {
         roleMap[role] = weekList.slice();
-        return;
-      }
-      const legacyList = legacy[rid]?.[role];
-      if (Array.isArray(legacyList) && legacyList.length) {
-        roleMap[role] = legacyList.slice();
       }
     });
     if (Object.keys(roleMap).length) out[rid] = roleMap;

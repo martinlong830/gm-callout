@@ -68,22 +68,33 @@ export function resolveOfferedShiftRef(
 export async function persistAssignmentStore(
   sb: SupabaseClient,
   store: AssignmentStore
-): Promise<{ ok: true; store: AssignmentStore } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; store: AssignmentStore; updatedAt?: string }
+  | { ok: false; message: string }
+> {
   const teamStateId = await readStoredTeamStateId();
-  const up = await sb.from('team_state').upsert(
-    {
-      id: teamStateId,
-      schedule_assignments: store,
-    },
-    { onConflict: 'id' }
-  );
+  const up = await sb
+    .from('team_state')
+    .upsert(
+      {
+        id: teamStateId,
+        schedule_assignments: store,
+      },
+      { onConflict: 'id' }
+    )
+    .select('id, updated_at')
+    .single();
   if (up.error) return { ok: false, message: up.error.message };
   try {
     await broadcastTeamStateChanged(sb, teamStateId, ['schedule_assignments']);
   } catch {
     /* non-blocking */
   }
-  return { ok: true, store };
+  return {
+    ok: true,
+    store,
+    updatedAt: up.data?.updated_at != null ? String(up.data.updated_at) : undefined,
+  };
 }
 
 export function unassignShiftsInStore(

@@ -10,6 +10,8 @@ export type NotificationRoute = {
   subsection?: NotificationSubsection;
   requestId?: string | null;
   weekMondayIso?: string | null;
+  openScheduleApprovals?: boolean;
+  restaurantId?: string | null;
 };
 
 function asRecord(data: unknown): Record<string, unknown> {
@@ -58,9 +60,19 @@ export function resolveNotificationRoute(
 
   if (!subsection) {
     if (notifType === 'availability_submitted') subsection = 'availability';
-    else if (notifType === 'schedule_published') subsection = 'schedule';
-    else if (notifType === 'swap_offer_targeted' || notifType.indexOf('swap') >= 0) subsection = 'swap';
-    else if (notifType.indexOf('callout') >= 0) subsection = 'callout';
+    else if (
+      notifType === 'schedule_published' ||
+      notifType === 'schedule_review_pending'
+    ) {
+      subsection = 'schedule';
+    } else if (
+      notifType === 'swap_offer_targeted' ||
+      notifType === 'swap_offer_submitted' ||
+      notifType === 'swap_accepted_pending' ||
+      notifType.indexOf('swap') >= 0
+    ) {
+      subsection = 'swap';
+    } else if (notifType.indexOf('callout') >= 0) subsection = 'callout';
     else if (notifType.indexOf('timeoff') >= 0 || notifType.indexOf('vacation') >= 0 || notifType.indexOf('sick') >= 0) {
       subsection = 'timeoff';
     }
@@ -72,11 +84,18 @@ export function resolveNotificationRoute(
     return { screen: 'availability', subsection, requestId };
   }
   if (subsection === 'schedule') {
+    const openScheduleApprovals =
+      notifType === 'schedule_review_pending' ||
+      d.openScheduleApprovals === true ||
+      d.open_schedule_approvals === true;
+    const restaurantId = str(d.restaurantId || d.restaurant_id) || null;
     return {
       screen: 'schedule',
       subsection,
       requestId,
       weekMondayIso: weekMondayIso && /^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso) ? weekMondayIso : null,
+      openScheduleApprovals,
+      restaurantId,
     };
   }
   return {
@@ -97,8 +116,12 @@ export function hrefForNotificationRoute(
   }
   if (route.screen === 'schedule') {
     const base = managerLike ? '/manager/schedule' : '/employee/schedule';
-    if (route.weekMondayIso) return `${base}?weekMondayIso=${encodeURIComponent(route.weekMondayIso)}`;
-    return base;
+    const q = new URLSearchParams();
+    if (route.weekMondayIso) q.set('weekMondayIso', route.weekMondayIso);
+    if (route.openScheduleApprovals) q.set('openApprovals', '1');
+    if (route.restaurantId) q.set('restaurantId', route.restaurantId);
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
   }
   const sub = route.subsection || 'timeoff';
   const base = managerLike ? '/manager/requests' : '/employee/actions';

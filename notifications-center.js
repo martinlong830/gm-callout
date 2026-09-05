@@ -204,9 +204,20 @@
     }
     if (!subsection) {
       if (notifType === 'availability_submitted') subsection = 'availability';
-      else if (notifType === 'schedule_published') subsection = 'schedule';
-      else if (notifType === 'swap_offer_targeted' || notifType.indexOf('swap') >= 0) subsection = 'swap';
-      else if (notifType.indexOf('callout') >= 0) subsection = 'callout';
+      else if (
+        notifType === 'schedule_published' ||
+        notifType === 'schedule_review_pending'
+      ) {
+        subsection = 'schedule';
+      }
+      else if (
+        notifType === 'swap_offer_targeted' ||
+        notifType === 'swap_offer_submitted' ||
+        notifType === 'swap_accepted_pending' ||
+        notifType.indexOf('swap') >= 0
+      ) {
+        subsection = 'swap';
+      } else if (notifType.indexOf('callout') >= 0) subsection = 'callout';
       else if (
         notifType.indexOf('timeoff') >= 0 ||
         notifType.indexOf('vacation') >= 0 ||
@@ -220,11 +231,18 @@
       return { screen: 'availability', subsection: subsection, requestId: requestId || null };
     }
     if (subsection === 'schedule') {
+      var openApprovals =
+        notifType === 'schedule_review_pending' ||
+        d.openScheduleApprovals === true ||
+        d.open_schedule_approvals === true;
+      var restaurantId = String(d.restaurantId || d.restaurant_id || '').trim() || null;
       return {
         screen: 'schedule',
         subsection: subsection,
         requestId: requestId || null,
         weekMondayIso: /^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso) ? weekMondayIso : null,
+        openScheduleApprovals: !!openApprovals,
+        restaurantId: restaurantId,
       };
     }
     return {

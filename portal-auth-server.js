@@ -478,6 +478,8 @@ async function seedCompanyTeamState(admin, company) {
     schedule_assignments: assignments,
     schedule_templates: [],
     draft_schedule: {},
+    schedule_published: {},
+    company_holidays: { v: 1, holidays: [] },
     messaging_templates: { voice: "" },
     current_restaurant_id: primaryLoc,
     callout_history: [],
@@ -1727,6 +1729,23 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     return authed;
   }
 
+  async function requireAdmin(req) {
+    const mgr = await requireManager(req);
+    if (mgr.error) return mgr;
+    if (mgr.profile.role !== "admin") {
+      return { error: "Admin access required.", status: 403 };
+    }
+    return mgr;
+  }
+
+  function sameCompanyOrLegacy(adminProfile, targetProfile) {
+    const a = adminProfile && adminProfile.company_id ? String(adminProfile.company_id) : "";
+    const t = targetProfile && targetProfile.company_id ? String(targetProfile.company_id) : "";
+    if (!a && !t) return true;
+    if (!a || !t) return false;
+    return a === t;
+  }
+
   /** Manager creates portal login for a new roster employee/manager (does not sign in as them). */
   router.post("/admin/create-employee", async (req, res) => {
     try {
@@ -1776,10 +1795,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           String(company.owner_user_id) === String(mgr.profile.id)
         );
       }
-      if (accountRole === "manager" && !isCreator) {
+      const isAdminCaller = mgr.profile.role === "admin";
+      if (accountRole === "manager" && !isCreator && !isAdminCaller) {
         return res.status(403).json({
           ok: false,
-          message: "Only the company creator can create manager accounts.",
+          message: "Only an admin or the company creator can create manager accounts.",
         });
       }
 
@@ -1887,6 +1907,277 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     } catch (err) {
       console.warn("portal admin create-employee", err);
       return res.status(500).json({ ok: false, message: "Could not create employee account." });
+    }
+  });
+
+  /** Admin: list linked portal roles for the company (Team page badges + editor). */
+  router.get("/admin/company-account-roles", async (req, res) => {
+    try {
+      const adm = await requireAdmin(req);
+      if (adm.error) {
+        return res.status(adm.status || 401).json({ ok: false, message: adm.error });
+      }
+      const companyId = adm.profile.company_id || null;
+      let profQuery = admin
+        .from("profiles")
+        .select("id, role, display_name, login_name")
+        .in("role", ["admin", "manager", "employee"]);
+      if (companyId) {
+        profQuery = profQuery.eq("company_id", companyId);
+      } else {
+        profQuery = profQuery.is("company_id", null);
+      }
+      const { data: profiles, error: profErr } = await profQuery;
+      if (profErr) {
+        return res.status(400).json({ ok: false, message: profErr.message || "Could not load roles." });
+      }
+      let empQuery = admin.from("employees").select("id, auth_user_id");
+      if (companyId) {
+        empQuery = empQuery.eq("company_id", companyId);
+      }
+      const { data: emps } = await empQuery.not("auth_user_id", "is", null);
+      const employeeIdByAuth = Object.create(null);
+      (emps || []).forEach(function (row) {
+        if (row && row.auth_user_id) {
+          employeeIdByAuth[String(row.auth_user_id)] = row.id;
+        }
+      });
+      const accounts = (profiles || []).map(function (p) {
+        return {
+          authUserId: p.id,
+          role: p.role,
+          displayName: p.display_name || "",
+          loginName: p.login_name || "",
+          employeeId: employeeIdByAuth[String(p.id)] || null,
+        };
+      });
+      return res.json({ ok: true, accounts: accounts });
+    } catch (err) {
+      console.warn("portal admin company-account-roles", err);
+      return res.status(500).json({ ok: false, message: "Could not load account roles." });
+    }
+  });
+
+  /** Admin: load one linked roster account's portal role. */
+  router.get("/admin/linked-account", async (req, res) => {
+    try {
+      const adm = await requireAdmin(req);
+      if (adm.error) {
+        return res.status(adm.status || 401).json({ ok: false, message: adm.error });
+      }
+      let authUserId = String((req.query && req.query.authUserId) || "").trim();
+      const employeeId = String((req.query && req.query.employeeId) || "").trim();
+      let staffType = null;
+      if (!authUserId && employeeId) {
+        const { data: emp, error: empErr } = await admin
+          .from("employees")
+          .select("id, auth_user_id, company_id, staff_type")
+          .eq("id", employeeId)
+          .maybeSingle();
+        if (empErr || !emp) {
+          return res.status(404).json({ ok: false, message: "Employee not found." });
+        }
+        if (adm.profile.company_id && emp.company_id && String(emp.company_id) !== String(adm.profile.company_id)) {
+          return res.status(403).json({ ok: false, message: "Employee is not in your company." });
+        }
+        authUserId = emp.auth_user_id ? String(emp.auth_user_id) : "";
+        staffType = emp.staff_type || null;
+        if (!authUserId) {
+          return res.json({
+            ok: true,
+            linked: false,
+            role: null,
+            authUserId: null,
+            employeeId: emp.id,
+            staffType: staffType,
+          });
+        }
+      }
+      if (!authUserId) {
+        return res.status(400).json({ ok: false, message: "employeeId or authUserId is required." });
+      }
+      const { data: profile, error: profErr } = await admin
+        .from("profiles")
+        .select(profileSelect)
+        .eq("id", authUserId)
+        .maybeSingle();
+      if (profErr || !profile) {
+        return res.status(404).json({ ok: false, message: "Portal account not found." });
+      }
+      if (!sameCompanyOrLegacy(adm.profile, profile)) {
+        return res.status(403).json({ ok: false, message: "Account is not in your company." });
+      }
+      if (!staffType) {
+        const { data: empRow } = await admin
+          .from("employees")
+          .select("id, staff_type")
+          .eq("auth_user_id", authUserId)
+          .limit(1)
+          .maybeSingle();
+        if (empRow) {
+          staffType = empRow.staff_type || null;
+          if (!employeeId) {
+            /* keep response employeeId from query or roster */
+          }
+        }
+      }
+      return res.json({
+        ok: true,
+        linked: true,
+        authUserId: profile.id,
+        role: profile.role,
+        displayName: profile.display_name || "",
+        loginName: profile.login_name || "",
+        employeeId: employeeId || null,
+        staffType: staffType,
+        canChangeRole: profile.role === "manager" || profile.role === "employee",
+      });
+    } catch (err) {
+      console.warn("portal admin linked-account", err);
+      return res.status(500).json({ ok: false, message: "Could not load linked account." });
+    }
+  });
+
+  /**
+   * Admin: set a linked portal account to manager or employee (team member).
+   * Does not change admin/timeclock accounts. Updates profiles.role + auth user_metadata.
+   */
+  router.post("/admin/update-role", async (req, res) => {
+    try {
+      const adm = await requireAdmin(req);
+      if (adm.error) {
+        return res.status(adm.status || 401).json({ ok: false, message: adm.error });
+      }
+      const body = req.body || {};
+      let authUserId = String(body.authUserId || body.userId || "").trim();
+      const employeeId = String(body.employeeId || "").trim();
+      const requested = String(body.role || body.accountType || "")
+        .trim()
+        .toLowerCase();
+      const nextRole = requested === "manager" ? "manager" : requested === "employee" ? "employee" : "";
+      if (!nextRole) {
+        return res.status(400).json({
+          ok: false,
+          message: "Account type must be manager or team member (employee).",
+        });
+      }
+
+      let rosterStaffType = null;
+      if (!authUserId && employeeId) {
+        const { data: emp, error: empErr } = await admin
+          .from("employees")
+          .select("id, auth_user_id, company_id, staff_type")
+          .eq("id", employeeId)
+          .maybeSingle();
+        if (empErr || !emp) {
+          return res.status(404).json({ ok: false, message: "Employee not found." });
+        }
+        if (adm.profile.company_id && emp.company_id && String(emp.company_id) !== String(adm.profile.company_id)) {
+          return res.status(403).json({ ok: false, message: "Employee is not in your company." });
+        }
+        authUserId = emp.auth_user_id ? String(emp.auth_user_id) : "";
+        rosterStaffType = emp.staff_type || null;
+        if (!authUserId) {
+          return res.status(400).json({
+            ok: false,
+            message: "This person has no app login linked yet.",
+          });
+        }
+      }
+      if (!authUserId) {
+        return res.status(400).json({ ok: false, message: "employeeId or authUserId is required." });
+      }
+
+      const { data: target, error: targetErr } = await admin
+        .from("profiles")
+        .select(profileSelect + ", staff_type, phone")
+        .eq("id", authUserId)
+        .maybeSingle();
+      if (targetErr || !target) {
+        return res.status(404).json({ ok: false, message: "Portal account not found." });
+      }
+      if (!sameCompanyOrLegacy(adm.profile, target)) {
+        return res.status(403).json({ ok: false, message: "Account is not in your company." });
+      }
+      if (target.role === "admin") {
+        return res.status(403).json({
+          ok: false,
+          message: "Admin accounts cannot be changed from the Team page.",
+        });
+      }
+      if (target.role === "timeclock") {
+        return res.status(403).json({
+          ok: false,
+          message: "Time clock device accounts cannot be changed here.",
+        });
+      }
+      if (target.role !== "manager" && target.role !== "employee") {
+        return res.status(400).json({ ok: false, message: "Unsupported account role." });
+      }
+      if (target.role === nextRole) {
+        return res.json({
+          ok: true,
+          role: nextRole,
+          authUserId: target.id,
+          self: String(target.id) === String(adm.userId),
+          unchanged: true,
+          message: nextRole === "manager" ? "Already a manager." : "Already a team member.",
+        });
+      }
+
+      if (!rosterStaffType) {
+        const { data: empRow } = await admin
+          .from("employees")
+          .select("staff_type")
+          .eq("auth_user_id", authUserId)
+          .limit(1)
+          .maybeSingle();
+        rosterStaffType = (empRow && empRow.staff_type) || null;
+      }
+
+      const profilePatch = { role: nextRole };
+      if (nextRole === "employee") {
+        const st =
+          rosterStaffType ||
+          target.staff_type ||
+          null;
+        if (st) profilePatch.staff_type = st;
+      }
+
+      const { error: updErr } = await admin.from("profiles").update(profilePatch).eq("id", authUserId);
+      if (updErr) {
+        return res.status(400).json({ ok: false, message: updErr.message || "Could not update role." });
+      }
+
+      const meta = {
+        role: nextRole,
+        display_name: target.display_name || target.login_name || "",
+        login_name: target.login_name || "",
+        login_name_norm: target.login_name_norm || "",
+        phone: target.phone || "",
+        staff_type: profilePatch.staff_type || target.staff_type || "",
+      };
+      if (target.company_id) meta.company_id = target.company_id;
+      try {
+        await admin.auth.admin.updateUserById(authUserId, { user_metadata: meta });
+      } catch (metaErr) {
+        console.warn("portal admin update-role metadata", metaErr);
+      }
+
+      const self = String(authUserId) === String(adm.userId);
+      return res.json({
+        ok: true,
+        role: nextRole,
+        authUserId: authUserId,
+        self: self,
+        message:
+          nextRole === "manager"
+            ? "Account set to manager. They will see the manager app on next refresh."
+            : "Account set to team member. They will see the employee app on next refresh.",
+      });
+    } catch (err) {
+      console.warn("portal admin update-role", err);
+      return res.status(500).json({ ok: false, message: "Could not update account type." });
     }
   });
 
@@ -2408,6 +2699,179 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
+  /**
+   * Authenticated staff: Expo-push managers/admins about a pending staff request.
+   * In-app rows are already created by staff_requests_notify; this only sends push.
+   * Body: { kind: 'swap_offer_submitted'|'swap_accepted_pending'|string, title?, body?, restaurantId?, data? }
+   */
+  router.post("/staff-request/notify-managers", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      const body = req.body || {};
+      const kind = String(body.kind || body.type || "request_submitted").trim();
+      const restaurantId = String(body.restaurantId || body.storeId || "").trim() || null;
+      if (restaurantId && restaurantId !== "rp-8" && restaurantId !== "rp-9") {
+        return res.status(400).json({
+          ok: false,
+          message: "restaurantId must be rp-8 or rp-9 when provided.",
+        });
+      }
+      const companyId = auth.profile.company_id || null;
+      if (!companyId) {
+        return res.status(400).json({ ok: false, message: "No company on profile." });
+      }
+
+      let title = String(body.title || "").trim();
+      let bodyText = String(body.body || body.message || "").trim();
+      if (!title || !bodyText) {
+        if (kind === "swap_accepted_pending") {
+          title = title || "Coverage accepted — approve";
+          bodyText = bodyText || "A teammate accepted a coverage offer — awaiting your approval.";
+        } else if (kind === "swap_offer_submitted") {
+          title = title || "Shift coverage requested";
+          bodyText = bodyText || "An employee requested shift coverage.";
+        } else {
+          title = title || "Staff request";
+          bodyText = bodyText || "A staff request needs your attention.";
+        }
+      }
+
+      let recipientIds = [];
+      const seenRecip = Object.create(null);
+      const { data: recipientRows, error: recipErr } = await admin.rpc(
+        "notification_manager_recipient_ids",
+        {
+          p_company_id: companyId,
+          p_restaurant_id: restaurantId,
+        }
+      );
+      if (recipErr) {
+        console.warn("staff-request/notify-managers recipients rpc", recipErr);
+        const { data: profRows } = await admin
+          .from("profiles")
+          .select("id, role")
+          .eq("company_id", companyId)
+          .in("role", ["admin", "manager"]);
+        (profRows || []).forEach((row) => {
+          const s = String((row && row.id) || "").trim();
+          if (!s || seenRecip[s]) return;
+          seenRecip[s] = true;
+          recipientIds.push(s);
+        });
+      } else {
+        (Array.isArray(recipientRows) ? recipientRows : []).forEach((uid) => {
+          const s = String(uid || "").trim();
+          if (!s || seenRecip[s]) return;
+          seenRecip[s] = true;
+          recipientIds.push(s);
+        });
+      }
+
+      if (!recipientIds.length) {
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          recipients: 0,
+          message: "No managers/admins to notify.",
+        });
+      }
+
+      let tokenQuery = admin
+        .from("device_push_tokens")
+        .select("expo_push_token, user_id")
+        .in("user_id", recipientIds);
+      if (companyId) {
+        tokenQuery = tokenQuery.or(`company_id.eq.${companyId},company_id.is.null`);
+      }
+      const { data: tokenRows, error: tokErr } = await tokenQuery;
+      if (tokErr) {
+        console.warn("staff-request/notify-managers tokens", tokErr);
+        return res.status(500).json({
+          ok: false,
+          message: tokErr.message || "Could not load push tokens.",
+          recipients: recipientIds.length,
+        });
+      }
+
+      const tokens = [];
+      const seenTok = Object.create(null);
+      (tokenRows || []).forEach((row) => {
+        const t = String((row && row.expo_push_token) || "").trim();
+        if (!t || seenTok[t]) return;
+        seenTok[t] = true;
+        tokens.push(t);
+      });
+
+      if (!tokens.length) {
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          recipients: recipientIds.length,
+          message: "Managers notified in-app; no Expo tokens registered yet.",
+        });
+      }
+
+      const dataExtra = Object.assign(
+        {
+          type: kind,
+          subsection: kind.indexOf("swap") >= 0 ? "swap" : "timeoff",
+          restaurantId: restaurantId || null,
+        },
+        body.data && typeof body.data === "object" ? body.data : {}
+      );
+      const messages = tokens.map((to) => ({
+        to,
+        sound: "default",
+        title,
+        body: bodyText,
+        channelId: "schedule_heads_up",
+        priority: "high",
+        interruptionLevel: "active",
+        data: dataExtra,
+      }));
+
+      const push = await sendExpoPushMessages(messages, { receiptWaitMs: 1500 });
+      if (push.staleTokens && push.staleTokens.length) {
+        try {
+          await admin.from("device_push_tokens").delete().in("expo_push_token", push.staleTokens);
+        } catch (_stale) {
+          /* ignore */
+        }
+      }
+      return res.json({
+        ok: true,
+        sent: push.sent,
+        failed: push.failed,
+        tokens: tokens.length,
+        recipients: recipientIds.length,
+        delivered: push.delivered,
+        message:
+          push.sent > 0
+            ? "Push sent to " + push.sent + " device" + (push.sent === 1 ? "" : "s") + "."
+            : "Could not deliver Expo push.",
+        errors: push.ticketErrors.length
+          ? push.ticketErrors
+          : push.deliveryErrors.length
+            ? push.deliveryErrors
+            : undefined,
+      });
+    } catch (err) {
+      console.warn("staff-request/notify-managers", err);
+      return res.status(500).json({ ok: false, message: "Could not send manager push." });
+    }
+  });
+
   /** Manager/admin: notify selected audience that a week’s schedule is ready (Expo Push + in-app). */
   router.post("/schedule/notify-published", async (req, res) => {
     try {
@@ -2870,6 +3334,317 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     } catch (err) {
       console.warn("schedule/notify-published", err);
       return res.status(500).json({ ok: false, message: "Could not send schedule notifications." });
+    }
+  });
+
+  /** Manager/admin: notify the other party that a schedule review needs attention. */
+  router.post("/schedule/notify-review", async (req, res) => {
+    try {
+      const auth = await profileFromAccessToken(req);
+      if (auth.error) {
+        return res.status(auth.status || 401).json({
+          ok: false,
+          message: auth.error,
+          needsSignIn: !!auth.needsSignIn,
+        });
+      }
+      if (!isManagerLikeRole(auth.profile.role)) {
+        return res.status(403).json({ ok: false, message: "Managers and admins only." });
+      }
+      const body = req.body || {};
+      const weekMondayIso = String(body.weekMondayIso || "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
+        return res.status(400).json({ ok: false, message: "weekMondayIso is required (YYYY-MM-DD)." });
+      }
+      const directionRaw = String(body.direction || body.to || "")
+        .trim()
+        .toLowerCase();
+      const direction =
+        directionRaw === "to_manager" ||
+        directionRaw === "manager" ||
+        directionRaw === "pending_manager"
+          ? "to_manager"
+          : "to_admin";
+      const restaurantId = String(body.restaurantId || body.storeId || "").trim();
+      if (restaurantId && restaurantId !== "rp-8" && restaurantId !== "rp-9") {
+        return res.status(400).json({
+          ok: false,
+          message: "restaurantId must be rp-8 or rp-9 when provided.",
+        });
+      }
+      const reviewId = String(body.reviewId || body.id || "").trim() || null;
+      let weekRangeLabel = String(body.weekRangeLabel || body.weekLabel || "").trim();
+      if (!weekRangeLabel) {
+        const m = weekMondayIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) {
+          const start = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+          const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+          const months = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+          ];
+          if (start.getMonth() === end.getMonth()) {
+            weekRangeLabel =
+              months[start.getMonth()] + " " + start.getDate() + "–" + end.getDate();
+          } else {
+            weekRangeLabel =
+              months[start.getMonth()] +
+              " " +
+              start.getDate() +
+              "–" +
+              months[end.getMonth()] +
+              " " +
+              end.getDate();
+          }
+        }
+      }
+      const companyId = auth.profile.company_id || null;
+      let teamStateId = await resolveCompanyTeamStateId(admin, companyId, body.teamStateId);
+      const storeLabel =
+        restaurantId === "rp-8" ? "8th Ave" : restaurantId === "rp-9" ? "9th Ave" : "";
+      const actorName =
+        String(
+          (auth.profile && (auth.profile.display_name || auth.profile.login_name)) || ""
+        ).trim() || "Someone";
+      const title =
+        direction === "to_manager"
+          ? weekRangeLabel
+            ? "Schedule approval returned (" + weekRangeLabel + ")"
+            : "Schedule approval returned"
+          : weekRangeLabel
+            ? "Schedule ready for approval (" + weekRangeLabel + ")"
+            : "Schedule ready for approval";
+      const bodyText =
+        direction === "to_manager"
+          ? storeLabel
+            ? actorName + " sent the " + storeLabel + " schedule back for your review."
+            : actorName + " sent a schedule back for your review."
+          : storeLabel
+            ? actorName + " submitted the " + storeLabel + " schedule for approval."
+            : actorName + " submitted a schedule for approval.";
+
+      const recipientIds = [];
+      const seenRecipients = Object.create(null);
+      const actorId = String((auth.profile && auth.profile.id) || "").trim();
+      function addRecipient(uid) {
+        const id = String(uid || "").trim();
+        if (!id || seenRecipients[id] || id === actorId) return;
+        seenRecipients[id] = true;
+        recipientIds.push(id);
+      }
+
+      if (direction === "to_admin") {
+        let adminQuery = admin.from("profiles").select("id").eq("role", "admin");
+        if (companyId) adminQuery = adminQuery.eq("company_id", companyId);
+        const { data: adminRows, error: adminErr } = await adminQuery;
+        if (adminErr) {
+          console.warn("schedule/notify-review admins", adminErr);
+          return res.status(500).json({
+            ok: false,
+            message: adminErr.message || "Could not load admin accounts.",
+          });
+        }
+        (adminRows || []).forEach((row) => addRecipient(row && row.id));
+      } else {
+        /* Store managers for this restaurant (exclude admins). */
+        if (companyId) {
+          const { data: recipientRows, error: recipErr } = await admin.rpc(
+            "notification_manager_recipient_ids",
+            {
+              p_company_id: companyId,
+              p_restaurant_id: restaurantId || null,
+            }
+          );
+          if (recipErr) {
+            console.warn("schedule/notify-review managers rpc", recipErr);
+            const { data: mgrRows } = await admin
+              .from("profiles")
+              .select("id, role")
+              .eq("company_id", companyId)
+              .eq("role", "manager");
+            (mgrRows || []).forEach((row) => addRecipient(row && row.id));
+          } else {
+            const candidateIds = [];
+            (Array.isArray(recipientRows) ? recipientRows : []).forEach((uid) => {
+              const s = String(uid || "").trim();
+              if (s) candidateIds.push(s);
+            });
+            if (candidateIds.length) {
+              const { data: roleRows } = await admin
+                .from("profiles")
+                .select("id, role")
+                .in("id", candidateIds);
+              (roleRows || []).forEach((row) => {
+                if (row && row.role === "manager") addRecipient(row.id);
+              });
+            }
+          }
+        }
+      }
+
+      let inAppCreated = 0;
+      let inAppError = null;
+      const notifType = "schedule_review_pending";
+      const notifData = {
+        type: notifType,
+        subsection: "schedule",
+        openScheduleApprovals: true,
+        weekMondayIso,
+        restaurantId: restaurantId || null,
+        reviewId,
+        direction,
+        teamStateId,
+      };
+      if (recipientIds.length) {
+        const notifRows = recipientIds.map((userId) => ({
+          user_id: userId,
+          company_id: companyId,
+          team_state_id: teamStateId,
+          restaurant_id: restaurantId || null,
+          type: notifType,
+          title,
+          body: bodyText,
+          data: notifData,
+        }));
+        const { error: notifErr } = await admin.from("app_notifications").insert(notifRows);
+        if (notifErr) {
+          inAppError = notifErr.message || String(notifErr);
+          console.warn("schedule/notify-review in-app", notifErr);
+        } else {
+          inAppCreated = notifRows.length;
+        }
+      }
+
+      let tokenQuery = admin
+        .from("device_push_tokens")
+        .select("expo_push_token, user_id, team_state_id")
+        .in("user_id", recipientIds);
+      if (companyId) {
+        tokenQuery = tokenQuery.or(`company_id.eq.${companyId},company_id.is.null`);
+      }
+      const { data: tokenRows, error: tokErr } = recipientIds.length
+        ? await tokenQuery
+        : { data: [], error: null };
+      if (tokErr) {
+        console.warn("schedule/notify-review tokens", tokErr);
+        return res.status(500).json({
+          ok: false,
+          message: tokErr.message || "Could not load push tokens.",
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          direction,
+          recipients: recipientIds.length,
+        });
+      }
+
+      const tokens = [];
+      const seenTok = Object.create(null);
+      (tokenRows || []).forEach((row) => {
+        const t = String((row && row.expo_push_token) || "").trim();
+        if (!t || seenTok[t]) return;
+        seenTok[t] = true;
+        tokens.push(t);
+      });
+
+      if (!recipientIds.length) {
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          recipients: 0,
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          direction,
+          restaurantId: restaurantId || null,
+          message:
+            direction === "to_admin"
+              ? "No admin accounts found to notify."
+              : "No managers found for this store to notify.",
+          weekMondayIso,
+        });
+      }
+
+      if (!tokens.length) {
+        return res.json({
+          ok: true,
+          sent: 0,
+          failed: 0,
+          tokens: 0,
+          recipients: recipientIds.length,
+          inAppCreated,
+          inAppError: inAppError || undefined,
+          direction,
+          restaurantId: restaurantId || null,
+          message:
+            inAppCreated > 0
+              ? "In-app notifications saved for " +
+                inAppCreated +
+                " recipient" +
+                (inAppCreated === 1 ? "" : "s") +
+                "."
+              : "No registered devices for push." +
+                (inAppError ? " (In-app save failed: " + inAppError + ")" : ""),
+          weekMondayIso,
+        });
+      }
+
+      const messages = tokens.map((to) =>
+        schedulePushMessagePayload(to, title, bodyText, {
+          type: notifType,
+          weekMondayIso,
+          teamStateId,
+          restaurantId: restaurantId || null,
+          reviewId,
+          direction,
+          openScheduleApprovals: true,
+        })
+      );
+      const push = await sendExpoPushMessages(messages, { receiptWaitMs: 1500 });
+      if (push.staleTokens && push.staleTokens.length) {
+        try {
+          await admin.from("device_push_tokens").delete().in("expo_push_token", push.staleTokens);
+        } catch (_stale) {
+          /* ignore */
+        }
+      }
+      return res.json({
+        ok: true,
+        sent: push.sent,
+        failed: push.failed,
+        tokens: tokens.length,
+        recipients: recipientIds.length,
+        inAppCreated,
+        inAppError: inAppError || undefined,
+        direction,
+        restaurantId: restaurantId || null,
+        weekMondayIso,
+        delivered: push.delivered,
+        message:
+          push.sent > 0
+            ? "Notified " + push.sent + " device" + (push.sent === 1 ? "" : "s") + "."
+            : inAppCreated > 0
+              ? "In-app notifications saved."
+              : "Could not deliver notifications.",
+        errors: push.ticketErrors.length
+          ? push.ticketErrors
+          : push.deliveryErrors.length
+            ? push.deliveryErrors
+            : undefined,
+      });
+    } catch (err) {
+      console.warn("schedule/notify-review", err);
+      return res.status(500).json({ ok: false, message: "Could not send schedule review notifications." });
     }
   });
 

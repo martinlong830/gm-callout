@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ErrorBoundaryProps } from 'expo-router';
 import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
@@ -16,6 +16,8 @@ import {
   type EmployeeRow,
 } from '../../lib/employees';
 import { leaveSummaryLines } from '../../lib/employeeLeave';
+import { portalListCompanyAccountRoles } from '../../lib/portalAuth';
+import { isAdminRole } from '../../lib/roles';
 import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
 import { compareEmployeesByDisplayName } from '../../lib/schedule/rosterOrder';
 
@@ -40,10 +42,12 @@ const TeamMemberCard = memo(function TeamMemberCard({
   item,
   onPress,
   t,
+  accountRoleLabel,
 }: {
   item: EmployeeRow;
   onPress: () => void;
   t: (key: string) => string;
+  accountRoleLabel?: string | null;
 }) {
   const pinLine = employeeClockPinLine(item);
   let leaveLines: string[] = [];
@@ -65,6 +69,9 @@ const TeamMemberCard = memo(function TeamMemberCard({
             label={t('team.employmentStatus')}
             value={item.employmentStatus === 'full-time' ? t('team.fullTime') : t('team.partTime')}
           />
+          {accountRoleLabel ? (
+            <MetaRow label={t('team.accountType')} value={accountRoleLabel} />
+          ) : null}
           {pinLine ? <MetaRow label={t('team.pin')} value={pinLine} /> : null}
           {leaveLines.length ? (
             <View style={styles.leaveBlock}>
@@ -119,6 +126,8 @@ export default function ManagerTeam() {
   const [selected, setSelected] = useState<EmployeeRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [rolesByAuthId, setRolesByAuthId] = useState<Record<string, string>>({});
+  const isAdmin = isAdminRole(role);
 
   const draftRows = useMemo(
     () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
@@ -135,17 +144,63 @@ export default function ManagerTeam() {
     [scopedEmployees, staffTypeLabel]
   );
 
+  const loadAccountRoles = useCallback(() => {
+    if (!isAdmin) {
+      setRolesByAuthId({});
+      return;
+    }
+    void portalListCompanyAccountRoles().then((res) => {
+      if (!res.ok) return;
+      const next: Record<string, string> = {};
+      for (const a of res.accounts) {
+        if (a.authUserId) next[String(a.authUserId)] = a.role;
+      }
+      setRolesByAuthId(next);
+    });
+  }, [isAdmin]);
+
+  useEffect(() => {
+    loadAccountRoles();
+  }, [loadAccountRoles, employees.length]);
+
+  const accountLabelFor = useCallback(
+    (emp: EmployeeRow) => {
+      if (!isAdmin) return null;
+      if (emp.authUserId && rolesByAuthId[String(emp.authUserId)]) {
+        const r = rolesByAuthId[String(emp.authUserId)];
+        if (r === 'admin') return t('team.accountAdmin');
+        if (r === 'manager') return t('team.accountManager');
+        if (r === 'employee') return t('team.accountTeamMember');
+        return r;
+      }
+      if (emp.authUserId) return t('editor.loginLinked');
+      return t('team.accountNotLinked');
+    },
+    [isAdmin, rolesByAuthId, t]
+  );
+
   const onRefresh = useCallback(() => {
     setRefreshing(true);
+    loadAccountRoles();
     void refetch().finally(() => setRefreshing(false));
-  }, [refetch]);
+  }, [refetch, loadAccountRoles]);
 
-  const renderRow = useCallback(({ item }: { item: TeamRow }) => {
-    if (item.kind === 'section') {
-      return <Text style={styles.sectionTitle}>{item.title}</Text>;
-    }
-    return <TeamMemberCard item={item.employee} onPress={() => setSelected(item.employee)} t={t} />;
-  }, [t]);
+  const renderRow = useCallback(
+    ({ item }: { item: TeamRow }) => {
+      if (item.kind === 'section') {
+        return <Text style={styles.sectionTitle}>{item.title}</Text>;
+      }
+      return (
+        <TeamMemberCard
+          item={item.employee}
+          onPress={() => setSelected(item.employee)}
+          t={t}
+          accountRoleLabel={accountLabelFor(item.employee)}
+        />
+      );
+    },
+    [t, accountLabelFor]
+  );
 
   return (
     <View style={styles.screen}>
@@ -189,7 +244,10 @@ export default function ManagerTeam() {
           setSelected(null);
           setCreating(false);
         }}
-        onSaved={() => void refetch({ silent: true })}
+        onSaved={() => {
+          loadAccountRoles();
+          void refetch({ silent: true });
+        }}
       />
     </View>
   );

@@ -4,7 +4,7 @@ import { mergeDraftScheduleSlotOrderFromRemote } from './schedule/slotOrder';
 
 /** Schedule JSON only — largest egress columns. */
 export const TEAM_STATE_SCHEDULE_COLUMNS =
-  'schedule_assignments,schedule_templates,draft_schedule,schedule_published,updated_at';
+  'schedule_assignments,schedule_templates,draft_schedule,schedule_published,company_holidays,updated_at';
 
 export const TEAM_STATE_MANAGER_COLUMNS =
   TEAM_STATE_SCHEDULE_COLUMNS +
@@ -12,13 +12,14 @@ export const TEAM_STATE_MANAGER_COLUMNS =
 
 /** Employees need draft_schedule + schedule_published so views match manager SoT for published weeks. */
 export const TEAM_STATE_EMPLOYEE_COLUMNS =
-  'schedule_assignments,draft_schedule,schedule_published,callout_history,current_restaurant_id,updated_at';
+  'schedule_assignments,draft_schedule,schedule_published,company_holidays,callout_history,current_restaurant_id,updated_at';
 
 const MANAGER_ALLOWED = [
   'schedule_assignments',
   'schedule_templates',
   'draft_schedule',
   'schedule_published',
+  'company_holidays',
   'messaging_templates',
   'current_restaurant_id',
   'callout_history',
@@ -33,6 +34,7 @@ const EMPLOYEE_ALLOWED = [
   'schedule_assignments',
   'draft_schedule',
   'schedule_published',
+  'company_holidays',
   'callout_history',
   'current_restaurant_id',
 ] as const;
@@ -69,6 +71,71 @@ export async function fetchTeamStateUpdatedAt(
   return at != null ? String(at) : null;
 }
 
+const MISSING_COLS_KEY = 'gm-callout-team-state-missing-cols-v1';
+
+/** Seed columns known missing until production migrations are applied. */
+const seededMissing: Record<string, true> = {
+  company_holidays: true,
+  schedule_reviews: true,
+  timecard_tip_takehome_pct: true,
+};
+
+function loadMissingColumns(): Record<string, true> {
+  const out: Record<string, true> = { ...seededMissing };
+  try {
+    if (typeof localStorage === 'undefined') return out;
+    const raw = localStorage.getItem(MISSING_COLS_KEY);
+    if (!raw) return out;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      for (const k of Object.keys(parsed)) {
+        if (parsed[k]) out[k] = true;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+let missingColumns = loadMissingColumns();
+
+function persistMissingColumns() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(MISSING_COLS_KEY, JSON.stringify(missingColumns));
+  } catch {
+    /* ignore */
+  }
+}
+
+function markColumnMissing(col: string) {
+  const c = String(col || '').trim();
+  if (!c || missingColumns[c]) return;
+  missingColumns = { ...missingColumns, [c]: true };
+  persistMissingColumns();
+}
+
+function stripMissingColumns(colsCsv: string): string {
+  return String(colsCsv || '')
+    .split(',')
+    .map((c) => c.trim())
+    .filter((c) => c && !missingColumns[c])
+    .join(',');
+}
+
+function parseMissingColumnFromError(err: unknown): string {
+  const msg = String(
+    (err && typeof err === 'object' && 'message' in err && (err as { message?: string }).message) ||
+      err ||
+      ''
+  );
+  const m =
+    msg.match(/column\s+[\w.]+\.(\w+)\s+does not exist/i) ||
+    msg.match(/Could not find the '(\w+)' column/i);
+  return m && m[1] ? m[1] : '';
+}
+
 export async function fetchTeamStateColumns(
   sb: SupabaseClient,
   opts: {
@@ -78,15 +145,28 @@ export async function fetchTeamStateColumns(
   }
 ): Promise<Record<string, unknown> | null> {
   const id = opts.teamStateId || (await readStoredTeamStateId());
-  const cols = teamStateColumnsForRole(opts.role, opts.fields);
-  const res = await sb.from('team_state').select(cols).eq('id', id).maybeSingle();
-  if (res.error) {
-    console.warn('team_state selective select', res.error);
-    return null;
+  let cols = stripMissingColumns(teamStateColumnsForRole(opts.role, opts.fields));
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const res = await sb.from('team_state').select(cols).eq('id', id).maybeSingle();
+    if (!res.error) {
+      return res.data && typeof res.data === 'object'
+        ? (res.data as Record<string, unknown>)
+        : null;
+    }
+    const missing = parseMissingColumnFromError(res.error);
+    if (!missing) {
+      console.warn('team_state selective select', res.error);
+      return null;
+    }
+    markColumnMissing(missing);
+    const next = stripMissingColumns(cols);
+    if (!next || next === cols) {
+      console.warn('team_state selective select', res.error);
+      return null;
+    }
+    cols = next;
   }
-  return res.data && typeof res.data === 'object'
-    ? (res.data as Record<string, unknown>)
-    : null;
+  return null;
 }
 
 /** In-memory only — never upsert to Supabase. Prefer local schedule while a save is pending. */
@@ -123,16 +203,20 @@ export function mergeTeamStatePartial(
       next.schedule_assignments = prev.schedule_assignments;
     }
     if (prev.draft_schedule != null) {
-      if (partial.draft_schedule != null) {
-        next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
-          partial.draft_schedule,
-          prev.draft_schedule
-        );
-      } else {
-        next.draft_schedule = prev.draft_schedule;
-      }
+      /*
+       * While dirty/in-flight, keep local draft times AND people together.
+       * Do not merge remote slot-order into a dirty draft — that mixed peer structure
+       * with local people and looked like a rollback / corruption.
+       */
+      next.draft_schedule = prev.draft_schedule;
+    }
+    if (prev.schedule_published != null && partial.schedule_published != null) {
+      /* Published flags can update; they do not discard assignment edits. */
+      next.schedule_published = partial.schedule_published;
     }
     if (localDirty) next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
+    /* Always adopt remote updated_at so freshness probes stay honest. */
+    if (partial.updated_at != null) next.updated_at = partial.updated_at;
     return next;
   }
 

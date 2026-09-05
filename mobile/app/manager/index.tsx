@@ -1,14 +1,13 @@
 import { Redirect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { CompactShiftRow } from '../../components/CompactShiftRow';
-import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { HomeScheduleSections } from '../../components/HomeScheduleSections';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
+import { normalizeCompanyHolidays } from '../../lib/companyHolidays';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
 import { isAdminRole } from '../../lib/roles';
-import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -38,7 +37,6 @@ export default function ManagerHome() {
   const { t, staffTypeLabel } = useI18n();
   const { myEmployee, employees, teamState, loading, error, refetch } = useAppData();
   const [refreshing, setRefreshing] = useState(false);
-  const [upcomingWeekCursor, setUpcomingWeekCursor] = useState(0);
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
@@ -74,7 +72,7 @@ export default function ManagerHome() {
   }, [myEmployee, displayName]);
 
   const buckets = useMemo(() => {
-    if (!workerName || !myEmployee) return { today: [], upcoming: [] };
+    if (!workerName || !myEmployee) return { today: [], upcoming: [], past: [] };
     try {
       return getWorkerScheduleBuckets({
         workerName,
@@ -89,7 +87,7 @@ export default function ManagerHome() {
       });
     } catch (err) {
       console.warn('manager home schedule buckets', err);
-      return { today: [], upcoming: [] };
+      return { today: [], upcoming: [], past: [] };
     }
   }, [
     workerName,
@@ -103,15 +101,10 @@ export default function ManagerHome() {
     assignmentStore,
   ]);
 
-  const upcomingGrouped = useMemo(
-    () => partitionShiftsByWeekStart(buckets.upcoming),
-    [buckets.upcoming]
+  const holidays = useMemo(
+    () => normalizeCompanyHolidays(teamState?.company_holidays),
+    [teamState?.company_holidays]
   );
-
-  const upcomingWeekRows = useMemo(() => {
-    const wk = upcomingGrouped.order[upcomingWeekCursor];
-    return wk ? upcomingGrouped.byWeek[wk] ?? [] : [];
-  }, [upcomingGrouped, upcomingWeekCursor]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -148,37 +141,13 @@ export default function ManagerHome() {
           <Text style={styles.muted}>{t('employee.noRosterLinked')}</Text>
         ) : null}
         {teamState && myEmployee ? (
-          <>
-            <Text style={styles.sectionLabel}>{t('common.today')}</Text>
-            {!buckets.today.length ? (
-              <Text style={styles.muted}>{t('employee.noShiftsToday')}</Text>
-            ) : (
-              buckets.today.map((row) => (
-                <CompactShiftRow key={`t-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
-              ))
-            )}
-            <View style={styles.upcomingHead}>
-              <Text style={[styles.sectionLabel, styles.sectionSpaced]}>{t('employee.upcomingShifts')}</Text>
-              {upcomingGrouped.order.length ? (
-                <ScheduleWeekPicker
-                  mode="pager"
-                  weekMeta={weekMeta}
-                  weekStartIsos={upcomingGrouped.order}
-                  cursor={upcomingWeekCursor}
-                  onCursorChange={setUpcomingWeekCursor}
-                />
-              ) : null}
-            </View>
-            {!upcomingGrouped.order.length ? (
-              <Text style={styles.muted}>{t('employee.noLaterShifts')}</Text>
-            ) : !upcomingWeekRows.length ? (
-              <Text style={styles.muted}>{t('employee.noShiftsThisWeek')}</Text>
-            ) : (
-              upcomingWeekRows.map((row) => (
-                <CompactShiftRow key={`u-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
-              ))
-            )}
-          </>
+          <HomeScheduleSections
+            today={buckets.today}
+            upcoming={buckets.upcoming}
+            past={buckets.past}
+            holidays={holidays}
+            weekMeta={weekMeta}
+          />
         ) : null}
       </View>
     </ScrollView>
@@ -200,9 +169,6 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 15, fontWeight: '700', color: '#111', marginBottom: 8 },
   body: { fontSize: 14, color: '#333' },
-  sectionLabel: { fontSize: 13, fontWeight: '700', color: '#666', textTransform: 'uppercase' },
-  sectionSpaced: { marginTop: 14 },
-  upcomingHead: { marginBottom: 4 },
   muted: { fontSize: 14, color: '#888', marginTop: 4 },
   err: { fontSize: 14, color: '#b91c1c', marginTop: 4 },
 });

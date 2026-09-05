@@ -85,8 +85,11 @@ export default function EmployeeLayout() {
     };
   }, [session, role]);
 
-  if (!session || role !== 'employee') {
+  if (!session) {
     return <Redirect href="/login" />;
+  }
+  if (role !== 'employee') {
+    return <Redirect href="/" />;
   }
 
   return (

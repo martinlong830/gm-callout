@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { CompactShiftRow } from '../../components/CompactShiftRow';
-import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
+import { HomeScheduleSections } from '../../components/HomeScheduleSections';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
+import { normalizeCompanyHolidays } from '../../lib/companyHolidays';
 import { employeeDisplayName, type EmployeeRow } from '../../lib/employees';
-import { partitionShiftsByWeekStart } from '../../lib/schedule/employeeShiftDisplay';
 import {
   assignmentShell,
   buildAllWeekDayLabels,
@@ -44,7 +43,6 @@ export default function EmployeeHome() {
   const { t, staffTypeLabel, statusLabel } = useI18n();
   const { myEmployee, employees, staffRequests, teamState, loading, error, refetch } = useAppData();
   const [refreshing, setRefreshing] = useState(false);
-  const [upcomingWeekCursor, setUpcomingWeekCursor] = useState(0);
 
   const restaurants = useMemo(() => defaultRestaurants(), []);
   const weekMeta = useMemo(
@@ -79,8 +77,6 @@ export default function EmployeeHome() {
     return displayName.trim();
   }, [myEmployee, displayName]);
 
-  // Push must never load at cold start. Expo Router sync-loads this route module
-  // when the root Stack mounts, so avoid any static import of push/notifications.
   useEffect(() => {
     let cancelled = false;
     void import('../../lib/pushNotifications')
@@ -94,7 +90,7 @@ export default function EmployeeHome() {
   }, []);
 
   const buckets = useMemo(() => {
-    if (!workerName) return { today: [], upcoming: [] };
+    if (!workerName) return { today: [], upcoming: [], past: [] };
     try {
       return getWorkerScheduleBuckets({
         workerName,
@@ -108,7 +104,7 @@ export default function EmployeeHome() {
       });
     } catch (err) {
       console.warn('employee home schedule buckets', err);
-      return { today: [], upcoming: [] };
+      return { today: [], upcoming: [], past: [] };
     }
   }, [
     workerName,
@@ -121,15 +117,10 @@ export default function EmployeeHome() {
     assignmentStore,
   ]);
 
-  const upcomingGrouped = useMemo(
-    () => partitionShiftsByWeekStart(buckets.upcoming),
-    [buckets.upcoming]
+  const holidays = useMemo(
+    () => normalizeCompanyHolidays(teamState?.company_holidays),
+    [teamState?.company_holidays]
   );
-
-  const upcomingWeekRows = useMemo(() => {
-    const wk = upcomingGrouped.order[upcomingWeekCursor];
-    return wk ? upcomingGrouped.byWeek[wk] ?? [] : [];
-  }, [upcomingGrouped, upcomingWeekCursor]);
 
   const recentRequests = useMemo(() => {
     const self = workerName.trim().toLowerCase();
@@ -178,37 +169,13 @@ export default function EmployeeHome() {
           <Text style={styles.muted}>{t('employee.scheduleUnavailable')}</Text>
         ) : null}
         {teamState ? (
-          <>
-            <Text style={styles.sectionLabel}>{t('common.today')}</Text>
-            {!buckets.today.length ? (
-              <Text style={styles.muted}>{t('employee.noShiftsToday')}</Text>
-            ) : (
-              buckets.today.map((row) => (
-                <CompactShiftRow key={`t-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
-              ))
-            )}
-            <View style={styles.upcomingHead}>
-              <Text style={[styles.sectionLabel, styles.sectionSpaced]}>{t('employee.upcomingShifts')}</Text>
-              {upcomingGrouped.order.length ? (
-                <ScheduleWeekPicker
-                  mode="pager"
-                  weekMeta={weekMeta}
-                  weekStartIsos={upcomingGrouped.order}
-                  cursor={upcomingWeekCursor}
-                  onCursorChange={setUpcomingWeekCursor}
-                />
-              ) : null}
-            </View>
-            {!upcomingGrouped.order.length ? (
-              <Text style={styles.muted}>{t('employee.noLaterShifts')}</Text>
-            ) : !upcomingWeekRows.length ? (
-              <Text style={styles.muted}>{t('employee.noShiftsThisWeek')}</Text>
-            ) : (
-              upcomingWeekRows.map((row) => (
-                <CompactShiftRow key={`u-${row.restaurantId}-${row.id}-${row.iso}`} row={row} />
-              ))
-            )}
-          </>
+          <HomeScheduleSections
+            today={buckets.today}
+            upcoming={buckets.upcoming}
+            past={buckets.past}
+            holidays={holidays}
+            weekMeta={weekMeta}
+          />
         ) : null}
       </View>
       <View style={styles.card}>
@@ -247,9 +214,6 @@ const styles = StyleSheet.create({
     borderColor: '#e2e6ea',
   },
   cardTitle: { fontSize: 12, fontWeight: '700', color: '#666', marginBottom: 8, textTransform: 'uppercase' },
-  sectionLabel: { fontSize: 11, fontWeight: '700', color: '#64748b', letterSpacing: 0.5, marginTop: 4 },
-  sectionSpaced: { marginTop: 14 },
-  upcomingHead: { marginTop: 4 },
   body: { fontSize: 15, color: '#333', lineHeight: 22 },
   warn: { fontSize: 14, color: '#8a5a00', lineHeight: 20 },
   muted: { fontSize: 14, color: '#888', marginTop: 4 },

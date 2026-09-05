@@ -97,6 +97,7 @@ const EN: Dict = {
   'status.declined': 'Declined',
   'status.pending': 'Pending',
   'status.awaiting_cover': 'Awaiting cover',
+  'status.pending_approval': 'Pending approval',
   'status.draft': 'Draft',
 
   'auth.tagline': 'Staff scheduling for restaurants',
@@ -204,6 +205,22 @@ const EN: Dict = {
   'schedule.publishNotifyEmployees': 'Publish / notify employees',
   'schedule.undo': 'Undo',
   'schedule.history': 'History',
+  'schedule.holidays': 'Holidays',
+  'schedule.holidaysTitle': 'Add or edit company holidays',
+  'schedule.holidaysHint':
+    'Holidays appear on everyone’s schedule calendar and on Home for the next 4 weeks.',
+  'schedule.holidayDate': 'Date',
+  'schedule.holidayName': 'Name',
+  'schedule.addHoliday': 'Add holiday',
+  'schedule.noHolidaysYet': 'No holidays yet.',
+  'schedule.holidayInvalid': 'Enter a valid date and name.',
+  'schedule.holidayAdded': 'Holiday saved.',
+  'common.done': 'Done',
+  'common.remove': 'Remove',
+  'employee.upcomingHolidays': 'Upcoming holidays',
+  'employee.noUpcomingHolidays': 'No upcoming holidays.',
+  'employee.pastShifts': 'Past shifts',
+  'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
     'Saved schedule versions (edits and publishes). Hard revert restores assignments and shift times for everyone.',
   'schedule.historyEmpty':
@@ -396,7 +413,7 @@ const EN: Dict = {
   'schedule.viewOnly': 'View only',
   'schedule.viewOnlyOtherStore': 'Other store — view only',
   'schedule.viewOnlyOtherStoreHint':
-    'You can view this store’s schedule but only edit your own store.',
+    'Abbreviated view of the other store — only people tied to your store this week. View only.',
   'schedule.publishConfirmNotify':
     'Send another notification that the schedule for {range} is ready?',
   'schedule.publishConfirmPublish':
@@ -474,6 +491,11 @@ const EN: Dict = {
   'team.employmentStatus': 'Employment status',
   'team.partTime': 'Part-time',
   'team.fullTime': 'Full-time',
+  'team.accountType': 'App account',
+  'team.accountManager': 'Manager',
+  'team.accountTeamMember': 'Team member',
+  'team.accountAdmin': 'Admin',
+  'team.accountNotLinked': 'No app login',
 
   'requests.searchEmployee': 'Search employee name',
   'requests.employeeCallout': 'Employee call-out',
@@ -494,6 +516,7 @@ const EN: Dict = {
   'requests.swapTarget': 'Requested cover',
   'requests.swapTargetEveryone': 'Sent to everyone',
   'requests.swapAwaitingCover': 'Waiting for a teammate to accept before you can approve.',
+  'requests.swapPendingApproval': 'Cover accepted — approve to place them on the schedule.',
   'requests.swapNeedsCover': 'A cover worker must accept this swap before you can approve it.',
   'requests.employeeCallouts': 'Employee call-outs',
   'requests.coverageCampaigns': 'Coverage campaigns',
@@ -508,7 +531,7 @@ const EN: Dict = {
   'availability.rosterNotLinked': 'Your roster profile is not linked yet.',
   'availability.noTeamMembers': 'No team members found.',
   'availability.employeeHint':
-    'Edit your availability by week. Changes save as a draft until you submit.',
+    'Drag across times you’re available. Save/submit still maps to your scheduled shift lines.',
   'availability.draftSaved': 'Draft saved',
   'availability.savedFor': 'Saved availability for {name}.',
   'availability.approvedFor': 'Approved availability for {name}.',
@@ -719,6 +742,10 @@ const EN: Dict = {
   'editor.portalPassword': 'Portal password',
   'editor.recoveryEmail': 'Recovery email',
   'editor.accountType': 'Account type',
+  'editor.accountTypeHintEdit':
+    'Managers use the manager app. Team members use the employee app and permissions.',
+  'editor.accountTypeAdminLocked': 'Admin accounts cannot be changed here.',
+  'editor.loadingAccount': 'Loading app account…',
 
   'errors.generic': 'Something went wrong.',
 
@@ -822,6 +849,7 @@ const ES: Dict = {
   'status.declined': 'Rechazado',
   'status.pending': 'Pendiente',
   'status.awaiting_cover': 'Esperando cobertura',
+  'status.pending_approval': 'Pendiente de aprobación',
   'status.draft': 'Borrador',
 
   'auth.tagline': 'Horarios de personal para restaurantes',
@@ -935,6 +963,22 @@ const ES: Dict = {
   'schedule.publishNotifyEmployees': 'Publicar / avisar a empleados',
   'schedule.undo': 'Deshacer',
   'schedule.history': 'Historial',
+  'schedule.holidays': 'Feriados',
+  'schedule.holidaysTitle': 'Agregar o editar feriados de la empresa',
+  'schedule.holidaysHint':
+    'Los feriados aparecen en el calendario de todos y en Inicio por las próximas 4 semanas.',
+  'schedule.holidayDate': 'Fecha',
+  'schedule.holidayName': 'Nombre',
+  'schedule.addHoliday': 'Agregar feriado',
+  'schedule.noHolidaysYet': 'Aún no hay feriados.',
+  'schedule.holidayInvalid': 'Ingresa una fecha y un nombre válidos.',
+  'schedule.holidayAdded': 'Feriado guardado.',
+  'common.done': 'Listo',
+  'common.remove': 'Quitar',
+  'employee.upcomingHolidays': 'Próximos feriados',
+  'employee.noUpcomingHolidays': 'No hay feriados próximos.',
+  'employee.pastShifts': 'Turnos pasados',
+  'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
     'Versiones guardadas (ediciones y publicaciones). La reversión restaura asignaciones y horarios para todos.',
   'schedule.historyEmpty':
@@ -1127,7 +1171,7 @@ const ES: Dict = {
   'schedule.viewOnly': 'Solo lectura',
   'schedule.viewOnlyOtherStore': 'Otra tienda — solo lectura',
   'schedule.viewOnlyOtherStoreHint':
-    'Puedes ver el horario de esta tienda, pero solo editar el de la tuya.',
+    'Vista abreviada de la otra tienda: solo personas vinculadas a tu tienda esta semana. Solo lectura.',
   'schedule.publishConfirmNotify':
     '¿Enviar otra notificación de que el horario de {range} está listo?',
   'schedule.publishConfirmPublish':
@@ -1205,6 +1249,11 @@ const ES: Dict = {
   'team.employmentStatus': 'Estado laboral',
   'team.partTime': 'Medio tiempo',
   'team.fullTime': 'Tiempo completo',
+  'team.accountType': 'Cuenta de la app',
+  'team.accountManager': 'Gerente',
+  'team.accountTeamMember': 'Miembro del equipo',
+  'team.accountAdmin': 'Administrador',
+  'team.accountNotLinked': 'Sin inicio de sesión',
 
   'requests.searchEmployee': 'Buscar nombre de empleado',
   'requests.employeeCallout': 'Falta de empleado',
@@ -1225,6 +1274,7 @@ const ES: Dict = {
   'requests.swapTarget': 'Cobertura solicitada',
   'requests.swapTargetEveryone': 'Enviado a todos',
   'requests.swapAwaitingCover': 'Esperando que un compañero acepte antes de poder aprobar.',
+  'requests.swapPendingApproval': 'Cobertura aceptada — aprueba para colocarlos en el horario.',
   'requests.swapNeedsCover': 'Un compañero debe aceptar este cambio antes de que puedas aprobarlo.',
   'requests.employeeCallouts': 'Faltas de empleados',
   'requests.coverageCampaigns': 'Campañas de cobertura',
@@ -1240,7 +1290,7 @@ const ES: Dict = {
   'availability.rosterNotLinked': 'Tu perfil aún no está vinculado a la lista.',
   'availability.noTeamMembers': 'No se encontraron miembros del equipo.',
   'availability.employeeHint':
-    'Edita tu disponibilidad por semana. Los cambios se guardan como borrador hasta que envíes.',
+    'Arrastra por los horarios en los que puedes trabajar. Al guardar/enviar se asigna a tus turnos programados.',
   'availability.draftSaved': 'Borrador guardado',
   'availability.savedFor': 'Disponibilidad guardada para {name}.',
   'availability.approvedFor': 'Disponibilidad aprobada para {name}.',
@@ -1453,6 +1503,10 @@ const ES: Dict = {
   'editor.portalPassword': 'Contraseña del portal',
   'editor.recoveryEmail': 'Correo de recuperación',
   'editor.accountType': 'Tipo de cuenta',
+  'editor.accountTypeHintEdit':
+    'Los gerentes usan la app de gerente. Los miembros del equipo usan la app y permisos de empleado.',
+  'editor.accountTypeAdminLocked': 'Las cuentas de administrador no se pueden cambiar aquí.',
+  'editor.loadingAccount': 'Cargando cuenta de la app…',
 
   'errors.generic': 'Algo salió mal.',
 
@@ -1489,6 +1543,7 @@ export function statusLabel(locale: Locale, status: string | null | undefined): 
   if (s === 'approved') return translate(locale, 'status.approved');
   if (s === 'declined') return translate(locale, 'status.declined');
   if (s === 'awaiting_cover') return translate(locale, 'status.awaiting_cover');
+  if (s === 'pending_approval') return translate(locale, 'status.pending_approval');
   if (s === 'pending') return translate(locale, 'status.pending');
   if (s === 'draft') return translate(locale, 'status.draft');
   return status || '';

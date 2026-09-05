@@ -52,6 +52,9 @@ window.GM_I18N_ES = {
   'common.location': 'Ubicación',
   'common.start': 'Inicio',
   'common.end': 'Fin',
+  'schedule.start': 'Inicio',
+  'schedule.end': 'Fin',
+  'schedule.break': 'Descanso / oficina',
   'common.type': 'Tipo',
   'common.notes': 'Notas',
   'common.optional': '(opcional)',
@@ -122,6 +125,7 @@ window.GM_I18N_ES = {
   'status.declined': 'Rechazado',
   'status.pending': 'Pendiente',
   'status.awaiting_cover': 'Esperando cobertura',
+  'status.pending_approval': 'Pendiente de aprobación',
   'status.draft': 'Borrador',
   'status.submitted': 'Enviado',
 
@@ -238,7 +242,9 @@ window.GM_I18N_ES = {
 
   'schedule.publishNotify': 'Publicar / Avisar',
   'schedule.viewOnlyOtherStoreHint':
-    'Puedes ver el horario de esta tienda, pero solo editar el de la tuya.',
+    'Vista abreviada de la otra tienda: solo personas vinculadas a tu tienda esta semana. Solo lectura.',
+  'schedule.dragMoveHint':
+    'Arrastra un turno para moverlo. Mantén Option/Alt al arrastrar para copiar horarios.',
   'schedule.publishNotifyTitle': 'Publicar el horario de esta semana y elegir a quién avisar',
   'schedule.publishNotifyAdmins': 'Publicar / avisar a cuentas admin',
   'schedule.publishNotifyEmployees': 'Publicar / avisar a empleados',
@@ -256,10 +262,33 @@ window.GM_I18N_ES = {
   'schedule.downloadWeekFailed': 'No se pudo descargar el horario de esta semana.',
   'schedule.undo': 'Deshacer',
   'schedule.undoTitle': 'Deshacer el último cambio de horario o turno',
+  'schedule.refresh': 'Actualizar',
+  'schedule.refreshTitle': 'Traer el horario más reciente de la nube (cambios de otros gerentes)',
+  'schedule.refreshing': 'Actualizando el horario desde la nube…',
+  'schedule.refreshDone': 'Horario actualizado. Todos los gerentes comparten esta copia en la nube.',
+  'schedule.refreshFailed': 'No se pudo actualizar el horario.',
+  'schedule.peerUpdated':
+    'Horario actualizado por otro gerente. Tu vista ahora coincide con la nube.',
   'schedule.history': 'Historial',
   'schedule.historyTitle': 'Ver versiones guardadas y revertir',
+  'schedule.holidays': 'Feriados',
+  'schedule.holidaysTitle': 'Agregar o editar feriados de la empresa',
+  'schedule.holidaysHint':
+    'Los feriados aparecen en el calendario de todos y en Inicio por las próximas 4 semanas.',
+  'schedule.holidayDate': 'Fecha',
+  'schedule.holidayName': 'Nombre',
+  'schedule.addHoliday': 'Agregar feriado',
+  'schedule.noHolidaysYet': 'Aún no hay feriados.',
+  'schedule.holidayInvalid': 'Ingresa una fecha y un nombre válidos.',
+  'schedule.holidayAdded': 'Feriado guardado.',
+  'common.done': 'Listo',
+  'common.remove': 'Quitar',
+  'employee.upcomingHolidays': 'Próximos feriados',
+  'employee.noUpcomingHolidays': 'No hay feriados próximos.',
+  'employee.pastShifts': 'Turnos pasados',
+  'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
-    'Versiones guardadas (autoguardado ~cada 8 minutos al editar, más publicar/revertir). La reversión fuerte restaura asignaciones y horarios para todos.',
+    'Versiones guardadas (autoguardado ~cada 15 minutos si el horario cambió, más publicar/revertir). La reversión fuerte restaura asignaciones y horarios para todos.',
   'schedule.historyEmpty': 'Aún no hay versiones. Sigue editando: los puntos de control aparecen tras una pausa.',
   'schedule.historyFailed': 'No se pudo cargar el historial del horario.',
   'schedule.historySourcePublish': 'Publicar',
@@ -271,6 +300,14 @@ window.GM_I18N_ES = {
   'schedule.hardRevertConfirm':
     '¿Revertir el horario en vivo a esta versión para todos los gerentes? Primero se guarda una copia de seguridad del horario actual.',
   'schedule.hardRevertDone': 'Horario restaurado desde el historial.',
+  'schedule.syncConflict':
+    'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe la nube) o carga el de ellos (descarta tus cambios sin guardar).',
+  'schedule.syncConflictKeepMine': 'Conservar mi horario',
+  'schedule.syncConflictTakeCloud': 'Cargar horario de la nube',
+  'schedule.syncConflictKeptMine': 'Conservando tu horario y guardándolo en la nube…',
+  'schedule.syncConflictKeptMineDone': 'Tu horario se guardó en la nube.',
+  'schedule.syncConflictTookCloud':
+    'Se cargó el horario de la nube. Se descartaron tus cambios locales en conflicto.',
   'schedule.markDayOff': 'Marcar día libre',
   'schedule.dayOffToolbarTitle': 'Marca como día libre el turno sobre el que pasas el cursor o que tiene el foco',
   'schedule.dayOffNeedHover': 'Pasa el cursor o enfoca un turno en el calendario y luego pulsa Día libre.',
@@ -344,6 +381,75 @@ window.GM_I18N_ES = {
   'schedule.pastWeek': 'Semana pasada',
   'schedule.pastWeekHint': 'No se puede publicar ni avisar una semana que ya pasó',
   'schedule.viewOnly': 'Solo lectura',
+  'schedule.sendForApproval': 'Enviar para aprobación',
+  'schedule.sendForApprovalTitle': 'Enviar el horario de esta semana a un administrador',
+  'schedule.reviewChanges': 'Revisar cambios',
+  'schedule.reviewChangesTitle': 'Revisar cambios de horario propuestos',
+  'schedule.approvals': 'Aprobaciones',
+  'schedule.approvalsTitle': 'Enviar o revisar aprobaciones de horario',
+  'schedule.approvalsSendTitle': 'Enviar para aprobación',
+  'schedule.approvalsSendWeek': 'Enviar esta semana para aprobación',
+  'schedule.approvalsEmptyManagerMeta':
+    'No hay propuestas en espera. Puedes enviar el horario de esta semana a un administrador.',
+  'schedule.approvalsEmptyManagerHint': 'Usa el botón de abajo para previsualizar y enviar esta semana.',
+  'schedule.approvalsEmptyManagerTitle': 'Nada pendiente',
+  'schedule.approvalsEmptyManagerBody':
+    'No hay propuestas esperándote. Envía el horario de esta semana a un administrador cuando esté listo.',
+  'schedule.approvalsPendingWeekMeta':
+    'Esta semana ya está enviada. Espera la devolución, o acepta y aplica cuando esté lista.',
+  'schedule.approvalsPendingWeekHint':
+    'Usa Devolver / Aceptar cuando la otra parte devuelva esta semana.',
+  'schedule.approvalsPendingWeekTitle': 'Ya enviada',
+  'schedule.approvalsPendingWeekBody':
+    'El horario de esta semana ya está en aprobación. Verás acciones aquí cuando lo devuelvan.',
+  'schedule.reviewComposeMeta':
+    'Vista previa del horario de esta semana; confirma para enviar una copia fija a un administrador.',
+  'schedule.reviewNetNewMeta': 'Horario propuesto completo (nuevo).',
+  'schedule.reviewDeltaMeta': 'Horario propuesto con sugerencias marcadas en rojo.',
+  'schedule.reviewComposeHint':
+    'El horario en vivo no cambia hasta que un administrador acepte y aplique.',
+  'schedule.reviewHint':
+    'Toca una celda para sugerir un horario (nota opcional) o aprobar una sugerencia. Rojo = cambio abierto.',
+  'schedule.reviewHistory': 'Historial de cambios',
+  'schedule.reviewNoHistory': 'Aún no hay sugerencias.',
+  'schedule.reviewNote': 'Nota (opcional)',
+  'schedule.reviewApproveSuggestion': 'Aprobar sugerencia',
+  'schedule.reviewSuggestChange': 'Sugerir cambio',
+  'schedule.reviewComposeReadOnly':
+    'Confirma el envío abajo para mandar esta copia fija a un administrador.',
+  'schedule.reviewBulkApprove': 'Aprobar todos los cambios abiertos',
+  'schedule.reviewSendToManager': 'Devolver al gerente',
+  'schedule.reviewSendToAdmin': 'Devolver al administrador',
+  'schedule.reviewConfirmSend': 'Confirmar envío al administrador',
+  'schedule.reviewSending': 'Enviando…',
+  'schedule.reviewApplying': 'Aplicando…',
+  'schedule.reviewConfirmed': 'Confirmado',
+  'schedule.reviewConfirmedMeta': 'Confirmado — enviado al administrador para aprobación.',
+  'schedule.reviewConfirmedToManagerMeta': 'enviado al gerente.',
+  'schedule.reviewConfirmedToAdminMeta': 'enviado al administrador.',
+  'schedule.reviewConfirmedApplyMeta': 'Confirmado — aplicado al horario en vivo.',
+  'schedule.reviewSent':
+    'Enviado al administrador. El horario en vivo no cambia hasta que lo acepte.',
+  'schedule.reviewSyncUnavailable':
+    'No se pudo sincronizar esta aprobación con la nube. Aplica la migración schedule_reviews y vuelve a enviar.',
+  'schedule.reviewSyncFailed':
+    'No se pudo enviar al administrador. Revisa tu conexión e intenta de nuevo.',
+  'schedule.reviewSentBack': 'Devuelto para que la otra parte lo revise.',
+  'schedule.reviewSentBackToManager': 'Devuelto al gerente para revisión.',
+  'schedule.reviewSentBackToAdmin': 'Devuelto al administrador para revisión.',
+  'schedule.reviewApplied': 'Propuesta aplicada al horario en vivo.',
+  'schedule.reviewAcceptApply': 'Aceptar y aplicar al horario en vivo',
+  'schedule.reviewAcceptConfirm':
+    '¿Aplicar este horario propuesto a la semana en vivo de esta ubicación?',
+  'schedule.reviewAcceptOpenWarn':
+    'Todavía hay sugerencias abiertas. ¿Aceptar y aplicar la propuesta tal cual?',
+  'schedule.reviewInboxEmpty': 'No hay revisiones de horario pendientes.',
+  'schedule.reviewInboxEmptyMeta': 'Aún no se han enviado horarios para revisión.',
+  'schedule.reviewInboxEmptyHint':
+    'Cuando un gerente envíe una semana para aprobación, aparecerá aquí.',
+  'schedule.reviewInboxEmptyTitle': 'Aún no hay horarios enviados',
+  'schedule.reviewInboxEmptyBody':
+    'Los gerentes aún no han enviado horarios para aprobación. Cuando lo hagan, esas propuestas aparecerán aquí.',
 
   'team.search': 'Buscar equipo',
   'team.searchPlaceholder': 'Buscar nombre o teléfono',
@@ -361,15 +467,31 @@ window.GM_I18N_ES = {
   'team.employmentStatus': 'Estado laboral',
   'team.partTime': 'Medio tiempo',
   'team.fullTime': 'Tiempo completo',
+  'team.accountType': 'Cuenta de la app',
+  'team.accountManager': 'Gerente',
+  'team.accountTeamMember': 'Miembro del equipo',
+  'team.accountAdmin': 'Administrador',
+  'team.accountNotLinked': 'Sin inicio de sesión',
+
+  'empForm.accountType': 'Tipo de cuenta',
+  'empForm.accountTeamMember': 'Miembro del equipo',
+  'empForm.accountManager': 'Gerente',
+  'empForm.accountTypeHintCreate':
+    'Solo un administrador o el creador de la empresa puede crear cuentas de gerente.',
+  'empForm.accountTypeHintEdit':
+    'Los gerentes usan la app de gerente. Los miembros del equipo usan la app y permisos de empleado.',
+  'empForm.accountTypeAdminLocked': 'Las cuentas de administrador no se pueden cambiar aquí.',
+  'empForm.appLoginLinked': 'Inicio de sesión: vinculado a la cuenta del portal',
+  'empForm.appLoginNotLinked': 'Inicio de sesión: no vinculado',
 
   'availability.checkAll': 'Marcar todos',
   'availability.save': 'Guardar disponibilidad',
   'availability.submit': 'Enviar disponibilidad',
   'availability.noEmployees': 'Aún no hay empleados en la lista.',
   'availability.managerHint':
-    'Consulta o edita la semana de cada empleado. Arrastra un bloque de tiempo a otro día para copiarlo (mantén Shift al soltar para mover). Aprueba las solicitudes pendientes cuando estén listas.',
+    'Consulta o edita la semana de cada empleado en la cuadrícula (arrastra para marcar horarios disponibles). Usa Borrar bajo un día para limpiarlo. Aprueba las solicitudes pendientes cuando estén listas.',
   'availability.employeeHint':
-    'Marca cuándo puedes trabajar en la semana seleccionada. Arrastra un horario a otro día para copiarlo (Shift+ soltar para mover) y envíalo a tu gerente.',
+    'Arrastra por los horarios en los que puedes trabajar. Al guardar/enviar se asigna a tus turnos programados.',
   'availability.weekNav': 'Semana de disponibilidad',
   'availability.pendingLabel': 'Pendiente',
   'availability.submissionTitle': 'Envío de disponibilidad',
@@ -549,6 +671,7 @@ window.GM_I18N_ES = {
   'employee.noUpcomingShiftsOption': 'No hay turnos próximos disponibles',
   'employee.noSwapOffers': 'No hay ofertas de cambio de turno abiertas',
   'employee.swapAwaitingCover': 'Esperando que un compañero acepte antes de poder aprobar.',
+  'employee.swapPendingApproval': 'Cobertura aceptada — aprueba para colocarlos en el horario.',
   'employee.swapNeedsCover': 'Un compañero debe aceptar este cambio antes de que puedas aprobarlo.',
   'employee.swapTarget': 'Cobertura solicitada',
   'employee.swapTargetEveryone': 'Enviado a todos',

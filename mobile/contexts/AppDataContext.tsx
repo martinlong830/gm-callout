@@ -37,6 +37,8 @@ import {
 } from '../lib/teamStateColumns';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
+import { migrateTimecardLeaveIntoTeamHistory } from '../lib/employeeLeave';
+import { saveEmployeeRow } from '../lib/employeeSave';
 import { isManagerLikeRole } from '../lib/roles';
 import { useAuth } from './AuthContext';
 
@@ -97,24 +99,41 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 
   const shouldProtectLocalSchedule = useCallback(
     (prev: HydrationResult['teamState'] | null, remote?: Record<string, unknown> | null) => {
+      /* HARD RULE: unpushed or in-flight local schedule always wins over remote. */
       if (schedulePushInFlightRef.current) return true;
       if (prev?.[LOCAL_SCHEDULE_DIRTY_KEY] === true) return true;
-      const elapsed = Date.now() - lastLocalSchedulePushAtRef.current;
-      if (elapsed < TEAM_STATE_SELF_ECHO_IGNORE_MS) return true;
       const lastAt = lastLocalSchedulePushUpdatedAtRef.current;
       const remoteAt = remote?.updated_at != null ? String(remote.updated_at) : null;
+      const remoteNewer = !!(remoteAt && lastAt && remoteAt > lastAt);
+      /*
+       * Echo window only blocks equal/older remotes — never a strictly newer peer write,
+       * and only when we have no local dirty/in-flight work (checked above).
+       */
+      const elapsed = Date.now() - lastLocalSchedulePushAtRef.current;
+      if (elapsed < TEAM_STATE_SELF_ECHO_IGNORE_MS && !remoteNewer) return true;
       /* Never paint an older cloud snapshot over a newer local push. */
       if (lastAt && remoteAt && remoteAt < lastAt) return true;
+      /*
+       * If remote claims to be newer but its schedule bundle matches what we last pushed,
+       * it is a tip/meta bump — keep local assignments/draft (no flicker / no empty apply).
+       * If remote schedule content differs and is newer, allow it (peer edit).
+       */
       if (
         lastLocalSchedulePushHashRef.current &&
-        elapsed < SCHEDULE_CONTENT_GUARD_MS &&
-        remote
+        remote &&
+        (remote.schedule_assignments != null || remote.draft_schedule != null)
       ) {
         const remoteHash = hashScheduleBundle(
           remote.schedule_assignments,
           remote.draft_schedule
         );
+        if (remoteHash === lastLocalSchedulePushHashRef.current) {
+          /* Same schedule content — protect to avoid pointless repaint/rollback flicker. */
+          if (!remoteNewer || elapsed < SCHEDULE_CONTENT_GUARD_MS) return true;
+        }
         if (
+          !remoteNewer &&
+          elapsed < SCHEDULE_CONTENT_GUARD_MS &&
           remoteHash !== lastLocalSchedulePushHashRef.current &&
           (!remoteAt || !lastAt || remoteAt <= lastAt)
         ) {
@@ -176,6 +195,23 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         });
         hydratedRef.current = true;
         lastHydrateAtRef.current = Date.now();
+        /* One-time: copy week-extras VL/SL into employee leaveBalance (parity with web). */
+        void migrateTimecardLeaveIntoTeamHistory(data.employees)
+          .then(async (changed) => {
+            if (!changed.length || !supabase) return;
+            for (const emp of changed) {
+              try {
+                await saveEmployeeRow(supabase, emp);
+              } catch (e) {
+                console.warn('migrate leaveBalance save', e);
+              }
+            }
+            setEmployees((prev) => {
+              const byId = new Map(changed.map((e) => [e.id, e]));
+              return prev.map((e) => byId.get(e.id) || e);
+            });
+          })
+          .catch((e) => console.warn('migrateTimecardLeaveIntoTeamHistory', e));
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load data');
       } finally {
@@ -346,6 +382,19 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       unsub?.();
     };
   }, [session?.user?.id, realtimePaused, scheduleTeamStateRemoteRefresh]);
+
+  /* Parity with web 15s poll — cheap updated_at probe; full fetch only when changed. */
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    if (realtimePaused) return;
+    const TEAM_STATE_POLL_MS = 15000;
+    const timer = setInterval(() => {
+      if (schedulePushInFlightRef.current) return;
+      if (teamStateRef.current?.[LOCAL_SCHEDULE_DIRTY_KEY] === true) return;
+      void refreshTeamStateSelective();
+    }, TEAM_STATE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [session?.user?.id, realtimePaused, refreshTeamStateSelective]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !session?.user) return;

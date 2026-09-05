@@ -59,7 +59,8 @@ export type SlotOrderByRestaurant = Record<string, SlotOrderByRole>;
 
 /**
  * Per-week slot order SoT: monday ISO → restaurant → role → trIdx[].
- * Legacy global `slotOrderByRestaurant` is read as fallback when a week has no entry.
+ * Legacy global `slotOrderByRestaurant` is kept for older payloads / one-time seed only;
+ * display order uses per-week `slotOrderByWeek` (natural draft order when a week has no entry).
  */
 export type SlotOrderByWeek = Record<string, SlotOrderByRestaurant>;
 

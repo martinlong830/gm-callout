@@ -12,6 +12,7 @@ import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useI18n } from '../../contexts/LocaleContext';
+import { holidayOnIso, normalizeCompanyHolidays } from '../../lib/companyHolidays';
 import {
   employeePrimaryLocationId,
   filterRestaurantsForEmployeeSchedule,
@@ -109,7 +110,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { t, staffTypeLabel } = useI18n();
-  const { myEmployee, employees, teamState, loading } = useAppData();
+  const { myEmployee, employees, teamState, loading, refetch } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const allRestaurants = useMemo(() => defaultRestaurants(), []);
@@ -195,13 +196,19 @@ export default function EmployeeScheduleScreen() {
         break;
       }
     }
-  }, [params.weekMondayIso, weekMeta]);
+    void refetch({ silent: true });
+  }, [params.weekMondayIso, weekMeta, refetch]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
     seedDefaultPublishedWeeks(map, weekMeta);
     return map;
   }, [teamState?.schedule_published, weekMeta]);
+
+  const companyHolidays = useMemo(
+    () => normalizeCompanyHolidays(teamState?.company_holidays),
+    [teamState?.company_holidays]
+  );
 
   const weekPublished = isScheduleWeekIndexPublished(publishedMap, weekMeta, weekIndex);
 
@@ -435,8 +442,16 @@ export default function EmployeeScheduleScreen() {
                       const parts = dayStr.split(' ');
                       const dow = parts[0] || '';
                       const rest = parts.slice(1).join(' ');
+                      const hol = meta?.iso ? holidayOnIso(companyHolidays, meta.iso) : null;
                       return (
-                        <View key={dayStr} style={[styles.th, { width: CELL_MIN }]}>
+                        <View
+                          key={dayStr}
+                          style={[
+                            styles.th,
+                            { width: CELL_MIN },
+                            hol ? styles.thHoliday : null,
+                          ]}
+                        >
                           <Text style={styles.thFull}>
                             {t(
                               (
@@ -453,6 +468,11 @@ export default function EmployeeScheduleScreen() {
                             )}
                           </Text>
                           <Text style={styles.thSub}>{rest}</Text>
+                          {hol ? (
+                            <Text style={styles.thHolidayFlag} numberOfLines={1}>
+                              {hol.name}
+                            </Text>
+                          ) : null}
                         </View>
                       );
                     })}
@@ -815,6 +835,8 @@ const styles = StyleSheet.create({
   },
   thFull: { fontSize: 11, fontWeight: '700', color: '#333' },
   thSub: { fontSize: 10, color: '#888', marginTop: 2 },
+  thHoliday: { backgroundColor: '#fff7ed' },
+  thHolidayFlag: { marginTop: 2, fontSize: 9, fontWeight: '700', color: '#c2410c' },
   sectionMatrixRow: {
     marginBottom: SECTION_GAP_BELOW,
   },

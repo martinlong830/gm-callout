@@ -32,23 +32,44 @@
   var watchdogTimer = null;
   var RPC_TIMEOUT_MS = 15000;
   var BUSY_STUCK_MS = 20000;
-  var urlRestaurantId = (function () {
-    var api = window.gmTimeclockScheduleMatch;
-    if (api && typeof api.restaurantFromPagePath === 'function') {
-      return api.restaurantFromPagePath();
-    }
-    return null;
-  })();
-  var deviceRestaurantId = (function () {
-    var api = window.gmTimeclockScheduleMatch;
-    if (api && typeof api.resolveDeviceRestaurantId === 'function') {
-      return api.resolveDeviceRestaurantId() || 'rp-9';
-    }
-    return urlRestaurantId || 'rp-9';
-  })();
   var scheduleAssignments = null;
   var scheduleContextReady = null;
   var locationLabelEl = document.getElementById('timeclockLocationLabel');
+
+  function scheduleMatchApi() {
+    return window.gmTimeclockScheduleMatch || null;
+  }
+
+  /** Always read the live path — do not freeze at module load. */
+  function liveUrlRestaurantId() {
+    var api = scheduleMatchApi();
+    if (api && typeof api.restaurantFromPagePath === 'function') {
+      return api.restaurantFromPagePath();
+    }
+    var path = String(
+      typeof window !== 'undefined' && window.location ? window.location.pathname : ''
+    )
+      .toLowerCase()
+      .replace(/\/+$/, '');
+    if (path === '/timeclock-8th' || path.endsWith('/timeclock-8th')) return 'rp-8';
+    if (
+      path === '/timeclock' ||
+      path === '/timeclock-9th' ||
+      path.endsWith('/timeclock') ||
+      path.endsWith('/timeclock-9th')
+    ) {
+      return 'rp-9';
+    }
+    return null;
+  }
+
+  var deviceRestaurantId = (function () {
+    var api = scheduleMatchApi();
+    if (api && typeof api.resolveDeviceRestaurantId === 'function') {
+      return api.resolveDeviceRestaurantId() || liveUrlRestaurantId() || 'rp-9';
+    }
+    return liveUrlRestaurantId() || 'rp-9';
+  })();
 
   function t(key, vars) {
     if (typeof window !== 'undefined' && window.gmI18n && window.gmI18n.t) {
@@ -100,10 +121,6 @@
     ]);
   }
 
-  function scheduleMatchApi() {
-    return window.gmTimeclockScheduleMatch || null;
-  }
-
   function punchIsoLocal() {
     var api = scheduleMatchApi();
     if (api && typeof api.isoFromDate === 'function') {
@@ -117,7 +134,8 @@
   }
 
   function inferDeviceRestaurantId(displayName) {
-    if (urlRestaurantId) return urlRestaurantId;
+    var fromUrl = liveUrlRestaurantId();
+    if (fromUrl) return fromUrl;
     var api = scheduleMatchApi();
     if (api && typeof api.storedRestaurantId === 'function') {
       var stored = api.storedRestaurantId();
@@ -164,6 +182,10 @@
     var api = scheduleMatchApi();
     var label =
       api && typeof api.restaurantLabel === 'function' ? api.restaurantLabel(restaurantId) : '';
+    if (!label) {
+      if (restaurantId === 'rp-8') label = '8th Ave';
+      else if (restaurantId === 'rp-9') label = '9th Ave';
+    }
     if (label) {
       locationLabelEl.textContent = label;
       locationLabelEl.hidden = false;
@@ -659,7 +681,7 @@
         var api = scheduleMatchApi();
         var stored =
           api && typeof api.storedRestaurantId === 'function' ? api.storedRestaurantId() : null;
-        if (!urlRestaurantId && !stored) {
+        if (!liveUrlRestaurantId() && !stored) {
           deviceRestaurantId = inferDeviceRestaurantId(prof.data.display_name);
         } else {
           refreshDeviceRestaurantId();

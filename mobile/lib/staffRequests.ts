@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { notifyManagersOfStaffRequest } from './portalAuth';
 
 export type OfferedShiftRef = {
   restaurantId: string;
@@ -226,5 +227,39 @@ export async function insertStaffRequest(
 
   if (ins.error) return { ok: false, message: ins.error.message };
   if (!ins.data?.id) return { ok: false, message: 'Insert returned no id.' };
+
+  if (dbType === 'swap') {
+    try {
+      const kind = full.swapOfferId ? 'swap_accepted_pending' : 'swap_offer_submitted';
+      const shiftLabel = String(full.offeredShiftLabel || '').trim();
+      const name = String(full.employeeName || 'Employee').trim() || 'Employee';
+      const title =
+        kind === 'swap_accepted_pending'
+          ? 'Coverage accepted — approve'
+          : 'Shift coverage requested';
+      const body =
+        kind === 'swap_accepted_pending'
+          ? `${name} accepted a coverage offer — awaiting your approval.`
+          : shiftLabel
+            ? `${name} requested shift coverage: ${shiftLabel}.`
+            : `${name} requested shift coverage.`;
+      void notifyManagersOfStaffRequest({
+        kind,
+        title,
+        body,
+        restaurantId: full.offeredShift?.restaurantId || null,
+        data: {
+          requestId: ins.data.id,
+          staffRequestId: ins.data.id,
+          requestType: 'swap',
+          subsection: 'swap',
+          type: kind,
+        },
+      });
+    } catch {
+      /* non-blocking */
+    }
+  }
+
   return { ok: true, id: ins.data.id };
 }

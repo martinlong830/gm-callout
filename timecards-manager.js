@@ -2103,12 +2103,8 @@
   }
 
   function resetShiftDayExtrasFormFields() {
-    var vlEl = document.getElementById('tcDayVl');
-    var slEl = document.getElementById('tcDaySl');
     var tipEl = document.getElementById('tcDishwasherTip');
     var cashTipEl = document.getElementById('tcAdditionalCashTip');
-    if (vlEl) vlEl.value = '0';
-    if (slEl) slEl.value = '0';
     if (tipEl) tipEl.value = '0';
     if (cashTipEl) cashTipEl.value = '0';
     syncShiftDishwasherTipNetDisplay();
@@ -3110,13 +3106,8 @@
     refreshTimecardGrandTotals(emp);
   }
 
-  function readShiftDayLeaveFromForm() {
-    var vlEl = document.getElementById('tcDayVl');
-    var slEl = document.getElementById('tcDaySl');
-    return {
-      vl: vlEl ? Math.max(0, parseFloat(vlEl.value) || 0) : 0,
-      sl: slEl ? Math.max(0, parseFloat(slEl.value) || 0) : 0,
-    };
+  function readShiftDayLeaveFromForm(emp, iso) {
+    return getEffectiveDayLeave(emp || {}, iso);
   }
 
   function readShiftDishwasherTipFromForm() {
@@ -3885,12 +3876,14 @@
   function ensureExportLibsLoaded(options) {
     options = options || {};
     var requireExcelJs = options.excelJs === true;
-    if (global.XLSX && global.JSZip && (!requireExcelJs || global.ExcelJS)) {
+    var xlsxOnly = options.xlsxOnly === true;
+    if (global.XLSX && (xlsxOnly || global.JSZip) && (!requireExcelJs || global.ExcelJS)) {
       return Promise.resolve();
     }
     if (exportLibsLoadPromise) return exportLibsLoadPromise;
     exportLibsLoadPromise = loadExportScript('/vendor/xlsx-js-style.min.js')
       .then(function () {
+        if (xlsxOnly && !requireExcelJs) return;
         return loadExportScript('/vendor/jszip.min.js');
       })
       .then(function () {
@@ -3898,6 +3891,12 @@
         return loadExportScript('/vendor/exceljs.min.js').catch(function (excelErr) {
           console.warn('ExcelJS optional load failed; PTO photos disabled', excelErr);
         });
+      })
+      .then(function () {
+        /* Allow a later full-report load to pull JSZip/ExcelJS after an xlsx-only prefetch. */
+        if (xlsxOnly && (!global.JSZip || (requireExcelJs && !global.ExcelJS))) {
+          exportLibsLoadPromise = null;
+        }
       })
       .catch(function (err) {
         exportLibsLoadPromise = null;
@@ -7520,7 +7519,7 @@
       opts.restaurantId === 'rp-8' || opts.restaurantId === 'rp-9' ? opts.restaurantId : null;
 
     try {
-      await ensureExportLibsLoaded();
+      await ensureExportLibsLoaded({ xlsxOnly: true });
     } catch (loadErr) {
       return {
         ok: false,
@@ -7528,7 +7527,7 @@
       };
     }
     var XLSX = global.XLSX;
-    if (!XLSX || !XLSX.utils || !XLSX.writeFile) {
+    if (!XLSX || !XLSX.utils || typeof XLSX.write !== 'function') {
       return { ok: false, message: 'Excel library not loaded' };
     }
 
@@ -7557,7 +7556,10 @@
         isoFromDate(bounds.end) +
         '-' +
         locationFileSlug(restaurantId);
-      XLSX.writeFile(wb, fileBase + '.xlsx');
+      /* Blob + <a download> survives async lib load better than writeFile (Safari/Chrome
+         often block writeFile after await because the click gesture is gone). */
+      var out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      downloadExcelBuffer(fileBase + '.xlsx', out);
       return { ok: true, fileBase: fileBase };
     } catch (err) {
       console.warn('downloadScheduleWeekOnly', err);
@@ -10552,12 +10554,9 @@
           setEmployeeDayAdditionalCashTip(emp.id, iso, val);
         } else if (field === 'missingHours') {
           setEmployeeDayMissingHours(emp.id, iso, val);
-        } else {
-          /* Use effective leave for the sibling field so editing VL does not wipe
-             approved/balance SL (and vice versa) that was only shown in the form. */
-          var dayLeave = getEffectiveDayLeave(emp, iso);
-          if (field === 'vl') setEmployeeDayLeave(emp.id, iso, val, dayLeave.sl);
-          else if (field === 'sl') setEmployeeDayLeave(emp.id, iso, dayLeave.vl, val);
+        } else if (field === 'vl' || field === 'sl') {
+          /* VL/SL are edited on Schedule shift editor only. */
+          return;
         }
         refreshTimecardGrandTotals(emp);
         if (timecardsEmployeeScreenActive()) {
@@ -11191,25 +11190,15 @@
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">VL / SL &amp; spread of hours</h3>' +
-      '<p class="calendar-hint">Saved per-day only — week totals may include other days or approved time off. Clear both fields to 0 to remove leave from this day.</p>' +
+      '<p class="calendar-hint">Vacation / sick hours are entered on the Schedule shift editor. Values here are read-only and flow into week grand totals.</p>' +
       suggestedLeaveHint +
       '<dl class="timecards-dl">' +
-      '<div><dt>VL (hrs)</dt><dd>' +
-      '<input type="number" class="timecards-extra-input" id="tcDayVl" data-timecard-extra="vl" data-timecard-day-iso="' +
-      d().escapeHtml(shiftRow.iso) +
-      '" data-timecard-employee-id="' +
-      d().escapeHtml(emp.id) +
-      '" min="0" step="0.25" value="' +
+      '<div><dt>VL (hrs)</dt><dd id="tcDayVlReadonly">' +
       d().escapeHtml(String(getEffectiveDayLeave(emp, shiftRow.iso).vl)) +
-      '" /></dd></div>' +
-      '<div><dt>SL (hrs)</dt><dd>' +
-      '<input type="number" class="timecards-extra-input" id="tcDaySl" data-timecard-extra="sl" data-timecard-day-iso="' +
-      d().escapeHtml(shiftRow.iso) +
-      '" data-timecard-employee-id="' +
-      d().escapeHtml(emp.id) +
-      '" min="0" step="0.25" value="' +
+      '</dd></div>' +
+      '<div><dt>SL (hrs)</dt><dd id="tcDaySlReadonly">' +
       d().escapeHtml(String(getEffectiveDayLeave(emp, shiftRow.iso).sl)) +
-      '" /></dd></div>' +
+      '</dd></div>' +
       '<div><dt>Missing hours</dt><dd>' +
       '<input type="number" class="timecards-extra-input" id="tcDayMissingHours" data-timecard-extra="missingHours" data-timecard-day-iso="' +
       d().escapeHtml(shiftRow.iso) +
@@ -11244,7 +11233,7 @@
       (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '') +
       '</p>' +
       '<h3 class="emp-form-subtitle" id="timecardsEditPunchTitle">Edit punch</h3>' +
-      '<p class="calendar-hint">Type date and time in each field, or use the browser picker. Clear date and time to save vacation/sick hours only (no punch).</p>' +
+      '<p class="calendar-hint">Type date and time in each field, or use the browser picker. Leave VL/SL blank on Schedule if this day is unpaid time off without a punch.</p>' +
       '<form id="timecardsShiftForm" class="timecards-edit-form" novalidate>' +
       '<input type="hidden" id="tcEditingEntryId" value="" />' +
       renderDateTimeField('Clock in', 'tcClockIn', true) +
@@ -11711,7 +11700,7 @@
       alert('Timecard form did not load. Go back and open the shift again.');
       return;
     }
-    var dayLeave = readShiftDayLeaveFromForm();
+    var dayLeave = readShiftDayLeaveFromForm(emp, shiftRow.iso);
     var hasPunch = formHasPunchTimes(shiftRow.iso);
     var inIso = readPunchDateTimeField('tcClockIn', shiftRow.iso);
     var outIso = readPunchDateTimeField('tcClockOut', shiftRow.iso);
@@ -12235,6 +12224,9 @@
     employeeEligibleForWeekBorrow: employeeEligibleForWeekBorrow,
     payWeekBoundsFromMonday: payWeekBoundsFromMonday,
     downloadScheduleWeekOnly: downloadScheduleWeekOnly,
+    prefetchExportLibs: function (opts) {
+      return ensureExportLibsLoaded(opts || { xlsxOnly: true });
+    },
   };
 
   if (global.__gmTimecardsEnableTestExports) {

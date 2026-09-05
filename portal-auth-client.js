@@ -500,6 +500,53 @@
       };
     },
 
+    /** Admin-only: list portal roles for the company (Team badges). */
+    listCompanyAccountRoles: async function () {
+      var r = await portalAuthedFetch("GET", "/api/portal/admin/company-account-roles");
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        accounts: Array.isArray(r.data.accounts) ? r.data.accounts : [],
+      };
+    },
+
+    /** Admin-only: load linked portal role for a roster employee. */
+    getLinkedAccount: async function (opts) {
+      opts = opts || {};
+      var qs = [];
+      if (opts.employeeId) qs.push("employeeId=" + encodeURIComponent(String(opts.employeeId)));
+      if (opts.authUserId) qs.push("authUserId=" + encodeURIComponent(String(opts.authUserId)));
+      var path =
+        "/api/portal/admin/linked-account" + (qs.length ? "?" + qs.join("&") : "");
+      var r = await portalAuthedFetch("GET", path);
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        linked: !!r.data.linked,
+        authUserId: r.data.authUserId || null,
+        role: r.data.role || null,
+        displayName: r.data.displayName || "",
+        loginName: r.data.loginName || "",
+        employeeId: r.data.employeeId || null,
+        staffType: r.data.staffType || null,
+        canChangeRole: !!r.data.canChangeRole,
+      };
+    },
+
+    /** Admin-only: set linked account to manager or employee (team member). */
+    updateEmployeeRole: async function (payload) {
+      var r = await portalAuthedFetch("POST", "/api/portal/admin/update-role", payload || {});
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        role: r.data.role || "",
+        authUserId: r.data.authUserId || "",
+        self: !!r.data.self,
+        unchanged: !!r.data.unchanged,
+        message: r.data.message || "Account type updated.",
+      };
+    },
+
     requestPasswordReset: async function (loginName) {
       const r = await portalFetch("/api/portal/forgot-password", {
         loginName: String(loginName || "").trim(),
@@ -701,6 +748,30 @@
       };
     },
 
+    /** Push managers/admins about a pending staff request (in-app already created by DB trigger). */
+    notifyManagersOfStaffRequest: async function (payload) {
+      var viaApi = await portalAuthedFetch(
+        "POST",
+        "/api/portal/staff-request/notify-managers",
+        payload || {}
+      );
+      if (viaApi.ok) {
+        return {
+          ok: true,
+          sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+          failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : 0,
+          tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : 0,
+          recipients: viaApi.data && viaApi.data.recipients != null ? viaApi.data.recipients : 0,
+          message: viaApi.data && viaApi.data.message,
+        };
+      }
+      return {
+        ok: false,
+        message: (viaApi && viaApi.message) || "Could not send manager push.",
+        needsSignIn: !!(viaApi && viaApi.needsSignIn),
+      };
+    },
+
     /** Manager/admin: notify selected audience that a week was published. */
     notifySchedulePublished: async function (payload) {
       var viaApi = await portalAuthedFetch(
@@ -732,6 +803,42 @@
         inAppCreated: viaApi.data && viaApi.data.inAppCreated,
         audience: viaApi.data && viaApi.data.audience,
         message: (viaApi && viaApi.message) || "Could not send notifications.",
+        errors: viaApi.data && viaApi.data.errors,
+        needsSignIn: !!(viaApi && viaApi.needsSignIn),
+      };
+    },
+
+    /** Manager/admin: notify the other party about a schedule approval handoff. */
+    notifyScheduleReview: async function (payload) {
+      var viaApi = await portalAuthedFetch(
+        "POST",
+        "/api/portal/schedule/notify-review",
+        payload || {}
+      );
+      if (viaApi.ok) {
+        return {
+          ok: true,
+          sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+          failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : 0,
+          tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : 0,
+          recipients: viaApi.data && viaApi.data.recipients != null ? viaApi.data.recipients : 0,
+          inAppCreated:
+            viaApi.data && viaApi.data.inAppCreated != null ? viaApi.data.inAppCreated : 0,
+          direction: viaApi.data && viaApi.data.direction,
+          weekMondayIso: viaApi.data && viaApi.data.weekMondayIso,
+          message: viaApi.data && viaApi.data.message,
+          errors: viaApi.data && viaApi.data.errors,
+        };
+      }
+      return {
+        ok: false,
+        sent: viaApi.data && viaApi.data.sent != null ? viaApi.data.sent : 0,
+        failed: viaApi.data && viaApi.data.failed != null ? viaApi.data.failed : undefined,
+        tokens: viaApi.data && viaApi.data.tokens != null ? viaApi.data.tokens : undefined,
+        recipients: viaApi.data && viaApi.data.recipients,
+        inAppCreated: viaApi.data && viaApi.data.inAppCreated,
+        direction: viaApi.data && viaApi.data.direction,
+        message: (viaApi && viaApi.message) || "Could not send schedule approval notifications.",
         errors: viaApi.data && viaApi.data.errors,
         needsSignIn: !!(viaApi && viaApi.needsSignIn),
       };

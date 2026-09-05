@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-52" />
+  <link rel="stylesheet" href="styles.css?v=perf-103" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-52" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-103" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-52';
+    window.__GM_ASSET_V = 'perf-103';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -96,7 +96,12 @@
           return;
         }
         /* Fallback only if the deferred app.js tag failed to provide the app. */
-        return window.gmLoadScripts(['employee-leave.js', 'break-policy.js', 'app.js']);
+        return window.gmLoadScripts([
+          'employee-leave.js',
+          'break-policy.js',
+          'availability-paint.js',
+          'app.js',
+        ]);
       });
       return window.__gmManagerAppLoadPromise;
     };
@@ -704,6 +709,17 @@
           </div>
           <ul class="emp-shift-list" id="mgrShiftsUpcoming"></ul>
         </div>
+        <div class="emp-section">
+          <h2 class="emp-section-title" data-i18n="employee.upcomingHolidays">Upcoming holidays</h2>
+          <ul class="emp-shift-list" id="mgrHolidaysUpcoming"></ul>
+        </div>
+        <div class="emp-section emp-history-section">
+          <button type="button" class="emp-history-toggle" id="mgrHistoryToggle" aria-expanded="false">
+            <span data-i18n="employee.pastShifts">Past shifts</span>
+            <span class="emp-history-chevron" aria-hidden="true">▾</span>
+          </button>
+          <ul class="emp-shift-list" id="mgrShiftsPast" hidden></ul>
+        </div>
       </section>
 
       <!-- Screen 1: Schedule Overview -->
@@ -779,10 +795,12 @@
               <button
                 type="button"
                 class="btn btn-secondary schedule-toolbar-btn"
-                id="scheduleClearAllBtn"
-                title="Clear all people and shift times for this week"
+                id="scheduleRefreshBtn"
+                title="Refresh schedule from cloud (other managers’ edits)"
+                data-i18n="schedule.refresh"
+                data-i18n-title="schedule.refreshTitle"
               >
-                Clear all
+                Refresh
               </button>
               <button
                 type="button"
@@ -793,6 +811,27 @@
                 data-i18n-title="schedule.historyTitle"
               >
                 History
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary schedule-toolbar-btn"
+                id="scheduleHolidaysBtn"
+                hidden
+                title="Add or edit company holidays"
+                data-i18n="schedule.holidays"
+                data-i18n-title="schedule.holidaysTitle"
+              >
+                Holidays
+              </button>
+              <button
+                type="button"
+                class="btn btn-primary schedule-toolbar-btn"
+                id="scheduleReviewInboxBtn"
+                title="Send or review schedule approvals"
+                data-i18n="schedule.approvals"
+                data-i18n-title="schedule.approvalsTitle"
+              >
+                Schedule Approvals
               </button>
               <button type="button" class="btn btn-secondary schedule-toolbar-btn" id="openScheduleTemplateModal" data-i18n="schedule.templates">
                 Templates
@@ -806,6 +845,9 @@
           <p class="calendar-hint emp-schedule-readonly-hint" id="mgrScheduleViewOnlyHint" hidden data-i18n="schedule.viewOnlyOtherStoreHint">
             You can view this store’s schedule but only edit your own store.
           </p>
+          <p class="calendar-hint schedule-drag-hint" data-i18n="schedule.dragMoveHint">
+            Drag a shift to move it. Hold Option/Alt while dragging to copy times.
+          </p>
           <div class="calendar-legend" data-i18n-aria="schedule.roleColors" aria-label="Role colors">
             <span class="legend-item"><span class="role-pill-mini role-bartender" data-i18n="staff.bartender">Front of the House</span></span>
             <span class="legend-item"><span class="role-pill-mini role-kitchen" data-i18n="staff.kitchen">Back of the House</span></span>
@@ -813,14 +855,25 @@
           </div>
           <div class="schedule-notice hidden" id="scheduleNotice">
             <p class="schedule-notice-text" id="scheduleNoticeText">Schedule updates appear here.</p>
-          </div>
-          <div class="schedule-template-confirm" id="scheduleClearAllConfirm" hidden>
-            <p class="schedule-template-confirm-msg" id="scheduleClearAllConfirmMsg">
-              Clear all people and shift times for this week at this location? This cannot be undone except with Undo.
-            </p>
-            <div class="schedule-template-actions">
-              <button type="button" class="btn btn-secondary" id="scheduleClearAllConfirmCancel">Cancel</button>
-              <button type="button" class="btn btn-primary" id="scheduleClearAllConfirmYes">Yes, clear all</button>
+            <div class="schedule-notice-actions" id="scheduleNoticeActions" hidden>
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="scheduleConflictKeepMineBtn"
+                data-i18n="schedule.syncConflictKeepMine"
+                onclick="if(window.gmCalloutResolveScheduleConflictKeepMine){window.gmCalloutResolveScheduleConflictKeepMine();}return false;"
+              >
+                Keep my schedule
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                id="scheduleConflictTakeCloudBtn"
+                data-i18n="schedule.syncConflictTakeCloud"
+                onclick="if(window.gmCalloutResolveScheduleConflictTakeCloud){window.gmCalloutResolveScheduleConflictTakeCloud();}return false;"
+              >
+                Load cloud schedule
+              </button>
             </div>
           </div>
           <div id="calendarGrid" aria-label="Schedule calendar"></div>
@@ -886,6 +939,19 @@
                 <span class="shift-detail-field-label"><span data-i18n="schedule.assignedTime">Assigned time</span></span>
                 <select id="shiftDetailBreakTime" class="timecards-input" aria-label="Break time"></select>
               </label>
+            </div>
+            <div class="shift-detail-leave" id="shiftDetailLeaveWrap">
+              <p class="calendar-hint" id="shiftDetailLeaveHint">Vacation / sick hours for the assigned person on this day. Also fills Timecards and Team leave history.</p>
+              <div class="shift-detail-times timecards-datetime-row">
+                <label class="shift-detail-field form-field-block">
+                  <span class="shift-detail-field-label">VL (hrs)</span>
+                  <input type="number" id="shiftDetailVl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" />
+                </label>
+                <label class="shift-detail-field form-field-block">
+                  <span class="shift-detail-field-label">SL (hrs)</span>
+                  <input type="number" id="shiftDetailSl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" />
+                </label>
+              </div>
             </div>
           </div>
           <div class="screen-actions screen-actions-footer">
@@ -1212,13 +1278,17 @@
 
           <div id="empPortalAccountBlock" class="emp-portal-account-block" hidden>
             <label class="form-field form-field-block" id="empPortalAccountTypeWrap" hidden>
-              <span class="form-label">Account type</span>
+              <span class="form-label" data-i18n="empForm.accountType">Account type</span>
               <select name="portalAccountType" id="empPortalAccountType" class="form-select">
-                <option value="employee" selected>Employee</option>
-                <option value="manager">Manager</option>
+                <option value="employee" selected data-i18n="empForm.accountTeamMember">Team member</option>
+                <option value="manager" data-i18n="empForm.accountManager">Manager</option>
               </select>
-              <span class="calendar-hint">Only the company creator can create manager accounts.</span>
+              <span class="calendar-hint" id="empPortalAccountTypeHint" data-i18n="empForm.accountTypeHintCreate">
+                Only an admin or the company creator can create manager accounts.
+              </span>
             </label>
+            <p class="calendar-hint" id="empPortalAccountTypeReadonly" hidden></p>
+            <div id="empPortalCreateCreds">
             <label class="form-field form-field-block">
               <span class="form-label">App login password</span>
               <input
@@ -1240,6 +1310,7 @@
                 placeholder="For password reset — uses Email above if blank"
               />
             </label>
+            </div>
           </div>
 
             </div>
@@ -1458,7 +1529,7 @@
         </div>
         <div id="mgrAvailPendingList" class="avail-pending-list" hidden aria-live="polite"></div>
         <p class="calendar-hint avail-tab-hint" data-i18n="availability.managerHint">
-          View or edit each employee's week. Drag a time block onto another day to copy it (hold Shift while dropping to move). Approve pending submissions when ready.
+          View or edit each employee’s week on the paint grid (drag to mark available times). Use Clear under a day to wipe it. Approve pending submissions when ready.
         </p>
         <div id="mgrAvailGrid" class="availability-grid-wrap avail-tab-grid" aria-label="Employee availability"></div>
         <div class="avail-tab-actions">
@@ -1637,6 +1708,17 @@
           </div>
           <ul class="emp-shift-list" id="empShiftsUpcoming"></ul>
         </div>
+        <div class="emp-section">
+          <h2 class="emp-section-title" data-i18n="employee.upcomingHolidays">Upcoming holidays</h2>
+          <ul class="emp-shift-list" id="empHolidaysUpcoming"></ul>
+        </div>
+        <div class="emp-section emp-history-section">
+          <button type="button" class="emp-history-toggle" id="empHistoryToggle" aria-expanded="false">
+            <span data-i18n="employee.pastShifts">Past shifts</span>
+            <span class="emp-history-chevron" aria-hidden="true">▾</span>
+          </button>
+          <ul class="emp-shift-list" id="empShiftsPast" hidden></ul>
+        </div>
       </section>
       <section class="emp-screen" data-emp-screen="schedule" id="empScreenSchedule" hidden>
         <div class="calendar-table-wrap emp-schedule-wrap">
@@ -1762,7 +1844,7 @@
           <span class="avail-status-badge" id="empAvailStatus" aria-live="polite">Draft</span>
         </div>
         <p class="emp-hint" data-i18n="availability.employeeHint">
-          Mark when you can work for the selected week. Drag a time onto another day to copy it (Shift+drop to move), then submit for your manager.
+          Drag across times you’re available. Save/submit still maps to your scheduled shift lines.
         </p>
         <div class="availability-grid-wrap emp-avail-grid-wrap avail-tab-grid" id="empAvailGrid"></div>
         <div class="avail-tab-actions">
@@ -2025,6 +2107,74 @@
     </div>
   </div>
 
+  <!-- Schedule review (manager ↔ admin frozen proposal) -->
+  <div
+    class="availability-modal schedule-sheet-modal"
+    id="scheduleReviewModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="scheduleReviewModalTitle"
+    hidden
+  >
+    <div class="availability-modal-backdrop" id="scheduleReviewModalBackdrop"></div>
+    <div class="availability-modal-panel schedule-sheet-panel">
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="scheduleReviewModalTitle">Schedule review</h2>
+        <button type="button" class="availability-modal-close" id="scheduleReviewModalClose" data-i18n-aria="common.close" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="availability-modal-meta" id="scheduleReviewModalMeta">
+        Review the proposed week below. Red tiles have open change suggestions.
+      </p>
+      <div class="schedule-sheet-stack">
+        <div class="schedule-template-section">
+          <div class="schedule-template-preview-stage" id="scheduleReviewPreviewStage">
+            <div class="calendar-table-wrap schedule-template-preview-wrap">
+              <div id="scheduleReviewPreviewMount" class="schedule-template-preview-mount" aria-label="Schedule review preview"></div>
+            </div>
+            <div
+              class="template-shift-edit-overlay schedule-review-cell-overlay"
+              id="scheduleReviewCellPanel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="scheduleReviewCellTitle"
+              hidden
+            >
+              <div class="template-shift-edit-screen">
+                <div class="template-shift-edit-toolbar">
+                  <button type="button" class="btn btn-secondary" id="scheduleReviewCellBack">Back</button>
+                  <h3 class="template-shift-edit-title" id="scheduleReviewCellTitle">Shift change</h3>
+                </div>
+                <div class="shift-context" id="scheduleReviewCellContext"></div>
+                <div class="schedule-review-cell-body" id="scheduleReviewCellBody"></div>
+              </div>
+            </div>
+          </div>
+          <div class="schedule-template-actions" id="scheduleReviewActions">
+            <button type="button" class="btn btn-secondary" id="scheduleReviewBulkApproveBtn" hidden>
+              Approve all open changes
+            </button>
+            <button type="button" class="btn btn-secondary" id="scheduleReviewSendBackBtn" hidden>
+              Send back
+            </button>
+            <button type="button" class="btn btn-primary" id="scheduleReviewStartSendBtn" hidden>
+              Send this week for approval
+            </button>
+            <button type="button" class="btn btn-primary" id="scheduleReviewConfirmSendBtn" hidden>
+              Confirm send to admin
+            </button>
+            <button type="button" class="btn btn-primary" id="scheduleReviewAcceptApplyBtn" hidden>
+              Accept &amp; apply to live schedule
+            </button>
+          </div>
+          <p class="calendar-hint" id="scheduleReviewHint"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div
     class="availability-modal schedule-sheet-modal draft-schedule-modal"
     id="draftScheduleModal"
@@ -2214,6 +2364,47 @@
     </div>
   </div>
 
+  <div id="companyHolidaysModal" class="availability-modal" hidden>
+    <div class="availability-modal-backdrop" id="companyHolidaysModalBackdrop" tabindex="-1"></div>
+    <div
+      class="availability-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="companyHolidaysModalTitle"
+    >
+      <div class="availability-modal-head">
+        <h2 class="availability-modal-title" id="companyHolidaysModalTitle" data-i18n="schedule.holidays">
+          Company holidays
+        </h2>
+        <button type="button" class="availability-modal-close" id="companyHolidaysModalClose" data-i18n-aria="common.close" aria-label="Close">
+          ×
+        </button>
+      </div>
+      <p class="calendar-hint" data-i18n="schedule.holidaysHint">
+        Holidays appear on everyone’s schedule calendar and on Home for the next 4 weeks.
+      </p>
+      <ul class="company-holidays-list" id="companyHolidaysList"></ul>
+      <div class="company-holidays-add">
+        <label class="company-holidays-field">
+          <span data-i18n="schedule.holidayDate">Date</span>
+          <input type="date" id="companyHolidayDateInput" />
+        </label>
+        <label class="company-holidays-field">
+          <span data-i18n="schedule.holidayName">Name</span>
+          <input type="text" id="companyHolidayNameInput" maxlength="80" placeholder="e.g. Christmas" />
+        </label>
+        <button type="button" class="btn btn-primary btn-block" id="companyHolidayAddBtn" data-i18n="schedule.addHoliday">
+          Add holiday
+        </button>
+      </div>
+      <div class="screen-actions" style="margin-top: 12px">
+        <button type="button" class="btn btn-ghost btn-block" id="companyHolidaysModalDone" data-i18n="common.done">
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="accountSettingsModal" class="availability-modal account-settings-modal" hidden>
     <div class="availability-modal-backdrop" data-account-settings-dismiss tabindex="-1"></div>
     <div
@@ -2308,7 +2499,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-10"></script>
+  <script src="locales/en.js?v=perf-103"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2320,7 +2511,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-10';
+      s.src = 'locales/es.js?v=perf-103';
       document.head.appendChild(s);
     })();
   </script>
@@ -2336,6 +2527,7 @@
         loginEl.removeAttribute('inert');
         try {
           loginEl.style.removeProperty('pointer-events');
+          loginEl.removeAttribute('style');
         } catch (_pe) {
           /* ignore */
         }
@@ -2391,18 +2583,56 @@
 
     /* If a prior session left the gate inert/hidden while not authed, recover. */
     (function recoverLoginGate() {
-      function tick() {
+      var LOGIN_PANEL_IDS = [
+        'landingPanel',
+        'accessCodePanel',
+        'createCompanyPanel',
+        'companyPendingPanel',
+        'setupAccessCodePanel',
+        'loginPanel',
+        'registerPanel',
+        'managerRegisterPanel',
+        'forgotPasswordPanel',
+        'resetPasswordPanel',
+        'timeclockLoginPanel',
+        'timeclockRegisterPanel',
+      ];
+      window.gmCalloutEnsureLoginPanelVisible = function () {
         if (document.documentElement.classList.contains('authed')) return;
         var loginEl = document.getElementById('login-screen');
         if (!loginEl) return;
         if (loginEl.hasAttribute('inert') || loginEl.hidden) {
           window.gmCalloutSetLoginGateOpen(true);
         }
+        try {
+          loginEl.removeAttribute('style');
+        } catch (_s) {}
+        var anyVisible = false;
+        for (var i = 0; i < LOGIN_PANEL_IDS.length; i += 1) {
+          var panel = document.getElementById(LOGIN_PANEL_IDS[i]);
+          if (panel && !panel.hidden) {
+            anyVisible = true;
+            break;
+          }
+        }
+        if (!anyVisible) {
+          if (typeof window.gmCalloutShowLandingPanel === 'function') {
+            window.gmCalloutShowLandingPanel();
+          } else {
+            var landing = document.getElementById('landingPanel');
+            if (landing) landing.hidden = false;
+          }
+        }
+      };
+      function tick() {
+        if (document.documentElement.classList.contains('authed')) return;
+        window.gmCalloutEnsureLoginPanelVisible();
       }
       tick();
       setTimeout(tick, 0);
       setTimeout(tick, 250);
       setTimeout(tick, 1000);
+      setInterval(tick, 8000);
     })();
   </script>
   <script>
@@ -3970,6 +4200,17 @@
       }
 
       function hardSignOutNow() {
+        window.__GM_INTENTIONAL_SIGN_OUT__ = true;
+        try {
+          sessionStorage.removeItem('gm-callout-auth-session-backup');
+        } catch (_bakClr) {
+          /* ignore */
+        }
+        try {
+          localStorage.removeItem('gm-callout-auth-session-backup');
+        } catch (_bakLsClr) {
+          /* ignore */
+        }
         (async function () {
           try {
             var flushTeam =
@@ -4159,13 +4400,14 @@
     })();
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
-  <script defer src="gm-supabase-init.js?v=perf-2"></script>
-  <script defer src="employee-leave.js?v=perf-2"></script>
+  <script defer src="gm-supabase-init.js?v=perf-3"></script>
+  <script defer src="employee-leave.js?v=perf-69"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-2"></script>
-  <script defer src="login-timeclock.js?v=perf-5"></script>
+  <script defer src="portal-auth-client.js?v=perf-103"></script>
+  <script defer src="login-timeclock.js?v=perf-63"></script>
+  <script defer src="availability-paint.js?v=perf-103"></script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-52"></script>
+  <script defer src="app.js?v=perf-103"></script>
   <script>
     /*
      * Role / feature modules after first paint:

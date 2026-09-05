@@ -360,6 +360,30 @@ export function employeePrimaryLocationId(emp: EmployeeRow | null | undefined): 
   return null;
 }
 
+/** Single-home usualRestaurant, or primary when usual is both. */
+export function employeeHomeOrPrimaryRestaurantId(
+  emp: {
+    usualRestaurant?: string;
+    primaryLocationId?: string | null;
+    meta?: Record<string, unknown> | null;
+  } | null | undefined
+): string | null {
+  if (!emp) return null;
+  const home = emp.usualRestaurant || 'rp-9';
+  if (home === 'rp-8' || home === 'rp-9') return home;
+  if (home === 'both') {
+    if (emp.primaryLocationId === 'rp-8' || emp.primaryLocationId === 'rp-9') {
+      return emp.primaryLocationId;
+    }
+    const meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    const raw = meta.primaryLocationId ?? meta.primaryRestaurantId;
+    const id = raw != null ? String(raw).trim() : '';
+    if (id === 'rp-8' || id === 'rp-9') return id;
+    return null;
+  }
+  return null;
+}
+
 /**
  * Preferred "main" store for schedule restaurant pills (leftmost).
  * Single-store usualRestaurant → that store; both → primary when set; else null

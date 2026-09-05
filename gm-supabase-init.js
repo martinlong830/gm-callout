@@ -51,6 +51,13 @@
         // Email confirm redirects use #access_token=… (implicit). Keep explicit so
         // create-company confirm links are not rejected by a PKCE-only client.
         flowType: 'implicit',
+        /*
+         * Bypass navigator.locks — a stuck auth lock freezes getSession/refreshSession
+         * and left localhost on an empty grey gate with no clickable UI.
+         */
+        lock: function (_name, _acquireTimeout, fn) {
+          return fn();
+        },
       },
     });
     window.gmSupabaseEnabled = true;

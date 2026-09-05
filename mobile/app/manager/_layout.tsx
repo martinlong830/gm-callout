@@ -91,8 +91,11 @@ export default function ManagerLayout() {
     };
   }, [session, role]);
 
-  if (!session || !isManagerLikeRole(role)) {
+  if (!session) {
     return <Redirect href="/login" />;
+  }
+  if (!isManagerLikeRole(role)) {
+    return <Redirect href="/" />;
   }
 
   return (

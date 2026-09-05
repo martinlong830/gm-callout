@@ -153,6 +153,13 @@ function sumHours(entries: LeaveEntry[]) {
   return entries.reduce((t, e) => t + (Number(e.hours) || 0), 0);
 }
 
+export type LeavePeriod = {
+  key: string;
+  start: string;
+  end: string;
+  label: string;
+};
+
 export type LeaveComputedSide = {
   allowanceDays: number;
   usedDays: number;
@@ -163,9 +170,136 @@ export type LeaveComputedSide = {
   note: string;
 };
 
-export function computeLeaveSide(side: LeaveSide): LeaveComputedSide {
+export type ComputeLeaveBalanceOpts = {
+  hiringDate?: string;
+  asOfIso?: string;
+  vacationPeriodKey?: string;
+  sickPeriodKey?: string;
+};
+
+export function todayIsoLocal() {
+  const d = new Date();
+  return isoDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+}
+
+/** Parse Team hiring date strings like "3/25/2023" or ISO. */
+export function parseHiringMonthDay(hiringDateStr: string | null | undefined): {
+  year: number;
+  month: number;
+  day: number;
+} | null {
+  const s = String(hiringDateStr || '').trim();
+  if (!s) return null;
+  const isoM = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoM) {
+    return {
+      year: parseInt(isoM[1], 10),
+      month: parseInt(isoM[2], 10),
+      day: parseInt(isoM[3], 10),
+    };
+  }
+  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (us) {
+    let y = parseInt(us[3], 10);
+    if (y < 100) y += 2000;
+    return { year: y, month: parseInt(us[1], 10), day: parseInt(us[2], 10) };
+  }
+  return null;
+}
+
+export function filterEntriesInRange(
+  entries: LeaveEntry[] | null | undefined,
+  startIso: string,
+  endIso: string
+): LeaveEntry[] {
+  const start = String(startIso || '').slice(0, 10);
+  const end = String(endIso || '').slice(0, 10);
+  return (entries || []).filter((e) => {
+    const d = String(e.date || '').slice(0, 10);
+    if (!d) return false;
+    if (start && d < start) return false;
+    if (end && d > end) return false;
+    return true;
+  });
+}
+
+/** Sick leave period = calendar year (resets Jan 1). */
+export function sickPeriodForAsOf(asOfIso?: string | null): LeavePeriod {
+  let y = parseInt(String(asOfIso || todayIsoLocal()).slice(0, 4), 10);
+  if (!y || Number.isNaN(y)) y = new Date().getFullYear();
+  return {
+    key: String(y),
+    start: isoDate(y, 1, 1),
+    end: isoDate(y, 12, 31),
+    label: String(y),
+  };
+}
+
+/**
+ * Vacation period = hire-anniversary year (resets on hiring month/day each year).
+ * Falls back to calendar year when hiring date is missing.
+ */
+export function vacationPeriodForAsOf(
+  hiringDateStr?: string | null,
+  asOfIso?: string | null
+): LeavePeriod {
+  const asOf = String(asOfIso || todayIsoLocal()).slice(0, 10);
+  const hire = parseHiringMonthDay(hiringDateStr);
+  if (!hire || !hire.month || !hire.day) {
+    return sickPeriodForAsOf(asOf);
+  }
+  const asOfY = parseInt(asOf.slice(0, 4), 10);
+  const asOfM = parseInt(asOf.slice(5, 7), 10);
+  const asOfD = parseInt(asOf.slice(8, 10), 10);
+  const pastAnniversary = asOfM > hire.month || (asOfM === hire.month && asOfD >= hire.day);
+  const startY = pastAnniversary ? asOfY : asOfY - 1;
+  const endY = startY + 1;
+  const start = isoDate(startY, hire.month, hire.day);
+  const endDate = new Date(endY, hire.month - 1, hire.day);
+  endDate.setDate(endDate.getDate() - 1);
+  const end = isoDate(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
+  return {
+    key: start,
+    start,
+    end,
+    label: `${formatUsDate(start)} – ${formatUsDate(end)}`,
+  };
+}
+
+export function leavePeriodForKind(
+  kind: 'vacation' | 'sick',
+  hiringDateStr?: string | null,
+  asOfIso?: string | null
+): LeavePeriod {
+  return kind === 'vacation'
+    ? vacationPeriodForAsOf(hiringDateStr, asOfIso)
+    : sickPeriodForAsOf(asOfIso);
+}
+
+export function listLeavePeriodsFromEntries(
+  kind: 'vacation' | 'sick',
+  entries: LeaveEntry[] | null | undefined,
+  hiringDateStr?: string | null,
+  asOfIso?: string | null
+): LeavePeriod[] {
+  const asOf = String(asOfIso || todayIsoLocal()).slice(0, 10);
+  const current = leavePeriodForKind(kind, hiringDateStr, asOf);
+  const byKey: Record<string, LeavePeriod> = { [current.key]: current };
+  for (const e of entries || []) {
+    const d = String(e.date || '').slice(0, 10);
+    if (!d) continue;
+    const p = leavePeriodForKind(kind, hiringDateStr, d);
+    if (!byKey[p.key]) byKey[p.key] = p;
+  }
+  return Object.keys(byKey)
+    .map((k) => byKey[k])
+    .sort((a, b) => String(b.start).localeCompare(String(a.start)));
+}
+
+export function computeLeaveSide(side: LeaveSide, periodEntries?: LeaveEntry[]): LeaveComputedSide {
+  const entries = periodEntries != null ? periodEntries : side.entries || [];
   const hoursPerDay = side.hoursPerDay || LEAVE_HOURS_PER_DAY;
-  const usedHours = sumHours(side.entries);
+  const usedHours = sumHours(entries);
   const allowanceDays = side.allowanceDays || 0;
   const allowanceHours = side.allowanceHours ?? allowanceDays * hoursPerDay;
   const usedDays = hoursPerDay > 0 ? Math.round((usedHours / hoursPerDay) * 100) / 100 : 0;
@@ -176,14 +310,42 @@ export function computeLeaveSide(side: LeaveSide): LeaveComputedSide {
     usedHours,
     allowanceHours,
     remainingHours,
-    entries: side.entries,
+    entries,
     note: side.note ?? '',
   };
 }
 
-export function computeLeaveBalance(bal: LeaveBalance) {
+/**
+ * Current-period used hours by default (SL calendar year; VL hire anniversary).
+ * Pass vacationPeriodKey / sickPeriodKey to view a prior period.
+ */
+export function computeLeaveBalance(bal: LeaveBalance, opts?: ComputeLeaveBalanceOpts) {
+  const o = opts || {};
   const b = normalizeLeaveBalance(bal);
-  return { vacation: computeLeaveSide(b.vacation), sick: computeLeaveSide(b.sick) };
+  const asOf = o.asOfIso || todayIsoLocal();
+  const hiringDate = o.hiringDate || '';
+  let vacPeriod = vacationPeriodForAsOf(hiringDate, asOf);
+  let sickPeriod = sickPeriodForAsOf(asOf);
+  if (o.vacationPeriodKey) {
+    const vacList = listLeavePeriodsFromEntries('vacation', b.vacation.entries, hiringDate, asOf);
+    const found = vacList.find((p) => p.key === o.vacationPeriodKey);
+    if (found) vacPeriod = found;
+  }
+  if (o.sickPeriodKey) {
+    const sickList = listLeavePeriodsFromEntries('sick', b.sick.entries, hiringDate, asOf);
+    const found = sickList.find((p) => p.key === o.sickPeriodKey);
+    if (found) sickPeriod = found;
+    else sickPeriod = sickPeriodForAsOf(`${o.sickPeriodKey}-01-01`);
+  }
+  return {
+    vacation: computeLeaveSide(
+      b.vacation,
+      filterEntriesInRange(b.vacation.entries, vacPeriod.start, vacPeriod.end)
+    ),
+    sick: computeLeaveSide(b.sick, filterEntriesInRange(b.sick.entries, sickPeriod.start, sickPeriod.end)),
+    vacationPeriod: vacPeriod,
+    sickPeriod,
+  };
 }
 
 export function ensureEmployeeLeaveBalance(emp: EmployeeRow): boolean {
@@ -233,12 +395,126 @@ export function appendLeaveBalanceEntries(
   return { addedHours, addedDates };
 }
 
+/**
+ * Set VL or SL hours for a date (replace). hours <= 0 removes the entry.
+ */
+export function upsertLeaveBalanceEntry(
+  emp: EmployeeRow,
+  leaveType: 'sick' | 'vacation',
+  dateIso: string,
+  hours: number
+): { changed: boolean; previousHours?: number; hours?: number } {
+  ensureEmployeeLeaveBalance(emp);
+  const date = String(dateIso || '').slice(0, 10);
+  if (!date) return { changed: false };
+  const hrs = Math.max(0, Number(hours) || 0);
+  const bal = normalizeLeaveBalance(emp.meta?.leaveBalance);
+  const side = leaveType === 'sick' ? bal.sick : bal.vacation;
+  const entries = side.entries || [];
+  let idx = -1;
+  let prevHours = 0;
+  for (let i = 0; i < entries.length; i += 1) {
+    if (String(entries[i].date || '').slice(0, 10) === date) {
+      idx = i;
+      prevHours = Math.max(0, Number(entries[i].hours) || 0);
+      break;
+    }
+  }
+  let changed = false;
+  if (hrs <= 0) {
+    if (idx >= 0) {
+      entries.splice(idx, 1);
+      changed = true;
+    }
+  } else if (idx >= 0) {
+    if (prevHours !== hrs) {
+      entries[idx] = { date, hours: hrs };
+      changed = true;
+    }
+  } else {
+    entries.push({ date, hours: hrs });
+    changed = true;
+  }
+  side.entries = entries;
+  if (changed && leaveType === 'sick' && side.hoursRemaining != null) {
+    const delta = hrs - prevHours;
+    side.hoursRemaining = Math.max(0, Number(side.hoursRemaining) - delta);
+  }
+  if (!emp.meta) emp.meta = {};
+  emp.meta.leaveBalance = bal;
+  return { changed, previousHours: prevHours, hours: hrs };
+}
+
 export function applyLeaveSeedsToEmployees(employees: EmployeeRow[]): number {
   let n = 0;
   for (const emp of employees) {
     if (ensureEmployeeLeaveBalance(emp)) n += 1;
   }
   return n;
+}
+
+const LEAVE_FROM_TIMECARDS_MIGRATED_KEY = 'gm-leave-from-timecards-migrated-v1';
+
+/**
+ * One-time: copy prior Timecards VL/SL day overrides into Team leaveBalance history.
+ * Returns employees whose leaveBalance changed (caller should persist).
+ */
+export async function migrateTimecardLeaveIntoTeamHistory(
+  employees: EmployeeRow[]
+): Promise<EmployeeRow[]> {
+  try {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    if ((await AsyncStorage.getItem(LEAVE_FROM_TIMECARDS_MIGRATED_KEY)) === '1') {
+      return [];
+    }
+    let all: Record<string, unknown> | null = null;
+    try {
+      const raw = await AsyncStorage.getItem('gm-timecard-week-extras-v1');
+      all = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    } catch {
+      all = null;
+    }
+    if (!all || typeof all !== 'object') {
+      await AsyncStorage.setItem(LEAVE_FROM_TIMECARDS_MIGRATED_KEY, '1');
+      return [];
+    }
+    const byId: Record<string, EmployeeRow> = {};
+    for (const e of employees) {
+      if (e?.id) byId[e.id] = e;
+    }
+    const changedIds = new Set<string>();
+    for (const weekKey of Object.keys(all)) {
+      const slice = all[weekKey];
+      if (!slice || typeof slice !== 'object') continue;
+      for (const k of Object.keys(slice as Record<string, unknown>)) {
+        const at = k.indexOf('@');
+        if (at < 0) continue;
+        const empId = k.slice(0, at);
+        const iso = k.slice(at + 1);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
+        const row = (slice as Record<string, unknown>)[k] as
+          | { vl?: unknown; sl?: unknown; manual?: boolean }
+          | null;
+        if (!row || row.manual === false) continue;
+        const emp = byId[empId];
+        if (!emp) continue;
+        const vl = Math.max(0, parseFloat(String(row.vl)) || 0);
+        const sl = Math.max(0, parseFloat(String(row.sl)) || 0);
+        if (vl > 0) {
+          const rv = upsertLeaveBalanceEntry(emp, 'vacation', iso, vl);
+          if (rv.changed) changedIds.add(emp.id);
+        }
+        if (sl > 0) {
+          const rs = upsertLeaveBalanceEntry(emp, 'sick', iso, sl);
+          if (rs.changed) changedIds.add(emp.id);
+        }
+      }
+    }
+    await AsyncStorage.setItem(LEAVE_FROM_TIMECARDS_MIGRATED_KEY, '1');
+    return [...changedIds].map((id) => byId[id]).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 export function formatUsDate(iso: string) {
@@ -256,7 +532,9 @@ export function formatLeaveHours(h: number) {
 export function leaveSummaryLines(emp: EmployeeRow): string[] {
   ensureEmployeeLeaveBalance(emp);
   const bal = normalizeLeaveBalance(emp.meta?.leaveBalance);
-  const c = computeLeaveBalance(bal);
+  const hiringDate =
+    emp.meta?.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
+  const c = computeLeaveBalance(bal, { hiringDate });
   const lines = [
     `Vacation: ${c.vacation.usedDays}/${c.vacation.allowanceDays} days used (${formatLeaveHours(c.vacation.usedHours)} hrs)`,
     `Sick: ${c.sick.usedDays}/${c.sick.allowanceDays} days used (${formatLeaveHours(c.sick.usedHours)} hrs)`,
