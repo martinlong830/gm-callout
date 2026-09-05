@@ -8431,11 +8431,36 @@
          * Only clear dirty when local SoT still matches what we just pushed. An edit during
          * the upsert must keep dirty=true so the while-loop pushes again — otherwise a remote
          * echo of the older snapshot rolls person assignments back (esp. noticeable on RP2).
+         *
+         * IMPORTANT: do not call loadScheduleAssignmentsStore() for this compare — it
+         * prune/migrates and can diverge from the uploaded JSON, leaving dirty stuck true
+         * so force-push always reports "Could not save to the cloud".
          */
         if (pushedAssignJson != null) {
-          setScheduleAssignmentsConfirmedJson(pushedAssignJson);
-          scheduleAssignmentsDirty =
-            JSON.stringify(loadScheduleAssignmentsStore()) !== pushedAssignJson;
+          var liveAssignRaw = '';
+          try {
+            liveAssignRaw = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
+          } catch (_liveA) {
+            liveAssignRaw = '';
+          }
+          if (liveAssignRaw !== pushedAssignJson) {
+            if (forceIgnore) {
+              /* Force override: lock local to what cloud just accepted. */
+              try {
+                localStorage.setItem(SCHEDULE_ASSIGN_KEY, pushedAssignJson);
+              } catch (_lockA) {
+                /* ignore */
+              }
+              setScheduleAssignmentsConfirmedJson(pushedAssignJson);
+              scheduleAssignmentsDirty = false;
+            } else {
+              setScheduleAssignmentsConfirmedJson(pushedAssignJson);
+              scheduleAssignmentsDirty = true;
+            }
+          } else {
+            setScheduleAssignmentsConfirmedJson(pushedAssignJson);
+            scheduleAssignmentsDirty = false;
+          }
         }
         if (pushedTemplatesJson != null) {
           setScheduleTemplatesConfirmedJson(pushedTemplatesJson);
@@ -8444,10 +8469,54 @@
             JSON.stringify(Array.isArray(liveTpl) ? liveTpl : []) !== pushedTemplatesJson;
         }
         if (pushedDraftJson != null) {
-          setDraftScheduleConfirmedJson(pushedDraftJson);
-          draftScheduleDirty =
-            JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore)) !==
-            pushedDraftJson;
+          var liveDraftJson = '';
+          try {
+            liveDraftJson = JSON.stringify(
+              draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+            );
+          } catch (_liveD) {
+            liveDraftJson = '';
+          }
+          if (liveDraftJson !== pushedDraftJson) {
+            if (forceIgnore) {
+              try {
+                var lockedDraft = JSON.parse(pushedDraftJson);
+                if (lockedDraft && lockedDraft.byWeek) {
+                  draftScheduleByWeekStore = lockedDraft.byWeek;
+                  localStorage.setItem(
+                    DRAFT_SCHEDULE_BY_WEEK_KEY,
+                    JSON.stringify(lockedDraft.byWeek)
+                  );
+                }
+                if (lockedDraft && lockedDraft.slotOrderByWeek) {
+                  slotOrderByWeekStore = sanitizeSlotOrderByWeek(lockedDraft.slotOrderByWeek);
+                  persistSlotOrderStores({ skipDirty: true });
+                }
+                if (lockedDraft && lockedDraft.groupOrderPotentialByWeek) {
+                  groupOrderPotentialByWeekStore = sanitizeGroupOrderPotentialByWeek(
+                    lockedDraft.groupOrderPotentialByWeek
+                  );
+                  persistGroupOrderPotentialStore({ skipDirty: true });
+                }
+                if (lockedDraft && lockedDraft.scheduleNetSalesByWeek) {
+                  scheduleNetSalesByWeekStore = sanitizeScheduleNetSalesByWeek(
+                    lockedDraft.scheduleNetSalesByWeek
+                  );
+                  persistScheduleNetSalesStore({ skipDirty: true });
+                }
+              } catch (_lockD) {
+                /* ignore */
+              }
+              setDraftScheduleConfirmedJson(pushedDraftJson);
+              draftScheduleDirty = false;
+            } else {
+              setDraftScheduleConfirmedJson(pushedDraftJson);
+              draftScheduleDirty = true;
+            }
+          } else {
+            setDraftScheduleConfirmedJson(pushedDraftJson);
+            draftScheduleDirty = false;
+          }
         }
         if (pushedPublished) {
           var livePub = JSON.stringify(schedulePublishedPayload());
@@ -17327,10 +17396,23 @@
       teamStateForcePushIgnoreVersion = true;
       teamStateForcePushIgnoreVersionSticky = true;
       teamStateForcePushActive = true;
+      var pushStartedAt = Date.now();
       return Promise.resolve(flushTeamStateSyncNow()).then(function () {
-        var stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
         if (scheduleSyncConflictActive) {
           return { ok: false, reason: 'conflict' };
+        }
+        var stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
+        /*
+         * Upsert can succeed while a later prune/payload rebuild leaves dirty true.
+         * If we just recorded a local push, treat that as success and lock confirmed.
+         */
+        if (
+          stillDirty &&
+          teamStateLastLocalPushAt &&
+          teamStateLastLocalPushAt >= pushStartedAt - 250
+        ) {
+          syncScheduleConfirmedFromLiveLocal();
+          stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
         }
         if (stillDirty) {
           return { ok: false, reason: 'incomplete' };
