@@ -303,10 +303,19 @@ window.GM_I18N_EN = {
   'schedule.hardRevertDone': 'Schedule restored from history.',
   'schedule.syncConflict':
     'You and another manager edited the schedule at the same time. Keep yours (overwrites the cloud), or load theirs (discards your unsaved edits).',
-  'schedule.syncConflictKeepMine': 'Keep my schedule',
-  'schedule.syncConflictTakeCloud': 'Load cloud schedule',
+  'schedule.syncConflictKeepMine': 'Keep my schedule (save to cloud)',
+  'schedule.syncConflictTakeCloud': 'Load cloud (overwrite mine)',
   'schedule.syncConflictKeptMine': 'Keeping your schedule and saving it to the cloud…',
   'schedule.syncConflictKeptMineDone': 'Your schedule was saved to the cloud.',
+  'schedule.pushToCloud': 'Save to cloud',
+  'schedule.pushToCloudTitle':
+    'Upload this browser’s schedule so shiflow.app matches what you see here',
+  'schedule.pushCloudSaving': 'Saving your local schedule to the cloud…',
+  'schedule.pushCloudDone': 'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
+  'schedule.pushCloudFailed': 'Could not save to the cloud. Check your connection and try again.',
+  'schedule.pushCloudUnavailable':
+    'Cloud sync is not available. Sign in as a manager and try again.',
+  'schedule.pushCloudManagersOnly': 'Only managers can save the schedule to the cloud.',
   'schedule.syncConflictTookCloud':
     'Loaded the cloud schedule. Your conflicting local edits were discarded.',
   'schedule.markDayOff': 'Mark day off',

@@ -302,10 +302,21 @@ window.GM_I18N_ES = {
   'schedule.hardRevertDone': 'Horario restaurado desde el historial.',
   'schedule.syncConflict':
     'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe la nube) o carga el de ellos (descarta tus cambios sin guardar).',
-  'schedule.syncConflictKeepMine': 'Conservar mi horario',
-  'schedule.syncConflictTakeCloud': 'Cargar horario de la nube',
+  'schedule.syncConflictKeepMine': 'Conservar mi horario (guardar en la nube)',
+  'schedule.syncConflictTakeCloud': 'Cargar nube (sobrescribir el mío)',
   'schedule.syncConflictKeptMine': 'Conservando tu horario y guardándolo en la nube…',
   'schedule.syncConflictKeptMineDone': 'Tu horario se guardó en la nube.',
+  'schedule.pushToCloud': 'Guardar en la nube',
+  'schedule.pushToCloudTitle':
+    'Sube el horario de este navegador para que shiflow.app coincida con lo que ves aquí',
+  'schedule.pushCloudSaving': 'Guardando tu horario local en la nube…',
+  'schedule.pushCloudDone':
+    'Horario local guardado en la nube. Actualiza shiflow.app para verlo.',
+  'schedule.pushCloudFailed':
+    'No se pudo guardar en la nube. Revisa la conexión e inténtalo de nuevo.',
+  'schedule.pushCloudUnavailable':
+    'La sincronización en la nube no está disponible. Inicia sesión como gerente e inténtalo de nuevo.',
+  'schedule.pushCloudManagersOnly': 'Solo los gerentes pueden guardar el horario en la nube.',
   'schedule.syncConflictTookCloud':
     'Se cargó el horario de la nube. Se descartaron tus cambios locales en conflicto.',
   'schedule.markDayOff': 'Marcar día libre',

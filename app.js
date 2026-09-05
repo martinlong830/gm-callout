@@ -16986,17 +16986,31 @@
     );
   }
 
-  function resolveScheduleConflictKeepMine() {
-    if (scheduleConflictResolveLock) return;
-    if (!scheduleConflictUiIsOpen() && !pendingScheduleConflictRow) {
-      /* Still allow force-push if dirty local schedule exists. */
-      if (!scheduleAssignmentsDirty && !draftScheduleDirty) return;
+  /**
+   * Force-upload this browser's schedule (assignments + draft/slot order) to Supabase
+   * so shiflow.app matches what you see locally. Ignores dirty flags and version races.
+   */
+  function forcePushLocalScheduleToCloud(opts) {
+    opts = opts || {};
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+      showScheduleNotice(
+        gmT('schedule.pushCloudUnavailable') ||
+          'Cloud sync is not available. Sign in as a manager and try again.',
+        false
+      );
+      return Promise.resolve({ ok: false, reason: 'no_cloud' });
     }
-    scheduleConflictResolveLock = true;
-    scheduleConflictSuppressOfferUntil = Date.now() + 8000;
+    if (!gmCalloutSessionIsManager) {
+      showScheduleNotice(
+        gmT('schedule.pushCloudManagersOnly') || 'Only managers can save the schedule to the cloud.',
+        false
+      );
+      return Promise.resolve({ ok: false, reason: 'not_manager' });
+    }
     clearAcceptedCloudConflict();
     setPreferCloudOnConflict(false);
     clearScheduleSyncConflictState();
+    scheduleConflictSuppressOfferUntil = Date.now() + 15000;
     if (scheduleAssignmentsStoreIsPopulated(loadScheduleAssignmentsStore())) {
       scheduleAssignmentsDirty = true;
     }
@@ -17008,33 +17022,50 @@
     persistTeamStateDirtyFlags();
     teamStateForcePushIgnoreVersion = true;
     teamStateForcePushIgnoreVersionSticky = true;
-    showScheduleNotice(
-      gmT('schedule.syncConflictKeptMine') || 'Keeping your schedule and saving it to the cloud…',
-      false
-    );
-    void flushTeamStateSyncNow()
+    if (!opts.silent) {
+      showScheduleNotice(
+        gmT('schedule.pushCloudSaving') || 'Saving your local schedule to the cloud…',
+        false
+      );
+    }
+    return Promise.resolve(flushTeamStateSyncNow())
       .then(function () {
         recoverScheduleUiAfterConflictResolve();
         if (scheduleSyncConflictActive) {
-          /* Push hit another conflict — banner already re-shown. */
-          return;
+          return { ok: false, reason: 'conflict' };
         }
-        showScheduleNotice(
-          gmT('schedule.syncConflictKeptMineDone') || 'Your schedule was saved to the cloud.',
-          false
-        );
+        if (!opts.silent) {
+          showScheduleNotice(
+            gmT('schedule.pushCloudDone') ||
+              'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
+            true
+          );
+        }
+        return { ok: true };
       })
       .catch(function (err) {
         recoverScheduleUiAfterConflictResolve();
-        console.warn('gm-callout: keep-mine push', err);
-        teamStateForcePushIgnoreVersion = true;
-        teamStateForcePushIgnoreVersionSticky = true;
-        showScheduleNotice(
-          gmT('schedule.syncConflictKeptMine') ||
-            'Keeping your schedule and saving it to the cloud…',
-          false
-        );
-        void flushTeamStateSyncNow();
+        console.warn('gm-callout: force push local schedule', err);
+        if (!opts.silent) {
+          showScheduleNotice(
+            gmT('schedule.pushCloudFailed') ||
+              'Could not save to the cloud. Check your connection and try again.',
+            false
+          );
+        }
+        return { ok: false, reason: 'error', error: err };
+      });
+  }
+
+  function resolveScheduleConflictKeepMine() {
+    if (scheduleConflictResolveLock) return;
+    scheduleConflictResolveLock = true;
+    void forcePushLocalScheduleToCloud()
+      .then(function () {
+        scheduleConflictResolveLock = false;
+      })
+      .catch(function () {
+        scheduleConflictResolveLock = false;
       });
   }
 
@@ -17147,6 +17178,7 @@
   }
 
   window.gmCalloutResolveScheduleConflictKeepMine = resolveScheduleConflictKeepMine;
+  window.gmCalloutForcePushLocalScheduleToCloud = forcePushLocalScheduleToCloud;
   window.gmCalloutResolveScheduleConflictTakeCloud = resolveScheduleConflictTakeCloud;
   /* Bury/clear helpers are defined later in this IIFE (function decls are hoisted). */
 
@@ -24043,6 +24075,22 @@
       e.preventDefault();
       e.stopPropagation();
       resolveScheduleConflictKeepMine();
+    });
+  }
+  var schedulePushLocalToCloudBtn = document.getElementById('schedulePushLocalToCloudBtn');
+  if (schedulePushLocalToCloudBtn) {
+    schedulePushLocalToCloudBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!managerCanEditCurrentRestaurant()) {
+        showScheduleNotice(
+          gmT('schedule.viewOnlyOtherStoreHint') ||
+            'You can view this store’s schedule but only edit your own store.',
+          false
+        );
+        return;
+      }
+      void forcePushLocalScheduleToCloud();
     });
   }
   if (scheduleConflictTakeCloudBtn) {
