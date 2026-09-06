@@ -825,16 +825,24 @@
             var locJson = JSON.stringify(locList);
             var remJson = JSON.stringify(remList);
             var confJson = confList ? JSON.stringify(confList) : '';
-            var holdLocalEdits =
+            var hasUnpushed =
               draftScheduleDirty ||
               scheduleAssignmentsDirty ||
               teamStateSyncTimer ||
-              teamStatePushInFlight ||
-              (confJson && locJson !== confJson) ||
-              (!confJson && locJson !== remJson);
-            /* Peer reorder: we already pushed this local order, remote differs. */
-            var peerReorder = confJson && locJson === confJson && remJson !== confJson;
-            roleOut[role] = (peerReorder && !holdLocalEdits ? remList : locList).slice();
+              teamStatePushInFlight;
+            var localAheadOfConfirmed = !!(confJson && locJson !== confJson);
+            var peerReorder = !!(confJson && locJson === confJson && remJson !== confJson);
+            if (peerReorder && !hasUnpushed && !localAheadOfConfirmed) {
+              roleOut[role] = remList.slice();
+            } else if (hasUnpushed || localAheadOfConfirmed) {
+              roleOut[role] = locList.slice();
+            } else {
+              /*
+               * Clean device / in sync: cloud wins. Previously "!confJson && loc!==rem"
+               * kept phone-seeded order over cloud and jumbled rows on first mobile open.
+               */
+              roleOut[role] = remList.slice();
+            }
           } else if (locList) {
             roleOut[role] = locList.slice();
           } else if (remList) {
@@ -8595,6 +8603,18 @@
     }
   }
 
+  /** True when this browser has never confirmed a schedule sync with cloud. */
+  function deviceHasNoConfirmedScheduleBind() {
+    try {
+      if (scheduleLastPushHash) return false;
+      if (getScheduleAssignmentsConfirmedJson()) return false;
+      if (getDraftScheduleConfirmedJson()) return false;
+      return true;
+    } catch (_b) {
+      return true;
+    }
+  }
+
   function applyTeamStateRowFromRemoteInner(row, ctx) {
     ctx = ctx || {};
     var isMgr = !!ctx.isManager;
@@ -8614,6 +8634,18 @@
 
     var forceAccept = !!(ctx.forceAcceptRemote || forceAcceptRemoteScheduleOnce);
     if (forceAcceptRemoteScheduleOnce) forceAcceptRemoteScheduleOnce = false;
+    /*
+     * First open on a phone/browser (no confirmed bind): always take cloud.
+     * Never show Keep/Load — local seed/demo is not real unpushed work.
+     */
+    if (
+      !forceAccept &&
+      (ctx.fromInitialHydrate || deviceHasNoConfirmedScheduleBind()) &&
+      scheduleAssignmentsStoreIsPopulated(row.schedule_assignments)
+    ) {
+      forceAccept = true;
+      ctx.allowDiscardDirty = true;
+    }
     /*
      * HARD RULE — never discard unpushed schedule edits unless the caller explicitly
      * allows it (Load cloud schedule button). Notification / prefer-cloud / hydrate
@@ -8849,11 +8881,13 @@
             } catch (_confSlot) {
               confirmedSlotOrder = {};
             }
-            var mergedRemoteSlotOrder = mergeSlotOrderByWeekMapsStable(
-              slotOrderByWeekStore,
-              remoteSlotOnly,
-              confirmedSlotOrder
-            );
+            var mergedRemoteSlotOrder = forceAccept
+              ? remoteSlotOnly
+              : mergeSlotOrderByWeekMapsStable(
+                  slotOrderByWeekStore,
+                  remoteSlotOnly,
+                  confirmedSlotOrder
+                );
             remoteDraftPayload.slotOrderByWeek = mergedRemoteSlotOrder;
             var remoteGroupOnly = sanitizeGroupOrderPotentialByWeek(
               remoteDraftPayload.groupOrderPotentialByWeek
@@ -17204,6 +17238,32 @@
           localPush: false,
         });
       }
+      return;
+    }
+    /*
+     * Phone / new browser with no confirmed cloud bind: take cloud silently.
+     * Seeded localStorage is not a real "Keep my schedule" choice.
+     */
+    if (deviceHasNoConfirmedScheduleBind()) {
+      scheduleConflictSuppressOfferUntil = Date.now() + 60000;
+      clearScheduleSyncConflictState();
+      scheduleAssignmentsDirty = false;
+      draftScheduleDirty = false;
+      persistTeamStateDirtyFlags();
+      forceAcceptRemoteScheduleOnce = true;
+      deferUiWork(function () {
+        try {
+          applyTeamStateRowFromRemote(row, {
+            isManager: true,
+            forceAcceptRemote: true,
+            allowDiscardDirty: true,
+            fromInitialHydrate: true,
+          });
+          rememberSchedulePushGuardFromRemoteRow(row);
+        } catch (_firstBind) {
+          console.warn('gm-callout: first-bind take-cloud', _firstBind);
+        }
+      });
       return;
     }
     /*
@@ -27274,11 +27334,11 @@
     }
 
     /*
-     * One-time cloud schedule resync after broken team_state selects
-     * (missing migration columns) left browsers on stale localStorage.
+     * One-time cloud schedule resync after broken team_state selects / mobile first-open
+     * jumble (missing migration columns or seeded localStorage beating cloud row order).
      */
     try {
-      var resyncKey = 'gm-callout-cloud-schedule-resync-v75';
+      var resyncKey = 'gm-callout-cloud-schedule-resync-v76';
       if (!localStorage.getItem(resyncKey) && teamRes && teamRes.data) {
         forceAcceptRemoteScheduleOnce = true;
         scheduleAssignmentsDirty = false;
@@ -27288,6 +27348,7 @@
         scheduleReviewsDirty = false;
         companyHolidaysDirty = false;
         persistTeamStateDirtyFlags();
+        clearScheduleSyncConflictState();
         localStorage.setItem(resyncKey, '1');
       }
     } catch (_resync) {
@@ -27341,7 +27402,16 @@
       clearLocalEmployeesRoster();
     }
     if (!teamRes.error && teamRes.data) {
-      applyTeamStateRowFromRemote(teamRes.data, { isManager: isManager });
+      applyTeamStateRowFromRemote(teamRes.data, {
+        isManager: isManager,
+        fromInitialHydrate: true,
+        forceAcceptRemote: !!(
+          forceAcceptRemoteScheduleOnce || deviceHasNoConfirmedScheduleBind()
+        ),
+        allowDiscardDirty: !!(
+          forceAcceptRemoteScheduleOnce || deviceHasNoConfirmedScheduleBind()
+        ),
+      });
     }
     if (isManager) {
       /* Reviews are optional + can be large — fetch after paint, never on critical path. */
