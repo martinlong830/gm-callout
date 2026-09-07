@@ -1021,7 +1021,7 @@
     return null;
   }
 
-  /** Write custom order for one week only — does not mutate legacy global. */
+  /** Write custom order for one week only — also mirrors into legacy for this restaurant. */
   function setCustomSlotOrderForRole(restaurantId, role, nextOrder, weekMondayIso) {
     var rid = resolveDraftRestaurantId(restaurantId != null ? restaurantId : currentRestaurantId);
     var mon = resolveSlotOrderWeekMondayIso(weekMondayIso, null);
@@ -1038,6 +1038,9 @@
       }
     } else {
       slotOrderByWeekStore[mon][rid][role] = nextOrder.slice();
+      /* Keep legacy mirror current so draft_schedule.slotOrderByRestaurant stays useful. */
+      if (!legacySlotOrderByRestaurantStore[rid]) legacySlotOrderByRestaurantStore[rid] = {};
+      legacySlotOrderByRestaurantStore[rid][role] = nextOrder.slice();
     }
     persistSlotOrderStores();
   }
@@ -8908,8 +8911,12 @@
             } catch (_confSlot) {
               confirmedSlotOrder = {};
             }
+            /*
+             * Load cloud / first-bind: take Supabase slotOrder exactly so people rows and
+             * time tiles match the cloud editor. Merging local leftovers caused mismatches.
+             */
             var mergedRemoteSlotOrder = forceAccept
-              ? mergeSlotOrderByWeekMaps(slotOrderByWeekStore, remoteSlotOnly, 'remote')
+              ? remoteSlotOnly
               : mergeSlotOrderByWeekMapsStable(
                   slotOrderByWeekStore,
                   remoteSlotOnly,
@@ -8919,30 +8926,48 @@
             var remoteGroupOnly = sanitizeGroupOrderPotentialByWeek(
               remoteDraftPayload.groupOrderPotentialByWeek
             );
-            var mergedRemoteGroupOrder = mergeGroupOrderPotentialByWeekMaps(
-              groupOrderPotentialByWeekStore,
-              remoteGroupOnly,
-              'remote'
-            );
-            remoteDraftPayload.groupOrderPotentialByWeek = mergedRemoteGroupOrder;
             var remoteSalesOnly = sanitizeScheduleNetSalesByWeek(
               remoteDraftPayload.scheduleNetSalesByWeek
             );
-            var mergedRemoteNetSales = mergeScheduleNetSalesByWeekMaps(
-              scheduleNetSalesByWeekStore,
-              remoteSalesOnly,
-              'remote'
-            );
+            var mergedRemoteGroupOrder;
+            var mergedRemoteNetSales;
+            if (forceAccept) {
+              mergedRemoteGroupOrder = remoteGroupOnly;
+              mergedRemoteNetSales = remoteSalesOnly;
+            } else {
+              mergedRemoteGroupOrder = mergeGroupOrderPotentialByWeekMaps(
+                groupOrderPotentialByWeekStore,
+                remoteGroupOnly,
+                'remote'
+              );
+              mergedRemoteNetSales = mergeScheduleNetSalesByWeekMaps(
+                scheduleNetSalesByWeekStore,
+                remoteSalesOnly,
+                'remote'
+              );
+            }
+            remoteDraftPayload.groupOrderPotentialByWeek = mergedRemoteGroupOrder;
             remoteDraftPayload.scheduleNetSalesByWeek = mergedRemoteNetSales;
             if (
               !remoteDraftPayload.slotOrderByRestaurant ||
               !Object.keys(remoteDraftPayload.slotOrderByRestaurant).length
             ) {
-              remoteDraftPayload.slotOrderByRestaurant = sanitizeSlotOrderByRestaurant(
-                legacySlotOrderByRestaurantStore
-              );
+              if (forceAccept) {
+                /* Do not inject this browser's legacy order into a Load-cloud apply. */
+                var curMonRemote = remoteDraftPayload.windowMondayIso
+                  ? String(remoteDraftPayload.windowMondayIso).slice(0, 10)
+                  : currentScheduleWeekMondayIso();
+                remoteDraftPayload.slotOrderByRestaurant = sanitizeSlotOrderByRestaurant(
+                  (curMonRemote && mergedRemoteSlotOrder[curMonRemote]) || {}
+                );
+              } else {
+                remoteDraftPayload.slotOrderByRestaurant = sanitizeSlotOrderByRestaurant(
+                  legacySlotOrderByRestaurantStore
+                );
+              }
             }
             var preservedLocalSlotOrder =
+              !forceAccept &&
               JSON.stringify(mergedRemoteSlotOrder) !== JSON.stringify(remoteSlotOnly);
             var remoteDraftJson = JSON.stringify(remoteDraftPayload);
             try {
@@ -11372,12 +11397,62 @@
     ensureDraftRowsCoverStaffedAssignments(store);
     /* Never strip staffed names just before upload — that is how Eugene disappeared. */
     pruneOrphanScheduleAssignmentsBeyondDraft(store, { preserveStaffed: true });
+    /*
+     * Materialize ↑↓ row order for every week/role that has slots so Supabase always
+     * stores display order with the schedule — Load cloud can then match tiles exactly.
+     */
+    ensureSlotOrderMaterializedForCloudPush();
     try {
       localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(store));
     } catch (_prep) {
       /* ignore */
     }
     return store;
+  }
+
+  /**
+   * Ensure slotOrderByWeek has an explicit list for each restaurant/role/week with rows.
+   * Missing keys fall back to natural 0…n locally and look "wrong" vs a peer who ↑↓'d.
+   */
+  function ensureSlotOrderMaterializedForCloudPush() {
+    var changed = false;
+    restaurantsList.forEach(function (rest) {
+      var rid = rest.id;
+      for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+        var mon = mondayIsoForScheduleWeekIndex(wi);
+        if (!mon) continue;
+        ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+          var n = slotCountForRole(role, wi, rid);
+          if (n <= 0) return;
+          if (!slotOrderByWeekStore[mon]) slotOrderByWeekStore[mon] = {};
+          if (!slotOrderByWeekStore[mon][rid]) slotOrderByWeekStore[mon][rid] = {};
+          var cur = slotOrderByWeekStore[mon][rid][role];
+          var normalized = normalizeSlotOrderList(cur, n);
+          if (normalized && Array.isArray(cur) && JSON.stringify(cur) === JSON.stringify(normalized)) {
+            return;
+          }
+          if (!normalized) {
+            normalized = [];
+            for (var i = 0; i < n; i += 1) normalized.push(i);
+          }
+          slotOrderByWeekStore[mon][rid][role] = normalized.slice();
+          changed = true;
+        });
+      }
+    });
+    /* Keep legacy mirror in sync with this week's order for older clients. */
+    var curMon = currentScheduleWeekMondayIso();
+    if (curMon && slotOrderByWeekStore[curMon]) {
+      var mirrored = sanitizeSlotOrderByRestaurant(
+        JSON.parse(JSON.stringify(slotOrderByWeekStore[curMon]))
+      );
+      if (JSON.stringify(mirrored) !== JSON.stringify(legacySlotOrderByRestaurantStore || {})) {
+        legacySlotOrderByRestaurantStore = mirrored;
+        changed = true;
+      }
+    }
+    if (changed) persistSlotOrderStores({ skipDirty: true });
+    return changed;
   }
 
   /**
@@ -18560,6 +18635,7 @@
     renderCalendar();
     if (scheduleBody) renderSchedule();
     scheduleTeamStateDebouncedSync();
+    scheduleTeamStateWriteThroughSoon();
   }
 
   function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly, moveFlags) {
