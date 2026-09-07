@@ -827,7 +827,6 @@
             var confJson = confList ? JSON.stringify(confList) : '';
             var hasUnpushed =
               draftScheduleDirty ||
-              scheduleAssignmentsDirty ||
               teamStateSyncTimer ||
               teamStatePushInFlight;
             var localAheadOfConfirmed = !!(confJson && locJson !== confJson);
@@ -838,8 +837,8 @@
               roleOut[role] = locList.slice();
             } else {
               /*
-               * Clean device / in sync: cloud wins. Previously "!confJson && loc!==rem"
-               * kept phone-seeded order over cloud and jumbled rows on first mobile open.
+               * Clean device / in sync: cloud wins. Do not let scheduleAssignmentsDirty
+               * alone prefer local — that flipped row order on every staffing prune/absorb.
                */
               roleOut[role] = remList.slice();
             }
@@ -1075,6 +1074,33 @@
     });
     if (changed) persistSlotOrderStores({ skipDirty: true });
     return changed;
+  }
+
+  /**
+   * When the calendar Monday advances, shift slotOrderByWeek keys by the same delta so
+   * ↑↓ display order stays attached to the weeks managers already arranged.
+   */
+  function shiftSlotOrderByWeekStore(deltaWeeks) {
+    if (!deltaWeeks) return false;
+    var src = sanitizeSlotOrderByWeek(slotOrderByWeekStore);
+    var keys = Object.keys(src);
+    if (!keys.length) return false;
+    var next = {};
+    var any = false;
+    keys.forEach(function (mon) {
+      var d = parseIsoDateLocal(mon);
+      if (!d) return;
+      d.setDate(d.getDate() + deltaWeeks * 7);
+      var newMon = isoDateFromLocalDate(d);
+      if (!newMon) return;
+      if (newMon !== mon) any = true;
+      /* Prefer keeping an existing target key (already written) over overwrite. */
+      if (!next[newMon]) next[newMon] = src[mon];
+    });
+    if (!any) return false;
+    slotOrderByWeekStore = next;
+    persistSlotOrderStores({ skipDirty: true });
+    return true;
   }
 
   function copySlotOrderBetweenWeeks(fromMondayIso, toMondayIso) {
@@ -6309,11 +6335,10 @@
     restorePreferCloudOnConflictFromStorage();
     restoreAcceptedCloudConflictFromStorage();
     restoreTeamStateDirtyFlagsFromStorage();
-    try {
-      seedCurrentWeekSlotOrderFromLegacyIfNeeded();
-    } catch (_seedOrder) {
-      /* ignore */
-    }
+    /*
+     * Do not seed legacy slot order on boot — that silently wrote a local order which
+     * then beat cloud on merge and reshuffled FOH rows after every refresh.
+     */
     try {
       var localAssignRaw = localStorage.getItem(SCHEDULE_ASSIGN_KEY) || '';
       var confAssign = getScheduleAssignmentsConfirmedJson();
@@ -8637,10 +8662,12 @@
     /*
      * First open on a phone/browser (no confirmed bind): always take cloud.
      * Never show Keep/Load — local seed/demo is not real unpushed work.
+     * Do NOT force-accept on every fromInitialHydrate — that wiped ↑↓ order on
+     * every shiflow.app refresh and made rows reshuffle.
      */
     if (
       !forceAccept &&
-      (ctx.fromInitialHydrate || deviceHasNoConfirmedScheduleBind()) &&
+      deviceHasNoConfirmedScheduleBind() &&
       scheduleAssignmentsStoreIsPopulated(row.schedule_assignments)
     ) {
       forceAccept = true;
@@ -8882,7 +8909,7 @@
               confirmedSlotOrder = {};
             }
             var mergedRemoteSlotOrder = forceAccept
-              ? remoteSlotOnly
+              ? mergeSlotOrderByWeekMaps(slotOrderByWeekStore, remoteSlotOnly, 'remote')
               : mergeSlotOrderByWeekMapsStable(
                   slotOrderByWeekStore,
                   remoteSlotOnly,
@@ -14023,6 +14050,10 @@
       if (delta > 0) {
         if (shiftAssignmentStoreByWeeks(store, delta)) changed = true;
         if (shiftDraftScheduleByWeeks(delta)) changed = true;
+        if (shiftSlotOrderByWeekStore(delta)) {
+          changed = true;
+          if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+        }
         writeScheduleWindowMondayIso(mondayIso);
         writeFurthestSeedMeta(null);
         if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
