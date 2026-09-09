@@ -4294,7 +4294,14 @@
     return out;
   })();
   /** Break TIME options in the shift editor (locked). */
-  const SHIFT_DETAIL_BREAK_TIME_PRESETS = ['3:00PM', '3:30PM', '4:00PM', '4:30PM'];
+  const SHIFT_DETAIL_BREAK_TIME_PRESETS = [
+    '2:00PM',
+    '2:30PM',
+    '3:00PM',
+    '3:30PM',
+    '4:00PM',
+    '4:30PM',
+  ];
   /** Office annotation times — locked to 2:00 PM only in the shift editor. */
   const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
   const OFFICE_DEFAULT_START_HHMM = '14:00';
@@ -7160,14 +7167,16 @@
       return { ok: false, error: res.error };
     }
     if (res.data) {
-      var takeCloud =
-        !!opts.forceAcceptRemote ||
-        (!!opts.allowDiscardDirty && !hasInteractiveScheduleEditsThisSession());
+      /*
+       * Do not promote allowDiscardDirty → forceAccept. That bypassed self-echo refusal
+       * and made Refresh paint a stale cloud over a just-pushed local schedule.
+       */
+      var takeCloud = !!opts.forceAcceptRemote;
       applyTeamStateRowFromRemote(res.data, {
         isManager: gmCalloutSessionIsManager,
         notifyPeerUpdate: opts.notifyPeerUpdate !== false,
         forceAcceptRemote: takeCloud,
-        allowDiscardDirty: takeCloud,
+        allowDiscardDirty: !!(opts.allowDiscardDirty || takeCloud),
       });
     }
     return { ok: true };
@@ -7429,26 +7438,19 @@
     flushTipPayrollPushToSupabase();
     await flushTeamStateSyncNow();
     /*
-     * Refresh must show cloud day-offs from other tabs/devices. Recovered dirty
-     * localStorage on shiflow.app was refusing remote draft and re-pushing old Sat/Sun.
-     * Only keep local when this tab has live edits this session.
+     * Never force-accept on Refresh. After a successful push, interactive=false and a
+     * stale replica read would wipe the edits we just saved. Apply path still takes a
+     * strictly newer peer cloud when this tab has no live edits; self-echo refusal keeps
+     * our own push. Recovered dirty behind cloud is handled by shouldAutoTakeNewerCloud…
      */
-    var takeCloudOnRefresh = !hasInteractiveScheduleEditsThisSession();
-    if (takeCloudOnRefresh) {
-      scheduleAssignmentsDirty = false;
-      draftScheduleDirty = false;
-      persistTeamStateDirtyFlags();
-      clearScheduleSyncConflictState();
-      scheduleConflictSuppressOfferUntil = Date.now() + 5000;
-    }
     /* Force a full fetch even when our cached updated_at matches (clock skew / missed field). */
     var prevCached = teamStateCachedUpdatedAt;
     teamStateCachedUpdatedAt = null;
     var res = await refreshTeamStateFromRemote(null, {
       forceFetch: true,
       notifyPeerUpdate: false,
-      forceAcceptRemote: takeCloudOnRefresh,
-      allowDiscardDirty: takeCloudOnRefresh,
+      forceAcceptRemote: false,
+      allowDiscardDirty: false,
     });
     if (!res || !res.ok) {
       teamStateCachedUpdatedAt = prevCached;
@@ -8956,9 +8958,9 @@
       forceAccept = false;
     }
     /*
-     * Newer cloud + no live edits this tab: always take cloud. Recovered dirty
-     * localStorage on shiflow.app otherwise refused remote day-offs and pushed old
-     * timed Sat/Sun back over clears made on another device/tab.
+     * Newer cloud + no live edits this tab: take cloud so recovered dirty cannot
+     * re-push old Sat/Sun over peer day-offs. Never bypass self-echo — a stale
+     * replica after our own push must not wipe what we just saved (Refresh case).
      */
     if (
       !forceAccept &&
@@ -8967,6 +8969,7 @@
       !teamStateForcePushActive &&
       !scheduleDayOffPushGuardActive() &&
       !hasInteractiveScheduleEditsThisSession() &&
+      !shouldRefuseStaleSelfPushEcho(row) &&
       remoteTeamStateIsStrictlyNewer(row) &&
       scheduleBundleContentDiffersFromRemoteRow(row)
     ) {
@@ -8976,6 +8979,19 @@
       draftScheduleDirty = false;
       persistTeamStateDirtyFlags();
       clearScheduleSyncConflictState();
+    }
+    /*
+     * Stale Postgres self-echo must never paint over a confirmed local push — including
+     * hydrate/Refresh forceAccept. First-bind and sticky "Load cloud" still take remote.
+     */
+    if (
+      forceAccept &&
+      shouldRefuseStaleSelfPushEcho(row) &&
+      !deviceHasNoConfirmedScheduleBind() &&
+      !schedulePreferCloudOnConflict
+    ) {
+      forceAccept = false;
+      ctx.allowDiscardDirty = false;
     }
     /*
      * Day-off / live × edits: never paint older cloud schedule over this tab while the
@@ -13132,16 +13148,26 @@
        * Always write explicit Unassigned. Leaving the person on a day-off cell meant
        * cloud/DEFAULT time restores brought Mark (etc.) back on Sat/Sun.
        * Direct Unassigned also blocks template-week pattern re-staffing for this week.
+       * Keep rowOwner so the Person column still shows Eugene (etc.) when the whole
+       * row is day-off — otherwise the last × makes them "disappear to Unassigned".
        */
       var offEntry =
         rs[shiftId] != null
           ? cloneScheduleAssignment(rs[shiftId])
           : { workers: ['Unassigned'] };
+      var prevPerson =
+        scheduleAssignmentPrimaryWorker(offEntry) ||
+        (offEntry.rowOwner && offEntry.rowOwner !== 'Unassigned' ? offEntry.rowOwner : null) ||
+        scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays());
       offEntry.workers = ['Unassigned'];
       delete offEntry.break;
       delete offEntry.timeLabel;
       delete offEntry.hours;
       delete offEntry.breakPaid;
+      if (prevPerson && prevPerson !== 'Unassigned') {
+        offEntry.rowOwner =
+          canonicalScheduleWorkerName(prevPerson, rid) || String(prevPerson).trim();
+      }
       rs[shiftId] = offEntry;
     } else {
       rows[role][trIdx][dayInWeekN] = [s, e];
@@ -13156,6 +13182,9 @@
       } else {
         entry.workers = canonicalizeScheduleWorkerList(entry.workers, rid);
         entry.workers = clampScheduleWorkersToSingle(entry.workers);
+      }
+      if (scheduleAssignmentHasStaffedWorkers(entry)) {
+        entry.rowOwner = scheduleAssignmentPrimaryWorker(entry);
       }
       entry.break = breakText || formatBreakAnnotation('3:00PM', 'BREAK TIME');
       entry.timeLabel = redPokeShiftTimeLabel(s, e);
@@ -14102,7 +14131,7 @@
     updateScheduleWeekNav();
   }
 
-  /** Assignment value: `['Name']` legacy, or `{ workers, break?, hours?, timeLabel? }` from FOH sheet. */
+  /** Assignment value: `['Name']` legacy, or `{ workers, break?, hours?, timeLabel?, rowOwner? }` from FOH sheet. */
   function normalizeScheduleAssignment(val) {
     if (val == null) return { workers: ['Unassigned'] };
     if (typeof val === 'string') {
@@ -14127,6 +14156,13 @@
       if (val.hours != null && val.hours !== '') out.hours = String(val.hours);
       if (val.timeLabel) out.timeLabel = String(val.timeLabel);
       if (val.breakPaid === true || val.breakPaid === false) out.breakPaid = !!val.breakPaid;
+      /*
+       * Row identity for all-day-off weeks. Day-off cells stay Unassigned (so times do not
+       * resurrect / absorb does not move people), but Person column still shows who owns the row.
+       */
+      if (val.rowOwner && String(val.rowOwner).trim() && String(val.rowOwner) !== 'Unassigned') {
+        out.rowOwner = String(val.rowOwner).trim();
+      }
       return out;
     }
     return { workers: ['Unassigned'] };
@@ -14688,6 +14724,9 @@
         : { workers: list.slice() };
     entry.workers = canonicalizeScheduleWorkerList(list, currentRestaurantId);
     entry.workers = clampScheduleWorkersToSingle(entry.workers);
+    if (scheduleAssignmentHasStaffedWorkers(entry)) {
+      entry.rowOwner = scheduleAssignmentPrimaryWorker(entry);
+    }
     if (shiftRow.redPokeBreak && !scheduleBreakIsHashPlaceholder(shiftRow, shiftRow.redPokeBreak)) {
       entry.break = shiftRow.redPokeBreak;
     }
@@ -14753,6 +14792,12 @@
         !scheduleAssignmentHasStaffedWorkers(nextEntry)
       ) {
         return;
+      }
+      if (
+        opts.allowUnassign &&
+        !scheduleAssignmentHasStaffedWorkers(nextEntry)
+      ) {
+        delete nextEntry.rowOwner;
       }
       rs[s.id] = nextEntry;
     });
@@ -19041,6 +19086,62 @@
     });
   }
 
+  /** Sticky row owner from day-off / Unassigned stubs (does not count as staffed). */
+  function scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays) {
+    if (!rs || roleIdx < 0) return null;
+    var days = visibleDays || getVisibleWeekDays();
+    for (var i = 0; i < days.length; i += 1) {
+      var dayStr = days[i];
+      var globalDayIdx = scheduleCalendarWeekIndex * 7 + i;
+      if (dayStr && ALL_WEEK_DAYS.indexOf(dayStr) >= 0) {
+        globalDayIdx = ALL_WEEK_DAYS.indexOf(dayStr);
+      }
+      var raw = rs['shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx];
+      if (!raw || typeof raw !== 'object') continue;
+      var owner = raw.rowOwner != null ? String(raw.rowOwner).trim() : '';
+      if (!owner && raw.workers) {
+        /* normalize may have already promoted rowOwner */
+        var norm = normalizeScheduleAssignment(raw);
+        owner = norm.rowOwner ? String(norm.rowOwner).trim() : '';
+      }
+      if (owner && owner !== 'Unassigned') {
+        return canonicalScheduleWorkerName(owner, currentRestaurantId) || owner;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * When this week is all day-off, recover the row person from other weeks' same slot
+   * (or sticky rowOwner) so Eugene does not vanish to Unassigned unprompted.
+   */
+  function scheduleRowPersonFromOtherWeeks(role, trIdx) {
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return null;
+    var rs = getCurrentRestaurantAssignments();
+    if (!rs) return null;
+    var ownerFallback = null;
+    var curStart = scheduleCalendarWeekIndex * 7;
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      for (var di = 0; di < 7; di += 1) {
+        var gdi = wi * 7 + di;
+        if (gdi >= curStart && gdi < curStart + 7) continue;
+        var raw = rs['shift-' + gdi + '-' + roleIdx + '-' + trIdx];
+        if (!raw) continue;
+        var entry = normalizeScheduleAssignment(raw);
+        var staffed = scheduleAssignmentPrimaryWorker(entry);
+        if (staffed) {
+          return canonicalScheduleWorkerName(staffed, currentRestaurantId) || staffed;
+        }
+        if (!ownerFallback && entry.rowOwner && entry.rowOwner !== 'Unassigned') {
+          ownerFallback =
+            canonicalScheduleWorkerName(entry.rowOwner, currentRestaurantId) || entry.rowOwner;
+        }
+      }
+    }
+    return ownerFallback;
+  }
+
   /** Dominant assigned person across staffed days in a calendar row (visible week).
    *  Also reads pending assignment stubs for days with no draft times yet (new empty slots),
    *  and for SCHEDULE rows still Unassigned when the store already has a person. */
@@ -19094,7 +19195,12 @@
         bestCount = counts[n];
       }
     });
-    return bestCount > 0 ? best : 'Unassigned';
+    if (bestCount > 0) return best;
+    var sticky = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays);
+    if (sticky) return sticky;
+    var fromOther = scheduleRowPersonFromOtherWeeks(role, trIdx);
+    if (fromOther) return fromOther;
+    return 'Unassigned';
   }
 
   /** Keep Person column ::after overlay in sync with the select value (native menulists shrink). */
@@ -19408,6 +19514,8 @@
             ? cloneScheduleAssignment(rsStore[shiftId])
             : { workers: ['Unassigned'] };
         entry.workers = list.slice();
+        if (canon === 'Unassigned') delete entry.rowOwner;
+        else entry.rowOwner = canon;
         rsStore[shiftId] = entry;
       });
       if (!templateScratch) {
@@ -28019,15 +28127,19 @@
       clearLocalEmployeesRoster();
     }
     if (!teamRes.error && teamRes.data) {
+      /*
+       * First-bind / publish notification: take cloud. Otherwise let apply decide —
+       * blanket !interactive forceAccept wiped a just-saved schedule when hydrate
+       * raced a stale replica (same bug as Refresh).
+       */
+      var takeCloudHydrate = !!(
+        forceAcceptRemoteScheduleOnce || deviceHasNoConfirmedScheduleBind()
+      );
       applyTeamStateRowFromRemote(teamRes.data, {
         isManager: isManager,
         fromInitialHydrate: true,
-        forceAcceptRemote: !!(
-          forceAcceptRemoteScheduleOnce || deviceHasNoConfirmedScheduleBind()
-        ),
-        allowDiscardDirty: !!(
-          forceAcceptRemoteScheduleOnce || deviceHasNoConfirmedScheduleBind()
-        ),
+        forceAcceptRemote: takeCloudHydrate,
+        allowDiscardDirty: takeCloudHydrate,
       });
     }
     if (isManager) {

@@ -2721,7 +2721,14 @@ export const BREAK_ANNOTATION_TYPE_PRESETS = ['BREAK TIME', 'OFFICE', 'NO BREAK'
 export type BreakAnnotationType = (typeof BREAK_ANNOTATION_TYPE_PRESETS)[number];
 
 /** Break TIME presets for the shift editor (parity with web). */
-export const SHIFT_DETAIL_BREAK_TIME_PRESETS = ['3:00PM', '3:30PM', '4:00PM', '4:30PM'];
+export const SHIFT_DETAIL_BREAK_TIME_PRESETS = [
+  '2:00PM',
+  '2:30PM',
+  '3:00PM',
+  '3:30PM',
+  '4:00PM',
+  '4:30PM',
+];
 /** Office annotation is always 2:00 PM (parity with web). */
 export const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
 export const OFFICE_DEFAULT_START_HHMM = '14:00';
