@@ -104,9 +104,9 @@
         ['10:00', '19:30'],
         ['10:00', '19:30'],
         ['10:00', '19:30'],
-        ['09:00', '18:00'],
-        ['10:30', '20:30'],
-        ['10:30', '20:30'],
+        null,
+        null,
+        null,
       ],
       [
         ['10:30', '20:30'],
@@ -114,7 +114,7 @@
         ['10:30', '20:30'],
         ['10:30', '16:00'],
         ['10:30', '20:30'],
-        ['12:00', '21:30'],
+        null,
         ['12:00', '21:30'],
       ],
       [
@@ -971,6 +971,7 @@
       }
       if (!(opts && opts.skipDirty) && GM_SUPABASE_DATA && window.gmSupabase) {
         draftScheduleDirty = true;
+        if (!(opts && opts.skipInteractiveMark)) markScheduleInteractiveEdit();
         persistTeamStateDirtyFlags();
         scheduleTeamStateDebouncedSync();
       }
@@ -1242,6 +1243,7 @@
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
       if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
         draftScheduleDirty = true;
+        markScheduleInteractiveEdit();
         persistTeamStateDirtyFlags();
         /* Debounce cloud push — flushing on every tile edit made alt-copy / × feel 5–10s slow. */
         scheduleTeamStateDebouncedSync();
@@ -5849,6 +5851,12 @@
   var draftScheduleDirty = false;
   /** True while local schedule assignment edits are not yet confirmed on Supabase. */
   var scheduleAssignmentsDirty = false;
+  /**
+   * Wall time of last interactive schedule edit (tile / ↑↓ / draft) in THIS tab session.
+   * Recovered dirty flags from localStorage do not set this — so a sleeping laptop cannot
+   * stomp peer cloud edits after wake.
+   */
+  var scheduleInteractiveEditAt = 0;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
@@ -5931,6 +5939,61 @@
   var gmCalloutSessionIsManager = false;
   /** After first manager bootstrap, avoid forcing Schedule when async hydrate finishes. */
   var gmManagerShellBootstrapped = false;
+
+  function markScheduleInteractiveEdit() {
+    scheduleInteractiveEditAt = Date.now();
+  }
+
+  /** True when this tab made schedule edits after the last successful cloud push. */
+  function hasInteractiveScheduleEditsThisSession() {
+    if (!scheduleInteractiveEditAt) return false;
+    if (!teamStateLastLocalPushAt) return true;
+    return scheduleInteractiveEditAt > teamStateLastLocalPushAt;
+  }
+
+  /**
+   * Peer wrote to cloud after our last push, and this tab only has recovered/stale dirty
+   * flags (no live edits). Take cloud so a sleeping manager laptop cannot roll everyone back.
+   *
+   * Do NOT silent-take when local still differs from the last confirmed push — that is real
+   * unpushed work (e.g. day-off that failed to upload). Offer conflict / push instead of
+   * bringing Charles/Mark weekend slots back from an older cloud snapshot.
+   */
+  function shouldAutoTakeNewerCloudOverStaleDirty(row) {
+    if (!row || typeof row !== 'object') return false;
+    if (!remoteTeamStateIsStrictlyNewer(row)) return false;
+    if (!scheduleBundleContentDiffersFromRemoteRow(row)) return false;
+    if (!(scheduleAssignmentsDirty || draftScheduleDirty)) return false;
+    if (hasInteractiveScheduleEditsThisSession()) return false;
+    if (teamStateForcePushActive) return false;
+    try {
+      if (scheduleLastPushHash && liveScheduleBundleHash() === scheduleLastPushHash) {
+        return true;
+      }
+    } catch (_autoHash) {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function applyNewerCloudSilently(row, isMgr) {
+    scheduleConflictSuppressOfferUntil = Date.now() + 30000;
+    clearScheduleSyncConflictState();
+    scheduleAssignmentsDirty = false;
+    draftScheduleDirty = false;
+    persistTeamStateDirtyFlags();
+    forceAcceptRemoteScheduleOnce = true;
+    try {
+      applyTeamStateRowFromRemote(row, {
+        isManager: !!isMgr,
+        forceAcceptRemote: true,
+        allowDiscardDirty: true,
+      });
+      rememberSchedulePushGuardFromRemoteRow(row);
+    } catch (_autoTake) {
+      console.warn('gm-callout: auto-take newer cloud', _autoTake);
+    }
+  }
 
   function persistTeamStateDirtyFlags() {
     try {
@@ -6323,6 +6386,20 @@
     } catch (_rel) {
       /* ignore */
     }
+    /*
+     * Boot recovery may have marked dirty without scheduling a push (hydrate gate).
+     * Only flush now for real in-session edits / Keep-mine force push — stale recovered
+     * dirty is resolved by hydrate auto-take or refuseStale apply paths.
+     */
+    if (
+      teamStateHasDirtyFields() &&
+      (hasInteractiveScheduleEditsThisSession() ||
+        teamStateForcePushIgnoreVersionSticky ||
+        teamStateForcePushActive)
+    ) {
+      scheduleTeamStateDebouncedSync();
+      scheduleTeamStateWriteThroughSoon();
+    }
   }
 
   /**
@@ -6431,7 +6508,18 @@
       /* clean — safe to accept cloud on hydrate without prompting */
     }
     persistTeamStateDirtyFlags();
-    if (teamStateHasDirtyFields()) {
+    /*
+     * Never flush recovered dirty before the first cloud hydrate — a sleeping laptop
+     * used to overwrite peer edits within seconds of wake/load. Also skip auto-flush
+     * when dirty flags came only from localStorage recovery (no live edits this tab).
+     */
+    if (
+      teamStateHasDirtyFields() &&
+      !scheduleUiAwaitingInitialCloudHydrate &&
+      (hasInteractiveScheduleEditsThisSession() ||
+        teamStateForcePushIgnoreVersionSticky ||
+        teamStateForcePushActive)
+    ) {
       scheduleTeamStateDebouncedSync();
       scheduleTeamStateWriteThroughSoon();
     }
@@ -7568,7 +7656,13 @@
   function protectStaffedAssignmentsFromRemoteWipe(localStore, remoteStore) {
     if (!remoteStore || typeof remoteStore !== 'object') return remoteStore;
     if (!localStore || typeof localStore !== 'object') return remoteStore;
-    if (!scheduleAssignmentsDirty) return remoteStore;
+    /*
+     * Only protect while this tab has live unpushed edits. Recovered dirty alone must
+     * not resurrect cleared names (duplicates / Unassigned fights after peer clears).
+     */
+    if (!scheduleAssignmentsDirty || !hasInteractiveScheduleEditsThisSession()) {
+      return remoteStore;
+    }
     var out = JSON.parse(JSON.stringify(remoteStore));
     Object.keys(localStore).forEach(function (rid) {
       var localRs = localStore[rid];
@@ -8700,6 +8794,10 @@
       persistTeamStateDirtyFlags();
     }
     if (refuseStaleSchedule && isMgr) {
+      if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
+        applyNewerCloudSilently(row, isMgr);
+        return;
+      }
       if (
         remoteTeamStateIsStrictlyNewer(row) &&
         scheduleBundleContentDiffersFromRemoteRow(row)
@@ -8710,8 +8808,15 @@
           /* Allow apply with staffed-slot protection — never silent forceAccept wipe. */
           refuseStaleSchedule = false;
         }
+      } else if (remoteTeamStateIsStrictlyNewer(row)) {
+        /* Newer cloud watermark but same content hash — apply, never push stale local. */
+        refuseStaleSchedule = false;
       } else {
-        /* Keep local SoT; push so cloud catches up instead of accepting a rollback. */
+        /*
+         * Remote same/older — keep local SoT and push. Crash-recovery dirty still needs
+         * this path; peer rollbacks are stopped by hydrate-before-push + auto-take when
+         * remote is strictly newer.
+         */
         scheduleTeamStateDebouncedSync();
         flushTeamStateSyncNow();
       }
@@ -11655,6 +11760,7 @@
       return;
     }
     if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
+    if (!opts.skipInteractiveMark) markScheduleInteractiveEdit();
     scheduleTeamStateDebouncedSync();
     /* Interactive tile edits stay coalesced; writeThrough (default) flushes in ~450ms so a
        Render deploy reload cannot outrun the longer debounce. Pass flushNow for publish /
@@ -12428,9 +12534,18 @@
       var raw = restAssignments[shiftId];
       var entry = normalizeScheduleAssignment(raw);
       if (!tr) {
-        if (entry.timeLabel || entry.hours != null) {
+        if (
+          scheduleAssignmentHasStaffedWorkers(entry) ||
+          entry.timeLabel ||
+          entry.hours != null ||
+          entry.break ||
+          entry.breakPaid != null
+        ) {
+          entry.workers = ['Unassigned'];
+          delete entry.break;
           delete entry.timeLabel;
           delete entry.hours;
+          delete entry.breakPaid;
           restAssignments[shiftId] = entry;
           changed = true;
         }
@@ -12756,13 +12871,21 @@
     var shiftId = 'shift-' + (weekStart + dayInWeekN) + '-' + roleIdx + '-' + trIdx;
     if (isDayOff) {
       rows[role][trIdx][dayInWeekN] = null;
-      if (rs[shiftId] != null) {
-        var offEntry = cloneScheduleAssignment(rs[shiftId]);
-        delete offEntry.break;
-        delete offEntry.timeLabel;
-        delete offEntry.hours;
-        rs[shiftId] = offEntry;
-      }
+      /*
+       * Always write explicit Unassigned. Leaving the person on a day-off cell meant
+       * cloud/DEFAULT time restores brought Mark (etc.) back on Sat/Sun.
+       * Direct Unassigned also blocks template-week pattern re-staffing for this week.
+       */
+      var offEntry =
+        rs[shiftId] != null
+          ? cloneScheduleAssignment(rs[shiftId])
+          : { workers: ['Unassigned'] };
+      offEntry.workers = ['Unassigned'];
+      delete offEntry.break;
+      delete offEntry.timeLabel;
+      delete offEntry.hours;
+      delete offEntry.breakPaid;
+      rs[shiftId] = offEntry;
     } else {
       rows[role][trIdx][dayInWeekN] = [s, e];
       var entry =
@@ -12799,10 +12922,16 @@
     if (!store[rid]) store[rid] = {};
     store[rid] = rs;
     saveDraftScheduleRowsForWeek(wi, rows, rid);
-    saveScheduleAssignmentsStore(store);
+    saveScheduleAssignmentsStore(store, isDayOff ? { flushNow: true } : undefined);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     pruneScheduleAssignmentsInvalidSlots();
-    scheduleTeamStateDebouncedSync();
+    if (isDayOff) {
+      /* Day-off must hit Supabase immediately — debounce left a window for cloud/poll
+         to restore Sat/Sun times (Charles Sept 5, Mark weekends, etc.). */
+      flushTeamStateSyncNow();
+    } else {
+      scheduleTeamStateDebouncedSync();
+    }
     /* Week-scoped only — full rebuildEmployeeDerivedData() was multi-second on large rosters. */
     rebuildSchedule({
       weekIndex: scheduleCalendarWeekIndex,
@@ -12917,6 +13046,7 @@
   function restoreScheduleUndoSnapshot(snap) {
     scheduleUndoSuppressPush = true;
     try {
+      markScheduleInteractiveEdit();
       localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(snap.assignments));
       if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
       if (snap.draftByWeek && typeof snap.draftByWeek === 'object') {
@@ -17347,6 +17477,14 @@
       return;
     }
     /*
+     * Stale dirty on a sleeping/background tab — peer cloud wins. Do not show Keep/Load
+     * or push an old laptop schedule over everyone else's work.
+     */
+    if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
+      applyNewerCloudSilently(row, true);
+      return;
+    }
+    /*
      * Phone / new browser with no confirmed cloud bind: take cloud silently.
      * Seeded localStorage is not a real "Keep my schedule" choice.
      */
@@ -17379,9 +17517,22 @@
      */
     if (schedulePreferCloudOnConflict) {
       /*
-       * Prefer-cloud must NEVER wipe unpushed edits. If dirty, keep local and push.
-       * Only auto-apply cloud when this tab has nothing unpushed.
+       * Prefer-cloud: live edits this session still win and push. Recovered dirty that is
+       * only flag noise (matches last push) takes cloud. Real unpushed day-offs must push,
+       * not silent-discard — otherwise Sat/Sun tiles return from cloud.
        */
+      if (
+        (scheduleAssignmentsDirty || draftScheduleDirty) &&
+        !hasInteractiveScheduleEditsThisSession()
+      ) {
+        if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
+          applyNewerCloudSilently(row, true);
+          return;
+        }
+        teamStateForcePushIgnoreVersionSticky = true;
+        scheduleTeamStateDebouncedSync();
+        return;
+      }
       if (
         scheduleAssignmentsDirty ||
         draftScheduleDirty ||
@@ -17419,6 +17570,13 @@
      */
     if (cloudConflictAlreadyAccepted(row)) {
       if (scheduleAssignmentsDirty || draftScheduleDirty) {
+        if (
+          !hasInteractiveScheduleEditsThisSession() &&
+          shouldAutoTakeNewerCloudOverStaleDirty(row)
+        ) {
+          applyNewerCloudSilently(row, true);
+          return;
+        }
         teamStateForcePushIgnoreVersionSticky = true;
         scheduleTeamStateDebouncedSync();
         flushTeamStateSyncNow();
@@ -19093,13 +19251,16 @@
     function clearTimed(role, trIdx, dayInWeek, shiftId) {
       ensureDraftRoleRow(draft, role, trIdx);
       draft[role][trIdx][dayInWeek] = null;
-      if (rs[shiftId] != null) {
-        var offEntry = cloneScheduleAssignment(rs[shiftId]);
-        delete offEntry.break;
-        delete offEntry.timeLabel;
-        delete offEntry.hours;
-        rs[shiftId] = offEntry;
-      }
+      var offEntry =
+        rs[shiftId] != null
+          ? cloneScheduleAssignment(rs[shiftId])
+          : { workers: ['Unassigned'] };
+      offEntry.workers = ['Unassigned'];
+      delete offEntry.break;
+      delete offEntry.timeLabel;
+      delete offEntry.hours;
+      delete offEntry.breakPaid;
+      rs[shiftId] = offEntry;
     }
 
     if (!targetTimed) {

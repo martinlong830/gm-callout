@@ -139,9 +139,9 @@ export const DEFAULT_DRAFT_SCHEDULE_ROWS: DraftGrid = {
       ['10:00', '19:30'],
       ['10:00', '19:30'],
       ['10:00', '19:30'],
-      ['09:00', '18:00'],
-      ['10:30', '20:30'],
-      ['10:30', '20:30'],
+      null,
+      null,
+      null,
     ],
     [
       ['10:30', '20:30'],
@@ -149,7 +149,7 @@ export const DEFAULT_DRAFT_SCHEDULE_ROWS: DraftGrid = {
       ['10:30', '20:30'],
       ['10:30', '16:00'],
       ['10:30', '20:30'],
-      ['12:00', '21:30'],
+      null,
       ['12:00', '21:30'],
     ],
     [
@@ -2944,13 +2944,13 @@ export function applyShiftSlotEdit(opts: {
   const rs = nextStore[opts.restaurantId];
 
   if (opts.isDayOff) {
-    if (rs[shiftId] != null) {
-      const entry = normalizeScheduleAssignment(rs[shiftId]);
-      delete entry.break;
-      delete entry.timeLabel;
-      delete entry.hours;
-      rs[shiftId] = entry;
-    }
+    const entry = normalizeScheduleAssignment(rs[shiftId] || { workers: ['Unassigned'] });
+    entry.workers = ['Unassigned'];
+    delete entry.break;
+    delete entry.timeLabel;
+    delete entry.hours;
+    delete entry.breakPaid;
+    rs[shiftId] = entry;
     return { draftRows: nextDraft, store: nextStore };
   }
 

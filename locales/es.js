@@ -301,14 +301,14 @@ window.GM_I18N_ES = {
     '¿Revertir el horario en vivo a esta versión para todos los gerentes? Primero se guarda una copia de seguridad del horario actual.',
   'schedule.hardRevertDone': 'Horario restaurado desde el historial.',
   'schedule.syncConflict':
-    'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe la nube) o carga el de ellos (descarta tus cambios sin guardar).',
-  'schedule.syncConflictKeepMine': 'Conservar mi horario (guardar en la nube)',
-  'schedule.syncConflictTakeCloud': 'Cargar nube (sobrescribir el mío)',
-  'schedule.syncConflictKeptMine': 'Conservando tu horario y guardándolo en la nube…',
-  'schedule.syncConflictKeptMineDone': 'Tu horario se guardó en la nube.',
+    'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe a todos) o carga la versión en la nube (descarta tus cambios sin guardar en este dispositivo).',
+  'schedule.syncConflictKeepMine': 'Conservar mi horario',
+  'schedule.syncConflictTakeCloud': 'Cargar horario de la nube',
+  'schedule.syncConflictKeptMine': 'Conservando tu horario y actualizando la copia compartida en la nube…',
+  'schedule.syncConflictKeptMineDone': 'Tu horario es ahora la copia compartida en la nube.',
   'schedule.pushToCloud': 'Guardar en la nube',
   'schedule.pushToCloudTitle':
-    'Sube el horario de este navegador para que shiflow.app coincida con lo que ves aquí',
+    'Sube el horario de este navegador para que shiflow.app coincida con lo que ves aquí (solo recuperación en localhost)',
   'schedule.pushCloudSaving': 'Guardando tu horario local en la nube…',
   'schedule.pushCloudDone':
     'Horario local guardado en la nube. Actualiza shiflow.app para verlo.',
