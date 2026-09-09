@@ -19233,7 +19233,7 @@
     return 'Unassigned';
   }
 
-  /** Keep Person column ::after overlay in sync with the select value (native menulists shrink). */
+  /** Keep Person column label in sync with the select value (native menulists shrink / grow long names). */
   function syncCalendarRowPersonSelectLabel(sel, personName) {
     if (!sel) return;
     var label = displayScheduleWorkerName(
@@ -19242,7 +19242,11 @@
         : canonicalScheduleWorkerName(personName, currentRestaurantId) || personName
     );
     var wrap = sel.closest ? sel.closest('.calendar-row-person-select-wrap') : null;
-    if (wrap) wrap.setAttribute('data-label', label);
+    if (wrap) {
+      wrap.setAttribute('data-label', label);
+      var labelEl = wrap.querySelector('.calendar-row-person-select-label');
+      if (labelEl) labelEl.textContent = label;
+    }
     sel.title = label;
   }
 
@@ -19415,10 +19419,14 @@
       ' row ' +
       (trIdx + 1) +
       '</label>' +
-      /* Overlay label keeps a fixed font-size; native <select> menulists shrink long names. */
+      /* Visible label is a real span (ellipsis). Native <select> stays opacity:0 so long
+         option text like Espinobarros cannot grow the row height/width. */
       '<div class="calendar-row-person-select-wrap" data-label="' +
       escapeHtml(selectedLabel) +
       '">' +
+      '<span class="calendar-row-person-select-label" aria-hidden="true">' +
+      escapeHtml(selectedLabel) +
+      '</span>' +
       '<select class="calendar-row-person-select" id="cal-row-person-' +
       escapeHtml(role) +
       '-' +
@@ -19433,7 +19441,6 @@
       opts +
       '</select>' +
       '</div>' +
-      employmentStatusHtml +
       '<div class="calendar-row-reorder" role="group" aria-label="Reorder row">' +
       '<button type="button" class="calendar-reorder-btn"' +
       (canUp ? '' : ' disabled') +
@@ -19451,6 +19458,7 @@
       '" data-reorder-dir="1" title="Move row down" aria-label="Move row down">↓</button>' +
       '</div>' +
       '</div>' +
+      employmentStatusHtml +
       awayPrimaryHtml +
       '<button type="button" class="calendar-delete-slot-btn" data-delete-slot-role="' +
       escapeHtml(role) +
@@ -21459,6 +21467,16 @@
         return;
       }
       if (e.target.closest('.calendar-row-person-select')) return;
+      /* Day-off × must win over leftover drag click-suppression (otherwise × needs 2 clicks). */
+      var dayOffBtn = e.target.closest('[data-calendar-dayoff]');
+      if (dayOffBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        scheduleCellDragSuppressClick = false;
+        var dayOffWrap = dayOffBtn.closest('.calendar-slot-wrap[data-shiftid]');
+        if (dayOffWrap) clearScheduleSlotToDayOff(dayOffWrap);
+        return;
+      }
       if (scheduleCellDragSuppressClick) {
         scheduleCellDragSuppressClick = false;
         e.preventDefault();
@@ -21471,14 +21489,6 @@
         return;
       }
       if (e.target.closest('.calendar-cell-edit-host')) return;
-      var dayOffBtn = e.target.closest('[data-calendar-dayoff]');
-      if (dayOffBtn) {
-        e.preventDefault();
-        e.stopPropagation();
-        var dayOffWrap = dayOffBtn.closest('.calendar-slot-wrap[data-shiftid]');
-        if (dayOffWrap) clearScheduleSlotToDayOff(dayOffWrap);
-        return;
-      }
       const wrap = e.target.closest('.calendar-slot-wrap[data-shiftid], .calendar-slot-wrap.calendar-slot-empty');
       if (!wrap) return;
       const id = wrap.dataset.shiftid;
@@ -21553,6 +21563,9 @@
       if (e.button !== 0) return;
       if (e.target.closest('.calendar-row-person-select, .calendar-row-person')) return;
       if (e.target.closest('[data-calendar-dayoff], [data-add-slot-role], [data-delete-slot-role], [data-reorder-role]')) {
+        /* Stop drag-arming and leftover suppress so the following click always clears. */
+        e.stopPropagation();
+        scheduleCellDragSuppressClick = false;
         return;
       }
       var target = calendarSlotTargetFromEl(e.target);
