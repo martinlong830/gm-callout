@@ -8716,6 +8716,56 @@
     }
   }
 
+  /**
+   * Remap remote schedule week indices onto this device's current Monday window.
+   * Peers that have not rolled yet still store Aug 31 as index 12; after local roll it is
+   * index 11. Applying without remapping restores cleared Sat/Sun onto the wrong week.
+   */
+  function alignRemoteTeamStateScheduleBundleToLocalWindow(row) {
+    if (!row || typeof row !== 'object') return row;
+    var localMon = currentScheduleWeekMondayIso();
+    if (!localMon) return row;
+    var remoteMon = '';
+    try {
+      if (row.draft_schedule && row.draft_schedule.windowMondayIso) {
+        remoteMon = String(row.draft_schedule.windowMondayIso).slice(0, 10);
+      }
+    } catch (_rm) {
+      remoteMon = '';
+    }
+    if (!remoteMon || remoteMon === localMon) {
+      if (row.draft_schedule && typeof row.draft_schedule === 'object') {
+        row = Object.assign({}, row, {
+          draft_schedule: Object.assign({}, row.draft_schedule, {
+            windowMondayIso: localMon,
+          }),
+        });
+      }
+      return row;
+    }
+    var delta = mondayIsoDiffWeeks(remoteMon, localMon);
+    if (!delta) return row;
+    row = Object.assign({}, row);
+    if (row.schedule_assignments && typeof row.schedule_assignments === 'object') {
+      try {
+        var assignClone = JSON.parse(JSON.stringify(row.schedule_assignments));
+        shiftAssignmentStoreByWeeks(assignClone, delta);
+        row.schedule_assignments = assignClone;
+      } catch (_as) {
+        /* keep original */
+      }
+    }
+    if (row.draft_schedule && typeof row.draft_schedule === 'object') {
+      var dr = Object.assign({}, row.draft_schedule);
+      if (dr.byWeek && typeof dr.byWeek === 'object') {
+        dr.byWeek = alignByWeekStoreToWindow(dr.byWeek, remoteMon, localMon);
+      }
+      dr.windowMondayIso = localMon;
+      row.draft_schedule = dr;
+    }
+    return row;
+  }
+
   function applyTeamStateRowFromRemote(row, ctx) {
     beginTeamStateRemoteApply();
     try {
@@ -8741,6 +8791,7 @@
     ctx = ctx || {};
     var isMgr = !!ctx.isManager;
     if (!row || typeof row !== 'object') return;
+    row = alignRemoteTeamStateScheduleBundleToLocalWindow(row);
 
     if (row.updated_at != null) {
       teamStateCachedUpdatedAt = String(row.updated_at);
@@ -9076,6 +9127,26 @@
               JSON.stringify(mergedRemoteSlotOrder) !== JSON.stringify(remoteSlotOnly);
             var remoteDraftJson = JSON.stringify(remoteDraftPayload);
             try {
+              /*
+               * Align remote byWeek indices to THIS device's calendar Monday before adopt.
+               * Blindly applying a peer's older windowMondayIso remapped Aug 31↔Sept 7 and
+               * restored Sat/Sun times that had already been cleared on the newer window.
+               */
+              var localWindowMon = currentScheduleWeekMondayIso();
+              var remoteWindowMon = remoteDraftPayload.windowMondayIso
+                ? String(remoteDraftPayload.windowMondayIso).slice(0, 10)
+                : '';
+              if (localWindowMon && remoteWindowMon && remoteWindowMon !== localWindowMon) {
+                remoteDraftPayload.byWeek = alignByWeekStoreToWindow(
+                  remoteDraftPayload.byWeek,
+                  remoteWindowMon,
+                  localWindowMon
+                );
+                remoteDraftPayload.windowMondayIso = localWindowMon;
+                remoteDraftJson = JSON.stringify(remoteDraftPayload);
+              } else if (localWindowMon) {
+                remoteDraftPayload.windowMondayIso = localWindowMon;
+              }
               draftScheduleByWeekStore = remoteDraftPayload.byWeek;
               localStorage.setItem(
                 DRAFT_SCHEDULE_BY_WEEK_KEY,
@@ -9093,7 +9164,9 @@
               setDraftScheduleConfirmedJson(remoteDraftJson);
               draftScheduleDirty = false;
               touchedScheduleBundle = true;
-              if (remoteDraftPayload.windowMondayIso) {
+              if (localWindowMon) {
+                writeScheduleWindowMondayIso(localWindowMon);
+              } else if (remoteDraftPayload.windowMondayIso) {
                 writeScheduleWindowMondayIso(remoteDraftPayload.windowMondayIso);
               }
               /* Local-only weeks survived an empty/partial remote map — push so SoT catches up. */
@@ -14161,7 +14234,30 @@
     return any;
   }
 
-  function shiftDraftScheduleByWeeks(deltaWeeks) {
+  /**
+   * Remap byWeek keys when the rolling Monday window advances.
+   * fromMon/toMon are YYYY-MM-DD Mondays; same direction as shiftDraftScheduleByWeeks.
+   */
+  function alignByWeekStoreToWindow(byWeek, fromMon, toMon) {
+    if (!byWeek || typeof byWeek !== 'object') return byWeek || {};
+    var from = fromMon ? String(fromMon).slice(0, 10) : '';
+    var to = toMon ? String(toMon).slice(0, 10) : '';
+    if (!from || !to || from === to) return byWeek;
+    var delta = mondayIsoDiffWeeks(from, to);
+    if (!delta) return byWeek;
+    var next = {};
+    Object.keys(byWeek).forEach(function (k) {
+      var wi = parseInt(k, 10);
+      if (isNaN(wi)) return;
+      var newWi = wi - delta;
+      if (newWi < 0 || newWi >= SCHEDULE_VIEW_WEEK_COUNT) return;
+      next[String(newWi)] = byWeek[k];
+    });
+    return next;
+  }
+
+  function shiftDraftScheduleByWeeks(deltaWeeks, opts) {
+    opts = opts || {};
     if (!deltaWeeks) return false;
     var next = {};
     var any = false;
@@ -14182,7 +14278,13 @@
     draftScheduleByWeekStore = next;
     try {
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
-      if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+      /*
+       * Index remaps are not schedule edits. Marking dirty here made sleeping tabs push
+       * pre-roll Sat/Sun slots (Charles/Mark) over cloud day-offs after Monday advanced.
+       */
+      if (!opts.skipDirty && GM_SUPABASE_DATA && window.gmSupabase) {
+        draftScheduleDirty = true;
+      }
     } catch (_e) {
       /* ignore */
     }
@@ -14247,6 +14349,7 @@
     var prevIso = readScheduleWindowMondayIso();
     var store = loadScheduleAssignmentsStore();
     var changed = false;
+    var windowRolled = false;
     if (!prevIso) {
       writeScheduleWindowMondayIso(mondayIso);
       if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
@@ -14254,23 +14357,39 @@
       var delta = mondayIsoDiffWeeks(prevIso, mondayIso);
       if (delta > 0) {
         if (shiftAssignmentStoreByWeeks(store, delta)) changed = true;
-        if (shiftDraftScheduleByWeeks(delta)) changed = true;
+        if (shiftDraftScheduleByWeeks(delta, { skipDirty: true })) changed = true;
         if (shiftSlotOrderByWeekStore(delta)) {
           changed = true;
-          if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
         }
         writeScheduleWindowMondayIso(mondayIso);
         writeFurthestSeedMeta(null);
-        if (GM_SUPABASE_DATA && window.gmSupabase) draftScheduleDirty = true;
+        windowRolled = true;
+        changed = true;
       } else if (delta < 0) {
         /* Clock skew / timezone — do not shift forward; just re-anchor. */
         writeScheduleWindowMondayIso(mondayIso);
       }
     }
-    if (seedFurthestFutureWeekFromCurrent(store, mondayIso)) changed = true;
+    var seeded = seedFurthestFutureWeekFromCurrent(store, mondayIso);
+    if (seeded) changed = true;
     if (changed) {
-      saveScheduleAssignmentsStore(store);
+      /*
+       * Window roll alone must not dirty-push — that resurrected cleared weekend slots from
+       * stale localStorage. Only a real W+2 seed is new content worth uploading.
+       */
+      if (seeded) {
+        saveScheduleAssignmentsStore(store);
+      } else {
+        saveScheduleAssignmentsStore(store, {
+          skipDirty: true,
+          skipInteractiveMark: true,
+        });
+      }
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+    }
+    if (windowRolled && GM_SUPABASE_DATA && window.gmSupabase) {
+      /* Prefer cloud SoT for remapped weeks over this tab's pre-roll cache. */
+      queueTeamStateRemoteRefresh(['schedule_assignments', 'draft_schedule']);
     }
     return changed;
   }

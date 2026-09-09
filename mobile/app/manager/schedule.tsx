@@ -1140,8 +1140,11 @@ export default function ManagerScheduleScreen() {
         markDirty: fohChanged ? true : 'keep',
       });
       queuePersist(nextStore, draftOut, { fromHydrate: !fohChanged });
-    } else if (rolled.draftMetaChanged && isManagerLikeRole(role)) {
-      /* Seed bookkeeping only — keep it in the local cache, never spend a cloud write on it. */
+    } else if (
+      (rolled.draftMetaChanged || rolled.windowRolled) &&
+      isManagerLikeRole(role)
+    ) {
+      /* Seed bookkeeping / Monday window remap — keep local cache, never cloud-write pre-roll slots. */
       applyLocalScheduleAssignments(nextStore, draftOut, { markDirty: 'keep' });
     }
     suppressHydrateUndoClearRef.current = false;

@@ -1477,6 +1477,8 @@ export function ensureRollingFutureAssignments(
   changed: boolean;
   /** Only `furthestSeedMeta` moved — cache it locally, but do not spend a cloud write. */
   draftMetaChanged: boolean;
+  /** Monday window remapped local indices — do not upload pre-roll cache. */
+  windowRolled: boolean;
 } {
   const next = JSON.parse(JSON.stringify(store || {})) as AssignmentStore;
   const rests = restaurants && restaurants.length ? restaurants : defaultRestaurants();
@@ -1488,6 +1490,7 @@ export function ensureRollingFutureAssignments(
   let draft: unknown =
     draftScheduleRaw != null ? JSON.parse(JSON.stringify(draftScheduleRaw)) : draftScheduleRaw;
   let changed = false;
+  let windowRolled = false;
 
   const mondayIso = currentScheduleWeekMondayIso();
   const prevIso = windowMondayIsoFromDraft(draft);
@@ -1509,6 +1512,7 @@ export function ensureRollingFutureAssignments(
       }
       /* New Monday window — allow W+2 seed again (parity with web writeFurthestSeedMeta(null)). */
       draft = writeFurthestSeedMetaOnDraft(draft, null);
+      windowRolled = true;
       changed = true;
     } else if (delta < 0 && draft && typeof draft === 'object') {
       /* Clock skew / timezone — re-anchor only; do not shift forward. */
@@ -1520,12 +1524,15 @@ export function ensureRollingFutureAssignments(
   const seeded = seedFurthestFutureWeekIfEmpty(next, rests, ids, draft, mondayIso);
   draft = seeded.draftSchedule;
   let draftMetaChanged = false;
+  let contentChanged = false;
   if (seeded.seeded) {
     changed = true;
+    contentChanged = true;
     purgeDefaultUnassignedRestaurantAssignments(next, rests);
   } else if (draftDiffersIgnoringSeedMeta(draft, draftScheduleRaw)) {
     /* W+2 draft week copy landed without assignment copies. */
     changed = true;
+    contentChanged = true;
   } else if (JSON.stringify(draft) !== JSON.stringify(draftScheduleRaw)) {
     /*
      * Seed meta only. Web keeps this in localStorage, so cloud draft_schedule never carries
@@ -1534,8 +1541,24 @@ export function ensureRollingFutureAssignments(
      */
     draftMetaChanged = true;
   }
-  if (pruneOrphanScheduleAssignmentsBeyondDraft(next, draft, rests)) changed = true;
-  return { store: next, draftSchedule: draft, changed, draftMetaChanged };
+  if (pruneOrphanScheduleAssignmentsBeyondDraft(next, draft, rests)) {
+    changed = true;
+    contentChanged = true;
+  }
+  /*
+   * Pure Monday window remaps must not count as content to upload — that resurrected
+   * cleared weekend slots from a stale pre-roll cache. Seed / prune still may upload.
+   */
+  if (windowRolled && !contentChanged) {
+    draftMetaChanged = true;
+  }
+  return {
+    store: next,
+    draftSchedule: draft,
+    changed: contentChanged,
+    draftMetaChanged: draftMetaChanged || (windowRolled && !contentChanged),
+    windowRolled,
+  };
 }
 
 function draftDiffersIgnoringSeedMeta(a: unknown, b: unknown): boolean {
@@ -1556,6 +1579,7 @@ export function hydrateScheduleAssignmentsFromTeamState(
   draftSchedule: unknown;
   changed: boolean;
   draftMetaChanged: boolean;
+  windowRolled: boolean;
 } {
   const ids = restaurants.map((r) => r.id);
   const merged = mergeRemoteAssignments(
@@ -1579,6 +1603,7 @@ export function hydrateScheduleAssignmentsFromTeamState(
     draftSchedule: rolled.draftSchedule,
     changed: merged.changed || rolled.changed || pruned,
     draftMetaChanged: rolled.draftMetaChanged,
+    windowRolled: !!rolled.windowRolled,
   };
 }
 
