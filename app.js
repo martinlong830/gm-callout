@@ -5939,7 +5939,7 @@
   var gmCalloutSessionIsManager = false;
   /** After first manager bootstrap, avoid forcing Schedule when async hydrate finishes. */
   var gmManagerShellBootstrapped = false;
-  /** Hold remote schedule apply while a day-off flush is in flight (tip/meta bumps must not clobber ×). */
+  /** Brief soft guard after × day-off — does not block refresh; only aids echo refusal. */
   var scheduleDayOffPushGuardUntil = 0;
 
   function markScheduleInteractiveEdit() {
@@ -5953,8 +5953,10 @@
   }
 
   function armScheduleDayOffPushGuard() {
-    scheduleDayOffPushGuardUntil = Date.now() + 20000;
+    /* Sticky force-push so tip/meta updated_at bumps cannot block the day-off upsert. */
     teamStateForcePushIgnoreVersionSticky = true;
+    scheduleDayOffPushGuardUntil =
+      Date.now() + Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000;
   }
 
   /** True when this tab made schedule edits after the last successful cloud push. */
@@ -7122,12 +7124,10 @@
     opts = opts || {};
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (scheduleSyncConflictActive) return;
-    if (scheduleDayOffPushGuardActive()) return;
     if (teamStateRemoteRefreshTimer) clearTimeout(teamStateRemoteRefreshTimer);
     teamStateRemoteRefreshTimer = setTimeout(function () {
       teamStateRemoteRefreshTimer = null;
       if (scheduleSyncConflictActive) return;
-      if (scheduleDayOffPushGuardActive()) return;
       void refreshTeamStateFromRemote(fields, opts);
     }, TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS);
   }
@@ -7136,11 +7136,10 @@
     opts = opts || {};
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
     if (scheduleSyncConflictActive) return { ok: false, reason: 'conflict' };
-    if (scheduleDayOffPushGuardActive()) return { ok: false, reason: 'dayoff_guard' };
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
-    if (teamStateCachedUpdatedAt) {
+    if (teamStateCachedUpdatedAt && !opts.forceFetch) {
       var probe = await sb
         .from('team_state')
         .select('updated_at')
@@ -7385,10 +7384,10 @@
           /* Own upsert fires this immediately — often with a stale read that still has
              the shift the user just ×'d. Ignore during the self-echo window. */
           if (teamStatePushInFlight) return;
-          if (scheduleDayOffPushGuardActive()) return;
           if (
             teamStateLastLocalPushAt &&
-            Date.now() - teamStateLastLocalPushAt < TEAM_STATE_SELF_ECHO_IGNORE_MS
+            Date.now() - teamStateLastLocalPushAt <
+              Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000
           ) {
             return;
           }
@@ -7427,12 +7426,18 @@
     /* Force a full fetch even when our cached updated_at matches (clock skew / missed field). */
     var prevCached = teamStateCachedUpdatedAt;
     teamStateCachedUpdatedAt = null;
-    var res = await refreshTeamStateFromRemote();
+    var res = await refreshTeamStateFromRemote(null, {
+      forceFetch: true,
+      notifyPeerUpdate: false,
+    });
     if (!res || !res.ok) {
       teamStateCachedUpdatedAt = prevCached;
       if (!opts.silent) {
         showScheduleNotice(
-          (res && res.error && res.error.message) ||
+          (res && res.reason === 'conflict'
+            ? gmT('schedule.syncConflict')
+            : null) ||
+            (res && res.error && res.error.message) ||
             gmT('schedule.refreshFailed') ||
             'Could not refresh schedule.',
           false
@@ -8246,13 +8251,20 @@
    * unpushed schedule edits (critical for Mike/Mark cross-account sync).
    */
   /**
-   * True when a remote row looks like a stale read of team_state right after THIS tab
-   * pushed (different schedule hash than what we just confirmed).
+   * True when remote schedule differs from what THIS tab just confirmed pushing, while
+   * local still matches that push. Covers stale replica reads (often with a misleading
+   * newer updated_at from tip/meta) without blocking real peer edits after the echo window.
    */
   function shouldRefuseStaleSelfPushEcho(row) {
     if (!row || typeof row !== 'object') return false;
-    if (!scheduleLastPushHash || !teamStateLastLocalPushAt) return false;
-    if (Date.now() - teamStateLastLocalPushAt > TEAM_STATE_SELF_ECHO_IGNORE_MS) return false;
+    if (!scheduleLastPushHash) return false;
+    var liveHash = null;
+    try {
+      liveHash = liveScheduleBundleHash();
+    } catch (_lh) {
+      liveHash = null;
+    }
+    if (!liveHash || liveHash !== scheduleLastPushHash) return false;
     var remoteHash = null;
     try {
       remoteHash = scheduleBundleHashFromRemoteRow(row);
@@ -8260,20 +8272,16 @@
       remoteHash = null;
     }
     if (!remoteHash || remoteHash === scheduleLastPushHash) return false;
-    var liveHash = null;
-    try {
-      liveHash = liveScheduleBundleHash();
-    } catch (_lh) {
-      liveHash = null;
-    }
-    /* Local still matches our last successful push — keep it; do not paint stale cloud. */
-    if (liveHash && liveHash === scheduleLastPushHash) return true;
     var remoteAt = row.updated_at != null ? String(row.updated_at) : '';
-    if (
-      remoteAt &&
-      scheduleLastPushUpdatedAt &&
-      remoteAt < String(scheduleLastPushUpdatedAt)
-    ) {
+    var localAt = scheduleLastPushUpdatedAt ? String(scheduleLastPushUpdatedAt) : '';
+    /* Cloud watermark older than our confirmed push — always keep local. */
+    if (remoteAt && localAt && remoteAt < localAt) return true;
+    /*
+     * Through one poll cycle after our push: refuse different content even if watermark
+     * looks newer (split-brain read). After that, strictly newer remote is a real peer.
+     */
+    var echoMs = Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000;
+    if (teamStateLastLocalPushAt && Date.now() - teamStateLastLocalPushAt <= echoMs) {
       return true;
     }
     return false;
@@ -8286,7 +8294,6 @@
     if (forceAcceptRemoteScheduleOnce) return false;
     /* Never paint cloud over a local→cloud override mid-flight. */
     if (teamStateForcePushActive) return true;
-    if (scheduleDayOffPushGuardActive()) return true;
     /*
      * Own push just landed: Postgres realtime often delivers a stale replica read that still
      * has Sat/Sun times. Refusing that echo is what stopped × day-off from instantly reverting.
@@ -8962,7 +8969,15 @@
         /*
          * Keep local × day-off / last push. Do not unlock apply — a stale Postgres echo
          * can carry a newer updated_at (tip bump) with old Sat/Sun draft cells.
+         * If cloud watermark is behind our push, repair-upload so other tabs (shiflow.app)
+         * actually receive the day-off.
          */
+        var echoRemoteAt = row.updated_at != null ? String(row.updated_at) : '';
+        var echoLocalAt = scheduleLastPushUpdatedAt ? String(scheduleLastPushUpdatedAt) : '';
+        if (!echoRemoteAt || !echoLocalAt || echoRemoteAt <= echoLocalAt) {
+          teamStateForcePushIgnoreVersionSticky = true;
+          scheduleTeamStateDebouncedSync();
+        }
       } else if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
         applyNewerCloudSilently(row, isMgr);
         return;
@@ -13131,24 +13146,34 @@
     pruneScheduleAssignmentsInvalidSlots();
     if (isDayOff) {
       /*
-       * Day-off must hit Supabase immediately and bypass optimistic updated_at (tip/meta
-       * bumps). Debounced sync left a window where poll/refresh restored Sat/Sun tiles.
+       * Force-save day-off to Supabase immediately. Do not block refresh/poll entirely —
+       * content-hash echo refusal stops stale Sat/Sun from coming back, while other tabs
+       * can still pull the cleared schedule.
        */
       armScheduleDayOffPushGuard();
       void Promise.resolve(flushTeamStateSyncNow())
         .then(function () {
-          /*
-           * Do NOT clear the guard on flush success. Postgres realtime often echoes a
-           * stale pre-day-off row right after upsert; keep blocking applies through the
-           * self-echo window so Mark/Charles Sat cannot pop back.
-           */
           scheduleDayOffPushGuardUntil = Math.max(
             scheduleDayOffPushGuardUntil,
-            (teamStateLastLocalPushAt || Date.now()) + TEAM_STATE_SELF_ECHO_IGNORE_MS + 2000
+            (teamStateLastLocalPushAt || Date.now()) +
+              Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) +
+              2000
           );
+          if (scheduleAssignmentsDirty || draftScheduleDirty) {
+            showScheduleNotice(
+              gmT('schedule.pushCloudFailed') ||
+                'Could not save day-off to the cloud. Check your connection and try again.',
+              false
+            );
+          }
         })
         .catch(function (_dayOffFlush) {
           console.warn('gm-callout: day-off cloud flush', _dayOffFlush);
+          showScheduleNotice(
+            gmT('schedule.pushCloudFailed') ||
+              'Could not save day-off to the cloud. Check your connection and try again.',
+            false
+          );
         });
     } else {
       scheduleTeamStateDebouncedSync();
