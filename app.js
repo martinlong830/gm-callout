@@ -7160,9 +7160,14 @@
       return { ok: false, error: res.error };
     }
     if (res.data) {
+      var takeCloud =
+        !!opts.forceAcceptRemote ||
+        (!!opts.allowDiscardDirty && !hasInteractiveScheduleEditsThisSession());
       applyTeamStateRowFromRemote(res.data, {
         isManager: gmCalloutSessionIsManager,
         notifyPeerUpdate: opts.notifyPeerUpdate !== false,
+        forceAcceptRemote: takeCloud,
+        allowDiscardDirty: takeCloud,
       });
     }
     return { ok: true };
@@ -7423,12 +7428,27 @@
     persistTeamStateDirtyFlags();
     flushTipPayrollPushToSupabase();
     await flushTeamStateSyncNow();
+    /*
+     * Refresh must show cloud day-offs from other tabs/devices. Recovered dirty
+     * localStorage on shiflow.app was refusing remote draft and re-pushing old Sat/Sun.
+     * Only keep local when this tab has live edits this session.
+     */
+    var takeCloudOnRefresh = !hasInteractiveScheduleEditsThisSession();
+    if (takeCloudOnRefresh) {
+      scheduleAssignmentsDirty = false;
+      draftScheduleDirty = false;
+      persistTeamStateDirtyFlags();
+      clearScheduleSyncConflictState();
+      scheduleConflictSuppressOfferUntil = Date.now() + 5000;
+    }
     /* Force a full fetch even when our cached updated_at matches (clock skew / missed field). */
     var prevCached = teamStateCachedUpdatedAt;
     teamStateCachedUpdatedAt = null;
     var res = await refreshTeamStateFromRemote(null, {
       forceFetch: true,
       notifyPeerUpdate: false,
+      forceAcceptRemote: takeCloudOnRefresh,
+      allowDiscardDirty: takeCloudOnRefresh,
     });
     if (!res || !res.ok) {
       teamStateCachedUpdatedAt = prevCached;
@@ -8934,6 +8954,28 @@
     );
     if (forceAccept && hasUnpushedSchedule && !ctx.allowDiscardDirty) {
       forceAccept = false;
+    }
+    /*
+     * Newer cloud + no live edits this tab: always take cloud. Recovered dirty
+     * localStorage on shiflow.app otherwise refused remote day-offs and pushed old
+     * timed Sat/Sun back over clears made on another device/tab.
+     */
+    if (
+      !forceAccept &&
+      isMgr &&
+      !ctx.allowDiscardDirty &&
+      !teamStateForcePushActive &&
+      !scheduleDayOffPushGuardActive() &&
+      !hasInteractiveScheduleEditsThisSession() &&
+      remoteTeamStateIsStrictlyNewer(row) &&
+      scheduleBundleContentDiffersFromRemoteRow(row)
+    ) {
+      forceAccept = true;
+      ctx.allowDiscardDirty = true;
+      scheduleAssignmentsDirty = false;
+      draftScheduleDirty = false;
+      persistTeamStateDirtyFlags();
+      clearScheduleSyncConflictState();
     }
     /*
      * Day-off / live × edits: never paint older cloud schedule over this tab while the
