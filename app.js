@@ -6160,10 +6160,16 @@
   }
 
   function restorePreferCloudOnConflictFromStorage() {
+    /*
+     * Prefer-cloud must NOT survive reload. Sticky localStorage made every refresh
+     * silent-take cloud and show "updated from another manager", restoring Sat/Sun
+     * after × day-off. Prefer-cloud is now session-only (Load cloud this visit).
+     */
+    schedulePreferCloudOnConflict = false;
     try {
-      schedulePreferCloudOnConflict = localStorage.getItem(SCHEDULE_PREFER_CLOUD_KEY) === '1';
+      localStorage.removeItem(SCHEDULE_PREFER_CLOUD_KEY);
     } catch (_prefRestore) {
-      schedulePreferCloudOnConflict = false;
+      /* ignore */
     }
   }
 
@@ -7376,6 +7382,16 @@
           filter: 'id=eq.' + teamStateId,
         },
         function () {
+          /* Own upsert fires this immediately — often with a stale read that still has
+             the shift the user just ×'d. Ignore during the self-echo window. */
+          if (teamStatePushInFlight) return;
+          if (scheduleDayOffPushGuardActive()) return;
+          if (
+            teamStateLastLocalPushAt &&
+            Date.now() - teamStateLastLocalPushAt < TEAM_STATE_SELF_ECHO_IGNORE_MS
+          ) {
+            return;
+          }
           queueTeamStateRemoteRefresh();
         }
       )
@@ -8229,6 +8245,40 @@
    * Other managers with a strictly newer updated_at always win when this tab has no
    * unpushed schedule edits (critical for Mike/Mark cross-account sync).
    */
+  /**
+   * True when a remote row looks like a stale read of team_state right after THIS tab
+   * pushed (different schedule hash than what we just confirmed).
+   */
+  function shouldRefuseStaleSelfPushEcho(row) {
+    if (!row || typeof row !== 'object') return false;
+    if (!scheduleLastPushHash || !teamStateLastLocalPushAt) return false;
+    if (Date.now() - teamStateLastLocalPushAt > TEAM_STATE_SELF_ECHO_IGNORE_MS) return false;
+    var remoteHash = null;
+    try {
+      remoteHash = scheduleBundleHashFromRemoteRow(row);
+    } catch (_rh) {
+      remoteHash = null;
+    }
+    if (!remoteHash || remoteHash === scheduleLastPushHash) return false;
+    var liveHash = null;
+    try {
+      liveHash = liveScheduleBundleHash();
+    } catch (_lh) {
+      liveHash = null;
+    }
+    /* Local still matches our last successful push — keep it; do not paint stale cloud. */
+    if (liveHash && liveHash === scheduleLastPushHash) return true;
+    var remoteAt = row.updated_at != null ? String(row.updated_at) : '';
+    if (
+      remoteAt &&
+      scheduleLastPushUpdatedAt &&
+      remoteAt < String(scheduleLastPushUpdatedAt)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   function shouldRefuseRemoteScheduleSnapshot(row) {
     if (!row || typeof row !== 'object') return false;
     /* forceAcceptRemoteScheduleOnce is consumed in applyTeamStateRowFromRemoteInner so it
@@ -8236,6 +8286,12 @@
     if (forceAcceptRemoteScheduleOnce) return false;
     /* Never paint cloud over a local→cloud override mid-flight. */
     if (teamStateForcePushActive) return true;
+    if (scheduleDayOffPushGuardActive()) return true;
+    /*
+     * Own push just landed: Postgres realtime often delivers a stale replica read that still
+     * has Sat/Sun times. Refusing that echo is what stopped × day-off from instantly reverting.
+     */
+    if (shouldRefuseStaleSelfPushEcho(row)) return true;
     var remoteAt = row.updated_at != null ? String(row.updated_at) : null;
     var localAt = scheduleLastPushUpdatedAt || teamStateCachedUpdatedAt;
     var remoteNewer = !!(remoteAt && localAt && remoteAt > String(localAt));
@@ -8902,11 +8958,15 @@
       persistTeamStateDirtyFlags();
     }
     if (refuseStaleSchedule && isMgr) {
-      if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
+      if (shouldRefuseStaleSelfPushEcho(row) || scheduleDayOffPushGuardActive()) {
+        /*
+         * Keep local × day-off / last push. Do not unlock apply — a stale Postgres echo
+         * can carry a newer updated_at (tip bump) with old Sat/Sun draft cells.
+         */
+      } else if (shouldAutoTakeNewerCloudOverStaleDirty(row)) {
         applyNewerCloudSilently(row, isMgr);
         return;
-      }
-      if (
+      } else if (
         remoteTeamStateIsStrictlyNewer(row) &&
         scheduleBundleContentDiffersFromRemoteRow(row)
       ) {
@@ -9375,7 +9435,12 @@
           if (afterHash !== scheduleHashBeforeApply) {
             var ownEcho =
               !!(scheduleLastPushHash && afterHash === scheduleLastPushHash) ||
-              Date.now() - (teamStateLastLocalPushAt || 0) < TEAM_STATE_SELF_ECHO_IGNORE_MS;
+              !!(
+                scheduleLastPushHash &&
+                scheduleHashBeforeApply === scheduleLastPushHash
+              ) ||
+              Date.now() - (teamStateLastLocalPushAt || 0) < TEAM_STATE_SELF_ECHO_IGNORE_MS ||
+              scheduleDayOffPushGuardActive();
             if (!ownEcho) {
               showScheduleNotice(
                 gmT('schedule.peerUpdated') ||
@@ -13072,9 +13137,15 @@
       armScheduleDayOffPushGuard();
       void Promise.resolve(flushTeamStateSyncNow())
         .then(function () {
-          if (!(scheduleAssignmentsDirty || draftScheduleDirty)) {
-            scheduleDayOffPushGuardUntil = 0;
-          }
+          /*
+           * Do NOT clear the guard on flush success. Postgres realtime often echoes a
+           * stale pre-day-off row right after upsert; keep blocking applies through the
+           * self-echo window so Mark/Charles Sat cannot pop back.
+           */
+          scheduleDayOffPushGuardUntil = Math.max(
+            scheduleDayOffPushGuardUntil,
+            (teamStateLastLocalPushAt || Date.now()) + TEAM_STATE_SELF_ECHO_IGNORE_MS + 2000
+          );
         })
         .catch(function (_dayOffFlush) {
           console.warn('gm-callout: day-off cloud flush', _dayOffFlush);
