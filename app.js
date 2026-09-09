@@ -5842,14 +5842,29 @@
   }
 
   var teamStateSyncTimer = null;
-  var TEAM_STATE_PUSH_DEBOUNCE_MS = 1200;
-  var TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS = 800;
-  /** Poll cloud so other managers' edits appear even if Realtime broadcast is missed. */
-  var TEAM_STATE_POLL_MS = 15000;
+  /** Debounce for non-urgent meta pushes; schedule staffing uses write-through below. */
+  var TEAM_STATE_PUSH_DEBOUNCE_MS = 400;
+  var TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS = 200;
+  /** Poll cloud so other devices' edits appear even if Realtime broadcast is missed. */
+  var TEAM_STATE_POLL_MS = 4000;
   var teamStatePollTimer = null;
-  /** Coalesced write-through so staffing edits reach cloud before a deploy reload. */
-  var SCHEDULE_WRITE_THROUGH_MS = 450;
+  /** Coalesced write-through so staffing edits reach cloud within ~200ms of the last click. */
+  var SCHEDULE_WRITE_THROUGH_MS = 150;
   var scheduleWriteThroughTimer = null;
+  /**
+   * Per-tab id so the same login on computer + shiflow.app does not treat the other
+   * device's broadcast as a self-echo (uid-only filtering caused multi-minute lag).
+   */
+  var TEAM_STATE_CLIENT_INSTANCE_ID = (function () {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch (_cid) {
+      /* ignore */
+    }
+    return 'c' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  })();
   /** Blocks remote assignment merge while a debounced or in-flight team_state push is active. */
   var teamStatePushInFlight = false;
   /** Coalesces concurrent team_state pushes (template apply awaits this). */
@@ -5888,7 +5903,7 @@
   var teamStateCachedUpdatedAt = null;
   /** Wall time of last successful local team_state push — ignore self-broadcast echo briefly. */
   var teamStateLastLocalPushAt = 0;
-  var TEAM_STATE_SELF_ECHO_IGNORE_MS = 8000;
+  var TEAM_STATE_SELF_ECHO_IGNORE_MS = 2500;
   /** Refuse older/different remote schedule snapshots for this long after a successful local push. */
   var SCHEDULE_CONTENT_GUARD_MS = 90000;
   var scheduleLastPushHash = null;
@@ -7132,11 +7147,17 @@
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (scheduleSyncConflictActive) return;
     if (teamStateRemoteRefreshTimer) clearTimeout(teamStateRemoteRefreshTimer);
+    var delay =
+      opts.immediate === true
+        ? 0
+        : opts.fast === true
+          ? 100
+          : TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS;
     teamStateRemoteRefreshTimer = setTimeout(function () {
       teamStateRemoteRefreshTimer = null;
       if (scheduleSyncConflictActive) return;
       void refreshTeamStateFromRemote(fields, opts);
-    }, TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS);
+    }, delay);
   }
 
   async function refreshTeamStateFromRemote(fields, opts) {
@@ -7324,6 +7345,7 @@
         event: 'team_state_changed',
         payload: {
           source: sessRes.data.session.user.id,
+          clientId: TEAM_STATE_CLIENT_INSTANCE_ID,
           fields: fields || [],
           ts: Date.now(),
           updated_at: teamStateCachedUpdatedAt || scheduleLastPushUpdatedAt || null,
@@ -7360,7 +7382,7 @@
       ) {
         return;
       }
-      queueTeamStateRemoteRefresh();
+      queueTeamStateRemoteRefresh(null, { forceFetch: true });
     }, TEAM_STATE_POLL_MS);
   }
 
@@ -7376,14 +7398,23 @@
       .on('broadcast', { event: 'team_state_changed' }, function (msg) {
         var payload = msg && msg.payload;
         if (!payload) return;
-        void sb.auth.getSession().then(function (sessRes) {
-          var uid = sessRes.data && sessRes.data.session && sessRes.data.session.user.id;
-          if (payload.source && uid && payload.source === uid) {
-            /* Own push already applied locally; refreshing the echo clears Undo (alt-copy, etc.). */
-            if (teamStatePushInFlight) return;
-            if (Date.now() - teamStateLastLocalPushAt < TEAM_STATE_SELF_ECHO_IGNORE_MS) return;
+        /* Same tab only — same login on another device must refresh immediately. */
+        if (payload.clientId && payload.clientId === TEAM_STATE_CLIENT_INSTANCE_ID) {
+          return;
+        }
+        if (!payload.clientId) {
+          /* Legacy broadcasts: only skip while THIS tab is mid-push / just pushed. */
+          if (teamStatePushInFlight) return;
+          if (
+            teamStateLastLocalPushAt &&
+            Date.now() - teamStateLastLocalPushAt < TEAM_STATE_SELF_ECHO_IGNORE_MS
+          ) {
+            return;
           }
-          queueTeamStateRemoteRefresh(payload.fields);
+        }
+        queueTeamStateRemoteRefresh(payload.fields, {
+          fast: true,
+          forceFetch: true,
         });
       })
       .on(
@@ -7395,17 +7426,16 @@
           filter: 'id=eq.' + teamStateId,
         },
         function () {
-          /* Own upsert fires this immediately — often with a stale read that still has
-             the shift the user just ×'d. Ignore during the self-echo window. */
+          /* Brief ignore while our upsert is in flight — apply-layer echo refusal handles
+             stale replica reads. Do not block peer updates for a full poll cycle. */
           if (teamStatePushInFlight) return;
           if (
             teamStateLastLocalPushAt &&
-            Date.now() - teamStateLastLocalPushAt <
-              Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000
+            Date.now() - teamStateLastLocalPushAt < TEAM_STATE_SELF_ECHO_IGNORE_MS
           ) {
             return;
           }
-          queueTeamStateRemoteRefresh();
+          queueTeamStateRemoteRefresh(null, { fast: true, forceFetch: true });
         }
       )
       .subscribe();
@@ -8302,7 +8332,7 @@
      * Through one poll cycle after our push: refuse different content even if watermark
      * looks newer (split-brain read). After that, strictly newer remote is a real peer.
      */
-    var echoMs = Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000;
+    var echoMs = TEAM_STATE_SELF_ECHO_IGNORE_MS + 1500;
     if (teamStateLastLocalPushAt && Date.now() - teamStateLastLocalPushAt <= echoMs) {
       return true;
     }
@@ -16631,7 +16661,7 @@
     /* Push local edits first, then pull — never refresh into a dirty browser and risk rollback. */
     flushTipPayrollPushToSupabase();
     void Promise.resolve(flushTeamStateSyncNow()).then(function () {
-      queueTeamStateRemoteRefresh();
+      queueTeamStateRemoteRefresh(null, { forceFetch: true, fast: true });
       // Punches live in time_clock_entries (not team_state). Refetch when Timecards is open so
       // another manager's edits are not masked by this tab's in-memory weekEntries cache.
       if (
@@ -19554,7 +19584,10 @@
         syncCalendarRowPersonSelectLabel(stillOpen, canon);
       }
     }
-    if (!templateScratch) scheduleTeamStateDebouncedSync();
+    if (!templateScratch) {
+      scheduleTeamStateDebouncedSync();
+      scheduleTeamStateWriteThroughSoon();
+    }
   }
 
   function ensureDraftRoleRow(draft, role, trIdx) {
@@ -28880,6 +28913,12 @@
           if (scheduleBody) renderSchedule();
         }
       }
+    });
+    /* Laptop ↔ phone same login: pulling focus should fetch peer edits immediately. */
+    window.addEventListener('focus', function () {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (!document.documentElement.classList.contains('authed')) return;
+      queueTeamStateRemoteRefresh(null, { forceFetch: true, fast: true });
     });
     window.addEventListener('pagehide', function () {
       persistTeamStateDirtyFlags();
