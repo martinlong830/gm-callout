@@ -5939,9 +5939,22 @@
   var gmCalloutSessionIsManager = false;
   /** After first manager bootstrap, avoid forcing Schedule when async hydrate finishes. */
   var gmManagerShellBootstrapped = false;
+  /** Hold remote schedule apply while a day-off flush is in flight (tip/meta bumps must not clobber ×). */
+  var scheduleDayOffPushGuardUntil = 0;
 
   function markScheduleInteractiveEdit() {
     scheduleInteractiveEditAt = Date.now();
+    /* A real edit means this tab is SoT — stop sticky "Load cloud" from discarding day-offs. */
+    if (schedulePreferCloudOnConflict) setPreferCloudOnConflict(false);
+  }
+
+  function scheduleDayOffPushGuardActive() {
+    return Date.now() < scheduleDayOffPushGuardUntil;
+  }
+
+  function armScheduleDayOffPushGuard() {
+    scheduleDayOffPushGuardUntil = Date.now() + 20000;
+    teamStateForcePushIgnoreVersionSticky = true;
   }
 
   /** True when this tab made schedule edits after the last successful cloud push. */
@@ -5961,6 +5974,7 @@
    */
   function shouldAutoTakeNewerCloudOverStaleDirty(row) {
     if (!row || typeof row !== 'object') return false;
+    if (scheduleDayOffPushGuardActive()) return false;
     if (!remoteTeamStateIsStrictlyNewer(row)) return false;
     if (!scheduleBundleContentDiffersFromRemoteRow(row)) return false;
     if (!(scheduleAssignmentsDirty || draftScheduleDirty)) return false;
@@ -7098,20 +7112,25 @@
     );
   }
 
-  function queueTeamStateRemoteRefresh(fields) {
+  function queueTeamStateRemoteRefresh(fields, opts) {
+    opts = opts || {};
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (scheduleSyncConflictActive) return;
+    if (scheduleDayOffPushGuardActive()) return;
     if (teamStateRemoteRefreshTimer) clearTimeout(teamStateRemoteRefreshTimer);
     teamStateRemoteRefreshTimer = setTimeout(function () {
       teamStateRemoteRefreshTimer = null;
       if (scheduleSyncConflictActive) return;
-      void refreshTeamStateFromRemote(fields);
+      if (scheduleDayOffPushGuardActive()) return;
+      void refreshTeamStateFromRemote(fields, opts);
     }, TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS);
   }
 
-  async function refreshTeamStateFromRemote(fields) {
+  async function refreshTeamStateFromRemote(fields, opts) {
+    opts = opts || {};
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
     if (scheduleSyncConflictActive) return { ok: false, reason: 'conflict' };
+    if (scheduleDayOffPushGuardActive()) return { ok: false, reason: 'dayoff_guard' };
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
@@ -7138,7 +7157,7 @@
     if (res.data) {
       applyTeamStateRowFromRemote(res.data, {
         isManager: gmCalloutSessionIsManager,
-        notifyPeerUpdate: true,
+        notifyPeerUpdate: opts.notifyPeerUpdate !== false,
       });
     }
     return { ok: true };
@@ -8507,8 +8526,25 @@
               .select('id, updated_at')
               .single();
           } else if (String(probe.data.updated_at || '') !== String(expectedAt)) {
-            offerScheduleSyncConflict(probe.data);
-            return;
+            /*
+             * updated_at often advances from tip/meta upserts while schedule content is
+             * unchanged. Interactive day-offs must still overwrite cloud — offering
+             * conflict here caused "another manager" refresh to restore Sat/Sun slots.
+             */
+            if (
+              hasInteractiveScheduleEditsThisSession() ||
+              scheduleDayOffPushGuardActive() ||
+              teamStateForcePushIgnoreVersionSticky
+            ) {
+              res = await sb
+                .from('team_state')
+                .upsert(payload, { onConflict: 'id' })
+                .select('id, updated_at')
+                .single();
+            } else {
+              offerScheduleSyncConflict(probe.data);
+              return;
+            }
           } else {
             res = await sb
               .from('team_state')
@@ -8836,9 +8872,30 @@
     if (forceAccept && hasUnpushedSchedule && !ctx.allowDiscardDirty) {
       forceAccept = false;
     }
+    /*
+     * Day-off / live × edits: never paint older cloud schedule over this tab while the
+     * flush is in flight. Tip/meta updated_at bumps were applying "peer" cloud and
+     * restoring Sat/Sun after the user cleared them.
+     */
+    var protectLocalDayOff = !!(
+      !ctx.allowDiscardDirty &&
+      (scheduleDayOffPushGuardActive() || hasInteractiveScheduleEditsThisSession()) &&
+      (scheduleAssignmentsDirty ||
+        draftScheduleDirty ||
+        teamStatePushInFlight ||
+        scheduleWriteThroughTimer)
+    );
     /* Publish-notification / Take cloud: apply remote even when local dirty locks merge. */
-    var scheduleBundleLocked = forceAccept ? false : teamStateScheduleBundleMergeLocked();
-    var refuseStaleSchedule = forceAccept ? false : shouldRefuseRemoteScheduleSnapshot(row);
+    var scheduleBundleLocked = forceAccept
+      ? false
+      : !!(teamStateScheduleBundleMergeLocked() || protectLocalDayOff);
+    var refuseStaleSchedule = forceAccept
+      ? false
+      : !!(shouldRefuseRemoteScheduleSnapshot(row) || protectLocalDayOff);
+    if (protectLocalDayOff && isMgr) {
+      teamStateForcePushIgnoreVersionSticky = true;
+      scheduleTeamStateDebouncedSync();
+    }
     if (forceAccept) {
       scheduleAssignmentsDirty = false;
       draftScheduleDirty = false;
@@ -9316,11 +9373,16 @@
             draftSchedulePayloadFromStore(draftScheduleByWeekStore)
           );
           if (afterHash !== scheduleHashBeforeApply) {
-            showScheduleNotice(
-              gmT('schedule.peerUpdated') ||
-                'Schedule updated from another manager. Your view now matches the cloud.',
-              false
-            );
+            var ownEcho =
+              !!(scheduleLastPushHash && afterHash === scheduleLastPushHash) ||
+              Date.now() - (teamStateLastLocalPushAt || 0) < TEAM_STATE_SELF_ECHO_IGNORE_MS;
+            if (!ownEcho) {
+              showScheduleNotice(
+                gmT('schedule.peerUpdated') ||
+                  'Schedule updated from another manager. Your view now matches the cloud.',
+                false
+              );
+            }
           }
         } catch (_peerNote) {
           /* ignore */
@@ -12995,13 +13057,28 @@
     if (!store[rid]) store[rid] = {};
     store[rid] = rs;
     saveDraftScheduleRowsForWeek(wi, rows, rid);
+    if (isDayOff) {
+      armScheduleDayOffPushGuard();
+      markScheduleInteractiveEdit();
+    }
     saveScheduleAssignmentsStore(store, isDayOff ? { flushNow: true } : undefined);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     pruneScheduleAssignmentsInvalidSlots();
     if (isDayOff) {
-      /* Day-off must hit Supabase immediately — debounce left a window for cloud/poll
-         to restore Sat/Sun times (Charles Sept 5, Mark weekends, etc.). */
-      flushTeamStateSyncNow();
+      /*
+       * Day-off must hit Supabase immediately and bypass optimistic updated_at (tip/meta
+       * bumps). Debounced sync left a window where poll/refresh restored Sat/Sun tiles.
+       */
+      armScheduleDayOffPushGuard();
+      void Promise.resolve(flushTeamStateSyncNow())
+        .then(function () {
+          if (!(scheduleAssignmentsDirty || draftScheduleDirty)) {
+            scheduleDayOffPushGuardUntil = 0;
+          }
+        })
+        .catch(function (_dayOffFlush) {
+          console.warn('gm-callout: day-off cloud flush', _dayOffFlush);
+        });
     } else {
       scheduleTeamStateDebouncedSync();
     }
@@ -14388,8 +14465,10 @@
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     }
     if (windowRolled && GM_SUPABASE_DATA && window.gmSupabase) {
-      /* Prefer cloud SoT for remapped weeks over this tab's pre-roll cache. */
-      queueTeamStateRemoteRefresh(['schedule_assignments', 'draft_schedule']);
+      /* Prefer cloud SoT for remapped weeks; do not claim "another manager". */
+      queueTeamStateRemoteRefresh(['schedule_assignments', 'draft_schedule'], {
+        notifyPeerUpdate: false,
+      });
     }
     return changed;
   }
@@ -17583,6 +17662,19 @@
     if (!gmCalloutSessionIsManager) return;
     if (scheduleConflictResolveLock) return;
     if (Date.now() < scheduleConflictSuppressOfferUntil) return;
+    /*
+     * Live day-off / schedule edits must win over tip-bumped cloud watermarks.
+     * Do not open Keep/Load or silent-take cloud — force the local schedule up.
+     */
+    if (
+      scheduleDayOffPushGuardActive() ||
+      hasInteractiveScheduleEditsThisSession()
+    ) {
+      teamStateForcePushIgnoreVersionSticky = true;
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
+      return;
+    }
     /* Already in sync — never prompt to upload. */
     if (clearScheduleDirtyIfAlreadySynced(row)) return;
     if (!scheduleBundleContentDiffersFromRemoteRow(row)) {
