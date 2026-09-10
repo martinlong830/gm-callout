@@ -5945,6 +5945,7 @@
     scheduleV2FlushPromise = Promise.resolve(v2.flushOutbox(window.gmSupabase))
       .then(function (res) {
         if (res && res.ok && !res.empty) {
+          scheduleLastCellFlushAt = Date.now();
           void broadcastScheduleCellsChanged();
         }
         if (res && res.ok === false) {
@@ -5952,6 +5953,7 @@
            * Cell RPC failed (missing migration / RLS / etc). Fall back to blob push so
            * peers still converge, and tell the manager something is wrong.
            */
+          armScheduleLocalAuthority(30000);
           scheduleAssignmentsDirty = true;
           draftScheduleDirty = true;
           persistTeamStateDirtyFlags();
@@ -5969,6 +5971,7 @@
       })
       .catch(function (err) {
         console.warn('gm-callout: schedule v2 flush', err);
+        armScheduleLocalAuthority(30000);
         scheduleAssignmentsDirty = true;
         draftScheduleDirty = true;
         persistTeamStateDirtyFlags();
@@ -6065,47 +6068,62 @@
 
   function enqueueV2SlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff, workerName) {
     var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2) return;
-    /* Enqueue immediately — do not wait on fetchSlots or cell poll paints stale cloud first. */
-    armScheduleLocalAuthority(15000);
-    var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-    if (!dayIso) return;
-    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-    var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
-    if (isDayOff) {
-      ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
-    } else {
-      ops.push(
-        v2.opSetTimes(
-          currentRestaurantId,
-          dayIso,
-          role,
-          slotKey,
-          start,
-          end,
-          breakText || null,
-          null
-        )
-      );
-      if (workerName && workerName !== 'Unassigned') {
-        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+    if (!scheduleSyncV2Enabled() || !v2) return Promise.resolve({ ok: false });
+    /*
+     * Arm first so cell poll cannot stomp local draft while we fetch the canonical
+     * slot_key. Writing before fetchSlots used to mint a forked UUID — first save
+     * missed the real cell; second save worked.
+     */
+    armScheduleLocalAuthority(20000);
+    return syncScheduleSlotsFromCloudThen(function () {
+      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+      if (!dayIso) return;
+      var slotKey =
+        (v2.resolveSlotKey && v2.resolveSlotKey(currentRestaurantId, role, trIdx)) ||
+        v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+      var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
+      if (isDayOff) {
+        ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
+      } else {
+        ops.push(
+          v2.opSetTimes(
+            currentRestaurantId,
+            dayIso,
+            role,
+            slotKey,
+            start,
+            end,
+            breakText || null,
+            null
+          )
+        );
+        if (workerName && workerName !== 'Unassigned') {
+          ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+        }
       }
-    }
-    enqueueScheduleV2Ops(ops);
-    /* Refresh slot map in the background without delaying the write. */
-    void syncScheduleSlotsFromCloudThen(function () {});
+      enqueueScheduleV2Ops(ops);
+    }).then(function () {
+      return flushScheduleV2Outbox();
+    }).then(function (res) {
+      armScheduleLocalAuthority(12000);
+      return res || { ok: true };
+    });
   }
 
   /**
    * Soft-delete ISO slots on the server when a draft row is removed, so cell poll
    * cannot recreate the row (slot 6 bounce).
    * deletes: [{ role, originalTrIdx }, ...] — process high→low per role.
+   * Returns a promise that resolves after ops flush + peer broadcast.
    */
   function enqueueV2DeactivateSlots(restaurantId, weekIndex, deletes) {
     var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2 || !deletes || !deletes.length) return;
+    if (!scheduleSyncV2Enabled() || !v2 || !deletes || !deletes.length) {
+      return Promise.resolve({ ok: true, skipped: true });
+    }
     var rid = restaurantId || currentRestaurantId;
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    armScheduleLocalAuthority(20000);
     var byRole = {};
     deletes.forEach(function (d) {
       if (!d || !d.role || d.originalTrIdx == null || isNaN(Number(d.originalTrIdx))) return;
@@ -6150,22 +6168,108 @@
         }
       }
     });
+    var drain = 0;
+    function drainOutbox() {
+      return Promise.resolve(flushScheduleV2Outbox()).then(function (res) {
+        var remain = v2.getOutbox ? v2.getOutbox() : [];
+        if (remain && remain.length && drain < 20 && res && res.ok !== false) {
+          drain += 1;
+          return drainOutbox();
+        }
+        return res || { ok: true };
+      });
+    }
+    return drainOutbox().then(function (res) {
+      armScheduleLocalAuthority(12000);
+      void broadcastScheduleCellsChanged();
+      return res || { ok: true };
+    });
+  }
+
+  /**
+   * Shrink local draft + assignments to match active cloud slot counts so peer
+   * Refresh drops deleted rows (cell apply alone never truncates draft length).
+   */
+  function reconcileLocalScheduleToActiveSlots(opts) {
+    opts = opts || {};
+    var v2 = gmScheduleV2();
+    if (!scheduleSyncV2Enabled() || !v2 || typeof v2.activeSlotCount !== 'function') {
+      return false;
+    }
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    var wiStart =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : 0;
+    var wiEnd =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex) + 1
+        : SCHEDULE_VIEW_WEEK_COUNT;
+    var onlyRid = opts.restaurantId ? String(opts.restaurantId) : '';
+    var changed = false;
+    var store = loadScheduleAssignmentsStore();
+    restaurantsList.forEach(function (rest) {
+      var rid = rest.id;
+      if (onlyRid && rid !== onlyRid) return;
+      if (!store[rid]) store[rid] = {};
+      var rs = store[rid];
+      for (var wi = wiStart; wi < wiEnd; wi += 1) {
+        var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+        var layerChanged = false;
+        roles.forEach(function (role) {
+          var want = Number(v2.activeSlotCount(rid, role)) || 0;
+          /* 0 means slots not loaded / none — do not wipe local rows. */
+          if (want <= 0) return;
+          if (!Array.isArray(layers[role])) layers[role] = [];
+          if (layers[role].length > want) {
+            layers[role] = layers[role].slice(0, want);
+            layerChanged = true;
+          }
+          var roleIdx = roleIdxForDraftRole(role);
+          if (roleIdx < 0) return;
+          var weekStart = wi * 7;
+          Object.keys(rs).forEach(function (shiftId) {
+            var p = parseShiftIdParts(shiftId);
+            if (!p || p.roleIdx !== roleIdx) return;
+            if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekStart + 7) return;
+            if (p.trIdx >= want) {
+              delete rs[shiftId];
+              changed = true;
+            }
+          });
+        });
+        if (layerChanged) {
+          saveDraftScheduleRowsForWeek(wi, layers, rid);
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
+    }
+    return changed;
   }
 
   function enqueueV2RowWorker(role, trIdx, personName) {
     var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2) return;
-    armScheduleLocalAuthority(15000);
-    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-    var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
-    var days = getVisibleWeekDays() || [];
-    days.forEach(function (_dayStr, dayInWeek) {
-      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-      if (!dayIso) return;
-      ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
+    if (!scheduleSyncV2Enabled() || !v2) return Promise.resolve({ ok: false });
+    armScheduleLocalAuthority(20000);
+    return syncScheduleSlotsFromCloudThen(function () {
+      var slotKey =
+        (v2.resolveSlotKey && v2.resolveSlotKey(currentRestaurantId, role, trIdx)) ||
+        v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+      var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
+      var days = getVisibleWeekDays() || [];
+      days.forEach(function (_dayStr, dayInWeek) {
+        var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+        if (!dayIso) return;
+        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
+      });
+      enqueueScheduleV2Ops(ops);
+    }).then(function () {
+      return flushScheduleV2Outbox();
+    }).then(function (res) {
+      armScheduleLocalAuthority(12000);
+      return res || { ok: true };
     });
-    enqueueScheduleV2Ops(ops);
-    void syncScheduleSlotsFromCloudThen(function () {});
   }
 
   /**
@@ -6259,10 +6363,30 @@
     var roleToIdx = { Bartender: 0, Kitchen: 1, Server: 2 };
     var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
     var rids = Object.keys(patch);
-    if (!rids.length) return false;
+    if (!rids.length) {
+      /* Slot deactivated with no remaining cells — still shrink local draft rows. */
+      var onlyShrink = reconcileLocalScheduleToActiveSlots({
+        weekIndex: scheduleCalendarWeekIndex,
+      });
+      if (onlyShrink && opts.rebuild !== false && currentScreen === 1) {
+        deferUiWork(function () {
+          rebuildSchedule({
+            weekIndex: scheduleCalendarWeekIndex,
+            preserveOtherWeeks: true,
+          });
+          renderCalendar({ force: true });
+          if (scheduleBody) renderSchedule();
+        });
+      }
+      return onlyShrink;
+    }
     beginTeamStateRemoteApply();
     var changed = false;
     try {
+      /* User may have edited after poll started — never clobber that local SoT. */
+      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+        return false;
+      }
       var store = loadScheduleAssignmentsStore();
       rids.forEach(function (rid) {
         if (!store[rid]) store[rid] = {};
@@ -6283,6 +6407,9 @@
           changed = true;
         });
       });
+      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+        return false;
+      }
       if (changed) {
         saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
       }
@@ -6319,17 +6446,50 @@
           }
           var cell = cells[shiftId];
           if (cell.dayOff || !cell.start || !cell.end) {
-            row[di] = null;
+            /*
+             * Never clear a local timed draft cell while this tab still has un-acked
+             * interactive edits (Mark Ong 9–6 snap-back).
+             */
+            if (
+              row[di] &&
+              row[di][0] &&
+              row[di][1] &&
+              hasInteractiveScheduleEditsThisSession()
+            ) {
+              /* keep local */
+            } else {
+              row[di] = null;
+            }
           } else {
-            row[di] = [String(cell.start), String(cell.end)];
+            var ns = String(cell.start);
+            var ne = String(cell.end);
+            if (
+              row[di] &&
+              row[di][0] &&
+              row[di][1] &&
+              hasInteractiveScheduleEditsThisSession() &&
+              (normalizeHHMM(row[di][0]) !== normalizeHHMM(ns) ||
+                normalizeHHMM(row[di][1]) !== normalizeHHMM(ne))
+            ) {
+              /* keep local draft times until cell flush acks */
+            } else {
+              row[di] = [ns, ne];
+            }
           }
           changed = true;
         });
       });
+      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+        return false;
+      }
       Object.keys(draftsByWeekRid).forEach(function (draftKey) {
         var bits = draftKey.split('\0');
         saveDraftScheduleRowsForWeek(Number(bits[0]), draftsByWeekRid[draftKey], bits[1]);
       });
+      /* Drop local rows for deactivated cloud slots (peer delete / Refresh). */
+      if (reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex })) {
+        changed = true;
+      }
     } finally {
       endTeamStateRemoteApply();
     }
@@ -6363,12 +6523,29 @@
       }
       var fromIso = dayIsoForScheduleWeekDay(0, 0);
       var toIso = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
+      /*
+       * Push local draft/assignments to cells BEFORE applying remote cells.
+       * Otherwise reload paints stale cloud times over Mark Ong edits still only in local draft.
+       */
+      if (draftScheduleDirty || scheduleAssignmentsDirty) {
+        markScheduleInteractiveEdit();
+        enqueueScheduleV2OpsFromLocalStores({});
+      }
+      await flushScheduleV2Outbox();
+      var drain = 0;
+      while (drain < 20) {
+        var left = v2.getOutbox ? v2.getOutbox() : [];
+        if (!left || !left.length) break;
+        var fr = await flushScheduleV2Outbox();
+        if (!fr || fr.ok === false) break;
+        drain += 1;
+      }
       if (fromIso && toIso) {
         await v2.fetchSlots(window.gmSupabase, cid);
         await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
       }
-      await flushScheduleV2Outbox();
       applyScheduleCellsCacheToLocalStore({ rebuild: true });
+      reconcileLocalScheduleToActiveSlots({});
       startScheduleCellsPoll();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
@@ -6435,6 +6612,11 @@
    * stomp peer cloud edits after wake.
    */
   var scheduleInteractiveEditAt = 0;
+  /**
+   * Last time schedule cell ops were successfully flushed (write-only SoT ack).
+   * Blob team_state push must NOT clear interactive protection — cells can still be pending.
+   */
+  var scheduleLastCellFlushAt = 0;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
@@ -6558,13 +6740,8 @@
       var box = v2.getOutbox();
       if (box && box.length) return true;
     }
-    if (
-      hasInteractiveScheduleEditsThisSession() &&
-      scheduleInteractiveEditAt &&
-      Date.now() - scheduleInteractiveEditAt < 8000
-    ) {
-      return true;
-    }
+    /* Write-only: protect until cell ops ack — blob push alone must not open the door. */
+    if (hasInteractiveScheduleEditsThisSession()) return true;
     return false;
   }
 
@@ -6579,9 +6756,15 @@
       Date.now() + Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000;
   }
 
-  /** True when this tab made schedule edits after the last successful cloud push. */
+  /**
+   * True when this tab made schedule edits that are not yet acked by cell SoT
+   * (write-only) or team_state push (legacy blob mode).
+   */
   function hasInteractiveScheduleEditsThisSession() {
     if (!scheduleInteractiveEditAt) return false;
+    if (scheduleSyncV2WriteOnly()) {
+      return scheduleInteractiveEditAt > (scheduleLastCellFlushAt || 0);
+    }
     if (!teamStateLastLocalPushAt) return true;
     return scheduleInteractiveEditAt > teamStateLastLocalPushAt;
   }
@@ -8102,6 +8285,8 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
+    /* Ensure deleted slots disappear even if cell patch was empty. */
+    reconcileLocalScheduleToActiveSlots({});
     if (!res || !res.ok) {
       teamStateCachedUpdatedAt = prevCached;
       if (!opts.silent) {
@@ -13948,7 +14133,7 @@
         setCustomSlotOrderForRole(rid, delRole, remapped, weekMon);
       });
       /* Deactivate cloud slots after local draft shrinks so poll cannot resurrect rows. */
-      enqueueV2DeactivateSlots(rid, wi, pendingSlotDeletes);
+      void enqueueV2DeactivateSlots(rid, wi, pendingSlotDeletes);
     }
     syncAssignmentBreaksFromDraftModal(wi, rid, nextRows, breakRows);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
@@ -14006,7 +14191,12 @@
       e = normalizeHHMM(end);
       if (!s || !e) return false;
     }
-    if (!templateScratch) pushScheduleUndoSnapshot();
+    if (!templateScratch) {
+      /* Guard before any write so an in-flight cell poll cannot clobber this edit. */
+      armScheduleLocalAuthority(20000);
+      markScheduleInteractiveEdit();
+      pushScheduleUndoSnapshot();
+    }
     var rows = templateScratch
       ? cloneDraftSchedule(scheduleTemplateEditorState.draft)
       : cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
@@ -14101,23 +14291,23 @@
     }
     saveScheduleAssignmentsStore(store, isDayOff ? { flushNow: true } : undefined);
     /* Schedule sync v2: durable op outbox (ISO cells) — cells are SoT (no blob dual-write). */
+    var v2FlushPromise = Promise.resolve({ ok: true });
     try {
       var v2Worker =
         isDayOff
           ? (rs[shiftId] && rs[shiftId].rowOwner) || null
           : scheduleAssignmentPrimaryWorker(rs[shiftId]);
-      enqueueV2SlotEdit(role, trIdx, dayInWeekN, s, e, breakText, !!isDayOff, v2Worker);
+      v2FlushPromise = Promise.resolve(
+        enqueueV2SlotEdit(role, trIdx, dayInWeekN, s, e, breakText, !!isDayOff, v2Worker)
+      );
     } catch (_v2edit) {
       console.warn('gm-callout: schedule v2 edit op', _v2edit);
     }
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     pruneScheduleAssignmentsInvalidSlots();
     if (isDayOff) {
-      /*
-       * Force-save day-off to cells immediately. Blob push is skipped in write-only mode.
-       */
       armScheduleDayOffPushGuard();
-      void Promise.resolve(flushScheduleV2Outbox())
+      void v2FlushPromise
         .then(function () {
           if (!scheduleSyncV2WriteOnly()) return flushTeamStateSyncNow();
           return null;
@@ -14148,8 +14338,13 @@
             false
           );
         });
-    } else if (!scheduleSyncV2WriteOnly()) {
-      scheduleTeamStateDebouncedSync();
+    } else {
+      void v2FlushPromise.catch(function (_editFlush) {
+        console.warn('gm-callout: shift edit cloud flush', _editFlush);
+      });
+      if (!scheduleSyncV2WriteOnly()) {
+        scheduleTeamStateDebouncedSync();
+      }
     }
     /* Week-scoped only — full rebuildEmployeeDerivedData() was multi-second on large rosters. */
     rebuildSchedule({
@@ -14158,7 +14353,7 @@
     });
     notifyTimecardsScheduleChanged();
     if (!opts.skipUiRefresh) {
-      renderCalendar();
+      renderCalendar({ force: true });
       if (scheduleBody) renderSchedule();
     }
     return true;
@@ -25761,7 +25956,7 @@
       }
       if (scheduleTemplateScratchActive && templateShiftEditorMountState) {
         closeTemplateShiftEditPanel();
-        refreshScheduleCalendarAfterEdit();
+        refreshScheduleCalendarAfterEdit({ force: true });
         return;
       }
       /* Ensure Save control is back on the main shift screen if a prior template edit left it moved. */
@@ -25769,6 +25964,8 @@
       currentShift = null;
       shiftDetailSlotTarget = null;
       showScreen(1);
+      /* Paint the saved draft immediately; do not wait on a second Save. */
+      refreshScheduleCalendarAfterEdit({ force: true });
     });
   }
 

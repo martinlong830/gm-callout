@@ -483,6 +483,35 @@
     setCellCache(cache);
   }
 
+  /**
+   * Drop cached cells whose slot is no longer active (peer deleted the row).
+   * Safer than wiping a whole date range — that destroyed in-flight local edits.
+   */
+  function pruneCellsForInactiveSlots() {
+    var slots = getSlotCache();
+    var cache = getCellCache();
+    var changed = false;
+    Object.keys(cache).forEach(function (ck) {
+      var c = cache[ck];
+      if (!c || c.deleted) return;
+      var spk = [c.restaurant_id, c.role, c.slot_key].join('\0');
+      if (slots[spk] && slots[spk].active !== false) return;
+      c.deleted = true;
+      changed = true;
+    });
+    if (changed) setCellCache(cache);
+    return changed;
+  }
+
+  /**
+   * Merge fetch into cache. Optionally prune cells for inactive slots after a slot fetch.
+   * Do NOT delete the whole date range — that wiped optimistic edits before flush landed.
+   */
+  function replaceCellsInRange(rows, fromIso, toIso) {
+    if (rows && rows.length) mergeRemoteCells(rows);
+    pruneCellsForInactiveSlots();
+  }
+
   function mergeRemoteSlots(rows) {
     if (!rows || !rows.length) return;
     var slots = getSlotCache();
@@ -511,6 +540,50 @@
     });
     setSlotCache(slots);
     setSlotMap(map);
+  }
+
+  /**
+   * Replace local active-slot SoT from a full company fetch (active rows only).
+   * Removes deactivated slots from map/cache so peers drop deleted rows.
+   */
+  function replaceActiveSlots(rows) {
+    var nextSlots = {};
+    var nextMap = {};
+    var bySort = {};
+    (rows || []).forEach(function (row) {
+      if (!row || row.active === false) return;
+      var pk = [row.restaurant_id, row.role, row.slot_key].join('\0');
+      nextSlots[pk] = {
+        restaurant_id: row.restaurant_id,
+        role: row.role,
+        slot_key: row.slot_key,
+        sort_order: Number(row.sort_order) || 0,
+        label: row.label || null,
+        active: true,
+      };
+      var mk = slotMapKey(row.restaurant_id, row.role, row.sort_order);
+      if (!bySort[mk]) bySort[mk] = [];
+      bySort[mk].push(String(row.slot_key));
+    });
+    Object.keys(bySort).forEach(function (mk) {
+      var list = bySort[mk].slice().sort();
+      nextMap[mk] = list[0];
+    });
+    setSlotCache(nextSlots);
+    setSlotMap(nextMap);
+  }
+
+  /** Count of active mapped rows for restaurant|role (0 if none loaded). */
+  function activeSlotCount(restaurantId, role) {
+    var map = getSlotMap();
+    var prefix = String(restaurantId) + '|' + String(role) + '|';
+    var max = -1;
+    Object.keys(map).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
+      var n = Number(k.slice(prefix.length));
+      if (!isNaN(n) && n > max) max = n;
+    });
+    return max + 1;
   }
 
   async function flushOutbox(sb) {
@@ -573,7 +646,7 @@
     if (companyId) q = q.eq('company_id', companyId);
     var res = await q;
     if (res.error) return { ok: false, error: res.error };
-    mergeRemoteCells(res.data || []);
+    replaceCellsInRange(res.data || [], fromIso, toIso);
     return { ok: true, rows: res.data || [] };
   }
 
@@ -586,7 +659,7 @@
     if (companyId) q = q.eq('company_id', companyId);
     var res = await q;
     if (res.error) return { ok: false, error: res.error };
-    mergeRemoteSlots(res.data || []);
+    replaceActiveSlots(res.data || []);
     return { ok: true, rows: res.data || [] };
   }
 
@@ -738,6 +811,10 @@
     fetchSlots: fetchSlots,
     mergeRemoteCells: mergeRemoteCells,
     mergeRemoteSlots: mergeRemoteSlots,
+    replaceCellsInRange: replaceCellsInRange,
+    replaceActiveSlots: replaceActiveSlots,
+    pruneCellsForInactiveSlots: pruneCellsForInactiveSlots,
+    activeSlotCount: activeSlotCount,
     backfillIfNeeded: backfillIfNeeded,
     getCell: getCell,
     listCellsForDay: listCellsForDay,
