@@ -7072,12 +7072,12 @@
   async function hydrateScheduleSyncV2FromCloud() {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) {
-      scheduleVisibleWeekFetchDone = true;
+      markScheduleAuthoritativePaintReady();
       return;
     }
     var cid = gmCalloutCompanyId();
     if (!cid) {
-      scheduleVisibleWeekFetchDone = true;
+      markScheduleAuthoritativePaintReady();
       return;
     }
     try {
@@ -7085,11 +7085,13 @@
       if (bf && bf.schemaMissing) {
         if (v2.setWriteOnlyCells) v2.setWriteOnlyCells(false);
         scheduleCellsHydratedOk = false;
-        scheduleVisibleWeekFetchDone = true;
+        markScheduleAuthoritativePaintReady();
         if (currentScreen === 1) {
           paintVisibleScheduleWeekFast({
             weekIndex: scheduleCalendarWeekIndex,
             forcePaint: true,
+            allowDayOffShell: true,
+            allowEmptyPaint: true,
           });
         }
         return;
@@ -7106,10 +7108,15 @@
       var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
       var weekTo = dayIsoForScheduleWeekDay(wi, 6);
       if (!weekFrom || !weekTo) {
-        scheduleVisibleWeekFetchDone = true;
+        markScheduleAuthoritativePaintReady();
         startScheduleCellsPoll();
         if (currentScreen === 1) {
-          paintVisibleScheduleWeekFast({ weekIndex: wi, forcePaint: true });
+          paintVisibleScheduleWeekFast({
+            weekIndex: wi,
+            forcePaint: true,
+            allowDayOffShell: true,
+            allowEmptyPaint: true,
+          });
         }
         return;
       }
@@ -7126,13 +7133,19 @@
       }
       if (pair[1] && pair[1].ok === false) {
         console.warn('gm-callout: schedule cells fetch failed', pair[1].error);
-        scheduleVisibleWeekFetchDone = true;
+        markScheduleAuthoritativePaintReady();
         startScheduleCellsPoll();
         if (currentScreen === 1) {
-          paintVisibleScheduleWeekFast({ weekIndex: wi, forcePaint: true });
+          paintVisibleScheduleWeekFast({
+            weekIndex: wi,
+            forcePaint: true,
+            allowDayOffShell: true,
+            allowEmptyPaint: true,
+          });
         }
         return;
       }
+      var firstVisible = !scheduleAuthoritativePaintReady;
       applyScheduleCellsCacheToLocalStore({
         rebuild: false,
         force: true,
@@ -7140,17 +7153,20 @@
          * First visible-week load may replace; later hydrates (tab focus) soft-upsert
          * only so an incomplete fetch cannot wipe a staffed week to "No shifts".
          */
-        replaceTrusted: !scheduleVisibleWeekFetchDone,
-        upsertTimedOnly: !!scheduleVisibleWeekFetchDone,
-        replaceWeekIndex: scheduleVisibleWeekFetchDone ? undefined : wi,
+        replaceTrusted: firstVisible,
+        upsertTimedOnly: !firstVisible,
+        replaceWeekIndex: firstVisible ? wi : undefined,
       });
-      scheduleVisibleWeekFetchDone = true;
-      /* One paint after cells land — avoids empty → filled flash. */
+      markScheduleAuthoritativePaintReady();
+      /* First paint only after cells applied — never the pre-cell DAY-OFF shell. */
       if (currentScreen === 1) {
+        var allowShell = !localWeekHasTimedDraft(wi, currentRestaurantId);
         paintVisibleScheduleWeekFast({
           weekIndex: wi,
           forcePaint: true,
           fast: true,
+          allowDayOffShell: allowShell,
+          allowEmptyPaint: allowShell,
         });
         scheduleDeferredScheduleChrome(wi);
       }
@@ -7212,12 +7228,14 @@
       })();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
-      scheduleVisibleWeekFetchDone = true;
+      markScheduleAuthoritativePaintReady();
       if (currentScreen === 1) {
         try {
           paintVisibleScheduleWeekFast({
             weekIndex: scheduleCalendarWeekIndex,
             forcePaint: true,
+            allowDayOffShell: true,
+            allowEmptyPaint: true,
           });
         } catch (_paintFail) {
           /* ignore */
@@ -7305,6 +7323,11 @@
    * Until then, never flash "No shifts to show" while cloud is still loading.
    */
   var scheduleVisibleWeekFetchDone = false;
+  /**
+   * True only after the first authoritative visible-week cell apply (or cloud unavailable).
+   * Until then the calendar stays blank — never paint the all-day-off / wrong-order shell.
+   */
+  var scheduleAuthoritativePaintReady = false;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
@@ -7986,14 +8009,51 @@
     return withSel;
   }
 
+  function scheduleDraftHasSlotRows(weekIndex, restaurantId) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi)) return false;
+    var rid = restaurantId || currentRestaurantId;
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    for (var i = 0; i < roles.length; i += 1) {
+      if (slotCountForRole(roles[i], wi, rid) > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Draft slot lines exist but no timed shifts — calendar would paint every cell as
+   * DAY-OFF with row names (often wrong order). Never show that intermediate shell.
+   */
+  function scheduleWeekIsDayOffShellOnly(weekIndex, restaurantId) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    if (SCHEDULE && SCHEDULE.length) return false;
+    if (localWeekHasTimedDraft(wi, restaurantId || currentRestaurantId)) return false;
+    return scheduleDraftHasSlotRows(wi, restaurantId || currentRestaurantId);
+  }
+
   function scheduleShouldSuppressEmptyCalendar() {
     if (SCHEDULE && SCHEDULE.length) return false;
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    /* Always suppress empty flash while cloud sync is the SoT — never show "No shifts"
-       over a blank rebuild when a painted grid already exists (handled in render). */
-    if (!scheduleVisibleWeekFetchDone) return true;
+    if (!scheduleVisibleWeekFetchDone || !scheduleAuthoritativePaintReady) return true;
     return false;
+  }
+
+  function scheduleShouldHoldCalendarPaint(opts) {
+    opts = opts || {};
+    if (opts.allowEmptyPaint || opts.allowDayOffShell) return false;
+    if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
+    if (!scheduleAuthoritativePaintReady) return true;
+    if (scheduleWeekIsDayOffShellOnly(opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex)) {
+      return true;
+    }
+    return false;
+  }
+
+  function markScheduleAuthoritativePaintReady() {
+    scheduleAuthoritativePaintReady = true;
+    scheduleVisibleWeekFetchDone = true;
   }
 
   function paintVisibleScheduleWeekFast(opts) {
@@ -8046,6 +8106,13 @@
         return;
       }
       if (opts.render === false) return;
+      /*
+       * Hold blank until authoritative cells land. Never paint the all-DAY-OFF /
+       * wrong-name-order shell that appears before timed cells are applied.
+       */
+      if (scheduleShouldHoldCalendarPaint({ weekIndex: wi, allowEmptyPaint: opts.allowEmptyPaint, allowDayOffShell: opts.allowDayOffShell })) {
+        return;
+      }
       if (scheduleShouldSuppressEmptyCalendar()) return;
       if (typeof renderCalendar === 'function') {
         renderCalendar({
@@ -21043,6 +21110,15 @@
       var scrollPending = calendarScrollRestorePending;
       function refreshScheduleScreenUi() {
         if (currentScreen !== 1) return;
+        /* Hold blank until cells ready — never flash DAY-OFF / wrong-order shell. */
+        if (
+          scheduleSyncV2WriteOnly() &&
+          GM_SUPABASE_DATA &&
+          window.gmSupabase &&
+          !scheduleAuthoritativePaintReady
+        ) {
+          return;
+        }
         /* Fast grid first — templates / rolling window / labor chrome after paint. */
         paintVisibleScheduleWeekFast({
           weekIndex: scheduleCalendarWeekIndex,
@@ -22469,6 +22545,20 @@
     closeCalendarInlineWorkerEdit();
     if (!targetEl) {
       if (!readOnly && !calendarScheduleUiBlocksRender()) flushDeferredCalendarRemoteRefresh();
+      return;
+    }
+    if (
+      scheduleShouldHoldCalendarPaint({
+        weekIndex: scheduleCalendarWeekIndex,
+        allowEmptyPaint: !!opts.allowEmptyPaint,
+        allowDayOffShell: !!opts.allowDayOffShell,
+      })
+    ) {
+      /* Blank until authoritative week — do not paint DAY-OFF shells. */
+      if (!targetEl.querySelector('table, .calendar-table')) {
+        targetEl.setAttribute('aria-busy', 'true');
+        targetEl.innerHTML = '';
+      }
       return;
     }
     if (!SCHEDULE.length) {
@@ -30825,21 +30915,10 @@
     }
     var sb = window.gmSupabase;
     /*
-     * Paint from local only when this week already has timed draft rows. Otherwise
-     * leave the calendar blank until cells hydrate (avoids "No shifts to show" flash).
+     * Do not paint from local before cells — local draft/assignments often show as
+     * all DAY-OFF with names out of order until the cell fetch applies.
      */
     releaseScheduleCloudHydrateGate();
-    try {
-      if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
-        scheduleVisibleWeekFetchDone = true;
-        paintVisibleScheduleWeekFast({
-          weekIndex: scheduleCalendarWeekIndex,
-          forcePaint: true,
-        });
-      }
-    } catch (_earlyPaint) {
-      /* ignore */
-    }
     var session = await gmCalloutEnsureSupabaseSession(sb);
     if (!session) {
       releaseScheduleCloudHydrateGate();
@@ -30994,17 +31073,10 @@
       });
     }
     /*
-     * Paint from assignment/draft only when local already has this week. Otherwise
-     * wait for hydrateScheduleSyncV2FromCloud so the first paint is the real week.
+     * Stay blank until hydrateScheduleSyncV2FromCloud applies visible-week cells.
+     * Painting blob/local first caused DAY-OFF + wrong name order, then the real week.
      */
     releaseScheduleCloudHydrateGate();
-    if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
-      scheduleVisibleWeekFetchDone = true;
-      paintVisibleScheduleWeekFast({
-        weekIndex: scheduleCalendarWeekIndex,
-        forcePaint: true,
-      });
-    }
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
       renderManagerHomeShifts();
@@ -31174,15 +31246,11 @@
     );
     /* restoreFoh already rebuilds when it writes; skip a duplicate full rebuild. */
     if (!fohRestored) {
-      if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
-        scheduleVisibleWeekFetchDone = true;
-        paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
-      }
-      /* else: stay blank until first cell hydrate paints the real week */
+      /* Stay blank until authoritative cell hydrate paints — no DAY-OFF shell. */
     } else {
       scheduleUiAwaitingInitialCloudHydrate = false;
-      scheduleVisibleWeekFetchDone = true;
-      renderCalendar({ force: true });
+      markScheduleAuthoritativePaintReady();
+      renderCalendar({ force: true, allowDayOffShell: true });
       if (scheduleBody) renderSchedule();
     }
     ensureManagerScheduleRestaurantDefault();
