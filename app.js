@@ -6805,6 +6805,18 @@
       }
     }
     /*
+     * Trusted replace refused (sparse cloud vs staffed local): fall back to soft
+     * timed upsert so Refresh/poll still merges names/times without wiping the week.
+     */
+    if (
+      opts.replaceTrusted &&
+      !opts.forceDayOffReplace &&
+      !Object.keys(replaceWeeks).length &&
+      Object.keys(timedWeeks).length
+    ) {
+      upsertTimedOnly = true;
+    }
+    /*
      * If local week is staffed and cloud is too sparse to replace, skip wipe applies.
      * upsertTimedOnly still merges timed cells without blanking the rest.
      */
