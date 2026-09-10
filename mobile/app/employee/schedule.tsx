@@ -263,6 +263,7 @@ export default function EmployeeScheduleScreen() {
           weekMeta,
           liveAssign: base.store,
           liveDraft: base.draftSchedule ?? teamState?.draft_schedule ?? {},
+          replaceWeekIndex: weekIndex,
         });
         if (cancelled) return;
         setCellAssign(projected.assign);

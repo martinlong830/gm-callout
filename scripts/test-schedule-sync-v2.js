@@ -287,6 +287,37 @@ function emptyState() {
   );
 })();
 
+// 15) Fetch tombstones missing cells in range so peers drop cleared shifts
+(function () {
+  var slot = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: slot, sort_order: 0, active: true },
+  ]);
+  sync.mergeRemoteCells([
+    {
+      restaurant_id: 'rp-9',
+      role: 'Bartender',
+      slot_key: slot,
+      day_iso: '2026-09-08',
+      start_hhmm: '10:00',
+      end_hhmm: '18:00',
+      worker_name: 'EUGENE',
+      rev: 8,
+      deleted: false,
+    },
+  ]);
+  /* Later fetch: cell gone from cloud (deleted) — empty rows for that day range. */
+  sync.replaceCellsInRange([], '2026-09-08', '2026-09-08');
+  var patch = sync.projectCellsToAssignmentPatch(
+    { '2026-09-08': 7 },
+    { Kitchen: 0, Bartender: 1, Server: 2 }
+  );
+  assert(
+    !(patch['rp-9'] && patch['rp-9']['shift-7-1-0']),
+    'tombstone removes cleared cell from projection'
+  );
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

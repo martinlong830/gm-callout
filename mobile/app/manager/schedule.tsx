@@ -447,6 +447,7 @@ export default function ManagerScheduleScreen() {
           weekMeta,
           liveAssign: assignmentStoreRef.current,
           liveDraft: draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {},
+          replaceWeekIndex: weekIndex,
         });
         if (cancelled || localEditPendingRef.current) return;
         setAssignmentStore(projected.assign);
@@ -1558,64 +1559,68 @@ export default function ManagerScheduleScreen() {
   ]);
 
   useEffect(() => {
-    const pendingDraft = pendingDraftRef.current;
-    const pendingStore = pendingStoreRef.current;
-    const editPending = localEditPendingRef.current || !!pendingStore;
-    const rolled = hydrateScheduleAssignmentsFromTeamState(
-      teamState?.schedule_assignments,
-      restaurants,
-      teamState?.draft_schedule
-    );
-    let draftOut: unknown = rolled.draftSchedule ?? teamState?.draft_schedule ?? null;
-    /*
-     * Debounced saves leave a window where remote/echo hydrate can arrive with a stale
-     * draft_schedule (missing the reorder). Keep pending slotOrderByWeek as SoT until flush.
-     */
-    if (pendingDraft !== undefined) {
-      draftOut = mergePendingDraftWithHydrated(pendingDraft, draftOut);
-      pendingDraftRef.current = draftOut;
-    }
-    /*
-     * While a manager edit is waiting to save, never paint remote/cache assignments over
-     * the local store — that is the main flash/revert path after person or time edits.
-     */
-    if (editPending) {
-      if (pendingStore) setAssignmentStore(pendingStore);
-      setRolledDraftRaw(draftOut);
-      suppressHydrateUndoClearRef.current = false;
-      return;
-    }
-    let nextStore = rolled.store;
-    let fohChanged = false;
-    if (isManagerLikeRole(role) && scheduleEditable) {
-      const foh = restoreFohTemplateWeekBreaks(
-        nextStore,
-        employees.map(toLite),
-        currentRestaurantId,
-        SCHEDULE_TEMPLATE_WEEK_INDEX
+    let cancelled = false;
+    void (async () => {
+      const cellsOnly = await writeOnlyCells().catch(() => false);
+      if (cancelled) return;
+      /*
+       * Write-only: assignment/draft UI comes from ISO cells poll — do not re-apply
+       * team_state blobs (they diverge across devices).
+       */
+      if (cellsOnly) return;
+      const pendingDraft = pendingDraftRef.current;
+      const pendingStore = pendingStoreRef.current;
+      const editPending = localEditPendingRef.current || !!pendingStore;
+      const rolled = hydrateScheduleAssignmentsFromTeamState(
+        teamState?.schedule_assignments,
+        restaurants,
+        teamState?.draft_schedule
       );
-      if (foh.changed) {
-        nextStore = foh.store;
-        fohChanged = true;
+      let draftOut: unknown = rolled.draftSchedule ?? teamState?.draft_schedule ?? null;
+      if (pendingDraft !== undefined) {
+        draftOut = mergePendingDraftWithHydrated(pendingDraft, draftOut);
+        pendingDraftRef.current = draftOut;
       }
-    }
-    setAssignmentStore(nextStore);
-    setRolledDraftRaw(draftOut);
-    if ((rolled.changed || fohChanged) && isManagerLikeRole(role)) {
-      /* Local commits (incl. delete-slot) update teamState and re-enter here — do not wipe Undo. */
-      if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-      applyLocalScheduleAssignments(nextStore, draftOut, {
-        markDirty: fohChanged ? true : 'keep',
-      });
-      queuePersist(nextStore, draftOut, { fromHydrate: !fohChanged });
-    } else if (
-      (rolled.draftMetaChanged || rolled.windowRolled) &&
-      isManagerLikeRole(role)
-    ) {
-      /* Seed bookkeeping / Monday window remap — keep local cache, never cloud-write pre-roll slots. */
-      applyLocalScheduleAssignments(nextStore, draftOut, { markDirty: 'keep' });
-    }
-    suppressHydrateUndoClearRef.current = false;
+      if (editPending) {
+        if (pendingStore) setAssignmentStore(pendingStore);
+        setRolledDraftRaw(draftOut);
+        suppressHydrateUndoClearRef.current = false;
+        return;
+      }
+      let nextStore = rolled.store;
+      let fohChanged = false;
+      if (isManagerLikeRole(role) && scheduleEditable) {
+        const foh = restoreFohTemplateWeekBreaks(
+          nextStore,
+          employees.map(toLite),
+          currentRestaurantId,
+          SCHEDULE_TEMPLATE_WEEK_INDEX
+        );
+        if (foh.changed) {
+          nextStore = foh.store;
+          fohChanged = true;
+        }
+      }
+      if (cancelled) return;
+      setAssignmentStore(nextStore);
+      setRolledDraftRaw(draftOut);
+      if ((rolled.changed || fohChanged) && isManagerLikeRole(role)) {
+        if (!suppressHydrateUndoClearRef.current) clearUndoStack();
+        applyLocalScheduleAssignments(nextStore, draftOut, {
+          markDirty: fohChanged ? true : 'keep',
+        });
+        queuePersist(nextStore, draftOut, { fromHydrate: !fohChanged });
+      } else if (
+        (rolled.draftMetaChanged || rolled.windowRolled) &&
+        isManagerLikeRole(role)
+      ) {
+        applyLocalScheduleAssignments(nextStore, draftOut, { markDirty: 'keep' });
+      }
+      suppressHydrateUndoClearRef.current = false;
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     teamState,
     restaurants,

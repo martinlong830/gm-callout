@@ -540,11 +540,35 @@
   }
 
   /**
-   * Merge fetch into cache. Optionally prune cells for inactive slots after a slot fetch.
-   * Do NOT delete the whole date range — that wiped optimistic edits before flush landed.
+   * Apply a cells fetch for [fromIso, toIso]. Merge returned rows, then tombstone
+   * cached cells in that range for active slots that were not returned (peer delete /
+   * clear). Without this, stale local cache keeps projecting old people/times.
    */
   function replaceCellsInRange(rows, fromIso, toIso) {
+    var seen = Object.create(null);
+    (rows || []).forEach(function (row) {
+      if (!row) return;
+      seen[cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key)] = true;
+    });
     if (rows && rows.length) mergeRemoteCells(rows);
+    var slots = getSlotCache();
+    var hasSlots = !!(slots && Object.keys(slots).length);
+    if (hasSlots && fromIso && toIso) {
+      var cache = getCellCache();
+      var changed = false;
+      Object.keys(cache).forEach(function (ck) {
+        var c = cache[ck];
+        if (!c || c.deleted) return;
+        var day = String(c.day_iso || '').slice(0, 10);
+        if (day < String(fromIso).slice(0, 10) || day > String(toIso).slice(0, 10)) return;
+        if (seen[ck]) return;
+        var spk = [c.restaurant_id, c.role, c.slot_key].join('\0');
+        if (!slots[spk] || slots[spk].active === false) return;
+        c.deleted = true;
+        changed = true;
+      });
+      if (changed) setCellCache(cache);
+    }
     pruneCellsForInactiveSlots();
   }
 

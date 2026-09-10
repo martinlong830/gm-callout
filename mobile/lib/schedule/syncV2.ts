@@ -291,6 +291,8 @@ export function projectCellsOntoLocalStores(opts: {
   weekMeta: { iso?: string }[];
   liveAssign: AssignmentStore;
   liveDraft: unknown;
+  /** When set, replace that week from cells (drop stale local keys). */
+  replaceWeekIndex?: number;
 }): { assign: AssignmentStore; draft: unknown } {
   const isoToGdi: Record<string, number> = {};
   (opts.weekMeta || []).forEach((m, i) => {
@@ -312,6 +314,7 @@ export function projectCellsOntoLocalStores(opts: {
       ? JSON.parse(JSON.stringify(opts.liveDraft))
       : { v: 2, byWeek: {} };
 
+  const projected = new Set<string>();
   (opts.cells || []).forEach((cell) => {
     if (!cell || cell.deleted) return;
     const dayIso = String(cell.day_iso || '').slice(0, 10);
@@ -326,6 +329,7 @@ export function projectCellsOntoLocalStores(opts: {
     const trIdx = slotTr.get(`${rid}\0${role}\0${slotKey}`);
     if (trIdx == null || trIdx < 0) return;
     const shiftId = `shift-${gdi}-${roleIdx}-${trIdx}`;
+    projected.add(`${rid}\0${shiftId}`);
     if (!nextAssign[rid]) nextAssign[rid] = {};
     const worker =
       cell.worker_name && String(cell.worker_name) !== 'Unassigned'
@@ -361,6 +365,28 @@ export function projectCellsOntoLocalStores(opts: {
     rows[trIdx] = row;
     nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
   });
+
+  const replaceWi =
+    opts.replaceWeekIndex != null && !Number.isNaN(Number(opts.replaceWeekIndex))
+      ? Number(opts.replaceWeekIndex)
+      : null;
+  if (replaceWi != null) {
+    const weekStart = replaceWi * 7;
+    const weekEnd = weekStart + 7;
+    Object.keys(nextAssign).forEach((rid) => {
+      const rs = nextAssign[rid];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach((shiftId) => {
+        const m = /^shift-(\d+)-/.exec(shiftId);
+        if (!m) return;
+        const gdi = Number(m[1]);
+        if (gdi < weekStart || gdi >= weekEnd) return;
+        if (!projected.has(`${rid}\0${shiftId}`)) {
+          delete rs[shiftId];
+        }
+      });
+    });
+  }
 
   return { assign: nextAssign, draft: nextDraft };
 }
