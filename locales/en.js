@@ -257,7 +257,7 @@ window.GM_I18N_EN = {
   'schedule.publishHint': "Publish this week’s schedule ({range}) and notify employees",
   'schedule.downloadWeek': 'Download',
   'schedule.downloadWeekTitle':
-    "Download this week’s schedule as Excel (same format as the full report Schedule tab)",
+    'Download this week’s on-screen schedule as Excel (includes group order / potential, not labor & sales)',
   'schedule.downloadingWeek': 'Downloading…',
   'schedule.downloadWeekDone': 'Schedule downloaded for {range}.',
   'schedule.downloadWeekFailed': 'Could not download this week’s schedule.',
@@ -289,7 +289,7 @@ window.GM_I18N_EN = {
   'employee.pastShifts': 'Past shifts',
   'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
-    'Saved schedule versions (auto-saves about every 15 minutes when the schedule changed, plus publish/revert). Hard revert restores assignments and shift times for everyone.',
+    'Saved schedule versions (auto-saves about every 15 minutes when the schedule changed, plus publish/revert). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
   'schedule.historyEmpty': 'No saved versions yet. Keep editing — checkpoints appear after a short pause.',
   'schedule.historyFailed': 'Could not load schedule history.',
   'schedule.historySourcePublish': 'Publish',
@@ -297,10 +297,28 @@ window.GM_I18N_EN = {
   'schedule.historySourceBeforeRevert': 'Before revert',
   'schedule.historySourceCheckpoint': 'Checkpoint',
   'schedule.historySourceAutoSave': 'Auto-save',
+  'schedule.savePoint': 'Save point',
+  'schedule.savePointPrompt':
+    'Name this save point (optional). Leave blank for the default label.',
+  'schedule.savePointDone':
+    'Save point stored. You can hard-revert to it later from History.',
+  'schedule.savePointFailed': 'Could not save checkpoint. Try again.',
+  'schedule.savePointManagersOnly': 'Only managers and admins can save a checkpoint.',
   'schedule.hardRevert': 'Hard revert',
   'schedule.hardRevertConfirm':
-    'Hard revert the live schedule to this version for all managers? A safety snapshot of the current schedule is saved first.',
-  'schedule.hardRevertDone': 'Schedule restored from history.',
+    'Hard revert only this store’s schedule for {range}? Other weeks and other restaurants stay unchanged. A safety snapshot is saved first.',
+  'schedule.hardRevertConfirmScoped':
+    'Hard revert only this store’s schedule for {range}? Other weeks and other restaurants stay unchanged. A safety snapshot is saved first.',
+  'schedule.hardRevertDone': 'Restored this store’s schedule for {range} from history.',
+  'schedule.hardRevertDoneScoped': 'Restored this store’s schedule for {range} from history.',
+  'schedule.hardRevertBadRevision':
+    'This history entry has no schedule data. Nothing was changed.',
+  'schedule.hardRevertCloudFailed':
+    'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
+  'schedule.hardRevertCellsLag':
+    'Schedule restored. Cell sync is still catching up — refresh in a moment if peers look stale.',
+  'schedule.hardRevertNoStoreWeek':
+    'This history entry has no schedule for the current store. Nothing was changed.',
   'schedule.syncConflict':
     'You and another manager edited the schedule at the same time. Keep yours (overwrites everyone else), or load the cloud version (discards your unsaved edits on this device).',
   'schedule.syncConflictKeepMine': 'Keep my schedule',

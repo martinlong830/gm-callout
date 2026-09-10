@@ -3993,9 +3993,21 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   opacity: 0.72;
 }
 
+.calendar-row-person-meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .calendar-row-away-primary {
   display: inline-block;
-  margin-top: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-top: 0;
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 0.625rem;
@@ -4013,10 +4025,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 .calendar-row-employment-status {
-  display: block;
+  display: inline-block;
+  flex: 0 0 auto;
   width: fit-content;
   max-width: 100%;
-  margin-top: 4px;
+  margin-top: 0;
   padding: 1px 6px;
   border: 1px solid #cbd5e1;
   border-radius: 4px;
@@ -7850,6 +7863,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
+}
+
+.schedule-history-row-manual {
+  border-color: rgba(4, 120, 87, 0.35);
+  background: rgba(236, 253, 245, 0.9);
 }
 
 .schedule-history-row-meta {

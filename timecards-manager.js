@@ -305,9 +305,7 @@
 
   function effectiveLocationFilter(locationFilter) {
     if (locationFilter != null) return locationFilter;
-    if (scheduleExportLocationOverride === 'rp-8' || scheduleExportLocationOverride === 'rp-9') {
-      return scheduleExportLocationOverride;
-    }
+    if (scheduleExportLocationOverride) return String(scheduleExportLocationOverride);
     return timecardsLocationFilter;
   }
 
@@ -7417,10 +7415,37 @@
     };
   }
 
-  function buildScheduleWorksheet() {
-    var weekDays = payWeekDayMeta();
+  function buildScheduleWorksheet(opts) {
+    opts = opts || {};
+    var matchCalendar = !!opts.matchCalendar;
+    var calendarModel = null;
+    if (matchCalendar && typeof d().buildScheduleCalendarExportModel === 'function') {
+      var weekIso =
+        (scheduleExportWeekOverrideIso && String(scheduleExportWeekOverrideIso).slice(0, 10)) ||
+        isoFromDate(payWeekBounds().start);
+      var weekIdx = d().weekIndexForPayWeekStartIso(weekIso);
+      var rid =
+        scheduleExportLocationOverride
+          ? String(scheduleExportLocationOverride)
+          : effectiveLocationFilter() === 'all'
+            ? null
+            : effectiveLocationFilter();
+      if (!rid && typeof d().managerManagedRestaurantId === 'function') {
+        rid = d().managerManagedRestaurantId() || null;
+      }
+      if (!rid && typeof d().getRestaurantsList === 'function') {
+        var rests = d().getRestaurantsList() || [];
+        rid = rests[0] && rests[0].id;
+      }
+      if (!rid) rid = 'rp-9';
+      calendarModel = d().buildScheduleCalendarExportModel(weekIdx, rid);
+    }
+
+    var weekDays = calendarModel && calendarModel.days && calendarModel.days.length
+      ? calendarModel.days
+      : payWeekDayMeta();
     if (!weekDays.length) return null;
-    var snapshot = ensurePayWeekScheduleRows();
+    var snapshot = calendarModel ? null : ensurePayWeekScheduleRows();
 
     var ws = {};
     var merges = [];
@@ -7430,7 +7455,11 @@
     var r = 0;
     var lastCol = SCHEDULE_COL_COUNT - 1;
 
-    xlSet(ws, r, 0, scheduleSheetTitleForLocation(), S.title);
+    var title =
+      calendarModel && calendarModel.restaurantName
+        ? String(calendarModel.restaurantName).toUpperCase() + ' — SCHEDULE'
+        : scheduleSheetTitleForLocation();
+    xlSet(ws, r, 0, title, S.title);
     xlMerge(merges, r, 0, r, lastCol);
     rowHeights[r] = { hpt: 22 };
     r += 1;
@@ -7438,70 +7467,192 @@
     xlSet(ws, r, 0, 'TEAM MEMBERS', S.colHead);
     xlSet(ws, r, 1, 'POSITION', S.colHead);
     weekDays.forEach(function (meta, i) {
-      var dow = meta.dayNameUpper || String(meta.label || '').split(' ')[0].toUpperCase();
-      xlSet(ws, r, SCHEDULE_DAY_COL_START + i, dow + '\n' + scheduleDayDateLabel(meta), S.colHead);
+      var dow =
+        meta.dayNameUpper ||
+        String(meta.label || '').split(' ')[0].toUpperCase();
+      var dateLbl = meta.dateLabel || scheduleDayDateLabel(meta);
+      xlSet(ws, r, SCHEDULE_DAY_COL_START + i, dow + '\n' + dateLbl, S.colHead);
     });
     xlSet(ws, r, SCHEDULE_COL_TOTAL_H, 'TOTAL HOURS', S.colHead);
     xlSet(ws, r, SCHEDULE_COL_TOTAL_AFTER, 'TOTAL HOURS\nAFTER BREAK', S.colHead);
     rowHeights[r] = { hpt: 30 };
     r += 1;
 
-    SCHEDULE_SECTIONS.forEach(function (section) {
-      var employees = scheduleSectionEmployees(section.staffType);
-      if (!employees.length) return;
+    if (calendarModel && calendarModel.sections) {
+      calendarModel.sections.forEach(function (section) {
+        if (!section.rows || !section.rows.length) return;
+        for (var sc = 0; sc <= lastCol; sc += 1) {
+          xlSet(ws, r, sc, sc === 0 ? section.title : '', S.section);
+        }
+        xlMerge(merges, r, 0, r, lastCol);
+        rowHeights[r] = { hpt: 18 };
+        r += 1;
 
-      for (var sc = 0; sc <= lastCol; sc += 1) {
-        xlSet(ws, r, sc, sc === 0 ? section.title : '', S.section);
+        section.rows.forEach(function (row) {
+          xlSet(ws, r, 0, row.personName || 'UNASSIGNED', S.name);
+          xlSet(ws, r, 1, row.position || '', S.position);
+          (row.days || []).forEach(function (cell, di) {
+            var col = SCHEDULE_DAY_COL_START + di;
+            if (cell && cell.kind === 'work') {
+              xlSet(ws, r, col, cell.text || '', S.dayWork);
+            } else {
+              xlSet(ws, r, col, (cell && cell.text) || 'DAY-OFF', S.dayOff);
+            }
+          });
+          xlSetHours(ws, r, SCHEDULE_COL_TOTAL_H, row.totalHours || 0, S.total);
+          xlSetHours(ws, r, SCHEDULE_COL_TOTAL_AFTER, row.totalHoursAfter || 0, S.total);
+          rowHeights[r] = { hpt: 48 };
+          r += 1;
+        });
+
+        xlSet(ws, r, 0, 'TOTAL MANPOWER', S.manpowerLabel);
+        xlSet(ws, r, 1, '', S.manpowerLabel);
+        weekDays.forEach(function (_meta, di) {
+          var count = 0;
+          section.rows.forEach(function (row) {
+            var cell = row.days && row.days[di];
+            if (cell && (cell.kind === 'work' || cell.kind === 'rp2')) count += 1;
+          });
+          xlSet(ws, r, SCHEDULE_DAY_COL_START + di, count, S.manpowerVal);
+        });
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_H, '', S.manpowerVal);
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_AFTER, '', S.manpowerVal);
+        rowHeights[r] = { hpt: 16 };
+        r += 1;
+      });
+    } else {
+      SCHEDULE_SECTIONS.forEach(function (section) {
+        var employees = scheduleSectionEmployees(section.staffType);
+        if (!employees.length) return;
+
+        for (var sc = 0; sc <= lastCol; sc += 1) {
+          xlSet(ws, r, sc, sc === 0 ? section.title : '', S.section);
+        }
+        xlMerge(merges, r, 0, r, lastCol);
+        rowHeights[r] = { hpt: 18 };
+        r += 1;
+
+        employees.forEach(function (emp) {
+          var totalH = 0;
+          var totalAfter = 0;
+          xlSet(ws, r, 0, String(d().employeeDisplayName(emp)).toUpperCase(), S.name);
+          xlSet(ws, r, 1, schedulePositionLabel(emp), S.position);
+
+          weekDays.forEach(function (meta, di) {
+            var cell = scheduleDayCellForEmployee(emp, meta.label, snapshot);
+            var col = SCHEDULE_DAY_COL_START + di;
+            if (cell.kind === 'work') {
+              totalH += cell.hours || 0;
+              totalAfter += cell.hoursAfter || 0;
+              var style = Object.assign({}, S.dayWork);
+              if (cell.fill) style.fill = cell.fill;
+              xlSet(ws, r, col, cell.text, style);
+            } else {
+              xlSet(ws, r, col, cell.text, S.dayOff);
+            }
+          });
+
+          xlSetHours(ws, r, SCHEDULE_COL_TOTAL_H, totalH, S.total);
+          xlSetHours(ws, r, SCHEDULE_COL_TOTAL_AFTER, totalAfter, S.total);
+          rowHeights[r] = { hpt: 48 };
+          r += 1;
+        });
+
+        xlSet(ws, r, 0, 'TOTAL MANPOWER', S.manpowerLabel);
+        xlSet(ws, r, 1, '', S.manpowerLabel);
+        weekDays.forEach(function (meta, di) {
+          var count = 0;
+          employees.forEach(function (emp) {
+            var cell = scheduleDayCellForEmployee(emp, meta.label, snapshot);
+            if (cell.kind === 'work' || cell.kind === 'rp2') count += 1;
+          });
+          xlSet(ws, r, SCHEDULE_DAY_COL_START + di, count, S.manpowerVal);
+        });
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_H, '', S.manpowerVal);
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_AFTER, '', S.manpowerVal);
+        rowHeights[r] = { hpt: 16 };
+        r += 1;
+      });
+    }
+
+    /* Group order / potential at bottom — never include labor & sales. */
+    var groupRows =
+      calendarModel && calendarModel.groupOrder
+        ? calendarModel.groupOrder
+        : buildGroupOrderExportRows(weekDays, scheduleExportLocationOverride);
+    if (groupRows && groupRows.length) {
+      r += 1; /* spacer */
+      for (var gsc = 0; gsc <= lastCol; gsc += 1) {
+        xlSet(
+          ws,
+          r,
+          gsc,
+          gsc === 0 ? 'GROUP ORDER / POTENTIAL' : '',
+          S.section
+        );
       }
       xlMerge(merges, r, 0, r, lastCol);
       rowHeights[r] = { hpt: 18 };
       r += 1;
-
-      employees.forEach(function (emp) {
-        var totalH = 0;
-        var totalAfter = 0;
-        xlSet(ws, r, 0, String(d().employeeDisplayName(emp)).toUpperCase(), S.name);
-        xlSet(ws, r, 1, schedulePositionLabel(emp), S.position);
-
-        weekDays.forEach(function (meta, di) {
-          var cell = scheduleDayCellForEmployee(emp, meta.label, snapshot);
-          var col = SCHEDULE_DAY_COL_START + di;
-          if (cell.kind === 'work') {
-            totalH += cell.hours || 0;
-            totalAfter += cell.hoursAfter || 0;
-            var style = Object.assign({}, S.dayWork);
-            if (cell.fill) style.fill = cell.fill;
-            xlSet(ws, r, col, cell.text, style);
-          } else {
-            xlSet(ws, r, col, cell.text, S.dayOff);
-          }
+      groupRows.forEach(function (plat) {
+        xlSet(ws, r, 0, String(plat.label || plat.id || '').toUpperCase(), S.name);
+        xlSet(ws, r, 1, '', S.position);
+        (plat.days || []).forEach(function (val, di) {
+          xlSet(ws, r, SCHEDULE_DAY_COL_START + di, val == null || val === '' ? '0' : String(val), S.total);
         });
-
-        xlSetHours(ws, r, SCHEDULE_COL_TOTAL_H, totalH, S.total);
-        xlSetHours(ws, r, SCHEDULE_COL_TOTAL_AFTER, totalAfter, S.total);
-        rowHeights[r] = { hpt: 48 };
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_H, plat.weekTotal || '', S.total);
+        xlSet(ws, r, SCHEDULE_COL_TOTAL_AFTER, '', S.total);
+        rowHeights[r] = { hpt: 18 };
         r += 1;
       });
-
-      xlSet(ws, r, 0, 'TOTAL MANPOWER', S.manpowerLabel);
-      xlSet(ws, r, 1, '', S.manpowerLabel);
-      weekDays.forEach(function (meta, di) {
-        var count = 0;
-        employees.forEach(function (emp) {
-          var cell = scheduleDayCellForEmployee(emp, meta.label, snapshot);
-          if (cell.kind === 'work' || cell.kind === 'rp2') count += 1;
-        });
-        xlSet(ws, r, SCHEDULE_DAY_COL_START + di, count, S.manpowerVal);
-      });
-      xlSet(ws, r, SCHEDULE_COL_TOTAL_H, '', S.manpowerVal);
-      xlSet(ws, r, SCHEDULE_COL_TOTAL_AFTER, '', S.manpowerVal);
-      rowHeights[r] = { hpt: 16 };
-      r += 1;
-    });
+    }
 
     return xlFinalizeSheet(ws, merges, colWidths.map(function (w) {
       return { wch: w };
     }), null, rowHeights);
+  }
+
+  /** Fallback group-order rows when calendar export model is unavailable. */
+  function buildGroupOrderExportRows(weekDays, restaurantId) {
+    var platforms =
+      (d().GROUP_ORDER_POTENTIAL_PLATFORMS && d().GROUP_ORDER_POTENTIAL_PLATFORMS.slice()) || [
+        { id: 'sharebits', label: 'Sharebits' },
+        { id: 'doordash', label: 'DoorDash' },
+        { id: 'grubhub', label: 'Grubhub' },
+        { id: 'uber', label: 'Uber' },
+      ];
+    var display =
+      typeof d().displayGroupOrderPotentialCell === 'function'
+        ? d().displayGroupOrderPotentialCell
+        : null;
+    if (!display) return [];
+    var rid =
+      restaurantId
+        ? String(restaurantId)
+        : effectiveLocationFilter() === 'all'
+          ? 'rp-9'
+          : effectiveLocationFilter();
+    var weekMon = isoFromDate(payWeekBounds().start);
+    return platforms.map(function (plat) {
+      var weekSum = 0;
+      var weekHasNum = false;
+      var days = (weekDays || []).map(function (meta) {
+        var iso = meta && meta.iso ? String(meta.iso).slice(0, 10) : '';
+        var val = display(rid, weekMon, plat.id, iso);
+        var num = parseFloat(String(val).replace(/[$,\s]/g, ''));
+        if (Number.isFinite(num)) {
+          weekSum += num;
+          weekHasNum = true;
+        }
+        return val;
+      });
+      return {
+        id: plat.id,
+        label: plat.label,
+        days: days,
+        weekTotal: weekHasNum ? String(Math.round(weekSum * 100) / 100) : '',
+      };
+    });
   }
 
   /**
@@ -7515,8 +7666,8 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(weekMondayIso)) {
       return { ok: false, message: 'Invalid week' };
     }
-    var restaurantId =
-      opts.restaurantId === 'rp-8' || opts.restaurantId === 'rp-9' ? opts.restaurantId : null;
+    var restaurantId = opts.restaurantId ? String(opts.restaurantId) : null;
+    if (restaurantId === 'all') restaurantId = null;
 
     try {
       await ensureExportLibsLoaded({ xlsxOnly: true });
@@ -7541,7 +7692,7 @@
       invalidatePayWeekScheduleCache();
       invalidateFullReportSheetsCache();
 
-      var ws = buildScheduleWorksheet();
+      var ws = buildScheduleWorksheet({ matchCalendar: true });
       if (!ws) {
         return { ok: false, message: 'Could not build schedule sheet' };
       }

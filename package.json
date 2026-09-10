@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "env:lan-ip": "node scripts/print-lan-ip.js",
+    "test": "npm run test:schedule-v2",
+    "test:schedule-v2": "node scripts/test-schedule-sync-v2.js",
     "mobile": "npm run start --prefix mobile",
     "mobile:tunnel": "npm run start:tunnel --prefix mobile"
   },

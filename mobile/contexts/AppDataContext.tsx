@@ -17,8 +17,14 @@ import {
 import type { AssignmentStore } from '../lib/schedule/types';
 import { subscribeEmployees } from '../lib/employeesSync';
 import { subscribeStaffRequests } from '../lib/staffRequestsSync';
-import { readStoredTeamStateId } from '../lib/companySession';
+import { readStoredCompanyId, readStoredTeamStateId } from '../lib/companySession';
 import { subscribeTeamState, TEAM_STATE_SELF_ECHO_IGNORE_MS } from '../lib/teamStateSync';
+import {
+  backfillIfNeeded,
+  flushOutbox,
+  subscribeScheduleCells,
+  writeOnlyCells,
+} from '../lib/schedule/syncV2';
 import {
   hashScheduleBundle,
   SCHEDULE_CONTENT_GUARD_MS,
@@ -182,17 +188,28 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         }
         setEmployees(data.employees);
         setStaffRequests(data.staffRequests);
+        const cellsOnly = await writeOnlyCells().catch(() => false);
         setTeamState((prev) => {
           const remote = data.teamState;
           if (!remote) return null;
           if (!prev) return remote;
           return mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
-            protectLocalSchedule: shouldProtectLocalSchedule(
-              prev,
-              remote as Record<string, unknown>
-            ),
+            protectLocalSchedule:
+              cellsOnly ||
+              shouldProtectLocalSchedule(prev, remote as Record<string, unknown>),
           }) as HydrationResult['teamState'];
         });
+        /* Flip write-only + flush ops when cells schema is live. */
+        void (async () => {
+          try {
+            const companyId = await readStoredCompanyId();
+            if (!companyId || !supabase) return;
+            await backfillIfNeeded(supabase, companyId);
+            await flushOutbox(supabase);
+          } catch (v2Err) {
+            console.warn('schedule sync v2 hydrate', v2Err);
+          }
+        })();
         hydratedRef.current = true;
         lastHydrateAtRef.current = Date.now();
         /* One-time: copy week-extras VL/SL into employee leaveBalance (parity with web). */
@@ -290,12 +307,21 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       await applyTipTakehomeFromTeamState(partial);
       invalidateDishwasherTipsSliceCache();
       invalidateWeekExtrasSliceCache();
+      const cellsOnly = await writeOnlyCells();
       setTeamState((prev) =>
         mergeTeamStatePartial(prev, partial, {
-          protectLocalSchedule: shouldProtectLocalSchedule(prev, partial),
+          protectLocalSchedule:
+            cellsOnly || shouldProtectLocalSchedule(prev, partial),
         })
       );
       lastHydrateAtRef.current = Date.now();
+      if (cellsOnly) {
+        try {
+          await flushOutbox(supabase);
+        } catch (_fo) {
+          /* ignore */
+        }
+      }
     },
     [session?.user?.id, role, shouldProtectLocalSchedule]
   );
@@ -375,6 +401,26 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           }
         }
         scheduleTeamStateRemoteRefresh(fields);
+      });
+    })();
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, [session?.user?.id, realtimePaused, scheduleTeamStateRemoteRefresh]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    if (realtimePaused) return;
+    let cancelled = false;
+    let unsub: (() => void) | undefined;
+    void (async () => {
+      const companyId = await readStoredCompanyId();
+      if (!companyId || cancelled) return;
+      unsub = subscribeScheduleCells(supabase, companyId, () => {
+        void flushOutbox(supabase);
+        /* Tip/meta still via team_state; cell edits land via ops — soft-refresh tips only. */
+        scheduleTeamStateRemoteRefresh(['tip_payroll', 'updated_at']);
       });
     })();
     return () => {

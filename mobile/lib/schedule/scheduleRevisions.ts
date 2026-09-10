@@ -161,11 +161,17 @@ async function pruneScheduleRevisions(sb: SupabaseClient, teamStateId: string): 
   try {
     const res = await sb
       .from('team_state_schedule_revisions')
-      .select('id')
+      .select('id, source')
       .eq('team_state_id', teamStateId)
       .order('created_at', { ascending: false })
-      .range(SCHEDULE_REVISION_RETENTION, SCHEDULE_REVISION_RETENTION + 40);
-    const ids = (res.data || []).map((r) => r.id).filter(Boolean);
+      .range(SCHEDULE_REVISION_RETENTION, SCHEDULE_REVISION_RETENTION + 80);
+    const ids = (res.data || [])
+      .filter((r) => {
+        const src = String((r as { source?: string }).source || '');
+        return src !== 'manual' && src !== 'pre_revert';
+      })
+      .map((r) => r.id)
+      .filter(Boolean);
     if (!ids.length) return;
     await sb.from('team_state_schedule_revisions').delete().in('id', ids);
   } catch {

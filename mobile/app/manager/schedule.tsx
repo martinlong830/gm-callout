@@ -8,6 +8,7 @@ import {
   FlatList,
   InteractionManager,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -36,7 +37,7 @@ import {
   orderRestaurantsMainFirst,
   type EmployeeRow,
 } from '../../lib/employees';
-import { readStoredTeamStateId } from '../../lib/companySession';
+import { readStoredCompanyId, readStoredTeamStateId } from '../../lib/companySession';
 import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
 import { isAdminRole, isManagerLikeRole } from '../../lib/roles';
@@ -82,6 +83,7 @@ import {
   defaultTimesForDraftCell,
   deleteDraftSlotRow,
   draftSlotRowHasContent,
+  draftTimeSlotFor,
   formatBreakAnnotation,
   getScheduleAnchorMondayDate,
   getVisibleWeekDays,
@@ -92,6 +94,7 @@ import {
   namesForScheduleBorrowPersonPicker,
   SCHEDULE_BORROW_PERSON_VALUE,
   normalizeBreakAnnotationTime,
+  normalizeScheduleAssignment,
   normalizeSchedulePublishedMap,
   OFFICE_BREAK_TIME_PRESETS,
   OFFICE_DEFAULT_BREAK_TIME,
@@ -123,6 +126,19 @@ import {
   type CalendarCell,
 } from '../../lib/schedule/engine';
 import {
+  backfillIfNeeded,
+  enqueueOps,
+  ensureSlotKey,
+  flushOutbox,
+  flushOutboxFully,
+  opAddSlot,
+  opSetDayOff,
+  opSetTimes,
+  opSetWorker,
+  writeOnlyCells,
+  type ScheduleOp,
+} from '../../lib/schedule/syncV2';
+import {
   masterTemplateRowsForRole,
   normalizeScheduleTemplates,
   type NormalTemplate,
@@ -153,15 +169,18 @@ import {
   patchSlotOrderAfterDelete,
   patchSlotOrderInDraftSchedule,
   readSlotOrderByRestaurantForWeek,
+  readSlotOrderByWeek,
 } from '../../lib/schedule/slotOrder';
 import {
   getGroupOrderPotentialCell,
   GROUP_ORDER_POTENTIAL_PLATFORMS,
   patchGroupOrderPotentialInDraft,
+  readGroupOrderPotentialByWeek,
 } from '../../lib/schedule/groupOrderPotential';
 import {
   getScheduleNetSalesCell,
   patchScheduleNetSalesInDraft,
+  readScheduleNetSalesByWeek,
 } from '../../lib/schedule/scheduleNetSales';
 
 function formatScheduleLaborPay(amount: number): string {
@@ -388,6 +407,24 @@ export default function ManagerScheduleScreen() {
     /* Deep-link from publish notification — pull latest cloud schedule. */
     void refetch({ silent: true });
   }, [params.weekMondayIso, weekMeta, refetch]);
+
+  useEffect(() => {
+    if (!supabase || !isManagerLikeRole(role)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const companyId = await readStoredCompanyId();
+        if (!companyId || cancelled) return;
+        await backfillIfNeeded(supabase, companyId);
+        if (!cancelled) await flushOutbox(supabase);
+      } catch (err) {
+        console.warn('schedule sync v2 hydrate', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, role]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
@@ -631,7 +668,11 @@ export default function ManagerScheduleScreen() {
   }, []);
 
   const persistCloud = useCallback(
-    async (store: AssignmentStore, draftSchedule?: unknown) => {
+    async (
+      store: AssignmentStore,
+      draftSchedule?: unknown,
+      opts?: { forceBlobPush?: boolean }
+    ) => {
       if (!supabase || !isManagerLikeRole(role)) return;
       setSchedulePushInFlight(true);
       /* Delay saving chrome so fast saves do not re-render the whole schedule grid. */
@@ -670,18 +711,26 @@ export default function ManagerScheduleScreen() {
         }
         const draftToSave =
           draftSchedule !== undefined ? draftSchedule : pendingDraftRef.current;
-        const pushedAssignJson = JSON.stringify(toSave);
-        const pushedDraftJson =
-          draftToSave !== undefined ? JSON.stringify(draftToSave) : null;
+        const cellsOnly = opts?.forceBlobPush ? false : await writeOnlyCells();
         const payload: Record<string, unknown> = {
           id: teamStateId,
-          schedule_assignments: toSave,
         };
-        const fields = ['schedule_assignments'];
-        if (draftToSave !== undefined) {
-          payload.draft_schedule = draftToSave;
-          fields.push('draft_schedule');
+        const fields: string[] = [];
+        /* Schedule sync v2 write-only: cells/RPC are SoT — do not push legacy blobs. */
+        if (!cellsOnly) {
+          payload.schedule_assignments = toSave;
+          fields.push('schedule_assignments');
+          if (draftToSave !== undefined) {
+            payload.draft_schedule = draftToSave;
+            fields.push('draft_schedule');
+          }
+        } else if (!fields.length) {
+          /* Nothing blob-shaped to push; ops already flushed via syncV2. */
+          return;
         }
+        const pushedAssignJson = cellsOnly ? null : JSON.stringify(toSave);
+        const pushedDraftJson =
+          !cellsOnly && draftToSave !== undefined ? JSON.stringify(draftToSave) : null;
         const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
         let up = knownAt
           ? await supabase
@@ -894,20 +943,14 @@ export default function ManagerScheduleScreen() {
         template.weekPattern && typeof template.weekPattern === 'object'
           ? (template.weekPattern as Record<string, unknown>)
           : {};
-      Object.keys(pattern).forEach((key) => {
-        const parts = key.split('-');
-        if (parts.length !== 3) return;
-        const dayIndex = Number(parts[0]);
-        const roleIndex = Number(parts[1]);
-        const trIdx = Number(parts[2]);
-        if (!Number.isInteger(dayIndex) || !Number.isInteger(roleIndex) || !Number.isInteger(trIdx)) return;
-        if (dayIndex < 0 || dayIndex > 6 || roleIndex < 0 || roleIndex > 2 || trIdx < 0) return;
-        const shiftId = `shift-${weekIndex * 7 + dayIndex}-${roleIndex}-${trIdx}`;
-        nextStore[currentRestaurantId][shiftId] = JSON.parse(JSON.stringify(pattern[key]));
-      });
-      let nextDraft = draftScheduleRawRef.current ?? draftScheduleRaw;
       const weekStart = weekIndex * 7;
       const weekEnd = weekStart + 7;
+      /*
+       * Match web applyWeekPatternToRestaurantWeek:
+       * 1) clear this week (seed Unassigned so inheritance cannot leak)
+       * 2) then write the template pattern
+       * Never delete after writing — that wiped people to Unassigned.
+       */
       Object.keys(nextStore[currentRestaurantId]).forEach((shiftId) => {
         const match = shiftId.match(/^shift-(\d+)-\d+-\d+$/);
         const dayIndex = match ? Number(match[1]) : -1;
@@ -915,6 +958,7 @@ export default function ManagerScheduleScreen() {
           delete nextStore[currentRestaurantId][shiftId];
         }
       });
+      let nextDraft = draftScheduleRawRef.current ?? draftScheduleRaw;
       if (template.draftSchedule && typeof template.draftSchedule === 'object') {
         const templateDraft = template.draftSchedule as Record<string, unknown>;
         if (templateDraft.Bartender || templateDraft.Kitchen || templateDraft.Server) {
@@ -960,12 +1004,102 @@ export default function ManagerScheduleScreen() {
         });
         nextDraft = patchDraftScheduleForWeek(nextDraft, weekIndex, currentRestaurantId, layers);
       }
+      /* Seed Unassigned for every slot in this week from the (possibly updated) draft. */
+      (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIndex) => {
+        const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
+        let n = slotCountForRole(draft, roleKey);
+        Object.keys(pattern).forEach((k) => {
+          const parts = k.split('-');
+          if (Number(parts[1]) !== roleIndex) return;
+          const tr = Number(parts[2]);
+          if (Number.isInteger(tr) && tr + 1 > n) n = tr + 1;
+        });
+        for (let trIdx = 0; trIdx < n; trIdx += 1) {
+          for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+            const shiftId = `shift-${weekStart + dayIndex}-${roleIndex}-${trIdx}`;
+            nextStore[currentRestaurantId][shiftId] = { workers: ['Unassigned'] };
+          }
+        }
+      });
+      Object.keys(pattern).forEach((key) => {
+        const parts = key.split('-');
+        if (parts.length !== 3) return;
+        const dayIndex = Number(parts[0]);
+        const roleIndex = Number(parts[1]);
+        const trIdx = Number(parts[2]);
+        if (!Number.isInteger(dayIndex) || !Number.isInteger(roleIndex) || !Number.isInteger(trIdx))
+          return;
+        if (dayIndex < 0 || dayIndex > 6 || roleIndex < 0 || roleIndex > 2 || trIdx < 0) return;
+        const shiftId = `shift-${weekStart + dayIndex}-${roleIndex}-${trIdx}`;
+        nextStore[currentRestaurantId][shiftId] = JSON.parse(JSON.stringify(pattern[key]));
+      });
       pushUndoSnapshot();
       suppressHydrateUndoClearRef.current = true;
       setAssignmentStore(nextStore);
       setRolledDraftRaw(nextDraft);
       applyLocalScheduleAssignments(nextStore, nextDraft);
       queuePersist(nextStore, nextDraft);
+      /* Sync v2 cells so cloud SoT matches the applied template. */
+      if (supabase) {
+        void (async () => {
+          try {
+            const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+            const ops: ScheduleOp[] = [];
+            const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
+            const rs = nextStore[currentRestaurantId] || {};
+            for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
+              const roleKey = roles[roleIdx];
+              const n = slotCountForRole(draft, roleKey);
+              for (let trIdx = 0; trIdx < n; trIdx += 1) {
+                const slotKey = await ensureSlotKey(currentRestaurantId, roleKey, trIdx);
+                ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
+                for (let di = 0; di < 7; di += 1) {
+                  const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
+                  if (!dayIso) continue;
+                  const wk = WEEKDAY_KEYS[di];
+                  const tr = draftTimeSlotFor(draft, roleKey, wk, trIdx);
+                  const shiftId = `shift-${weekStart + di}-${roleIdx}-${trIdx}`;
+                  const raw = rs[shiftId];
+                  const entry = normalizeScheduleAssignment(raw);
+                  const rawOwner =
+                    raw && typeof raw === 'object' && !Array.isArray(raw)
+                      ? String((raw as { rowOwner?: string }).rowOwner || '').trim()
+                      : '';
+                  const worker =
+                    (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
+                    (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
+                  if (!tr?.start || !tr?.end) {
+                    ops.push(
+                      opSetDayOff(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                    );
+                  } else {
+                    ops.push(
+                      opSetTimes(
+                        currentRestaurantId,
+                        dayIso,
+                        roleKey,
+                        slotKey,
+                        tr.start,
+                        tr.end,
+                        entry.break || null
+                      )
+                    );
+                    ops.push(
+                      opSetWorker(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                    );
+                  }
+                }
+              }
+            }
+            for (let i = 0; i < ops.length; i += 40) {
+              await enqueueOps(ops.slice(i, i + 40));
+            }
+            await flushOutboxFully(supabase);
+          } catch (tplV2Err) {
+            console.warn('template apply cell ops', tplV2Err);
+          }
+        })();
+      }
       Alert.alert(t('schedule.templates'), `${template.name} applied.`);
     },
     [
@@ -979,6 +1113,8 @@ export default function ManagerScheduleScreen() {
       t,
       visibleDays,
       weekIndex,
+      weekMeta,
+      supabase,
     ]
   );
 
@@ -1015,7 +1151,12 @@ export default function ManagerScheduleScreen() {
   const hardRevertToRevision = useCallback(
     (revisionId: string) => {
       if (!supabase || !isManagerLikeRole(role) || !scheduleEditable) return;
-      Alert.alert(t('schedule.hardRevertTitle'), t('schedule.hardRevertBody'), [
+      const range = selectedWeekRange;
+      Alert.alert(
+        t('schedule.hardRevertTitle'),
+        t('schedule.hardRevertBody', { range }) ||
+          `Hard revert only this store’s schedule for ${range}? Other weeks and other restaurants stay unchanged.`,
+        [
         { text: t('common.cancel'), style: 'cancel' },
         {
           text: t('schedule.hardRevertConfirm'),
@@ -1029,6 +1170,10 @@ export default function ManagerScheduleScreen() {
                 const teamStateId = await readStoredTeamStateId();
                 const curAssign = assignmentStoreRef.current;
                 const curDraft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+                const rid = currentRestaurantId;
+                const wi = weekIndex;
+                const weekStart = wi * 7;
+                const weekEnd = weekStart + 7;
                 await insertScheduleRevision(sb, {
                   teamStateId,
                   userId: session?.user?.id,
@@ -1044,8 +1189,138 @@ export default function ManagerScheduleScreen() {
                   Alert.alert(t('schedule.historyFailed'), fetched.error || t('schedule.couldNotSave'));
                   return;
                 }
-                const nextAssign = (fetched.row.schedule_assignments || {}) as AssignmentStore;
-                const nextDraft = fetched.row.draft_schedule ?? {};
+                const revAssignRoot = (fetched.row.schedule_assignments || {}) as AssignmentStore;
+                const revDraftRoot = fetched.row.draft_schedule ?? {};
+                if (!revAssignRoot || typeof revAssignRoot !== 'object') {
+                  Alert.alert(
+                    t('schedule.historyFailed'),
+                    t('schedule.hardRevertBadRevision')
+                  );
+                  return;
+                }
+                const revRs =
+                  revAssignRoot[rid] && typeof revAssignRoot[rid] === 'object'
+                    ? revAssignRoot[rid]
+                    : {};
+                /* Scope: current restaurant + week only. */
+                const nextAssign = JSON.parse(JSON.stringify(curAssign)) as AssignmentStore;
+                if (!nextAssign[rid]) nextAssign[rid] = {};
+                Object.keys(nextAssign[rid]).forEach((shiftId) => {
+                  const match = shiftId.match(/^shift-(\d+)-\d+-\d+$/);
+                  const dayIndex = match ? Number(match[1]) : -1;
+                  if (dayIndex >= weekStart && dayIndex < weekEnd) {
+                    delete nextAssign[rid][shiftId];
+                  }
+                });
+                let nextDraft: unknown = curDraft;
+                const revByWeek =
+                  revDraftRoot &&
+                  typeof revDraftRoot === 'object' &&
+                  (revDraftRoot as { byWeek?: unknown }).byWeek &&
+                  typeof (revDraftRoot as { byWeek?: unknown }).byWeek === 'object'
+                    ? ((revDraftRoot as { byWeek: Record<string, unknown> }).byWeek)
+                    : null;
+                const weekEntry = revByWeek ? revByWeek[String(wi)] : null;
+                const hasDraftLayers = (obj: unknown) =>
+                  !!(
+                    obj &&
+                    typeof obj === 'object' &&
+                    (Array.isArray((obj as { Bartender?: unknown }).Bartender) ||
+                      Array.isArray((obj as { Kitchen?: unknown }).Kitchen) ||
+                      Array.isArray((obj as { Server?: unknown }).Server))
+                  );
+                let revLayers: ReturnType<typeof loadDraftFromTeamState> | null = null;
+                if (weekEntry && typeof weekEntry === 'object') {
+                  const perRest = restaurants.some((r) =>
+                    hasDraftLayers((weekEntry as Record<string, unknown>)[r.id])
+                  );
+                  if (perRest) {
+                    const per = (weekEntry as Record<string, unknown>)[rid];
+                    if (hasDraftLayers(per)) {
+                      revLayers = loadDraftFromTeamState(
+                        { v: 2, byWeek: { [String(wi)]: { [rid]: per } } },
+                        wi,
+                        rid
+                      );
+                    }
+                  } else if (hasDraftLayers(weekEntry)) {
+                    revLayers = loadDraftFromTeamState(
+                      { v: 2, byWeek: { [String(wi)]: weekEntry } },
+                      wi,
+                      rid
+                    );
+                  }
+                }
+                if (revLayers) {
+                  nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, revLayers);
+                }
+                /* Seed Unassigned, then overlay revision week keys. */
+                (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIndex) => {
+                  const draft = loadDraftFromTeamState(nextDraft, wi, rid);
+                  const n = slotCountForRole(draft, roleKey);
+                  for (let trIdx = 0; trIdx < n; trIdx += 1) {
+                    for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+                      const shiftId = `shift-${weekStart + dayIndex}-${roleIndex}-${trIdx}`;
+                      nextAssign[rid][shiftId] = { workers: ['Unassigned'] };
+                    }
+                  }
+                });
+                Object.keys(revRs).forEach((shiftId) => {
+                  const match = shiftId.match(/^shift-(\d+)-\d+-\d+$/);
+                  const dayIndex = match ? Number(match[1]) : -1;
+                  if (dayIndex < weekStart || dayIndex >= weekEnd) return;
+                  nextAssign[rid][shiftId] = JSON.parse(JSON.stringify(revRs[shiftId]));
+                });
+                /* Group order / net sales / slot order: this Monday + restaurant only. */
+                const mon = weekMeta[weekStart]?.iso
+                  ? weekStartMondayIsoFromDayIso(weekMeta[weekStart].iso)
+                  : selectedWeekMonday;
+                if (mon) {
+                  const liveBase: Record<string, unknown> =
+                    nextDraft && typeof nextDraft === 'object'
+                      ? (JSON.parse(JSON.stringify(nextDraft)) as Record<string, unknown>)
+                      : { v: 2, byWeek: {} };
+                  const revBase =
+                    revDraftRoot && typeof revDraftRoot === 'object'
+                      ? (revDraftRoot as Record<string, unknown>)
+                      : {};
+                  const liveGroup = readGroupOrderPotentialByWeek(liveBase);
+                  const revGroup = readGroupOrderPotentialByWeek(revBase);
+                  if (!liveGroup[mon]) liveGroup[mon] = {};
+                  if (revGroup[mon]?.[rid]) {
+                    liveGroup[mon][rid] = JSON.parse(JSON.stringify(revGroup[mon][rid]));
+                  } else {
+                    delete liveGroup[mon][rid];
+                    if (!Object.keys(liveGroup[mon]).length) delete liveGroup[mon];
+                  }
+                  if (Object.keys(liveGroup).length) liveBase.groupOrderPotentialByWeek = liveGroup;
+                  else delete liveBase.groupOrderPotentialByWeek;
+
+                  const liveSales = readScheduleNetSalesByWeek(liveBase);
+                  const revSales = readScheduleNetSalesByWeek(revBase);
+                  if (!liveSales[mon]) liveSales[mon] = {};
+                  if (revSales[mon]?.[rid]) {
+                    liveSales[mon][rid] = JSON.parse(JSON.stringify(revSales[mon][rid]));
+                  } else {
+                    delete liveSales[mon][rid];
+                    if (!Object.keys(liveSales[mon]).length) delete liveSales[mon];
+                  }
+                  if (Object.keys(liveSales).length) liveBase.scheduleNetSalesByWeek = liveSales;
+                  else delete liveBase.scheduleNetSalesByWeek;
+
+                  const liveSlot = readSlotOrderByWeek(liveBase);
+                  const revSlot = readSlotOrderByWeek(revBase);
+                  if (!liveSlot[mon]) liveSlot[mon] = {};
+                  if (revSlot[mon]?.[rid]) {
+                    liveSlot[mon][rid] = JSON.parse(JSON.stringify(revSlot[mon][rid]));
+                  } else {
+                    delete liveSlot[mon][rid];
+                    if (!Object.keys(liveSlot[mon]).length) delete liveSlot[mon];
+                  }
+                  if (Object.keys(liveSlot).length) liveBase.slotOrderByWeek = liveSlot;
+                  else delete liveBase.slotOrderByWeek;
+                  nextDraft = liveBase;
+                }
                 pushUndoSnapshot();
                 suppressHydrateUndoClearRef.current = true;
                 setAssignmentStore(nextAssign);
@@ -1054,8 +1329,60 @@ export default function ManagerScheduleScreen() {
                 pendingStoreRef.current = nextAssign;
                 pendingDraftRef.current = nextDraft;
                 localEditPendingRef.current = true;
-                /* Match web: restore assignments + draft only; leave published weeks as-is. */
-                await persistCloud(nextAssign, nextDraft);
+                /* Force blob push even in write-only, and upsert ISO cells (never delete). */
+                await persistCloud(nextAssign, nextDraft, { forceBlobPush: true });
+                try {
+                  const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+                  const ops: ScheduleOp[] = [];
+                  const rs = nextAssign[rid] || {};
+                  const draft = loadDraftFromTeamState(nextDraft, wi, rid);
+                  for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
+                    const roleKey = roles[roleIdx];
+                    const n = slotCountForRole(draft, roleKey);
+                    for (let trIdx = 0; trIdx < n; trIdx += 1) {
+                      const slotKey = await ensureSlotKey(rid, roleKey, trIdx);
+                      ops.push(opAddSlot(rid, roleKey, slotKey, trIdx));
+                      for (let di = 0; di < 7; di += 1) {
+                        const dayIso = weekMeta[wi * 7 + di]?.iso;
+                        if (!dayIso) continue;
+                        const wk = WEEKDAY_KEYS[di];
+                        const tr = draftTimeSlotFor(draft, roleKey, wk, trIdx);
+                        const shiftId = `shift-${wi * 7 + di}-${roleIdx}-${trIdx}`;
+                        const raw = rs[shiftId];
+                        const entry = normalizeScheduleAssignment(raw);
+                        const rawOwner =
+                          raw && typeof raw === 'object' && !Array.isArray(raw)
+                            ? String((raw as { rowOwner?: string }).rowOwner || '').trim()
+                            : '';
+                        const worker =
+                          (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
+                          (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
+                        if (!tr?.start || !tr?.end) {
+                          ops.push(opSetDayOff(rid, dayIso, roleKey, slotKey, worker || null));
+                        } else {
+                          ops.push(
+                            opSetTimes(
+                              rid,
+                              dayIso,
+                              roleKey,
+                              slotKey,
+                              tr.start,
+                              tr.end,
+                              entry.break || null
+                            )
+                          );
+                          ops.push(opSetWorker(rid, dayIso, roleKey, slotKey, worker || null));
+                        }
+                      }
+                    }
+                  }
+                  for (let i = 0; i < ops.length; i += 40) {
+                    await enqueueOps(ops.slice(i, i + 40));
+                  }
+                  await flushOutboxFully(sb);
+                } catch (cellErr) {
+                  console.warn('hard revert cell ops', cellErr);
+                }
                 await insertScheduleRevision(sb, {
                   teamStateId,
                   userId: session?.user?.id,
@@ -1063,10 +1390,15 @@ export default function ManagerScheduleScreen() {
                   assignments: nextAssign,
                   draft: nextDraft,
                   published: teamState?.schedule_published ?? null,
+                  label: `${formatScheduleRevisionLabel('hard_revert')} · ${range}`,
                   dedupe: false,
                 });
                 setHistoryOpen(false);
-                Alert.alert(t('schedule.hardRevertDone'), t('schedule.hardRevertDoneBody'));
+                Alert.alert(
+                  t('schedule.hardRevertDone'),
+                  t('schedule.hardRevertDoneBody', { range }) ||
+                    `Restored this store’s schedule for ${range} from history.`
+                );
                 await refetch({ silent: true });
               } finally {
                 setHistoryBusyId(null);
@@ -1074,7 +1406,8 @@ export default function ManagerScheduleScreen() {
             })();
           },
         },
-      ]);
+      ]
+      );
     },
     [
       role,
@@ -1086,8 +1419,77 @@ export default function ManagerScheduleScreen() {
       applyLocalScheduleAssignments,
       pushUndoSnapshot,
       persistCloud,
+      restaurants,
+      weekMeta,
+      weekIndex,
+      currentRestaurantId,
+      selectedWeekRange,
+      selectedWeekMonday,
+      refetch,
     ]
   );
+
+  const saveManualSavePoint = useCallback(() => {
+    if (!supabase || !isManagerLikeRole(role) || !scheduleEditable) return;
+    const runSave = (name?: string) => {
+      void (async () => {
+        const sb = supabase;
+        if (!sb) return;
+        setHistoryBusyId('save-point');
+        try {
+          const teamStateId = await readStoredTeamStateId();
+          const assignments = assignmentStoreRef.current;
+          const draft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+          await persistCloud(assignments, draft, { forceBlobPush: true });
+          await flushOutbox(sb);
+          const label = String(name || '').trim() || formatScheduleRevisionLabel('manual');
+          const res = await insertScheduleRevision(sb, {
+            teamStateId,
+            userId: session?.user?.id,
+            source: 'manual',
+            assignments,
+            draft,
+            published: teamState?.schedule_published ?? null,
+            label,
+            dedupe: false,
+          });
+          if (!res.ok) {
+            Alert.alert(t('schedule.savePointFailed'), res.error || t('schedule.couldNotSave'));
+            return;
+          }
+          Alert.alert(t('schedule.savePoint'), t('schedule.savePointDone'));
+          await openScheduleHistory();
+        } finally {
+          setHistoryBusyId(null);
+        }
+      })();
+    };
+    if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+      Alert.prompt(
+        t('schedule.savePoint'),
+        t('schedule.savePointPrompt'),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          { text: t('schedule.savePoint'), onPress: (name?: string) => runSave(name) },
+        ],
+        'plain-text'
+      );
+      return;
+    }
+    Alert.alert(t('schedule.savePoint'), t('schedule.savePointPrompt'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('schedule.savePoint'), onPress: () => runSave() },
+    ]);
+  }, [
+    role,
+    scheduleEditable,
+    t,
+    session?.user?.id,
+    teamState?.draft_schedule,
+    teamState?.schedule_published,
+    persistCloud,
+    openScheduleHistory,
+  ]);
 
   useEffect(() => {
     const pendingDraft = pendingDraftRef.current;
@@ -1578,6 +1980,8 @@ export default function ManagerScheduleScreen() {
     captureScheduleScroll();
     const start = target.shift?.start || '10:00';
     const end = target.shift?.end || '18:00';
+    const owner =
+      (target.shift?.workers || []).find((w) => w && w !== 'Unassigned') || null;
     const ok = persistSlotEdit({
       role: target.role,
       trIdx: target.trIdx,
@@ -1591,6 +1995,17 @@ export default function ManagerScheduleScreen() {
     if (!ok) {
       Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
       return;
+    }
+    const dayIso = dayIsoForShiftDayStr(target.dayStr);
+    if (dayIso && supabase) {
+      void (async () => {
+        const slotKey = await ensureSlotKey(currentRestaurantId, target.role, target.trIdx);
+        await enqueueOps([
+          opAddSlot(currentRestaurantId, target.role, slotKey, target.trIdx),
+          opSetDayOff(currentRestaurantId, dayIso, target.role, slotKey, owner),
+        ]);
+        await flushOutbox(supabase);
+      })();
     }
     restoreScheduleScroll();
   }
@@ -1707,6 +2122,50 @@ export default function ManagerScheduleScreen() {
       if (!ok) {
         Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
         return;
+      }
+      if (dayIso && supabase) {
+        void (async () => {
+          const slotKey = await ensureSlotKey(
+            currentRestaurantId,
+            shiftEditor.role,
+            shiftEditor.trIdx
+          );
+          const ops = [opAddSlot(currentRestaurantId, shiftEditor.role, slotKey, shiftEditor.trIdx)];
+          if (editDayOff) {
+            ops.push(
+              opSetDayOff(
+                currentRestaurantId,
+                dayIso,
+                shiftEditor.role,
+                slotKey,
+                leavePerson || null
+              )
+            );
+          } else {
+            ops.push(
+              opSetTimes(
+                currentRestaurantId,
+                dayIso,
+                shiftEditor.role,
+                slotKey,
+                start,
+                end,
+                breakText
+              )
+            );
+            ops.push(
+              opSetWorker(
+                currentRestaurantId,
+                dayIso,
+                shiftEditor.role,
+                slotKey,
+                editWorker === 'Unassigned' ? null : editWorker
+              )
+            );
+          }
+          await enqueueOps(ops);
+          await flushOutbox(supabase);
+        })();
       }
       if (leavePerson && dayIso && supabase) {
         const leaveEmp =
@@ -2693,6 +3152,17 @@ export default function ManagerScheduleScreen() {
           <Pressable style={[styles.modalPanel, styles.modalPanelTall]} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>{t('schedule.history')}</Text>
             <Text style={styles.modalSub}>{t('schedule.historyHint')}</Text>
+            {scheduleEditable ? (
+              <Pressable
+                style={[styles.publishBtn, { marginBottom: 12 }, historyBusyId === 'save-point' && styles.publishBtnDisabled]}
+                disabled={!!historyBusyId}
+                onPress={saveManualSavePoint}
+              >
+                <Text style={styles.publishBtnText}>
+                  {historyBusyId === 'save-point' ? t('common.publishing') : t('schedule.savePoint')}
+                </Text>
+              </Pressable>
+            ) : null}
             {historyLoading ? (
               <ActivityIndicator style={{ marginTop: 20 }} />
             ) : !historyRows.length ? (
@@ -3137,19 +3607,23 @@ const PersonColRow = memo(function PersonColRow({
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
-            {employmentStatusLabel ? (
-              <Text style={styles.employmentStatusBadge} numberOfLines={1}>
-                {employmentStatusLabel}
-              </Text>
-            ) : null}
-            {awayPrimaryLabel ? (
-              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
-                {t('schedule.primaryStore', { store: awayPrimaryLabel })}
-              </Text>
-            ) : borrowedFromLabel ? (
-              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
-                {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
-              </Text>
+            {employmentStatusLabel || awayPrimaryLabel || borrowedFromLabel ? (
+              <View style={styles.personMetaRow}>
+                {employmentStatusLabel ? (
+                  <Text style={styles.employmentStatusBadge} numberOfLines={1}>
+                    {employmentStatusLabel}
+                  </Text>
+                ) : null}
+                {awayPrimaryLabel ? (
+                  <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                    {t('schedule.primaryStore', { store: awayPrimaryLabel })}
+                  </Text>
+                ) : borrowedFromLabel ? (
+                  <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                    {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
           </Pressable>
         ) : (
@@ -3157,19 +3631,23 @@ const PersonColRow = memo(function PersonColRow({
             <Text style={styles.personSelectText} numberOfLines={1} ellipsizeMode="tail">
               {label}
             </Text>
-            {employmentStatusLabel ? (
-              <Text style={styles.employmentStatusBadge} numberOfLines={1}>
-                {employmentStatusLabel}
-              </Text>
-            ) : null}
-            {awayPrimaryLabel ? (
-              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
-                {t('schedule.primaryStore', { store: awayPrimaryLabel })}
-              </Text>
-            ) : borrowedFromLabel ? (
-              <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
-                {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
-              </Text>
+            {employmentStatusLabel || awayPrimaryLabel || borrowedFromLabel ? (
+              <View style={styles.personMetaRow}>
+                {employmentStatusLabel ? (
+                  <Text style={styles.employmentStatusBadge} numberOfLines={1}>
+                    {employmentStatusLabel}
+                  </Text>
+                ) : null}
+                {awayPrimaryLabel ? (
+                  <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                    {t('schedule.primaryStore', { store: awayPrimaryLabel })}
+                  </Text>
+                ) : borrowedFromLabel ? (
+                  <Text style={styles.awayPrimaryBadge} numberOfLines={1}>
+                    {t('schedule.borrowedFrom', { store: borrowedFromLabel })}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
           </View>
         )}
@@ -3569,9 +4047,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   personSelectText: { fontSize: 12, fontWeight: '600', color: '#0f172a' },
-  employmentStatusBadge: {
-    alignSelf: 'flex-start',
+  personMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+    gap: 4,
     marginTop: 3,
+    minWidth: 0,
+  },
+  employmentStatusBadge: {
+    flexShrink: 0,
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 4,
@@ -3584,10 +4069,18 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   awayPrimaryBadge: {
-    marginTop: 2,
+    flexShrink: 1,
+    minWidth: 0,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(249, 115, 22, 0.4)',
+    backgroundColor: 'rgba(253, 186, 116, 0.35)',
+    color: '#9a3412',
     fontSize: 10,
-    fontWeight: '600',
-    color: '#b45309',
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
   reorderCol: {
     justifyContent: 'space-between',

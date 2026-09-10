@@ -256,7 +256,7 @@ window.GM_I18N_ES = {
   'schedule.publishHint': 'Publica el horario de esta semana ({range}) y avisa a los empleados',
   'schedule.downloadWeek': 'Descargar',
   'schedule.downloadWeekTitle':
-    'Descargar el horario de esta semana en Excel (mismo formato que la pestaña Schedule del reporte completo)',
+    'Descargar el horario en pantalla de esta semana en Excel (incluye pedido grupal / potencial, sin labor y ventas)',
   'schedule.downloadingWeek': 'Descargando…',
   'schedule.downloadWeekDone': 'Horario descargado para {range}.',
   'schedule.downloadWeekFailed': 'No se pudo descargar el horario de esta semana.',
@@ -288,7 +288,7 @@ window.GM_I18N_ES = {
   'employee.pastShifts': 'Turnos pasados',
   'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
-    'Versiones guardadas (autoguardado ~cada 15 minutos si el horario cambió, más publicar/revertir). La reversión fuerte restaura asignaciones y horarios para todos.',
+    'Versiones guardadas (autoguardado ~cada 15 minutos si el horario cambió, más publicar/revertir). Usa «Punto de guardado» para un checkpoint con nombre. La reversión fuerte restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
   'schedule.historyEmpty': 'Aún no hay versiones. Sigue editando: los puntos de control aparecen tras una pausa.',
   'schedule.historyFailed': 'No se pudo cargar el historial del horario.',
   'schedule.historySourcePublish': 'Publicar',
@@ -296,10 +296,29 @@ window.GM_I18N_ES = {
   'schedule.historySourceBeforeRevert': 'Antes de revertir',
   'schedule.historySourceCheckpoint': 'Punto de control',
   'schedule.historySourceAutoSave': 'Autoguardado',
+  'schedule.savePoint': 'Punto de guardado',
+  'schedule.savePointPrompt':
+    'Nombre de este punto de guardado (opcional). Déjalo vacío para la etiqueta predeterminada.',
+  'schedule.savePointDone':
+    'Punto de guardado almacenado. Puedes revertir a él más tarde desde Historial.',
+  'schedule.savePointFailed': 'No se pudo guardar el checkpoint. Inténtalo de nuevo.',
+  'schedule.savePointManagersOnly': 'Solo gerentes y administradores pueden guardar un checkpoint.',
   'schedule.hardRevert': 'Revertir',
   'schedule.hardRevertConfirm':
-    '¿Revertir el horario en vivo a esta versión para todos los gerentes? Primero se guarda una copia de seguridad del horario actual.',
-  'schedule.hardRevertDone': 'Horario restaurado desde el historial.',
+    '¿Revertir solo el horario de este local para {range}? Otras semanas y otros restaurantes no cambian. Primero se guarda una copia de seguridad.',
+  'schedule.hardRevertConfirmScoped':
+    '¿Revertir solo el horario de este local para {range}? Otras semanas y otros restaurantes no cambian. Primero se guarda una copia de seguridad.',
+  'schedule.hardRevertDone': 'Horario de este local restaurado para {range} desde el historial.',
+  'schedule.hardRevertDoneScoped':
+    'Horario de este local restaurado para {range} desde el historial.',
+  'schedule.hardRevertBadRevision':
+    'Esta entrada del historial no tiene datos de horario. No se cambió nada.',
+  'schedule.hardRevertCloudFailed':
+    'Restaurado en este dispositivo, pero falló la sincronización en la nube. Mantén esta pestaña abierta e intenta Guardar en la nube.',
+  'schedule.hardRevertCellsLag':
+    'Horario restaurado. La sincronización de celdas aún continúa — actualiza en un momento si otros ven datos viejos.',
+  'schedule.hardRevertNoStoreWeek':
+    'Esta entrada del historial no tiene horario para el local actual. No se cambió nada.',
   'schedule.syncConflict':
     'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe a todos) o carga la versión en la nube (descarta tus cambios sin guardar en este dispositivo).',
   'schedule.syncConflictKeepMine': 'Conservar mi horario',

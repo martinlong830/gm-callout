@@ -222,17 +222,26 @@ const EN: Dict = {
   'employee.pastShifts': 'Past shifts',
   'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
-    'Saved schedule versions (edits and publishes). Hard revert restores assignments and shift times for everyone.',
+    'Saved schedule versions (edits and publishes). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
   'schedule.historyEmpty':
     'No saved versions yet. Edits and publishes are snapshotted after they sync.',
   'schedule.historyFailed': 'Could not load schedule history',
+  'schedule.savePoint': 'Save point',
+  'schedule.savePointPrompt':
+    'Name this save point (optional). Leave blank for the default label.',
+  'schedule.savePointDone':
+    'Save point stored. You can hard-revert to it later from History.',
+  'schedule.savePointFailed': 'Could not save checkpoint. Try again.',
   'schedule.hardRevert': 'Hard revert',
   'schedule.hardRevertTitle': 'Hard revert schedule?',
   'schedule.hardRevertBody':
-    'Hard revert the live schedule to this version for all managers? A safety snapshot of the current schedule is saved first.',
+    'Hard revert only this store’s schedule for {range}? Other weeks and other restaurants stay unchanged. A safety snapshot is saved first.',
   'schedule.hardRevertConfirm': 'Hard revert',
   'schedule.hardRevertDone': 'Schedule restored',
-  'schedule.hardRevertDoneBody': 'Schedule restored from history.',
+  'schedule.hardRevertDoneBody':
+    'Restored this store’s schedule for {range} from history.',
+  'schedule.hardRevertBadRevision':
+    'This history entry has no schedule data. Nothing was changed.',
   'schedule.templates': 'Templates',
   'schedule.normalTemplate': 'Normal template',
   'schedule.masterTemplate': 'Master Template',
@@ -980,17 +989,26 @@ const ES: Dict = {
   'employee.pastShifts': 'Turnos pasados',
   'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
-    'Versiones guardadas (ediciones y publicaciones). La reversión restaura asignaciones y horarios para todos.',
+    'Versiones guardadas (ediciones y publicaciones). Usa «Punto de guardado» para un checkpoint con nombre. La reversión restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
   'schedule.historyEmpty':
     'Aún no hay versiones. Las ediciones y publicaciones se guardan después de sincronizar.',
   'schedule.historyFailed': 'No se pudo cargar el historial',
+  'schedule.savePoint': 'Punto de guardado',
+  'schedule.savePointPrompt':
+    'Nombre de este punto de guardado (opcional). Déjalo vacío para la etiqueta predeterminada.',
+  'schedule.savePointDone':
+    'Punto de guardado almacenado. Puedes revertir a él más tarde desde Historial.',
+  'schedule.savePointFailed': 'No se pudo guardar el checkpoint. Inténtalo de nuevo.',
   'schedule.hardRevert': 'Revertir',
   'schedule.hardRevertTitle': '¿Revertir el horario?',
   'schedule.hardRevertBody':
-    '¿Revertir el horario en vivo a esta versión para todos los gerentes? Primero se guarda una copia de seguridad del horario actual.',
+    '¿Revertir solo el horario de este local para {range}? Otras semanas y otros restaurantes no cambian. Primero se guarda una copia de seguridad.',
   'schedule.hardRevertConfirm': 'Revertir',
   'schedule.hardRevertDone': 'Horario restaurado',
-  'schedule.hardRevertDoneBody': 'Horario restaurado desde el historial.',
+  'schedule.hardRevertDoneBody':
+    'Horario de este local restaurado para {range} desde el historial.',
+  'schedule.hardRevertBadRevision':
+    'Esta entrada del historial no tiene datos de horario. No se cambió nada.',
   'schedule.templates': 'Plantillas',
   'schedule.normalTemplate': 'Plantilla normal',
   'schedule.masterTemplate': 'Plantilla maestra',
