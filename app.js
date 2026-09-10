@@ -5946,6 +5946,8 @@
       .then(function (res) {
         if (res && res.ok && !res.empty) {
           scheduleLastCellFlushAt = Date.now();
+          /* Cloud now has our write — stop blocking peer/self poll apply. */
+          scheduleLocalAuthorityUntil = 0;
           void broadcastScheduleCellsChanged();
         }
         if (res && res.ok === false) {
@@ -6055,9 +6057,9 @@
       ) {
         return;
       }
-      if (currentScreen !== 1) return;
       if (!scheduleSyncV2WriteOnly()) return;
-      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+      /* Every authed role/device polls the same cell SoT (~2s). Rebuild UI only on Schedule. */
+      void pollVisibleScheduleCellsFromCloud({ rebuild: currentScreen === 1 });
     }, SCHEDULE_CELLS_POLL_MS);
   }
 
@@ -6105,7 +6107,7 @@
     }).then(function () {
       return flushScheduleV2Outbox();
     }).then(function (res) {
-      armScheduleLocalAuthority(12000);
+      scheduleLocalAuthorityUntil = 0;
       return res || { ok: true };
     });
   }
@@ -6180,7 +6182,7 @@
       });
     }
     return drainOutbox().then(function (res) {
-      armScheduleLocalAuthority(12000);
+      scheduleLocalAuthorityUntil = 0;
       void broadcastScheduleCellsChanged();
       return res || { ok: true };
     });
@@ -6267,8 +6269,7 @@
     }).then(function () {
       return flushScheduleV2Outbox();
     }).then(function (res) {
-      /* Hold peer/cell apply so corrected names cannot snap back to poisoned cloud. */
-      armScheduleLocalAuthority(45000);
+      scheduleLocalAuthorityUntil = 0;
       return res || { ok: true };
     });
   }
@@ -6375,69 +6376,11 @@
   }
 
   /**
-   * Cells written while Bartender/Kitchen roleIdx were swapped left FOH names on
-   * Kitchen keys and BOH names on Bartender keys. Swap those worker fields back.
-   * Returns number of day-slot pairs repaired.
+   * DISABLED — never auto-rewrite cloud names. Role-index fix + cell SoT make this
+   * unnecessary; running it reshuffled schedules without a user edit.
    */
-  function repairCrossRoleNameSwapInAssignmentPatch(patch) {
-    if (!patch || typeof patch !== 'object') return 0;
-    var kitchenIdx = roleIdxForDraftRole('Kitchen');
-    var bartenderIdx = roleIdxForDraftRole('Bartender');
-    if (kitchenIdx < 0 || bartenderIdx < 0) return 0;
-    var repaired = 0;
-    Object.keys(patch).forEach(function (rid) {
-      var cells = patch[rid];
-      if (!cells || typeof cells !== 'object') return;
-      var pairs = Object.create(null);
-      Object.keys(cells).forEach(function (shiftId) {
-        var p = parseShiftIdParts(shiftId);
-        if (!p) return;
-        if (p.roleIdx !== kitchenIdx && p.roleIdx !== bartenderIdx) return;
-        var gk = String(p.globalDayIdx) + '|' + String(p.trIdx);
-        if (!pairs[gk]) pairs[gk] = {};
-        if (p.roleIdx === kitchenIdx) pairs[gk].kitchenId = shiftId;
-        else pairs[gk].bartenderId = shiftId;
-      });
-      Object.keys(pairs).forEach(function (gk) {
-        var pair = pairs[gk];
-        if (!pair.kitchenId || !pair.bartenderId) return;
-        var ek = cells[pair.kitchenId];
-        var eb = cells[pair.bartenderId];
-        var nk = patchEntryPrimaryName(ek);
-        var nb = patchEntryPrimaryName(eb);
-        if (!nk && !nb) return;
-        var kitchenHasFoh = workerNameOnFohRoster(nk);
-        var bartenderHasBoh = workerNameOnBohRoster(nb);
-        var kitchenHasBoh = workerNameOnBohRoster(nk);
-        var bartenderHasFoh = workerNameOnFohRoster(nb);
-        if (kitchenHasFoh && bartenderHasBoh) {
-          var tmpWorkers = ek.workers;
-          var tmpOwner = ek.rowOwner;
-          ek.workers = eb.workers;
-          ek.rowOwner = eb.rowOwner;
-          eb.workers = tmpWorkers;
-          eb.rowOwner = tmpOwner;
-          repaired += 1;
-          return;
-        }
-        if (kitchenHasFoh && !bartenderHasFoh && (!nb || nb === 'Unassigned')) {
-          eb.workers = ek.workers ? ek.workers.slice() : [nk];
-          eb.rowOwner = nk;
-          ek.workers = ['Unassigned'];
-          delete ek.rowOwner;
-          repaired += 1;
-          return;
-        }
-        if (bartenderHasBoh && !kitchenHasBoh && (!nk || nk === 'Unassigned')) {
-          ek.workers = eb.workers ? eb.workers.slice() : [nb];
-          ek.rowOwner = nb;
-          eb.workers = ['Unassigned'];
-          delete eb.rowOwner;
-          repaired += 1;
-        }
-      });
-    });
-    return repaired;
+  function repairCrossRoleNameSwapInAssignmentPatch(_patch) {
+    return 0;
   }
 
   function applyScheduleCellsCacheToLocalStore(opts) {
@@ -6458,7 +6401,6 @@
       roleToIdx[ROLE_DEFS[ri].role] = ri;
     }
     var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
-    var repairedPairs = repairCrossRoleNameSwapInAssignmentPatch(patch);
     var rids = Object.keys(patch);
     if (!rids.length) {
       /* Slot deactivated with no remaining cells — still shrink local draft rows. */
@@ -6480,7 +6422,6 @@
     beginTeamStateRemoteApply();
     var changed = false;
     try {
-      /* User may have edited after poll started — never clobber that local SoT. */
       if (scheduleCellRemoteApplyBlocked() && !opts.force) {
         return false;
       }
@@ -6511,9 +6452,9 @@
         saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
       }
       /*
-       * Calendar rows are built from draft times (draftTimeSlotFor), not assignment
-       * timeLabel. Write-only mode ignores team_state draft blobs — so peers only see
-       * new/edited shifts if we project ISO cells back into the local draft grid.
+       * Cloud cells are SoT — always project into the draft grid. Do not keep local
+       * "interactive" times over cloud (that caused forever-forked device views).
+       * Pending edits are already protected by scheduleCellRemoteApplyBlocked (outbox).
        */
       var draftsByWeekRid = Object.create(null);
       rids.forEach(function (rid) {
@@ -6543,35 +6484,9 @@
           }
           var cell = cells[shiftId];
           if (cell.dayOff || !cell.start || !cell.end) {
-            /*
-             * Never clear a local timed draft cell while this tab still has un-acked
-             * interactive edits (Mark Ong 9–6 snap-back).
-             */
-            if (
-              row[di] &&
-              row[di][0] &&
-              row[di][1] &&
-              hasInteractiveScheduleEditsThisSession()
-            ) {
-              /* keep local */
-            } else {
-              row[di] = null;
-            }
+            row[di] = null;
           } else {
-            var ns = String(cell.start);
-            var ne = String(cell.end);
-            if (
-              row[di] &&
-              row[di][0] &&
-              row[di][1] &&
-              hasInteractiveScheduleEditsThisSession() &&
-              (normalizeHHMM(row[di][0]) !== normalizeHHMM(ns) ||
-                normalizeHHMM(row[di][1]) !== normalizeHHMM(ne))
-            ) {
-              /* keep local draft times until cell flush acks */
-            } else {
-              row[di] = [ns, ne];
-            }
+            row[di] = [String(cell.start), String(cell.end)];
           }
           changed = true;
         });
@@ -6621,17 +6536,17 @@
       var fromIso = dayIsoForScheduleWeekDay(0, 0);
       var toIso = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
       /*
-       * Apply cloud cells first (correct role indices). Only then push local dirty
-       * draft/assignments — pushing first re-uploaded FOH↔BOH shuffled names.
+       * Cloud cells are the schedule. Apply them first. Only flush ops that were
+       * enqueued from live edits this session — never re-upload recovered dirty
+       * localStorage over the shared store (that rolled peers back).
        */
       if (fromIso && toIso) {
         await v2.fetchSlots(window.gmSupabase, cid);
         await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
       }
-      applyScheduleCellsCacheToLocalStore({ rebuild: true });
+      applyScheduleCellsCacheToLocalStore({ rebuild: true, force: true });
       reconcileLocalScheduleToActiveSlots({});
-      if (draftScheduleDirty || scheduleAssignmentsDirty) {
-        markScheduleInteractiveEdit();
+      if (hasInteractiveScheduleEditsThisSession()) {
         enqueueScheduleV2OpsFromLocalStores({});
         await flushScheduleV2Outbox();
         var drain = 0;
@@ -6643,6 +6558,12 @@
           drain += 1;
         }
       } else {
+        /* Stale dirty flags must not fight cloud — take cloud as SoT. */
+        if (draftScheduleDirty || scheduleAssignmentsDirty) {
+          draftScheduleDirty = false;
+          scheduleAssignmentsDirty = false;
+          persistTeamStateDirtyFlags();
+        }
         await flushScheduleV2Outbox();
       }
       startScheduleCellsPoll();
@@ -6822,25 +6743,33 @@
     /* A real edit means this tab is SoT — stop sticky "Load cloud" from discarding day-offs. */
     if (schedulePreferCloudOnConflict) setPreferCloudOnConflict(false);
     /*
-     * Block cell poll/realtime from painting stale cloud over this edit while the
-     * outbox flushes (past-week Mark Ong snap-back).
+     * Brief gate only until ops hit the outbox (fetchSlots → enqueue). After flush,
+     * cloud is SoT again — long authority windows caused snap-back.
      */
-    armScheduleLocalAuthority(15000);
+    armScheduleLocalAuthority(8000);
   }
 
   /**
-   * True when remote ISO cells must not overwrite the local calendar (in-flight edits).
+   * True when remote ISO cells must not overwrite the local calendar.
+   *
+   * HARD RULE (write-only): cloud cells are the only SoT. Block peer apply only while
+   * this device still has unsent/in-flight ops — never after a successful flush, and
+   * never via long "authority" or interactive timers (those caused snap-back when they
+   * expired against a different cloud snapshot).
    */
   function scheduleCellRemoteApplyBlocked() {
-    if (scheduleLocalAuthorityActive()) return true;
-    if (scheduleDayOffPushGuardActive()) return true;
+    if (teamStateForcePushActive) return true;
+    if (scheduleV2FlushPromise) return true;
     var v2 = gmScheduleV2();
     if (v2 && typeof v2.getOutbox === 'function') {
       var box = v2.getOutbox();
       if (box && box.length) return true;
     }
-    /* Write-only: protect until cell ops ack — blob push alone must not open the door. */
-    if (hasInteractiveScheduleEditsThisSession()) return true;
+    /*
+     * Brief gate while building ops (fetchSlots → enqueue). Cleared as soon as ops
+     * land in the outbox; not a multi-minute authority window.
+     */
+    if (scheduleLocalAuthorityActive()) return true;
     return false;
   }
 
@@ -9866,9 +9795,20 @@
     row = alignRemoteTeamStateScheduleBundleToLocalWindow(row);
 
     /*
-     * Dual-write: apply schedule blobs for fast peer transport, then overlay cells
-     * (hydrate/poll) so ISO cells win when present. Do not strip blobs here — that
-     * left peers blank whenever cell realtime lagged.
+     * WRITE-ONLY HARD RULE: schedule_assignments / draft_schedule blobs are NOT SoT.
+     * Applying them reshuffles people/times vs ISO cells. Strip before any merge so
+     * tip/meta/publish still flow while every device shares one cell schedule.
+     */
+    if (scheduleSyncV2WriteOnly()) {
+      row = Object.assign({}, row, {
+        schedule_assignments: null,
+        draft_schedule: null,
+      });
+    }
+
+    /*
+     * Dual-write (legacy): apply schedule blobs for fast peer transport, then overlay
+     * cells. Write-only path above skips blob schedule entirely.
      */
 
     if (row.updated_at != null) {
@@ -19419,8 +19359,8 @@
         /* Brief guard so a concurrent peer poll cannot paint over a failed mid-push. */
         armScheduleLocalAuthority(8000);
       } else {
-        /* Hold local SoT until our cell upserts propagate and peers stop replaying old cells. */
-        armScheduleLocalAuthority(45000);
+        /* Cloud now matches what we pushed — reopen poll so this device stays aligned. */
+        scheduleLocalAuthorityUntil = 0;
         syncScheduleConfirmedFromLiveLocal();
         var liveHash = liveScheduleBundleHash();
         if (liveHash) {

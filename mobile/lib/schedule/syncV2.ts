@@ -167,11 +167,36 @@ export function opReorderSlots(
 export async function ensureSlotKey(
   restaurantId: string,
   role: string,
-  trIdx: number
+  trIdx: number,
+  knownSlots?: {
+    restaurant_id?: string;
+    role?: string;
+    slot_key?: string;
+    sort_order?: number;
+    active?: boolean;
+  }[]
 ): Promise<string> {
   const map = await readJson<Record<string, string>>(SLOT_MAP_KEY, {});
   const k = `${restaurantId}|${role}|${trIdx}`;
   if (map[k]) return map[k];
+  /* Prefer an existing server slot so mobile does not fork UUIDs vs web. */
+  const candidates = (knownSlots || [])
+    .filter(
+      (s) =>
+        s &&
+        s.active !== false &&
+        String(s.restaurant_id || '') === String(restaurantId) &&
+        String(s.role || '') === String(role) &&
+        Number(s.sort_order) === Number(trIdx) &&
+        s.slot_key
+    )
+    .map((s) => String(s.slot_key))
+    .sort();
+  if (candidates.length) {
+    map[k] = candidates[0];
+    await writeJson(SLOT_MAP_KEY, map);
+    return candidates[0];
+  }
   const sk = uuid();
   map[k] = sk;
   await writeJson(SLOT_MAP_KEY, map);

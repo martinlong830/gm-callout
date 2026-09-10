@@ -162,7 +162,7 @@ function emptyState() {
     var cell = fakeCache[sync.cellKey('rp-9', '2026-08-31', 'Bartender', slot)];
     var shiftId = 'shift-' + gdi + '-' + roleMap.Bartender + '-0';
     assert(cell && cell.day_iso === '2026-08-31', 'projection source stays ISO');
-    assert(shiftId === 'shift-0-0-0', 'projection maps ISO Monday to display index only');
+    assert(shiftId === 'shift-0-1-0', 'Bartender is roleIdx 1 (Kitchen=0) — never swap FOH/BOH');
   } else {
     assert(false, 'projectCellsToAssignmentPatch exported');
   }
@@ -179,6 +179,80 @@ function emptyState() {
   assert(dayOff.op_type === 'set_day_off' && dayOff.payload.worker_name === 'EUGENE', 'set_day_off keeps worker_name');
   assert(worker.op_type === 'set_worker' && worker.payload.worker_name === 'EUGENE', 'set_worker payload');
   assert(!!times.op_id && times.op_id !== dayOff.op_id, 'each op has unique op_id');
+})();
+
+// 12) Stable slot identity: prefer existing map binding over lex-smallest UUID
+(function () {
+  var a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  var b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  sync.setSlotMap({ 'rp-9|Kitchen|0': b });
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Kitchen', slot_key: a, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Kitchen', slot_key: b, sort_order: 0, active: true },
+  ]);
+  assert(sync.getSlotMap()['rp-9|Kitchen|0'] === b, 'keeps bound slot_key instead of lex reshuffle');
+  sync.setSlotMap({});
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Kitchen', slot_key: a, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Kitchen', slot_key: b, sort_order: 0, active: true },
+  ]);
+  assert(sync.getSlotMap()['rp-9|Kitchen|0'] === a, 'cold start uses lex-smallest only when unbound');
+})();
+
+// 13) Multi-device same view: identical cells + slots → identical shift projection
+(function () {
+  var slotK = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  var slotB = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  var rows = [
+    {
+      restaurant_id: 'rp-9',
+      role: 'Kitchen',
+      slot_key: slotK,
+      day_iso: '2026-09-08',
+      start_hhmm: '09:00',
+      end_hhmm: '17:00',
+      worker_name: 'MARK ONG',
+      rev: 3,
+      deleted: false,
+    },
+    {
+      restaurant_id: 'rp-9',
+      role: 'Bartender',
+      slot_key: slotB,
+      day_iso: '2026-09-08',
+      start_hhmm: '10:00',
+      end_hhmm: '18:00',
+      worker_name: 'EUGENE',
+      rev: 4,
+      deleted: false,
+    },
+  ];
+  var slots = [
+    { restaurant_id: 'rp-9', role: 'Kitchen', slot_key: slotK, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: slotB, sort_order: 0, active: true },
+  ];
+  function projectAsDevice() {
+    sync.replaceActiveSlots(slots);
+    sync.mergeRemoteCells(rows);
+    return sync.projectCellsToAssignmentPatch(
+      { '2026-09-08': 7 },
+      { Kitchen: 0, Bartender: 1, Server: 2 }
+    );
+  }
+  var deviceA = projectAsDevice();
+  var deviceB = projectAsDevice();
+  var aKitchen = deviceA['rp-9'] && deviceA['rp-9']['shift-7-0-0'];
+  var aBar = deviceA['rp-9'] && deviceA['rp-9']['shift-7-1-0'];
+  var bKitchen = deviceB['rp-9'] && deviceB['rp-9']['shift-7-0-0'];
+  var bBar = deviceB['rp-9'] && deviceB['rp-9']['shift-7-1-0'];
+  assert(aKitchen && aKitchen.rowOwner === 'MARK ONG', 'device A Kitchen keeps MARK ONG on roleIdx 0');
+  assert(aBar && aBar.rowOwner === 'EUGENE', 'device A Bartender keeps EUGENE on roleIdx 1');
+  assert(
+    JSON.stringify(aKitchen) === JSON.stringify(bKitchen) &&
+      JSON.stringify(aBar) === JSON.stringify(bBar),
+    'two devices project the same schedule view'
+  );
+  assert(aKitchen.start === '09:00' && aBar.start === '10:00', 'times stay on the correct role rows');
 })();
 
 if (failed) {

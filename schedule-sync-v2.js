@@ -13,6 +13,31 @@
   var LAST_REV_KEY = 'gm-callout-schedule-last-rev-v1';
   var DEVICE_KEY = 'gm-callout-schedule-device-id-v1';
   var WRITE_ONLY_LS_KEY = 'gm-schedule-sync-v2-write-only';
+  /** In-memory fallback when localStorage is missing (Node tests). */
+  var memStore = Object.create(null);
+
+  function storageGet(key) {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) {
+        return localStorage.getItem(key);
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+    return Object.prototype.hasOwnProperty.call(memStore, key) ? memStore[key] : null;
+  }
+
+  function storageSet(key, val) {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) {
+        localStorage.setItem(key, val);
+        return;
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+    memStore[key] = val;
+  }
 
   function uuid() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -39,7 +64,7 @@
       return !!root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY;
     }
     try {
-      var raw = localStorage.getItem(WRITE_ONLY_LS_KEY);
+      var raw = storageGet(WRITE_ONLY_LS_KEY);
       if (raw === '0' || raw === 'false') return false;
       if (raw === '1' || raw === 'true') return true;
     } catch (_e) {
@@ -51,7 +76,7 @@
   function setWriteOnlyCells(enabled) {
     root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = !!enabled;
     try {
-      localStorage.setItem(WRITE_ONLY_LS_KEY, enabled ? '1' : '0');
+      storageSet(WRITE_ONLY_LS_KEY, enabled ? '1' : '0');
     } catch (_e) {
       /* ignore */
     }
@@ -59,7 +84,7 @@
 
   function readJson(key, fallback) {
     try {
-      var raw = localStorage.getItem(key);
+      var raw = storageGet(key);
       if (!raw) return fallback;
       var o = JSON.parse(raw);
       return o == null ? fallback : o;
@@ -70,7 +95,7 @@
 
   function writeJson(key, val) {
     try {
-      localStorage.setItem(key, JSON.stringify(val));
+      storageSet(key, JSON.stringify(val));
     } catch (_e) {
       /* ignore */
     }
@@ -79,14 +104,14 @@
   function deviceId() {
     var id = '';
     try {
-      id = localStorage.getItem(DEVICE_KEY) || '';
+      id = storageGet(DEVICE_KEY) || '';
     } catch (_e) {
       id = '';
     }
     if (!id) {
       id = uuid();
       try {
-        localStorage.setItem(DEVICE_KEY, id);
+        storageSet(DEVICE_KEY, id);
       } catch (_e2) {
         /* ignore */
       }
@@ -512,11 +537,24 @@
     pruneCellsForInactiveSlots();
   }
 
+  /**
+   * Pick canonical slot_key for restaurant|role|sort_order.
+   * Prefer an already-bound local map key so devices never reshuffle rows when
+   * duplicate/forked UUIDs exist; only fall back to lex-smallest for cold start.
+   */
+  function pickStableSlotKey(mapKey, candidates, preferMap) {
+    var list = (candidates || []).slice().filter(Boolean);
+    if (!list.length) return null;
+    list.sort();
+    var prev = preferMap && preferMap[mapKey];
+    if (prev && list.indexOf(String(prev)) >= 0) return String(prev);
+    return list[0];
+  }
+
   function mergeRemoteSlots(rows) {
     if (!rows || !rows.length) return;
     var slots = getSlotCache();
     var map = getSlotMap();
-    /* Group by restaurant|role|sort_order — pick stable canonical slot_key (lexicographically smallest). */
     var bySort = {};
     rows.forEach(function (row) {
       if (!row) return;
@@ -535,8 +573,8 @@
       bySort[mk].push(String(row.slot_key));
     });
     Object.keys(bySort).forEach(function (mk) {
-      var list = bySort[mk].slice().sort();
-      map[mk] = list[0];
+      var chosen = pickStableSlotKey(mk, bySort[mk], map);
+      if (chosen) map[mk] = chosen;
     });
     setSlotCache(slots);
     setSlotMap(map);
@@ -547,6 +585,7 @@
    * Removes deactivated slots from map/cache so peers drop deleted rows.
    */
   function replaceActiveSlots(rows) {
+    var prevMap = getSlotMap();
     var nextSlots = {};
     var nextMap = {};
     var bySort = {};
@@ -566,8 +605,8 @@
       bySort[mk].push(String(row.slot_key));
     });
     Object.keys(bySort).forEach(function (mk) {
-      var list = bySort[mk].slice().sort();
-      nextMap[mk] = list[0];
+      var chosen = pickStableSlotKey(mk, bySort[mk], prevMap);
+      if (chosen) nextMap[mk] = chosen;
     });
     setSlotCache(nextSlots);
     setSlotMap(nextMap);

@@ -1099,11 +1099,25 @@ export default function ManagerScheduleScreen() {
             const ops: ScheduleOp[] = [];
             const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
             const rs = nextStore[currentRestaurantId] || {};
+            const companyId = (await readStoredCompanyId()) || '';
+            const slotsRes = companyId ? await fetchSlots(supabase, companyId) : { data: [] };
+            const knownSlots = (slotsRes.data || []) as {
+              restaurant_id?: string;
+              role?: string;
+              slot_key?: string;
+              sort_order?: number;
+              active?: boolean;
+            }[];
             for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
               const roleKey = roles[roleIdx];
               const n = slotCountForRole(draft, roleKey);
               for (let trIdx = 0; trIdx < n; trIdx += 1) {
-                const slotKey = await ensureSlotKey(currentRestaurantId, roleKey, trIdx);
+                const slotKey = await ensureSlotKey(
+                  currentRestaurantId,
+                  roleKey,
+                  trIdx,
+                  knownSlots
+                );
                 ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
                 for (let di = 0; di < 7; di += 1) {
                   const dayIso = weekMeta[weekIndex * 7 + di]?.iso;

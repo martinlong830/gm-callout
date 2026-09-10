@@ -53,6 +53,15 @@ import {
   getEmployeeBorrowedRestaurantSync,
   restaurantShortLabel as borrowRestaurantShortLabel,
 } from '../../lib/timecards/weekBorrow';
+import { supabase } from '../../lib/supabase';
+import { readStoredCompanyId } from '../../lib/companySession';
+import {
+  backfillIfNeeded,
+  fetchCellsRange,
+  fetchSlots,
+  projectCellsOntoLocalStores,
+  writeOnlyCells,
+} from '../../lib/schedule/syncV2';
 
 const CELL_MIN = 158;
 const PERSON_COL = 118;
@@ -212,15 +221,92 @@ export default function EmployeeScheduleScreen() {
 
   const weekPublished = isScheduleWeekIndexPublished(publishedMap, weekMeta, weekIndex);
 
-  /** Derive store + rolled draft — avoid useEffect + setState layout thrash on every teamState tick. */
+  const [cellAssign, setCellAssign] = useState<AssignmentStore | null>(null);
+  const [cellDraft, setCellDraft] = useState<unknown>(null);
+
+  /** Same ISO cell SoT as managers — poll every 2s so employee view cannot drift. */
+  useEffect(() => {
+    if (!supabase) return;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const pullCells = async () => {
+      try {
+        if (!supabase) return;
+        const companyId = await readStoredCompanyId();
+        if (!companyId || cancelled) return;
+        await backfillIfNeeded(supabase, companyId);
+        if (cancelled) return;
+        const cellsOnly = await writeOnlyCells();
+        if (!cellsOnly || cancelled) return;
+        const fromIso = weekMeta[weekIndex * 7]?.iso;
+        const toIso = weekMeta[weekIndex * 7 + 6]?.iso;
+        if (!fromIso || !toIso) return;
+        const [cellsRes, slotsRes] = await Promise.all([
+          fetchCellsRange(supabase, companyId, fromIso, toIso),
+          fetchSlots(supabase, companyId),
+        ]);
+        if (cancelled || cellsRes.error || slotsRes.error) return;
+        const base = hydrateScheduleAssignmentsFromTeamState(
+          teamState?.schedule_assignments,
+          allRestaurants,
+          teamState?.draft_schedule
+        );
+        const projected = projectCellsOntoLocalStores({
+          cells: (cellsRes.data || []) as Record<string, unknown>[],
+          slots: (slotsRes.data || []) as {
+            restaurant_id?: string;
+            role?: string;
+            slot_key?: string;
+            sort_order?: number;
+          }[],
+          weekMeta,
+          liveAssign: base.store,
+          liveDraft: base.draftSchedule ?? teamState?.draft_schedule ?? {},
+        });
+        if (cancelled) return;
+        setCellAssign(projected.assign);
+        setCellDraft(projected.draft);
+      } catch (err) {
+        console.warn('employee schedule cell poll', err);
+      }
+    };
+
+    void pullCells();
+    pollTimer = setInterval(() => {
+      if (!cancelled) void pullCells();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [
+    supabase,
+    weekMeta,
+    weekIndex,
+    teamState?.schedule_assignments,
+    teamState?.draft_schedule,
+    allRestaurants,
+  ]);
+
+  /** Prefer cell projection; fall back to blob hydrate only before first cell fetch. */
   const hydrated = useMemo(
     () =>
-      hydrateScheduleAssignmentsFromTeamState(
-        teamState?.schedule_assignments,
-        allRestaurants,
-        teamState?.draft_schedule
-      ),
-    [teamState?.schedule_assignments, teamState?.draft_schedule, allRestaurants]
+      cellAssign
+        ? { store: cellAssign, draftSchedule: cellDraft }
+        : hydrateScheduleAssignmentsFromTeamState(
+            teamState?.schedule_assignments,
+            allRestaurants,
+            teamState?.draft_schedule
+          ),
+    [
+      cellAssign,
+      cellDraft,
+      teamState?.schedule_assignments,
+      teamState?.draft_schedule,
+      allRestaurants,
+    ]
   );
   const assignmentStore = hydrated.store;
   const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
