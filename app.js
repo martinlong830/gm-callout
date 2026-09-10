@@ -6090,8 +6090,12 @@
     scheduleCellsPollInFlight = true;
     try {
       scheduleSlotsPollTick += 1;
+      var localNeedsSlots =
+        !localWeekHasTimedDraft(targetWi) || scheduleWeekIsDayOffShellOnly(targetWi);
       var needSlots =
         !!opts.forceSlots ||
+        !!opts.replaceTrusted ||
+        localNeedsSlots ||
         scheduleSlotsPollTick === 1 ||
         scheduleSlotsPollTick % SCHEDULE_SLOTS_POLL_EVERY_N === 0;
       var slotsPromise = needSlots
@@ -6107,16 +6111,39 @@
       var cellsRes = pair[1];
       if (slotsRes && slotsRes.ok === false) return false;
       if (cellsRes && cellsRes.ok === false) return false;
-      return applyScheduleCellsCacheToLocalStore({
+      var fetchRows = (cellsRes && cellsRes.rows) || [];
+      var cloudTimedVisible = countTimedCellsInFetchRows(fetchRows, null, fromIso, toIso);
+      var wantTrusted =
+        !!opts.replaceTrusted ||
+        !!opts.forceDayOffReplace ||
+        scheduleVisibleWeekNeedsTrustedCloudReplace(targetWi, cloudTimedVisible);
+      var applied = applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
-        force: !!opts.force,
-        /* Week nav / soft poll: only upsert timed cells — never wipe to day-off. */
-        upsertTimedOnly: opts.upsertTimedOnly !== false && !opts.replaceTrusted,
-        replaceWeekIndex: opts.replaceTrusted ? targetWi : undefined,
-        replaceTrusted: !!opts.replaceTrusted,
+        force: !!opts.force || wantTrusted,
+        /*
+         * Soft poll for incremental edits. Escalate to trusted week replace when this
+         * device is on an empty/DAY-OFF shell (or sparse draft) and cloud is dense —
+         * otherwise peers never converge.
+         */
+        upsertTimedOnly: !wantTrusted && opts.upsertTimedOnly !== false,
+        replaceWeekIndex: wantTrusted ? targetWi : undefined,
+        replaceTrusted: wantTrusted,
         forceDayOffReplace: !!opts.forceDayOffReplace,
         allowEmptyReplace: !!opts.allowEmptyReplace,
+        minCloudTimed: 8,
       });
+      if (applied && wantTrusted && currentScreen === 1) {
+        paintVisibleScheduleWeekFast({
+          weekIndex: targetWi,
+          forcePaint: true,
+          fast: true,
+          forceInitial: true,
+          allowEmptyPaint: cloudTimedVisible <= 0,
+        });
+        markScheduleAuthoritativePaintReady();
+        scheduleDeferredScheduleChrome(targetWi);
+      }
+      return applied;
     } catch (_poll) {
       return false;
     } finally {
@@ -6692,18 +6719,42 @@
     var cloudTimed = countTimedCellsInPatchWeek(patch, weekIndex);
     var localTimed = countLocalTimedDraftWeek(weekIndex);
     /*
-     * Trusted replace (Refresh / peer hard-revert): still refuse an empty/incomplete
-     * cloud projection — that wiped staffed weeks to "No shifts" then refilled (flicker).
+     * Trusted replace must be dense enough to be the shared week — a single timed
+     * projection used to wipe peers to DAY-OFF / Unassigned while soft polls could
+     * never rebuild the draft.
      */
     if (opts.replaceTrusted) {
-      if (cloudTimed > 0) return true;
-      return localTimed <= 0;
+      if (cloudTimed <= 0) return localTimed <= 0;
+      if (localTimed <= 0) {
+        /* Empty/day-off local: require a real staffed cloud week, not 1–2 cells. */
+        return cloudTimed >= Math.max(8, Number(opts.minCloudTimed) || 8);
+      }
+      var minKeepTrusted = Math.max(4, Math.floor(localTimed * 0.5));
+      return cloudTimed >= minKeepTrusted;
     }
     if (localTimed <= 0) return cloudTimed > 0 || !!opts.allowEmptyReplace;
     if (cloudTimed <= 0) return false;
     /* Cloud must carry a meaningful share of local timed cells before wipe/replace. */
     var minKeep = Math.max(4, Math.floor(localTimed * 0.5));
     return cloudTimed >= minKeep;
+  }
+
+  /**
+   * Visible week looks like an empty / all-DAY-OFF shell — soft upsert alone cannot
+   * rebuild draft rows, so peers stay desynced until a trusted replace.
+   */
+  function scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimedCount) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    var cloudTimed = Number(cloudTimedCount) || 0;
+    if (cloudTimed < 8) return false;
+    if (!localWeekHasTimedDraft(wi)) return true;
+    if (scheduleWeekIsDayOffShellOnly(wi)) return true;
+    var localTimed = countLocalTimedDraftWeek(wi);
+    /* Local draft is sparse vs cloud — take the dense cloud week. */
+    if (localTimed > 0 && cloudTimed >= Math.max(8, Math.floor(localTimed * 1.25))) {
+      return true;
+    }
+    return false;
   }
 
   function applyScheduleCellsCacheToLocalStore(opts) {
@@ -6842,17 +6893,15 @@
           }
           var prev = store[rid][shiftId];
           /*
-           * Soft upsert: do not replace a real local name with Unassigned from a
+           * Soft upsert only: do not replace a real local name with Unassigned from a
            * partial cloud cell — that made names blink while scrolling weeks.
-           */
-          /*
-           * Never flash Unassigned over a staffed local name — soft polls / partial
-           * cloud cells were wiping names then restoring them half a second later.
+           * Trusted week replace must take cloud names/Unassigned/day-offs as SoT so
+           * peers converge.
            */
           var incomingUnassigned =
             !entry.rowOwner &&
             (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned');
-          if (prev && incomingUnassigned) {
+          if (upsertTimedOnly && prev && incomingUnassigned) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
@@ -7006,8 +7055,11 @@
     scheduleLastAppliedFingerprint = fp;
     if (!changed) return false;
     if (opts.rebuild !== false && currentScreen === 1) {
+      var trustedPaint = !!opts.replaceTrusted || Object.keys(replaceWeeks).length > 0;
       coalesceVisibleSchedulePaint({
         weekIndex: scheduleCalendarWeekIndex,
+        forceInitial: trustedPaint,
+        trustedReplace: trustedPaint,
       });
     }
     return true;
@@ -7158,15 +7210,16 @@
       var timedForPaint =
         cloudTimedThisStore > 0 ? cloudTimedThisStore : cloudTimedVisible;
       /*
-       * Visible week: trusted replace when cloud has times. Soft-only upsert left the
-       * grid stuck on DAY-OFF until the user changed weeks (draft never rebuilt).
+       * Dense cloud + empty/shell local → trusted replace. Sparse cloud stays soft
+       * so we do not wipe a good local week to DAY-OFF.
        */
-      if (timedForPaint > 0) {
+      if (scheduleVisibleWeekNeedsTrustedCloudReplace(wi, timedForPaint)) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: wi,
+          minCloudTimed: 8,
         });
       } else {
         applyScheduleCellsCacheToLocalStore({
@@ -7185,6 +7238,7 @@
             force: true,
             replaceTrusted: true,
             replaceWeekIndex: wi,
+            minCloudTimed: 8,
           });
         }
         markScheduleAuthoritativePaintReady();
@@ -8076,12 +8130,19 @@
     var weekIndex = wi != null ? Number(wi) : scheduleCalendarWeekIndex;
     var cloudTimed = Number(cloudTimedCount) || 0;
     try {
-      if (cloudTimed > 0 && !localWeekHasTimedDraft(weekIndex, currentRestaurantId)) {
+      if (scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimed)) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: weekIndex,
+          minCloudTimed: 8,
+        });
+      } else if (cloudTimed > 0 && !localWeekHasTimedDraft(weekIndex, currentRestaurantId)) {
+        applyScheduleCellsCacheToLocalStore({
+          rebuild: false,
+          force: true,
+          upsertTimedOnly: true,
         });
       }
     } catch (_rep) {
@@ -8097,14 +8158,14 @@
       allowEmptyPaint: cloudTimed <= 0,
     });
     /* If still empty but cloud had times, one more replace + paint. */
-    if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed > 0) {
+    if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed >= 8) {
       try {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: weekIndex,
-          allowEmptyReplace: false,
+          minCloudTimed: 8,
         });
       } catch (_rep2) {
         /* ignore */
@@ -8336,7 +8397,7 @@
 
   /** Collapse bursty cloud applies into one paint (stops load → day-off → reload flicker). */
   function coalesceVisibleSchedulePaint(opts) {
-    schedulePaintCoalesceOpts = opts || {};
+    schedulePaintCoalesceOpts = Object.assign({}, schedulePaintCoalesceOpts || {}, opts || {});
     if (schedulePaintCoalesceTimer) return;
     schedulePaintCoalesceTimer = setTimeout(function () {
       schedulePaintCoalesceTimer = null;
@@ -8344,11 +8405,14 @@
       schedulePaintCoalesceOpts = null;
       if (currentScreen !== 1) return;
       var wi = o.weekIndex != null ? o.weekIndex : scheduleCalendarWeekIndex;
+      var forceInitial =
+        !scheduleAuthoritativePaintReady || !!o.forceInitial || !!o.trustedReplace;
       paintVisibleScheduleWeekFast({
         weekIndex: wi,
         forcePaint: true,
         fast: true,
-        forceInitial: !scheduleAuthoritativePaintReady,
+        forceInitial: forceInitial,
+        allowEmptyPaint: !!o.allowEmptyPaint,
       });
       if (SCHEDULE && SCHEDULE.length) {
         markScheduleAuthoritativePaintReady();
@@ -9459,13 +9523,14 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
-    /* Soft upsert only — trusted replace flashed day-off / Unassigned after a good load. */
+    /* Refresh: trusted replace when cloud is dense so every device converges. */
     try {
       await pollVisibleScheduleCellsFromCloud({
         rebuild: true,
         force: true,
         forceSlots: true,
-        upsertTimedOnly: true,
+        replaceTrusted: true,
+        replaceWeekIndex: scheduleCalendarWeekIndex,
       });
     } catch (_refPoll) {
       /* ignore */
