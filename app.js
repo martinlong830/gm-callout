@@ -6173,11 +6173,13 @@
         fetchTimedCount: cloudTimedVisible,
       });
       if (applied && currentScreen === 1) {
+        scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
           forcePaint: true,
           fast: true,
           forceInitial: true,
+          forceCloudPending: true,
           /* Only allow empty message when cloud confirmed zero timed cells. */
           allowEmptyPaint: cloudTimedVisible <= 0,
           confirmedEmpty: cloudTimedVisible <= 0,
