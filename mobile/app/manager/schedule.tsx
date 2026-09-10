@@ -413,6 +413,7 @@ export default function ManagerScheduleScreen() {
 
   useEffect(() => {
     if (!supabase || !isManagerLikeRole(role)) return;
+    const sb = supabase;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -420,9 +421,9 @@ export default function ManagerScheduleScreen() {
       try {
         const companyId = await readStoredCompanyId();
         if (!companyId || cancelled) return;
-        await backfillIfNeeded(supabase, companyId);
+        await backfillIfNeeded(sb, companyId);
         if (cancelled) return;
-        await flushOutbox(supabase);
+        await flushOutbox(sb);
         if (cancelled) return;
         const cellsOnly = await writeOnlyCells();
         if (!cellsOnly || cancelled) return;
@@ -430,8 +431,8 @@ export default function ManagerScheduleScreen() {
         const toIso = weekMeta[weekIndex * 7 + 6]?.iso;
         if (!fromIso || !toIso) return;
         const [cellsRes, slotsRes] = await Promise.all([
-          fetchCellsRange(supabase, companyId, fromIso, toIso),
-          fetchSlots(supabase, companyId),
+          fetchCellsRange(sb, companyId, fromIso, toIso),
+          fetchSlots(sb, companyId),
         ]);
         if (cancelled || cellsRes.error || slotsRes.error) return;
         const projected = projectCellsOntoLocalStores({
