@@ -12,6 +12,7 @@
   var SLOT_MAP_KEY = 'gm-callout-schedule-slot-map-v1'; // restaurant|role|trIdx -> slot_key
   var LAST_REV_KEY = 'gm-callout-schedule-last-rev-v1';
   var DEVICE_KEY = 'gm-callout-schedule-device-id-v1';
+  var WRITE_ONLY_LS_KEY = 'gm-schedule-sync-v2-write-only';
 
   function uuid() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -29,9 +30,31 @@
     return true;
   }
 
-  /** When true, remote team_state schedule blobs are not applied (cells are SoT). */
+  /**
+   * Cells are SoT — schedule blobs are not applied/pushed.
+   * Window flag wins when set; otherwise localStorage (default true after cutover).
+   */
   function writeOnlyCells() {
-    return !!root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY;
+    if (typeof root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY === 'boolean') {
+      return !!root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY;
+    }
+    try {
+      var raw = localStorage.getItem(WRITE_ONLY_LS_KEY);
+      if (raw === '0' || raw === 'false') return false;
+      if (raw === '1' || raw === 'true') return true;
+    } catch (_e) {
+      /* ignore */
+    }
+    return true;
+  }
+
+  function setWriteOnlyCells(enabled) {
+    root.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = !!enabled;
+    try {
+      localStorage.setItem(WRITE_ONLY_LS_KEY, enabled ? '1' : '0');
+    } catch (_e) {
+      /* ignore */
+    }
   }
 
   function readJson(key, fallback) {
@@ -398,9 +421,9 @@
         label: row.label || null,
         active: row.active !== false,
       };
-      // Best-effort reverse map by sort_order for legacy trIdx bridges
+      // Prefer remote slot_key for each sort_order so devices share the same keys.
       var mk = slotMapKey(row.restaurant_id, row.role, row.sort_order);
-      if (!map[mk]) map[mk] = row.slot_key;
+      map[mk] = row.slot_key;
     });
     setSlotCache(slots);
     setSlotMap(map);
@@ -479,9 +502,15 @@
       .select('schedule_rev')
       .eq('company_id', companyId)
       .maybeSingle();
+    if (probe.error && /does not exist|relation/i.test(probe.error.message || '')) {
+      setWriteOnlyCells(false);
+      return { ok: false, error: probe.error, schemaMissing: true };
+    }
     if (probe.error && !/does not exist|relation/i.test(probe.error.message || '')) {
       return { ok: false, error: probe.error };
     }
+    /* Schema is live — cells are SoT (no schedule blob apply/push). */
+    setWriteOnlyCells(true);
     if (probe.data && Number(probe.data.schedule_rev) > 0) {
       return { ok: true, skipped: true };
     }
@@ -581,6 +610,7 @@
   root.gmScheduleSyncV2 = {
     isEnabled: isEnabled,
     writeOnlyCells: writeOnlyCells,
+    setWriteOnlyCells: setWriteOnlyCells,
     deviceId: deviceId,
     uuid: uuid,
     ensureSlotKey: ensureSlotKey,

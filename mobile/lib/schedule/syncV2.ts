@@ -4,6 +4,11 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  loadDraftFromTeamState,
+  patchDraftScheduleForWeek,
+} from './engine';
+import type { AssignmentStore } from './types';
 
 const OUTBOX_KEY = 'gm-schedule-ops-outbox-v1';
 const DEVICE_KEY = 'gm-schedule-device-id-v1';
@@ -219,6 +224,98 @@ export async function fetchCellsRange(
     .lte('day_iso', toIso);
 }
 
+export async function fetchSlots(sb: SupabaseClient, companyId: string) {
+  return sb
+    .from('schedule_slots')
+    .select('company_id,restaurant_id,role,slot_key,sort_order,label,active')
+    .eq('company_id', companyId)
+    .eq('active', true);
+}
+
+/**
+ * Project fetched ISO cells onto legacy assignment + draft stores for one display window.
+ * Used when write-only mode ignores team_state schedule blobs.
+ */
+export function projectCellsOntoLocalStores(opts: {
+  cells: Record<string, unknown>[];
+  slots: { restaurant_id?: string; role?: string; slot_key?: string; sort_order?: number }[];
+  weekMeta: { iso?: string }[];
+  liveAssign: AssignmentStore;
+  liveDraft: unknown;
+}): { assign: AssignmentStore; draft: unknown } {
+  const isoToGdi: Record<string, number> = {};
+  (opts.weekMeta || []).forEach((m, i) => {
+    const iso = m?.iso ? String(m.iso).slice(0, 10) : '';
+    if (iso) isoToGdi[iso] = i;
+  });
+  const roleToIdx: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
+  const slotTr = new Map<string, number>();
+  (opts.slots || []).forEach((s) => {
+    if (!s?.restaurant_id || !s.role || !s.slot_key) return;
+    slotTr.set(
+      `${s.restaurant_id}\0${s.role}\0${s.slot_key}`,
+      Number(s.sort_order) || 0
+    );
+  });
+  const nextAssign = JSON.parse(JSON.stringify(opts.liveAssign || {})) as AssignmentStore;
+  let nextDraft: unknown =
+    opts.liveDraft && typeof opts.liveDraft === 'object'
+      ? JSON.parse(JSON.stringify(opts.liveDraft))
+      : { v: 2, byWeek: {} };
+
+  (opts.cells || []).forEach((cell) => {
+    if (!cell || cell.deleted) return;
+    const dayIso = String(cell.day_iso || '').slice(0, 10);
+    const gdi = isoToGdi[dayIso];
+    if (gdi == null || gdi < 0) return;
+    const role = String(cell.role || '');
+    const roleIdx = roleToIdx[role];
+    if (roleIdx == null) return;
+    const rid = String(cell.restaurant_id || '');
+    const slotKey = String(cell.slot_key || '');
+    if (!rid || !slotKey) return;
+    const trIdx = slotTr.get(`${rid}\0${role}\0${slotKey}`);
+    if (trIdx == null || trIdx < 0) return;
+    const shiftId = `shift-${gdi}-${roleIdx}-${trIdx}`;
+    if (!nextAssign[rid]) nextAssign[rid] = {};
+    const worker =
+      cell.worker_name && String(cell.worker_name) !== 'Unassigned'
+        ? String(cell.worker_name)
+        : null;
+    const start = cell.start_hhmm ? String(cell.start_hhmm) : '';
+    const end = cell.end_hhmm ? String(cell.end_hhmm) : '';
+    const entry: Record<string, unknown> = {
+      workers: worker ? [worker] : ['Unassigned'],
+    };
+    if (worker) entry.rowOwner = worker;
+    if (start && end) {
+      entry.break = cell.break_annotation || null;
+      if (cell.break_paid === true || cell.break_paid === false) entry.breakPaid = cell.break_paid;
+    }
+    nextAssign[rid][shiftId] = entry as AssignmentStore[string][string];
+
+    const wi = Math.floor(gdi / 7);
+    const di = gdi % 7;
+    const layers = loadDraftFromTeamState(nextDraft, wi, rid);
+    if (!layers[role as 'Bartender' | 'Kitchen' | 'Server']) {
+      (layers as Record<string, unknown>)[role] = [];
+    }
+    const rows = (layers as Record<string, unknown[]>)[role] as unknown[];
+    while (rows.length <= trIdx) {
+      rows.push([null, null, null, null, null, null, null]);
+    }
+    const row = Array.isArray(rows[trIdx])
+      ? ([...(rows[trIdx] as unknown[])] as unknown[])
+      : [null, null, null, null, null, null, null];
+    while (row.length < 7) row.push(null);
+    row[di] = start && end ? [start, end] : null;
+    rows[trIdx] = row;
+    nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
+  });
+
+  return { assign: nextAssign, draft: nextDraft };
+}
+
 /** Subscribe to schedule_cells changes for a company; returns unsubscribe. */
 export function subscribeScheduleCells(
   sb: SupabaseClient,
@@ -252,7 +349,10 @@ export async function setWriteOnlyCells(enabled: boolean): Promise<void> {
 
 export async function writeOnlyCells(): Promise<boolean> {
   const v = await AsyncStorage.getItem(WRITE_ONLY_KEY);
-  return v === '1';
+  if (v === '0') return false;
+  if (v === '1') return true;
+  /* Default true after cells cutover — schedule blobs are not SoT. */
+  return true;
 }
 
 export async function backfillIfNeeded(sb: SupabaseClient, companyId: string) {
@@ -261,6 +361,10 @@ export async function backfillIfNeeded(sb: SupabaseClient, companyId: string) {
     .select('schedule_rev')
     .eq('company_id', companyId)
     .maybeSingle();
+  if (probe.error && /does not exist|relation/i.test(probe.error.message || '')) {
+    await setWriteOnlyCells(false);
+    return { ok: false, error: probe.error, schemaMissing: true };
+  }
   if (probe.data && Number(probe.data.schedule_rev) > 0) {
     await setWriteOnlyCells(true);
     return { ok: true, skipped: true };
@@ -309,7 +413,9 @@ export function applyOpsLocal(
         continue;
       }
       next.rev += 1;
-      const cell = existing ? { ...existing } : { deleted: false };
+      const cell: Record<string, unknown> = existing
+        ? { ...existing }
+        : { deleted: false };
       if (op.op_type === 'set_day_off') {
         cell.start_hhmm = null;
         cell.end_hhmm = null;

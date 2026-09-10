@@ -129,12 +129,15 @@ import {
   backfillIfNeeded,
   enqueueOps,
   ensureSlotKey,
+  fetchCellsRange,
+  fetchSlots,
   flushOutbox,
   flushOutboxFully,
   opAddSlot,
   opSetDayOff,
   opSetTimes,
   opSetWorker,
+  projectCellsOntoLocalStores,
   writeOnlyCells,
   type ScheduleOp,
 } from '../../lib/schedule/syncV2';
@@ -411,20 +414,67 @@ export default function ManagerScheduleScreen() {
   useEffect(() => {
     if (!supabase || !isManagerLikeRole(role)) return;
     let cancelled = false;
-    void (async () => {
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const pullCells = async () => {
       try {
         const companyId = await readStoredCompanyId();
         if (!companyId || cancelled) return;
         await backfillIfNeeded(supabase, companyId);
-        if (!cancelled) await flushOutbox(supabase);
+        if (cancelled) return;
+        await flushOutbox(supabase);
+        if (cancelled) return;
+        const cellsOnly = await writeOnlyCells();
+        if (!cellsOnly || cancelled) return;
+        const fromIso = weekMeta[weekIndex * 7]?.iso;
+        const toIso = weekMeta[weekIndex * 7 + 6]?.iso;
+        if (!fromIso || !toIso) return;
+        const [cellsRes, slotsRes] = await Promise.all([
+          fetchCellsRange(supabase, companyId, fromIso, toIso),
+          fetchSlots(supabase, companyId),
+        ]);
+        if (cancelled || cellsRes.error || slotsRes.error) return;
+        const projected = projectCellsOntoLocalStores({
+          cells: (cellsRes.data || []) as Record<string, unknown>[],
+          slots: (slotsRes.data || []) as {
+            restaurant_id?: string;
+            role?: string;
+            slot_key?: string;
+            sort_order?: number;
+          }[],
+          weekMeta,
+          liveAssign: assignmentStoreRef.current,
+          liveDraft: draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {},
+        });
+        if (cancelled || localEditPendingRef.current) return;
+        setAssignmentStore(projected.assign);
+        setRolledDraftRaw(projected.draft);
+        applyLocalScheduleAssignments(projected.assign, projected.draft, {
+          markDirty: false,
+        });
       } catch (err) {
         console.warn('schedule sync v2 hydrate', err);
       }
-    })();
+    };
+
+    void pullCells();
+    pollTimer = setInterval(() => {
+      if (cancelled || localEditPendingRef.current) return;
+      void pullCells();
+    }, 2000);
+
     return () => {
       cancelled = true;
+      if (pollTimer) clearInterval(pollTimer);
     };
-  }, [supabase, role]);
+  }, [
+    supabase,
+    role,
+    weekMeta,
+    weekIndex,
+    teamState?.draft_schedule,
+    applyLocalScheduleAssignments,
+  ]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
