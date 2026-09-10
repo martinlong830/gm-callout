@@ -181,25 +181,71 @@
     return candidates.length ? candidates[0] : null;
   }
 
+  var cellCacheMem = null;
+  var slotCacheMem = null;
+  var cellCachePersistTimer = null;
+  var slotCachePersistTimer = null;
+
+  function persistCellCacheSoon() {
+    if (cellCachePersistTimer) return;
+    cellCachePersistTimer = setTimeout(function () {
+      cellCachePersistTimer = null;
+      writeJson(CELL_CACHE_KEY, cellCacheMem || {});
+    }, 300);
+  }
+
+  function persistSlotCacheSoon() {
+    if (slotCachePersistTimer) return;
+    slotCachePersistTimer = setTimeout(function () {
+      slotCachePersistTimer = null;
+      writeJson(SLOT_CACHE_KEY, slotCacheMem || {});
+    }, 300);
+  }
+
   function getCellCache() {
-    return readJson(CELL_CACHE_KEY, {});
+    if (cellCacheMem) return cellCacheMem;
+    cellCacheMem = readJson(CELL_CACHE_KEY, {});
+    if (!cellCacheMem || typeof cellCacheMem !== 'object') cellCacheMem = {};
+    return cellCacheMem;
   }
 
   function setCellCache(cache) {
-    writeJson(CELL_CACHE_KEY, cache || {});
+    cellCacheMem = cache || {};
+    persistCellCacheSoon();
   }
 
   function getSlotCache() {
-    return readJson(SLOT_CACHE_KEY, {});
+    if (slotCacheMem) return slotCacheMem;
+    slotCacheMem = readJson(SLOT_CACHE_KEY, {});
+    if (!slotCacheMem || typeof slotCacheMem !== 'object') slotCacheMem = {};
+    return slotCacheMem;
   }
 
   function setSlotCache(cache) {
-    writeJson(SLOT_CACHE_KEY, cache || {});
+    slotCacheMem = cache || {};
+    persistSlotCacheSoon();
   }
 
   function getOutbox() {
     var list = readJson(OUTBOX_KEY, []);
     return Array.isArray(list) ? list : [];
+  }
+
+  /**
+   * Drop oldest ops when the outbox grows past maxKeep — never wipe everything.
+   * Full clears discarded manager edits before they could upload.
+   */
+  function pruneBloatedOutbox(maxKeep) {
+    var max = maxKeep != null && !isNaN(Number(maxKeep)) ? Number(maxKeep) : 500;
+    var box = getOutbox();
+    if (!box.length || box.length <= max) {
+      return { ok: true, pruned: false, before: box.length, after: box.length };
+    }
+    var before = box.length;
+    /* Keep the newest max ops (end of queue) so recent edits still flush. */
+    var kept = box.slice(Math.max(0, before - max));
+    setOutbox(kept);
+    return { ok: true, pruned: true, before: before, after: kept.length };
   }
 
   function setOutbox(list) {
@@ -237,14 +283,14 @@
   }
 
   function opSetDayOff(restaurantId, dayIso, role, slotKey, workerName) {
-    var p = {
+    return makeOp('set_day_off', {
       restaurant_id: restaurantId,
       day_iso: dayIso,
       role: role,
       slot_key: slotKey,
-    };
-    if (workerName) p.worker_name = workerName;
-    return makeOp('set_day_off', p);
+      /* Always include worker_name so null clears sticky FOH names off BOH day-offs. */
+      worker_name: workerName && workerName !== 'Unassigned' ? workerName : null,
+    });
   }
 
   function opSetWorker(restaurantId, dayIso, role, slotKey, workerName, workerId) {
@@ -433,8 +479,10 @@
           cell.end_hhmm = null;
           cell.break_annotation = null;
           cell.break_paid = null;
-          if (p.worker_name) cell.worker_name = p.worker_name;
-          // keep existing worker_name otherwise
+          if (Object.prototype.hasOwnProperty.call(p, 'worker_name')) {
+            cell.worker_name = p.worker_name || null;
+            cell.worker_id = null;
+          }
         } else if (type === 'set_times') {
           cell.start_hhmm = p.start_hhmm || null;
           cell.end_hhmm = p.end_hhmm || null;
@@ -462,7 +510,12 @@
 
   function enqueueOps(ops) {
     if (!isEnabled() || !ops || !ops.length) return;
+    pruneBloatedOutbox(500);
     var box = getOutbox();
+    /* Cap growth but keep room for this batch after prune. */
+    if (box.length > 500) {
+      box = box.slice(box.length - 400);
+    }
     ops.forEach(function (op) {
       box.push(op);
     });
@@ -479,8 +532,15 @@
     if (result.state.rev > getLastRev()) setLastRev(result.state.rev);
   }
 
-  function mergeRemoteCells(rows) {
+  function mergeRemoteCells(rows, opts) {
     if (!rows || !rows.length) return;
+    opts = opts || {};
+    /*
+     * preferRemote: authoritative network fetch. Optimistic local apply (especially a
+     * bloated outbox) was bumping cell revs past server and permanently blocking the
+     * real timed schedule — peers painted all DAY-OFF / Unassigned forever.
+     */
+    var preferRemote = !!opts.preferRemote;
     var cache = getCellCache();
     rows.forEach(function (row) {
       if (!row) return;
@@ -488,13 +548,15 @@
       var local = cache[ck];
       var remoteRev = Number(row.rev) || 0;
       var remoteDeleted = !!row.deleted;
-      /*
-       * Keep optimistic / newer local cells. Equal rev must not snap edits back —
-       * except revive cells wrongly marked deleted locally (empty slot-cache prune).
-       */
-      if (local && Number(local.rev) > remoteRev) return;
-      if (local && Number(local.rev) === remoteRev && !(local.deleted && !remoteDeleted)) {
-        return;
+      if (!preferRemote) {
+        /*
+         * Keep optimistic / newer local cells. Equal rev must not snap edits back —
+         * except revive cells wrongly marked deleted locally (empty slot-cache prune).
+         */
+        if (local && Number(local.rev) > remoteRev) return;
+        if (local && Number(local.rev) === remoteRev && !(local.deleted && !remoteDeleted)) {
+          return;
+        }
       }
       cache[ck] = {
         restaurant_id: row.restaurant_id,
@@ -551,7 +613,8 @@
       if (!row) return;
       seen[cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key)] = true;
     });
-    if (list.length) mergeRemoteCells(list);
+    /* Network fetch is SoT for returned keys — do not let inflated local revs win. */
+    if (list.length) mergeRemoteCells(list, { preferRemote: true });
     /*
      * Only tombstone when the fetch returned at least one live cell for the range.
      * Empty arrays are treated as incomplete/failed (RLS, race, wrong range) — keep cache.
@@ -562,15 +625,60 @@
     }
     var slots = getSlotCache();
     var hasSlots = !!(slots && Object.keys(slots).length);
+    /* Pending outbox ops must win over fetch tombstones (revive Charles before flush). */
+    var pendingKeys = Object.create(null);
+    try {
+      var box = getOutbox();
+      (box || []).forEach(function (op) {
+        if (!op || !op.payload) return;
+        var p = op.payload;
+        if (!p.day_iso || !p.slot_key || !p.role) return;
+        if (
+          op.op_type === 'set_times' ||
+          op.op_type === 'set_worker' ||
+          op.op_type === 'set_day_off'
+        ) {
+          pendingKeys[cellKey(p.restaurant_id, p.day_iso, p.role, p.slot_key)] = true;
+        }
+      });
+    } catch (_box) {
+      /* ignore */
+    }
     if (hasSlots && fromIso && toIso) {
       var cache = getCellCache();
       var changed = false;
+      /* Per-restaurant timed density: sparse fetch must not tombstone a dense local week
+         (revive Charles/Maeve then Refresh used to wipe them back to Mark-only). */
+      var remoteTimedByRid = Object.create(null);
+      var localTimedByRid = Object.create(null);
+      list.forEach(function (row) {
+        if (!row || row.deleted) return;
+        if (!row.start_hhmm || !row.end_hhmm) return;
+        var ridR = String(row.restaurant_id || '');
+        remoteTimedByRid[ridR] = (remoteTimedByRid[ridR] || 0) + 1;
+      });
+      Object.keys(cache).forEach(function (ck0) {
+        var c0 = cache[ck0];
+        if (!c0 || c0.deleted) return;
+        var day0 = String(c0.day_iso || '').slice(0, 10);
+        if (day0 < String(fromIso).slice(0, 10) || day0 > String(toIso).slice(0, 10)) return;
+        if (!c0.start_hhmm || !c0.end_hhmm) return;
+        var rid0 = String(c0.restaurant_id || '');
+        localTimedByRid[rid0] = (localTimedByRid[rid0] || 0) + 1;
+      });
       Object.keys(cache).forEach(function (ck) {
         var c = cache[ck];
         if (!c || c.deleted) return;
         var day = String(c.day_iso || '').slice(0, 10);
         if (day < String(fromIso).slice(0, 10) || day > String(toIso).slice(0, 10)) return;
         if (seen[ck]) return;
+        if (pendingKeys[ck]) return;
+        var rid = String(c.restaurant_id || '');
+        var remoteN = remoteTimedByRid[rid] || 0;
+        var localN = localTimedByRid[rid] || 0;
+        if (c.start_hhmm && c.end_hhmm && localN >= 4 && remoteN < Math.max(4, Math.floor(localN * 0.5))) {
+          return;
+        }
         var spk = [c.restaurant_id, c.role, c.slot_key].join('\0');
         if (!slots[spk] || slots[spk].active === false) return;
         c.deleted = true;
@@ -874,18 +982,26 @@
       /* Duplicate slots (forked UUIDs, same sort_order) can collide — keep higher rev. */
       if (existing && Number(existing.rev || 0) > remoteRev) return;
       var entry = { workers: ['Unassigned'], rev: remoteRev };
-      if (cell.worker_name && cell.worker_name !== 'Unassigned') {
-        entry.rowOwner = String(cell.worker_name);
-      }
       if (cell.start_hhmm && cell.end_hhmm) {
-        entry.workers = entry.rowOwner ? [entry.rowOwner] : ['Unassigned'];
+        if (cell.worker_name && cell.worker_name !== 'Unassigned') {
+          entry.rowOwner = String(cell.worker_name);
+          entry.workers = [entry.rowOwner];
+        }
         if (cell.break_annotation) entry.break = String(cell.break_annotation);
         if (cell.break_paid === true || cell.break_paid === false) entry.breakPaid = !!cell.break_paid;
         entry.start = cell.start_hhmm;
         entry.end = cell.end_hhmm;
       } else {
+        /*
+         * Day-off: keep worker_name as rowOwner for Person-column identity.
+         * Workers stay Unassigned so times do not resurrect. Wrong-role names are
+         * stripped in app apply (paintHome), not here.
+         */
         entry.workers = ['Unassigned'];
         entry.dayOff = true;
+        if (cell.worker_name && cell.worker_name !== 'Unassigned') {
+          entry.rowOwner = String(cell.worker_name);
+        }
       }
       patch[rid][shiftId] = entry;
     });
@@ -916,6 +1032,7 @@
     applyOpsLocal: applyOpsLocal,
     enqueueOps: enqueueOps,
     flushOutbox: flushOutbox,
+    pruneBloatedOutbox: pruneBloatedOutbox,
     fetchCellsRange: fetchCellsRange,
     fetchSlots: fetchSlots,
     mergeRemoteCells: mergeRemoteCells,
