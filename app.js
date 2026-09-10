@@ -6538,6 +6538,66 @@
     return out;
   }
 
+  function countTimedCellsInPatchWeek(patch, weekIndex) {
+    var wi = Number(weekIndex);
+    var weekStart = wi * 7;
+    var weekEnd = weekStart + 7;
+    var n = 0;
+    if (!patch) return 0;
+    Object.keys(patch).forEach(function (rid) {
+      var cells = patch[rid] || {};
+      Object.keys(cells).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+        var c = cells[shiftId];
+        if (c && !c.dayOff && c.start && c.end) n += 1;
+      });
+    });
+    return n;
+  }
+
+  function countLocalTimedDraftWeek(weekIndex, restaurantId) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return 0;
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    var rests = restaurantsList.filter(function (rest) {
+      return !restaurantId || rest.id === restaurantId;
+    });
+    var n = 0;
+    for (var r = 0; r < rests.length; r += 1) {
+      var rid = rests[r].id;
+      for (var ri = 0; ri < roles.length; ri += 1) {
+        var role = roles[ri];
+        var slots = slotCountForRole(role, wi, rid);
+        for (var trIdx = 0; trIdx < slots; trIdx += 1) {
+          for (var di = 0; di < 7; di += 1) {
+            var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
+            var tr = draftTimeSlotFor(role, wk, trIdx, wi, rid);
+            if (tr && tr.start && tr.end) n += 1;
+          }
+        }
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Refuse sparse cloud projections that would blank a staffed local week to day-off
+   * (stale cache / incomplete fetch flash).
+   */
+  function cloudWeekReplaceIsSafe(weekIndex, patch, opts) {
+    opts = opts || {};
+    if (opts.allowEmptyReplace || opts.forceDayOffReplace) return true;
+    var cloudTimed = countTimedCellsInPatchWeek(patch, weekIndex);
+    var localTimed = countLocalTimedDraftWeek(weekIndex);
+    if (localTimed <= 0) return cloudTimed > 0 || !!opts.allowEmptyReplace;
+    if (cloudTimed <= 0) return false;
+    /* Cloud must carry a meaningful share of local timed cells before wipe/replace. */
+    var minKeep = Math.max(4, Math.floor(localTimed * 0.5));
+    return cloudTimed >= minKeep;
+  }
+
   function applyScheduleCellsCacheToLocalStore(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -6562,16 +6622,44 @@
     var replaceWeeks = Object.create(null);
     if (opts.replaceAllTimedWeeks) {
       Object.keys(timedWeeks).forEach(function (k) {
-        replaceWeeks[k] = true;
+        if (cloudWeekReplaceIsSafe(Number(k), patch, opts)) {
+          replaceWeeks[k] = true;
+        }
       });
     } else {
       var replaceWi =
         opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
           ? Number(opts.replaceWeekIndex)
           : scheduleCalendarWeekIndex;
-      if (timedWeeks[replaceWi] || opts.allowEmptyReplace || opts.forceDayOffReplace) {
+      if (
+        (timedWeeks[replaceWi] || opts.allowEmptyReplace || opts.forceDayOffReplace) &&
+        cloudWeekReplaceIsSafe(replaceWi, patch, opts)
+      ) {
         replaceWeeks[replaceWi] = true;
       }
+    }
+    /*
+     * If local week is staffed and cloud is too sparse to replace, skip the whole apply
+     * for that week (including day-off upserts) so the UI does not flash all day-off.
+     */
+    if (
+      opts.replaceWeekIndex != null &&
+      !opts.replaceAllTimedWeeks &&
+      !replaceWeeks[Number(opts.replaceWeekIndex)] &&
+      !opts.allowEmptyReplace &&
+      !opts.forceDayOffReplace &&
+      countLocalTimedDraftWeek(Number(opts.replaceWeekIndex)) > 0
+    ) {
+      return false;
+    }
+    if (
+      opts.replaceAllTimedWeeks &&
+      !Object.keys(replaceWeeks).length &&
+      !opts.allowEmptyReplace &&
+      !opts.forceDayOffReplace
+    ) {
+      /* Nothing safe to replace — keep local. */
+      return false;
     }
     var rids = Object.keys(patch);
     if (!rids.length && !Object.keys(replaceWeeks).length) {
@@ -6618,6 +6706,8 @@
            */
           if (!timedWeeks[wi] && !replaceWeeks[wi]) return;
           var cell = cells[shiftId];
+          /* Day-offs only land during a trusted week replace — never from sparse cache. */
+          if (cell.dayOff && !replaceWeeks[wi]) return;
           var entry = { workers: cell.workers || ['Unassigned'] };
           if (cell.rowOwner) entry.rowOwner = cell.rowOwner;
           if (cell.dayOff) {
@@ -6772,13 +6862,8 @@
     scheduleLastAppliedFingerprint = fp;
     if (!changed && !opts.force) return false;
     if (opts.rebuild !== false && currentScreen === 1) {
-      deferUiWork(function () {
-        rebuildSchedule({
-          weekIndex: scheduleCalendarWeekIndex,
-          preserveOtherWeeks: true,
-        });
-        renderCalendar({ force: true });
-        if (scheduleBody) renderSchedule();
+      coalesceVisibleSchedulePaint({
+        weekIndex: scheduleCalendarWeekIndex,
       });
     }
     return true;
@@ -6858,12 +6943,10 @@
         v2.setWriteOnlyCells(true);
       }
       var wi = scheduleCalendarWeekIndex;
-      /* Instant paint from any local cell cache (visible week only). */
-      applyScheduleCellsCacheToLocalStore({
-        rebuild: currentScreen === 1,
-        force: true,
-        replaceWeekIndex: wi,
-      });
+      /*
+       * Do NOT apply stale local cell cache before the network fetch — that painted
+       * all day-off, then the fetch restored the real week (triple flash).
+       */
       void flushScheduleV2Outbox();
       var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
       var weekTo = dayIsoForScheduleWeekDay(wi, 6);
@@ -6872,8 +6955,8 @@
         return;
       }
       /*
-       * Fast path: slots + visible week only (keeps Schedule open under ~1s).
-       * Full rolling window loads in the background so past weeks still converge.
+       * Fast path: slots + visible week only. Local UI already painted; only update
+       * if cloud coverage is rich enough (see cloudWeekReplaceIsSafe).
        */
       var pair = await Promise.all([
         v2.fetchSlots(window.gmSupabase, cid),
@@ -6894,19 +6977,21 @@
       });
       reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
       startScheduleCellsPoll();
-      if (currentScreen === 1) {
-        paintVisibleScheduleWeekFast({ weekIndex: wi });
-      }
+      /* apply already coalesces paint when it changes something */
 
       var fullFrom = dayIsoForScheduleWeekDay(0, 0);
       var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
-      if (!fullFrom || !fullTo) return;
+      if (!fullFrom || !fullTo) {
+        scheduleCellsHydratedOk = true;
+        return;
+      }
 
       void (async function hydrateFullScheduleWindow() {
         try {
           var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fullFrom, fullTo);
           if (cellsRes && cellsRes.ok === false) {
             console.warn('gm-callout: full schedule cells fetch failed', cellsRes.error);
+            scheduleCellsHydratedOk = true;
             return;
           }
           applyScheduleCellsCacheToLocalStore({
@@ -6918,7 +7003,19 @@
           if (teamStateLastRowCache) {
             fillUntimedWeeksFromTeamStateBlobs(teamStateLastRowCache);
           }
-          seedMissingTimedWeeksToCloudCells();
+          /* Seed in idle time — never block / reflash the open week. */
+          if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(
+              function () {
+                seedMissingTimedWeeksToCloudCells();
+              },
+              { timeout: 12000 }
+            );
+          } else {
+            setTimeout(function () {
+              seedMissingTimedWeeksToCloudCells();
+            }, 2500);
+          }
           scheduleCellsHydratedOk = true;
           if (draftScheduleDirty || scheduleAssignmentsDirty) {
             if (!hasInteractiveScheduleEditsThisSession()) {
@@ -6927,11 +7024,13 @@
               persistTeamStateDirtyFlags();
             }
           }
+          /* No forced repaint — visible week already correct; fingerprint skips no-ops. */
           if (currentScreen === 1) {
-            paintVisibleScheduleWeekFast();
+            coalesceVisibleSchedulePaint({ weekIndex: scheduleCalendarWeekIndex });
           }
         } catch (_full) {
           console.warn('gm-callout: full schedule window hydrate', _full);
+          scheduleCellsHydratedOk = true;
         }
       })();
     } catch (_h) {
@@ -6978,7 +7077,7 @@
             return;
           }
           v2.mergeRemoteCells([row]);
-          applyScheduleCellsCacheToLocalStore({ rebuild: true });
+          applyScheduleCellsCacheToLocalStore({ rebuild: true, force: false });
         }
       )
       .subscribe();
@@ -7598,6 +7697,54 @@
     return false;
   }
 
+  var schedulePaintCoalesceTimer = null;
+  var schedulePaintCoalesceOpts = null;
+  var scheduleLastPaintFingerprint = '';
+
+  function scheduleVisibleWeekPaintFingerprint(weekIndex) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    var rid = currentRestaurantId || '';
+    var parts = [String(wi), String(rid)];
+    try {
+      var roles = ['Bartender', 'Kitchen', 'Server'];
+      roles.forEach(function (role) {
+        var n = slotCountForRole(role, wi, rid);
+        parts.push(role + ':' + n);
+        for (var tr = 0; tr < n; tr += 1) {
+          for (var di = 0; di < 7; di += 1) {
+            var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
+            var slot = draftTimeSlotFor(role, wk, tr, wi, rid);
+            var shiftId =
+              'shift-' +
+              (wi * 7 + di) +
+              '-' +
+              roleIdxForDraftRole(role) +
+              '-' +
+              tr;
+            var store = getCurrentRestaurantAssignments();
+            var entry = store && store[shiftId];
+            var name =
+              (entry && entry.rowOwner) ||
+              (entry && entry.workers && entry.workers[0]) ||
+              '';
+            parts.push(
+              [
+                tr,
+                di,
+                slot && slot.start ? slot.start : '',
+                slot && slot.end ? slot.end : '',
+                name,
+              ].join('~')
+            );
+          }
+        }
+      });
+    } catch (_fp) {
+      /* ignore */
+    }
+    return parts.join('|');
+  }
+
   function paintVisibleScheduleWeekFast(opts) {
     opts = opts || {};
     scheduleUiAwaitingInitialCloudHydrate = false;
@@ -7605,6 +7752,13 @@
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
         ? Number(opts.weekIndex)
         : scheduleCalendarWeekIndex;
+    if (!opts.forcePaint) {
+      var fp = scheduleVisibleWeekPaintFingerprint(wi);
+      if (fp && fp === scheduleLastPaintFingerprint && SCHEDULE && SCHEDULE.length) {
+        return;
+      }
+      scheduleLastPaintFingerprint = fp;
+    }
     try {
       if (typeof rebuildSchedule === 'function') {
         rebuildSchedule({
@@ -7619,6 +7773,19 @@
     } catch (_paint) {
       /* ignore */
     }
+  }
+
+  /** Collapse bursty cloud applies into one paint (stops load → day-off → reload flicker). */
+  function coalesceVisibleSchedulePaint(opts) {
+    schedulePaintCoalesceOpts = opts || {};
+    if (schedulePaintCoalesceTimer) return;
+    schedulePaintCoalesceTimer = setTimeout(function () {
+      schedulePaintCoalesceTimer = null;
+      var o = schedulePaintCoalesceOpts || {};
+      schedulePaintCoalesceOpts = null;
+      if (currentScreen !== 1) return;
+      paintVisibleScheduleWeekFast(o);
+    }, 40);
   }
 
   function releaseScheduleCloudHydrateGate() {
@@ -20571,10 +20738,11 @@
         if (currentScreen !== 1) return;
         refreshScheduleScreenUi();
         if (!(scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase)) return;
+        /* Soft poll — never force-apply sparse cells over a staffed local week. */
         void Promise.resolve(
           pollVisibleScheduleCellsFromCloud({
             rebuild: true,
-            force: true,
+            force: false,
             forceSlots: false,
           })
         ).catch(function () {
@@ -30271,7 +30439,10 @@
     /* Paint Schedule from local stores immediately — never wait on network for first view. */
     releaseScheduleCloudHydrateGate();
     try {
-      paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+      paintVisibleScheduleWeekFast({
+        weekIndex: scheduleCalendarWeekIndex,
+        forcePaint: true,
+      });
     } catch (_earlyPaint) {
       /* ignore */
     }
@@ -30432,17 +30603,15 @@
      * Paint ASAP from local assignment/draft + any cached cells. Network cell hydrate
      * continues in the background — awaiting it here made first Schedule open laggy.
      */
-    try {
-      applyScheduleCellsCacheToLocalStore({
-        rebuild: false,
-        force: true,
-        replaceWeekIndex: scheduleCalendarWeekIndex,
-      });
-    } catch (_cachePaint) {
-      /* ignore */
-    }
+    /*
+     * Paint from assignment/draft stores only. Applying a stale cell cache here caused
+     * local → all day-off → cloud restore flicker.
+     */
     releaseScheduleCloudHydrateGate();
-    paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+    paintVisibleScheduleWeekFast({
+      weekIndex: scheduleCalendarWeekIndex,
+      forcePaint: true,
+    });
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
       renderManagerHomeShifts();
