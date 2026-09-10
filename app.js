@@ -8030,13 +8030,31 @@
         replaceWeekIndex: weekIndex,
       });
     }
+    /* Mark ready before paint so nested renderCalendarInto cannot hold/clear. */
+    markScheduleAuthoritativePaintReady();
     paintVisibleScheduleWeekFast({
       weekIndex: weekIndex,
       forcePaint: true,
       fast: true,
       forceInitial: true,
+      allowEmptyPaint: cloudTimed <= 0,
     });
-    markScheduleAuthoritativePaintReady();
+    /* If still empty but cloud had times, one more replace + paint. */
+    if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed > 0) {
+      applyScheduleCellsCacheToLocalStore({
+        rebuild: false,
+        force: true,
+        replaceTrusted: true,
+        replaceWeekIndex: weekIndex,
+        allowEmptyReplace: false,
+      });
+      paintVisibleScheduleWeekFast({
+        weekIndex: weekIndex,
+        forcePaint: true,
+        fast: true,
+        forceInitial: true,
+      });
+    }
     scheduleDeferredScheduleChrome(weekIndex);
     return !!(SCHEDULE && SCHEDULE.length);
   }
@@ -8070,6 +8088,8 @@
 
   function scheduleShouldHoldCalendarPaint(opts) {
     opts = opts || {};
+    /* Never block once we have timed rows to show. */
+    if (SCHEDULE && SCHEDULE.length) return false;
     /* Week nav / forced initial paint always render. */
     if (opts.weekNav || opts.forceInitial || opts.allowEmptyPaint || opts.allowDayOffShell) {
       return false;
@@ -8187,6 +8207,7 @@
           allowEmptyPaint: !!opts.allowEmptyPaint,
           allowDayOffShell: !!opts.allowDayOffShell,
           weekNav: !!opts.weekNav,
+          forceInitial: !!opts.forceInitial,
         });
       }
       if (SCHEDULE && SCHEDULE.length) {
@@ -22651,13 +22672,10 @@
         allowEmptyPaint: !!opts.allowEmptyPaint,
         allowDayOffShell: !!opts.allowDayOffShell,
         weekNav: !!opts.weekNav,
+        forceInitial: !!opts.forceInitial,
       })
     ) {
-      /* Blank until authoritative week — do not paint DAY-OFF shells. */
-      if (!targetEl.querySelector('table, .calendar-table')) {
-        targetEl.setAttribute('aria-busy', 'true');
-        targetEl.innerHTML = '';
-      }
+      /* Keep prior grid if any; do not wipe to blank (that hid the whole schedule). */
       return;
     }
     if (!SCHEDULE.length) {
@@ -23635,7 +23653,12 @@
 
   function renderCalendar(opts) {
     opts = opts || {};
-    if (scheduleUiAwaitingInitialCloudHydrate && !opts.forceCloudPending) {
+    if (
+      scheduleUiAwaitingInitialCloudHydrate &&
+      !opts.forceCloudPending &&
+      !opts.forceInitial &&
+      !opts.force
+    ) {
       return;
     }
     var readOnly =
@@ -23658,6 +23681,7 @@
       allowEmptyPaint: !!opts.allowEmptyPaint,
       allowDayOffShell: !!opts.allowDayOffShell,
       weekNav: !!opts.weekNav,
+      forceInitial: !!opts.forceInitial,
       deferLaborTotals: fast,
     });
     if (fast) {
