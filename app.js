@@ -6113,6 +6113,7 @@
       if (cellsRes && cellsRes.ok === false) return false;
       var fetchRows = (cellsRes && cellsRes.rows) || [];
       var cloudTimedVisible = countTimedCellsInFetchRows(fetchRows, null, fromIso, toIso);
+      markScheduleVisibleWeekFetch(targetWi, cloudTimedVisible);
       var wantTrusted =
         !!opts.replaceTrusted ||
         !!opts.forceDayOffReplace ||
@@ -6130,17 +6131,20 @@
         replaceTrusted: wantTrusted,
         forceDayOffReplace: !!opts.forceDayOffReplace,
         allowEmptyReplace: !!opts.allowEmptyReplace,
-        minCloudTimed: 8,
+        minCloudTimed: 4,
+        fetchTimedCount: cloudTimedVisible,
       });
-      if (applied && wantTrusted && currentScreen === 1) {
+      if (applied && currentScreen === 1) {
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
           forcePaint: true,
           fast: true,
           forceInitial: true,
+          /* Only allow empty message when cloud confirmed zero timed cells. */
           allowEmptyPaint: cloudTimedVisible <= 0,
+          confirmedEmpty: cloudTimedVisible <= 0,
         });
-        markScheduleAuthoritativePaintReady();
+        if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
         scheduleDeferredScheduleChrome(targetWi);
       }
       return applied;
@@ -6709,6 +6713,23 @@
     return n;
   }
 
+  function markScheduleVisibleWeekFetch(weekIndex, timedCount) {
+    scheduleLastFetchedWeekIndex = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    scheduleLastFetchedWeekTimedCount =
+      timedCount == null || isNaN(Number(timedCount)) ? -1 : Number(timedCount);
+    scheduleVisibleWeekFetchDone = true;
+  }
+
+  /** Only show "No shifts" after cloud said this week has zero timed cells. */
+  function scheduleCloudConfirmedWeekEmpty(weekIndex) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return true;
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return true;
+    if (!scheduleVisibleWeekFetchDone) return false;
+    if (scheduleLastFetchedWeekIndex !== wi) return false;
+    return scheduleLastFetchedWeekTimedCount === 0;
+  }
+
   /**
    * Refuse sparse cloud projections that would blank a staffed local week to day-off
    * (stale cache / incomplete fetch flash).
@@ -6725,9 +6746,17 @@
      */
     if (opts.replaceTrusted) {
       if (cloudTimed <= 0) return localTimed <= 0;
+      /*
+       * Projection must cover most of the fetched timed rows — otherwise replace
+       * rewrites the draft to nulls (DAY-OFF shell) before soft upsert refills.
+       */
+      var fetchTimed = Number(opts.fetchTimedCount);
+      if (Number.isFinite(fetchTimed) && fetchTimed > 0) {
+        if (cloudTimed < Math.max(4, Math.floor(fetchTimed * 0.5))) return false;
+      }
       if (localTimed <= 0) {
         /* Empty/day-off local: require a real staffed cloud week, not 1–2 cells. */
-        return cloudTimed >= Math.max(8, Number(opts.minCloudTimed) || 8);
+        return cloudTimed >= Math.max(4, Number(opts.minCloudTimed) || 4);
       }
       var minKeepTrusted = Math.max(4, Math.floor(localTimed * 0.5));
       return cloudTimed >= minKeepTrusted;
@@ -6746,12 +6775,12 @@
   function scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimedCount) {
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
     var cloudTimed = Number(cloudTimedCount) || 0;
-    if (cloudTimed < 8) return false;
+    if (cloudTimed < 4) return false;
     if (!localWeekHasTimedDraft(wi)) return true;
     if (scheduleWeekIsDayOffShellOnly(wi)) return true;
     var localTimed = countLocalTimedDraftWeek(wi);
     /* Local draft is sparse vs cloud — take the dense cloud week. */
-    if (localTimed > 0 && cloudTimed >= Math.max(8, Math.floor(localTimed * 1.25))) {
+    if (localTimed > 0 && cloudTimed >= Math.max(4, Math.floor(localTimed * 1.25))) {
       return true;
     }
     return false;
@@ -7185,17 +7214,18 @@
       if (pair[1] && pair[1].ok === false) {
         console.warn('gm-callout: schedule cells fetch failed', pair[1].error);
         /*
-         * Do not paint a DAY-OFF shell from a failed fetch — but never leave the
-         * schedule UI suppressed forever (week label "—", panels only, no tiles).
+         * Do not paint a DAY-OFF / "No shifts" shell from a failed fetch — keep
+         * any local timed grid and retry via poll.
          */
-        markScheduleAuthoritativePaintReady();
-        if (currentScreen === 1) {
+        markScheduleVisibleWeekFetch(wi, -1);
+        if (currentScreen === 1 && localWeekHasTimedDraft(wi)) {
+          markScheduleAuthoritativePaintReady();
           paintVisibleScheduleWeekFast({
             weekIndex: wi,
             forcePaint: true,
             fast: true,
             forceInitial: true,
-            allowEmptyPaint: true,
+            allowEmptyPaint: false,
           });
           scheduleDeferredScheduleChrome(wi);
         }
@@ -7221,6 +7251,7 @@
       );
       var timedForPaint =
         cloudTimedThisStore > 0 ? cloudTimedThisStore : cloudTimedVisible;
+      markScheduleVisibleWeekFetch(wi, timedForPaint);
       /*
        * Dense cloud + empty/shell local → trusted replace. Sparse cloud stays soft
        * so we do not wipe a good local week to DAY-OFF.
@@ -7231,7 +7262,8 @@
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: wi,
-          minCloudTimed: 8,
+          minCloudTimed: 4,
+          fetchTimedCount: timedForPaint,
         });
       } else {
         applyScheduleCellsCacheToLocalStore({
@@ -7250,7 +7282,8 @@
             force: true,
             replaceTrusted: true,
             replaceWeekIndex: wi,
-            minCloudTimed: 8,
+            minCloudTimed: 4,
+            fetchTimedCount: timedForPaint,
           });
         }
         markScheduleAuthoritativePaintReady();
@@ -7329,15 +7362,15 @@
       })();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
-      markScheduleAuthoritativePaintReady();
-      if (currentScreen === 1) {
+      if (currentScreen === 1 && localWeekHasTimedDraft(scheduleCalendarWeekIndex)) {
         try {
+          markScheduleAuthoritativePaintReady();
           paintVisibleScheduleWeekFast({
             weekIndex: scheduleCalendarWeekIndex,
             forcePaint: true,
             fast: true,
             forceInitial: true,
-            allowEmptyPaint: true,
+            allowEmptyPaint: false,
           });
           scheduleDeferredScheduleChrome(scheduleCalendarWeekIndex);
         } catch (_hp) {
@@ -7427,6 +7460,9 @@
    * Until then, never flash "No shifts to show" while cloud is still loading.
    */
   var scheduleVisibleWeekFetchDone = false;
+  /** Last visible-week cell fetch: week index + timed row count (-1 = unknown). */
+  var scheduleLastFetchedWeekIndex = -1;
+  var scheduleLastFetchedWeekTimedCount = -1;
   /**
    * True only after the first authoritative visible-week cell apply (or cloud unavailable).
    * Until then the calendar stays blank — never paint the all-day-off / wrong-order shell.
@@ -8141,6 +8177,7 @@
   function ensureVisibleWeekPaintedFromCells(wi, cloudTimedCount) {
     var weekIndex = wi != null ? Number(wi) : scheduleCalendarWeekIndex;
     var cloudTimed = Number(cloudTimedCount) || 0;
+    markScheduleVisibleWeekFetch(weekIndex, cloudTimed);
     try {
       if (scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimed)) {
         applyScheduleCellsCacheToLocalStore({
@@ -8148,9 +8185,10 @@
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: weekIndex,
-          minCloudTimed: 8,
+          minCloudTimed: 4,
+          fetchTimedCount: cloudTimed,
         });
-      } else if (cloudTimed > 0 && !localWeekHasTimedDraft(weekIndex, currentRestaurantId)) {
+      } else if (cloudTimed > 0) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
@@ -8161,24 +8199,35 @@
       console.warn('gm-callout: trusted week replace before paint', _rep);
     }
     /* Mark ready before paint so nested renderCalendarInto cannot hold/clear. */
-    markScheduleAuthoritativePaintReady();
+    if (localWeekHasTimedDraft(weekIndex) || cloudTimed <= 0) {
+      markScheduleAuthoritativePaintReady();
+    }
     paintVisibleScheduleWeekFast({
       weekIndex: weekIndex,
       forcePaint: true,
       fast: true,
       forceInitial: true,
       allowEmptyPaint: cloudTimed <= 0,
+      confirmedEmpty: cloudTimed <= 0,
     });
-    /* If still empty but cloud had times, one more replace + paint. */
-    if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed >= 8) {
+    /* If still empty but cloud had times, soft upsert again then paint. */
+    if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed >= 4) {
       try {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
-          replaceTrusted: true,
-          replaceWeekIndex: weekIndex,
-          minCloudTimed: 8,
+          upsertTimedOnly: true,
         });
+        if (scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimed)) {
+          applyScheduleCellsCacheToLocalStore({
+            rebuild: false,
+            force: true,
+            replaceTrusted: true,
+            replaceWeekIndex: weekIndex,
+            minCloudTimed: 4,
+            fetchTimedCount: cloudTimed,
+          });
+        }
       } catch (_rep2) {
         /* ignore */
       }
@@ -8187,9 +8236,11 @@
         forcePaint: true,
         fast: true,
         forceInitial: true,
-        allowEmptyPaint: true,
+        allowEmptyPaint: false,
+        confirmedEmpty: false,
       });
     }
+    if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
     scheduleDeferredScheduleChrome(weekIndex);
     updateScheduleWeekNav({ lite: true });
     return !!(SCHEDULE && SCHEDULE.length);
@@ -8215,30 +8266,45 @@
 
   function scheduleShouldSuppressEmptyCalendar(opts) {
     opts = opts || {};
-    /* Week nav / forced first paint must never stay blank. */
-    if (opts.weekNav || opts.forceInitial || opts.allowEmptyPaint || opts.allowDayOffShell) {
-      return false;
-    }
     if (SCHEDULE && SCHEDULE.length) return false;
+    /* Explicit day-off shell paints are rare and opt-in. */
+    if (opts.allowDayOffShell) return false;
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    /* Only suppress the empty hint before first paint — never block forever. */
-    if (!scheduleAuthoritativePaintReady) return true;
-    return false;
+    /*
+     * Never flash "No shifts to show" until cloud confirmed this week is empty.
+     * forceInitial / weekNav used to bypass this and paint the empty hint while
+     * cells were still in flight, then blink to DAY-OFF / real times.
+     */
+    if (opts.confirmedEmpty || scheduleCloudConfirmedWeekEmpty(opts.weekIndex)) {
+      return false;
+    }
+    if (opts.allowEmptyPaint && scheduleCloudConfirmedWeekEmpty(opts.weekIndex)) {
+      return false;
+    }
+    return true;
   }
 
   function scheduleShouldHoldCalendarPaint(opts) {
     opts = opts || {};
     /* Never block once we have timed rows to show. */
     if (SCHEDULE && SCHEDULE.length) return false;
-    /* Week nav / forced initial paint always render. */
-    if (opts.weekNav || opts.forceInitial || opts.allowEmptyPaint || opts.allowDayOffShell) {
+    /* Week nav with local timed draft always paints; empty week waits on cloud. */
+    if (opts.weekNav && localWeekHasTimedDraft(opts.weekIndex, currentRestaurantId)) {
+      return false;
+    }
+    if (opts.allowDayOffShell) return false;
+    if (opts.confirmedEmpty || scheduleCloudConfirmedWeekEmpty(opts.weekIndex)) {
       return false;
     }
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    /* Hold only before the first successful paint. */
+    /* Hold blank until first authoritative timed paint or confirmed-empty fetch. */
     if (!scheduleAuthoritativePaintReady) return true;
+    if (!scheduleVisibleWeekFetchDone) return true;
+    if (scheduleLastFetchedWeekIndex !== Number(opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex)) {
+      return true;
+    }
     return false;
   }
 
@@ -8336,16 +8402,19 @@
           allowDayOffShell: opts.allowDayOffShell,
           weekNav: opts.weekNav,
           forceInitial: opts.forceInitial,
+          confirmedEmpty: opts.confirmedEmpty,
         })
       ) {
         return;
       }
       if (
         scheduleShouldSuppressEmptyCalendar({
+          weekIndex: wi,
           weekNav: opts.weekNav,
           forceInitial: opts.forceInitial,
           allowEmptyPaint: opts.allowEmptyPaint,
           allowDayOffShell: opts.allowDayOffShell,
+          confirmedEmpty: opts.confirmedEmpty,
         })
       ) {
         return;
@@ -8358,6 +8427,7 @@
           allowDayOffShell: !!opts.allowDayOffShell,
           weekNav: !!opts.weekNav,
           forceInitial: !!opts.forceInitial,
+          confirmedEmpty: !!opts.confirmedEmpty,
         });
       }
       if (SCHEDULE && SCHEDULE.length) {
@@ -16744,16 +16814,21 @@
     persistSelectedScheduleWeekMonday(w);
     /* Invalidate in-flight week polls so a slower prior week cannot apply late. */
     scheduleCellsPollGeneration += 1;
+    /* New week: don't reuse prior week's empty/timed confirmation. */
+    if (scheduleLastFetchedWeekIndex !== w) {
+      scheduleLastFetchedWeekTimedCount = -1;
+      scheduleVisibleWeekFetchDone = false;
+    }
     updateScheduleWeekNav({ lite: true });
     updateEmpScheduleWeekNav();
-    /* Instant local paint — never wait on cloud or keep the previous week on screen. */
+    /* Instant local paint when this week already has times — never flash empty/DAY-OFF. */
     paintVisibleScheduleWeekFast({
       weekIndex: w,
       forcePaint: true,
       fast: true,
       weekNav: true,
       forceInitial: true,
-      allowEmptyPaint: true,
+      allowEmptyPaint: false,
     });
     scheduleDeferredScheduleChrome(w);
     if (
@@ -18637,7 +18712,7 @@
       console.warn('gm-callout: renderSchedule shell', _rs);
     }
     try {
-      renderCalendar({ force: true, forceInitial: true, allowEmptyPaint: true });
+      renderCalendar({ force: true, forceInitial: true, allowEmptyPaint: false });
     } catch (_rc) {
       console.warn('gm-callout: renderCalendar shell', _rc);
     }
@@ -22853,6 +22928,7 @@
         allowDayOffShell: !!opts.allowDayOffShell,
         weekNav: !!opts.weekNav,
         forceInitial: !!opts.forceInitial,
+        confirmedEmpty: !!opts.confirmedEmpty,
       })
     ) {
       /* Keep prior grid if any; do not wipe to blank (that hid the whole schedule). */
@@ -22872,27 +22948,24 @@
        * grid after a blank first paint even once cloud times arrived.
        */
       var existingMatrix = targetEl.querySelector('.calendar-matrix');
-      if (
-        existingMatrix &&
-        !opts.force &&
-        !opts.forceInitial &&
-        !opts.weekNav &&
-        !opts.allowEmptyPaint
-      ) {
-        var hasTimedTile = !!existingMatrix.querySelector('.calendar-slot-rp-time');
-        if (hasTimedTile) {
-          targetEl.setAttribute('aria-busy', 'false');
-          return;
-        }
+      if (existingMatrix && existingMatrix.querySelector('.calendar-slot-rp-time')) {
+        targetEl.setAttribute('aria-busy', 'false');
+        return;
       }
       if (
         scheduleShouldSuppressEmptyCalendar({
+          weekIndex: scheduleCalendarWeekIndex,
           weekNav: opts.weekNav,
           forceInitial: opts.forceInitial,
           allowEmptyPaint: opts.allowEmptyPaint,
           allowDayOffShell: opts.allowDayOffShell,
+          confirmedEmpty: opts.confirmedEmpty,
         })
       ) {
+        targetEl.setAttribute('aria-busy', 'true');
+        return;
+      }
+      if (!scheduleCloudConfirmedWeekEmpty(scheduleCalendarWeekIndex) && !opts.confirmedEmpty) {
         targetEl.setAttribute('aria-busy', 'true');
         return;
       }
@@ -23896,6 +23969,7 @@
       allowDayOffShell: !!opts.allowDayOffShell,
       weekNav: !!opts.weekNav,
       forceInitial: !!opts.forceInitial,
+      confirmedEmpty: !!opts.confirmedEmpty,
       deferLaborTotals: fast,
     });
     if (fast) {
@@ -31668,17 +31742,19 @@
     /* restoreFoh already rebuilds when it writes; skip a duplicate full rebuild. */
     void fohRestored;
     try {
+      var hasLocalTimed = localWeekHasTimedDraft(
+        scheduleCalendarWeekIndex,
+        currentRestaurantId
+      );
       paintVisibleScheduleWeekFast({
         weekIndex: scheduleCalendarWeekIndex,
         forcePaint: true,
         fast: true,
         forceInitial: true,
-        allowEmptyPaint: !localWeekHasTimedDraft(
-          scheduleCalendarWeekIndex,
-          currentRestaurantId
-        ),
+        /* Never flash "No shifts" before the visible-week cell fetch finishes. */
+        allowEmptyPaint: false,
       });
-      if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
+      if (hasLocalTimed) {
         markScheduleAuthoritativePaintReady();
       }
       updateScheduleWeekNav();
