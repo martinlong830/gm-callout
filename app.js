@@ -6129,7 +6129,8 @@
     try {
       scheduleSlotsPollTick += 1;
       var localNeedsSlots =
-        !localWeekHasTimedDraft(targetWi) || scheduleWeekIsDayOffShellOnly(targetWi);
+        !localWeekHasAuthoritativeTimedDraft(targetWi) ||
+        scheduleWeekIsDayOffShellOnly(targetWi);
       var needSlots =
         !!opts.forceSlots ||
         !!opts.replaceTrusted ||
@@ -6149,6 +6150,18 @@
       var cellsRes = pair[1];
       if (slotsRes && slotsRes.ok === false) return false;
       if (cellsRes && cellsRes.ok === false) return false;
+      /*
+       * Always trim draft/assignments to activeSlotCount after slots land — cell
+       * fingerprint no-ops used to leave deleted FOH rows (e.g. Irineo) forever.
+       */
+      var trimmed = false;
+      if (slotsRes && !slotsRes.skipped) {
+        try {
+          trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi });
+        } catch (_trim) {
+          trimmed = false;
+        }
+      }
       var fetchRows = (cellsRes && cellsRes.rows) || [];
       var cloudTimedVisible = countTimedCellsInFetchRows(fetchRows, null, fromIso, toIso);
       markScheduleVisibleWeekFetch(targetWi, cloudTimedVisible);
@@ -6158,7 +6171,7 @@
         scheduleVisibleWeekNeedsTrustedCloudReplace(targetWi, cloudTimedVisible);
       var applied = applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
-        force: !!opts.force || wantTrusted,
+        force: !!opts.force || wantTrusted || trimmed,
         /*
          * Soft poll for incremental edits. Escalate to trusted week replace when this
          * device is on an empty/DAY-OFF shell (or sparse draft) and cloud is dense —
@@ -6172,7 +6185,15 @@
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
-      if (applied && currentScreen === 1) {
+      /* Soft apply can still leave extras — trim again after cells merge. */
+      try {
+        if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
+          trimmed = true;
+        }
+      } catch (_trim2) {
+        /* ignore */
+      }
+      if ((applied || trimmed) && currentScreen === 1) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
@@ -6187,7 +6208,7 @@
         if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
         scheduleDeferredScheduleChrome(targetWi);
       }
-      return applied;
+      return !!(applied || trimmed);
     } catch (_poll) {
       return false;
     } finally {
@@ -6340,6 +6361,24 @@
             if (map && map[mk]) slotKey = map[mk];
           } catch (_peek) {
             slotKey = null;
+          }
+        }
+        /* Last resort: active slot cache by sort_order (stale map after peer edits). */
+        if (!slotKey && v2.getSlotCache) {
+          try {
+            var cache = v2.getSlotCache() || {};
+            Object.keys(cache).forEach(function (pk) {
+              if (slotKey) return;
+              var s = cache[pk];
+              if (!s || s.active === false) return;
+              if (String(s.restaurant_id) !== String(rid)) return;
+              if (String(s.role) !== String(role)) return;
+              if (Number(s.sort_order) === trIdx && s.slot_key) {
+                slotKey = String(s.slot_key);
+              }
+            });
+          } catch (_cachePeek) {
+            /* ignore */
           }
         }
         if (!slotKey || !v2.opDeactivateSlot) {
@@ -6816,7 +6855,11 @@
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
     var cloudTimed = Number(cloudTimedCount) || 0;
     if (cloudTimed < 4) return false;
-    if (!localWeekHasTimedDraft(wi)) return true;
+    /*
+     * DEFAULT / unpersisted fallback times are not real local authority — peers
+     * stuck on that shell otherwise soft-upsert forever and stay on DAY-OFF.
+     */
+    if (!localWeekHasAuthoritativeTimedDraft(wi)) return true;
     if (scheduleWeekIsDayOffShellOnly(wi)) return true;
     var localTimed = countLocalTimedDraftWeek(wi);
     /* Local draft is sparse vs cloud — take the dense cloud week. */
@@ -7155,6 +7198,14 @@
           }
         });
       }
+      /* Always trim the week we just touched — fingerprint no-ops used to skip this. */
+      var trimWi =
+        opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+          ? Number(opts.replaceWeekIndex)
+          : scheduleCalendarWeekIndex;
+      if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
+        changed = true;
+      }
     } finally {
       endTeamStateRemoteApply();
     }
@@ -7329,6 +7380,12 @@
       var timedForPaint =
         cloudTimedThisStore > 0 ? cloudTimedThisStore : cloudTimedVisible;
       markScheduleVisibleWeekFetch(wi, timedForPaint);
+      /* Slots landed — drop phantom local rows before cell merge / first paint. */
+      try {
+        reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
+      } catch (_hydTrim) {
+        /* ignore */
+      }
       /*
        * Dense cloud + empty/shell local → trusted replace. Sparse cloud stays soft
        * so we do not wipe a good local week to DAY-OFF.
@@ -7348,6 +7405,11 @@
           force: true,
           upsertTimedOnly: true,
         });
+      }
+      try {
+        reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
+      } catch (_hydTrim2) {
+        /* ignore */
       }
       if (currentScreen === 1) {
         ensureVisibleWeekPaintedFromCells(wi, timedForPaint);
@@ -9695,8 +9757,14 @@
         forceSlots: true,
         replaceTrusted: true,
         replaceWeekIndex: scheduleCalendarWeekIndex,
+        forceDayOffReplace: !localWeekHasAuthoritativeTimedDraft(scheduleCalendarWeekIndex),
       });
     } catch (_refPoll) {
+      /* ignore */
+    }
+    try {
+      reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex });
+    } catch (_refTrim) {
       /* ignore */
     }
     if (!res || !res.ok) {
@@ -15829,21 +15897,44 @@
         });
         setCustomSlotOrderForRole(rid, delRole, remapped, weekMon);
       });
-      /* Deactivate cloud slots after local draft shrinks so poll cannot resurrect rows. */
-      void enqueueV2DeactivateSlots(rid, wi, pendingSlotDeletes);
     }
-    syncAssignmentBreaksFromDraftModal(wi, rid, nextRows, breakRows);
-    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    syncAssignmentTimesFromDraftForWeek(wi, rid);
-    pruneScheduleAssignmentsInvalidSlots();
-    /* Flush only after draft + break + timeLabel/hours are all written locally. */
-    scheduleTeamStateDebouncedSync();
-    flushTeamStateSyncNow();
-    rebuildEmployeeDerivedData();
-    rebuildSchedule();
-    renderCalendar();
-    if (scheduleBody) renderSchedule();
-    notifyTimecardsScheduleChanged();
+    function finishPersistDraftLocalUi() {
+      syncAssignmentBreaksFromDraftModal(wi, rid, nextRows, breakRows);
+      AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
+      syncAssignmentTimesFromDraftForWeek(wi, rid);
+      pruneScheduleAssignmentsInvalidSlots();
+      /* Flush only after draft + break + timeLabel/hours are all written locally. */
+      scheduleTeamStateDebouncedSync();
+      flushTeamStateSyncNow();
+      rebuildEmployeeDerivedData();
+      rebuildSchedule();
+      renderCalendar({ force: true });
+      if (scheduleBody) renderSchedule();
+      notifyTimecardsScheduleChanged();
+    }
+    finishPersistDraftLocalUi();
+    /* Deactivate cloud slots after local UI so poll cannot resurrect deleted rows. */
+    if (pendingSlotDeletes && pendingSlotDeletes.length) {
+      return enqueueV2DeactivateSlots(rid, wi, pendingSlotDeletes).then(function (res) {
+        if (res && res.ok === false) {
+          showScheduleNotice(
+            (res.error && res.error.message) ||
+              'Could not sync deleted row to cloud. Try Refresh, then delete again.',
+            false
+          );
+        } else {
+          /* Re-fetch slots on this device so activeSlotCount matches peers. */
+          void pollVisibleScheduleCellsFromCloud({
+            rebuild: true,
+            force: true,
+            forceSlots: true,
+            replaceWeekIndex: wi,
+            upsertTimedOnly: true,
+          });
+        }
+        return res;
+      });
+    }
   }
 
   /** Default start/end when enabling a day-off cell (same row or built-in template). */
@@ -23252,8 +23343,9 @@
         managedWorkerKeysForAbbrev = Object.create(null);
       }
     }
-    /* Fast week-scroll: skip scanning other weeks for row names (was a major lag). */
-    var rowPersonOpts = opts.fast ? { allowOtherWeeks: false } : null;
+    /* Never borrow Person labels from other weeks — that put Irineo (etc.) on
+       trailing FOH day-off rows until cloud/slots caught up. */
+    var rowPersonOpts = { allowOtherWeeks: false };
 
     SCHEDULE_GRID_ROLE_ORDER.forEach(function (roleKey) {
       var rd = ROLE_DEFS.find(function (r) {
