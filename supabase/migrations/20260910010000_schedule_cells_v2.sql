@@ -259,10 +259,10 @@ as $$
 declare
   uid uuid := auth.uid();
   cid uuid;
-  op jsonb;
-  op_id uuid;
-  op_type text;
-  payload jsonb;
+  v_op jsonb;
+  v_op_id uuid;
+  v_op_type text;
+  v_payload jsonb;
   next_rev bigint;
   applied jsonb := '[]'::jsonb;
   conflicts jsonb := '[]'::jsonb;
@@ -312,12 +312,12 @@ begin
 
   n := jsonb_array_length(p_ops);
   for i in 0 .. n - 1 loop
-    op := p_ops -> i;
-    op_id := nullif(op->>'op_id', '')::uuid;
-    op_type := coalesce(nullif(op->>'op_type', ''), nullif(op->>'type', ''), '');
-    payload := coalesce(op->'payload', op - 'op_id' - 'op_type' - 'type');
+    v_op := p_ops -> i;
+    v_op_id := nullif(v_op->>'op_id', '')::uuid;
+    v_op_type := coalesce(nullif(v_op->>'op_type', ''), nullif(v_op->>'type', ''), '');
+    v_payload := coalesce(v_op->'payload', v_op - 'op_id' - 'op_type' - 'type');
 
-    if op_id is null then
+    if v_op_id is null then
       conflicts := conflicts || jsonb_build_array(jsonb_build_object(
         'index', i, 'reason', 'missing_op_id'
       ));
@@ -325,21 +325,23 @@ begin
     end if;
 
     -- Idempotent: already applied
-    if exists (select 1 from public.schedule_ops where schedule_ops.op_id = op_id) then
+    if exists (
+      select 1 from public.schedule_ops so where so.op_id = v_op_id
+    ) then
       applied := applied || jsonb_build_array(jsonb_build_object(
-        'op_id', op_id, 'op_type', op_type, 'duplicate', true
+        'op_id', v_op_id, 'op_type', v_op_type, 'duplicate', true
       ));
       continue;
     end if;
 
-    if op_type = 'add_slot' then
-      rest_id := payload->>'restaurant_id';
-      role_t := payload->>'role';
-      slot_k := coalesce(nullif(payload->>'slot_key', '')::uuid, gen_random_uuid());
-      sort_n := coalesce((payload->>'sort_order')::int, 0);
+    if v_op_type = 'add_slot' then
+      rest_id := v_payload->>'restaurant_id';
+      role_t := v_payload->>'role';
+      slot_k := coalesce(nullif(v_payload->>'slot_key', '')::uuid, gen_random_uuid());
+      sort_n := coalesce((v_payload->>'sort_order')::int, 0);
       if rest_id is null or role_t is null then
         conflicts := conflicts || jsonb_build_array(jsonb_build_object(
-          'op_id', op_id, 'reason', 'invalid_add_slot'
+          'op_id', v_op_id, 'reason', 'invalid_add_slot'
         ));
         continue;
       end if;
@@ -347,7 +349,7 @@ begin
       insert into public.schedule_slots (
         company_id, restaurant_id, role, slot_key, sort_order, label, active, updated_at
       ) values (
-        cid, rest_id, role_t, slot_k, sort_n, payload->>'label', true, now()
+        cid, rest_id, role_t, slot_k, sort_n, v_payload->>'label', true, now()
       )
       on conflict (company_id, restaurant_id, role, slot_key) do update set
         sort_order = excluded.sort_order,
@@ -355,12 +357,12 @@ begin
         active = true,
         updated_at = now();
 
-    elsif op_type = 'reorder_slots' then
-      rest_id := payload->>'restaurant_id';
-      role_t := payload->>'role';
+    elsif v_op_type = 'reorder_slots' then
+      rest_id := v_payload->>'restaurant_id';
+      role_t := v_payload->>'role';
       next_rev := next_rev + 1;
-      for sort_n in 0 .. coalesce(jsonb_array_length(payload->'slot_keys'), 0) - 1 loop
-        slot_k := nullif(payload->'slot_keys'->>sort_n, '')::uuid;
+      for sort_n in 0 .. coalesce(jsonb_array_length(v_payload->'slot_keys'), 0) - 1 loop
+        slot_k := nullif(v_payload->'slot_keys'->>sort_n, '')::uuid;
         if slot_k is null then continue; end if;
         update public.schedule_slots
         set sort_order = sort_n, updated_at = now()
@@ -370,10 +372,10 @@ begin
           and slot_key = slot_k;
       end loop;
 
-    elsif op_type = 'deactivate_slot' then
-      rest_id := payload->>'restaurant_id';
-      role_t := payload->>'role';
-      slot_k := nullif(payload->>'slot_key', '')::uuid;
+    elsif v_op_type = 'deactivate_slot' then
+      rest_id := v_payload->>'restaurant_id';
+      role_t := v_payload->>'role';
+      slot_k := nullif(v_payload->>'slot_key', '')::uuid;
       next_rev := next_rev + 1;
       update public.schedule_slots
       set active = false, updated_at = now()
@@ -383,31 +385,31 @@ begin
       where company_id = cid and restaurant_id = rest_id and role = role_t and slot_key = slot_k
         and deleted = false;
 
-    elsif op_type in ('set_times', 'set_day_off', 'set_worker') then
-      rest_id := payload->>'restaurant_id';
-      day_d := nullif(payload->>'day_iso', '')::date;
-      role_t := payload->>'role';
-      slot_k := nullif(payload->>'slot_key', '')::uuid;
+    elsif v_op_type in ('set_times', 'set_day_off', 'set_worker') then
+      rest_id := v_payload->>'restaurant_id';
+      day_d := nullif(v_payload->>'day_iso', '')::date;
+      role_t := v_payload->>'role';
+      slot_k := nullif(v_payload->>'slot_key', '')::uuid;
       if rest_id is null or day_d is null or role_t is null or slot_k is null then
         conflicts := conflicts || jsonb_build_array(jsonb_build_object(
-          'op_id', op_id, 'reason', 'invalid_cell_key'
+          'op_id', v_op_id, 'reason', 'invalid_cell_key'
         ));
         continue;
       end if;
 
       -- Ensure slot exists
       insert into public.schedule_slots (company_id, restaurant_id, role, slot_key, sort_order, active)
-      values (cid, rest_id, role_t, slot_k, coalesce((payload->>'sort_order')::int, 0), true)
+      values (cid, rest_id, role_t, slot_k, coalesce((v_payload->>'sort_order')::int, 0), true)
       on conflict do nothing;
 
-      select rev into cell_rev
-      from public.schedule_cells
-      where company_id = cid and restaurant_id = rest_id and day_iso = day_d
-        and role = role_t and slot_key = slot_k;
+      select c.rev into cell_rev
+      from public.schedule_cells c
+      where c.company_id = cid and c.restaurant_id = rest_id and c.day_iso = day_d
+        and c.role = role_t and c.slot_key = slot_k;
 
       if p_base_rev is not null and cell_rev is not null and cell_rev > p_base_rev then
         conflicts := conflicts || jsonb_build_array(jsonb_build_object(
-          'op_id', op_id,
+          'op_id', v_op_id,
           'reason', 'cell_conflict',
           'day_iso', day_d,
           'role', role_t,
@@ -426,45 +428,45 @@ begin
         updated_at, updated_by, updated_by_device
       ) values (
         cid, rest_id, day_d, role_t, slot_k,
-        case when op_type = 'set_day_off' then null else coalesce(payload->>'start_hhmm', null) end,
-        case when op_type = 'set_day_off' then null else coalesce(payload->>'end_hhmm', null) end,
-        nullif(payload->>'worker_id', '')::uuid,
-        nullif(payload->>'worker_name', ''),
-        payload->>'break_annotation',
-        case when payload ? 'break_paid' then (payload->>'break_paid')::boolean else null end,
+        case when v_op_type = 'set_day_off' then null else coalesce(v_payload->>'start_hhmm', null) end,
+        case when v_op_type = 'set_day_off' then null else coalesce(v_payload->>'end_hhmm', null) end,
+        nullif(v_payload->>'worker_id', '')::uuid,
+        nullif(v_payload->>'worker_name', ''),
+        v_payload->>'break_annotation',
+        case when v_payload ? 'break_paid' then (v_payload->>'break_paid')::boolean else null end,
         false,
         next_rev,
         now(), uid, p_device_id
       )
       on conflict (company_id, restaurant_id, day_iso, role, slot_key) do update set
         start_hhmm = case
-          when op_type = 'set_day_off' then null
-          when op_type = 'set_times' then excluded.start_hhmm
+          when v_op_type = 'set_day_off' then null
+          when v_op_type = 'set_times' then excluded.start_hhmm
           else c.start_hhmm
         end,
         end_hhmm = case
-          when op_type = 'set_day_off' then null
-          when op_type = 'set_times' then excluded.end_hhmm
+          when v_op_type = 'set_day_off' then null
+          when v_op_type = 'set_times' then excluded.end_hhmm
           else c.end_hhmm
         end,
         -- Day-off keeps worker/row owner unless set_worker clears/sets it
         worker_id = case
-          when op_type = 'set_worker' then excluded.worker_id
+          when v_op_type = 'set_worker' then excluded.worker_id
           else coalesce(c.worker_id, excluded.worker_id)
         end,
         worker_name = case
-          when op_type = 'set_worker' then excluded.worker_name
-          when op_type = 'set_day_off' then coalesce(c.worker_name, excluded.worker_name)
+          when v_op_type = 'set_worker' then excluded.worker_name
+          when v_op_type = 'set_day_off' then coalesce(c.worker_name, excluded.worker_name)
           else coalesce(excluded.worker_name, c.worker_name)
         end,
         break_annotation = case
-          when op_type = 'set_day_off' then null
-          when op_type = 'set_times' then coalesce(excluded.break_annotation, c.break_annotation)
+          when v_op_type = 'set_day_off' then null
+          when v_op_type = 'set_times' then coalesce(excluded.break_annotation, c.break_annotation)
           else c.break_annotation
         end,
         break_paid = case
-          when op_type = 'set_times' and payload ? 'break_paid' then excluded.break_paid
-          when op_type = 'set_day_off' then null
+          when v_op_type = 'set_times' and v_payload ? 'break_paid' then excluded.break_paid
+          when v_op_type = 'set_day_off' then null
           else c.break_paid
         end,
         deleted = false,
@@ -473,18 +475,18 @@ begin
         updated_by = uid,
         updated_by_device = p_device_id;
 
-    elsif op_type = 'set_week_meta' then
-      rest_id := payload->>'restaurant_id';
-      week_mon := nullif(payload->>'week_monday_iso', '')::date;
+    elsif v_op_type = 'set_week_meta' then
+      rest_id := v_payload->>'restaurant_id';
+      week_mon := nullif(v_payload->>'week_monday_iso', '')::date;
       next_rev := next_rev + 1;
       insert into public.schedule_week_meta (
         company_id, restaurant_id, week_monday_iso,
         group_order_potential, net_sales, extras, rev, updated_at, updated_by
       ) values (
         cid, rest_id, week_mon,
-        nullif(payload->>'group_order_potential', '')::numeric,
-        nullif(payload->>'net_sales', '')::numeric,
-        coalesce(payload->'extras', '{}'::jsonb),
+        nullif(v_payload->>'group_order_potential', '')::numeric,
+        nullif(v_payload->>'net_sales', '')::numeric,
+        coalesce(v_payload->'extras', '{}'::jsonb),
         next_rev, now(), uid
       )
       on conflict (company_id, restaurant_id, week_monday_iso) do update set
@@ -495,9 +497,9 @@ begin
         updated_at = now(),
         updated_by = uid;
 
-    elsif op_type = 'publish_week' then
-      rest_id := payload->>'restaurant_id';
-      week_mon := nullif(payload->>'week_monday_iso', '')::date;
+    elsif v_op_type = 'publish_week' then
+      rest_id := v_payload->>'restaurant_id';
+      week_mon := nullif(v_payload->>'week_monday_iso', '')::date;
       next_rev := next_rev + 1;
       select coalesce(jsonb_agg(to_jsonb(c) order by c.day_iso, c.role, c.slot_key), '[]'::jsonb)
       into snap
@@ -521,16 +523,16 @@ begin
 
     else
       conflicts := conflicts || jsonb_build_array(jsonb_build_object(
-        'op_id', op_id, 'reason', 'unknown_op_type', 'op_type', op_type
+        'op_id', v_op_id, 'reason', 'unknown_op_type', 'op_type', v_op_type
       ));
       continue;
     end if;
 
     insert into public.schedule_ops (op_id, company_id, rev, created_by, device_id, op_type, payload)
-    values (op_id, cid, next_rev, uid, p_device_id, op_type, payload);
+    values (v_op_id, cid, next_rev, uid, p_device_id, v_op_type, v_payload);
 
     applied := applied || jsonb_build_array(jsonb_build_object(
-      'op_id', op_id, 'op_type', op_type, 'rev', next_rev
+      'op_id', v_op_id, 'op_type', v_op_type, 'rev', next_rev
     ));
   end loop;
 
