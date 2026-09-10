@@ -283,14 +283,20 @@
   }
 
   function opSetDayOff(restaurantId, dayIso, role, slotKey, workerName) {
-    return makeOp('set_day_off', {
+    var p = {
       restaurant_id: restaurantId,
       day_iso: dayIso,
       role: role,
       slot_key: slotKey,
-      /* Always include worker_name so null clears sticky FOH names off BOH day-offs. */
-      worker_name: workerName && workerName !== 'Unassigned' ? workerName : null,
-    });
+    };
+    /*
+     * Match SQL apply_schedule_ops: omit worker_name → keep existing row owner;
+     * explicit null clears sticky wrong-role names; a real name sets Person identity.
+     */
+    if (arguments.length >= 5) {
+      p.worker_name = workerName && workerName !== 'Unassigned' ? workerName : null;
+    }
+    return makeOp('set_day_off', p);
   }
 
   function opSetWorker(restaurantId, dayIso, role, slotKey, workerName, workerId) {
@@ -663,6 +669,10 @@
         var day0 = String(c0.day_iso || '').slice(0, 10);
         if (day0 < String(fromIso).slice(0, 10) || day0 > String(toIso).slice(0, 10)) return;
         if (!c0.start_hhmm || !c0.end_hhmm) return;
+        /* Orphan cells for slots no longer active must not inflate density and
+           block legitimate peer-delete tombstones on the remaining active slots. */
+        var spk0 = [c0.restaurant_id, c0.role, c0.slot_key].join('\0');
+        if (!slots[spk0] || slots[spk0].active === false) return;
         var rid0 = String(c0.restaurant_id || '');
         localTimedByRid[rid0] = (localTimedByRid[rid0] || 0) + 1;
       });

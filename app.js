@@ -6063,6 +6063,12 @@
           deviceId: v2 && v2.deviceId ? v2.deviceId() : null,
           ts: Date.now(),
           forceDayOffReplace: !!opts.forceDayOffReplace,
+          weekIndex:
+            opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+              ? Number(opts.weekIndex)
+              : null,
+          restaurantId: opts.restaurantId ? String(opts.restaurantId) : null,
+          hardEpoch: opts.hardEpoch != null ? Number(opts.hardEpoch) : null,
         },
       })
       .catch(function () {
@@ -6103,11 +6109,23 @@
       .then(function (res) {
         if (res && res.ok && !res.empty) {
           scheduleLastCellFlushAt = Date.now();
-          /* Cloud now has our write — stop blocking peer/self poll apply. */
-          scheduleLocalAuthorityUntil = 0;
+          /*
+           * Never clear local authority while a Person-row protect is armed — add-slot
+           * flush finishing after an Eugene assign used to open a race where soft poll
+           * stomped the new stubs before cloud echoed them.
+           */
+          if (
+            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)
+          ) {
+            scheduleLocalAuthorityUntil = 0;
+          }
           void broadcastScheduleCellsChanged();
         } else if (res && res.ok && res.empty) {
-          scheduleLocalAuthorityUntil = 0;
+          if (
+            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)
+          ) {
+            scheduleLocalAuthorityUntil = 0;
+          }
         }
         if (res && res.ok === false) {
           /*
@@ -6234,11 +6252,23 @@
       if (slotsRes && slotsRes.ok === false) return false;
       if (cellsRes && cellsRes.ok === false) return false;
       /*
-       * Always trim draft/assignments to activeSlotCount after slots land — cell
-       * fingerprint no-ops used to leave deleted FOH rows (e.g. Irineo) forever.
+       * Soft idle polls must only merge cell upserts. reconcile/trim/dedupe/restore
+       * used to run every 5s and chop newly added Eugene rows / reshuffle the grid
+       * with nobody editing — that looked like the schedule "changing by itself".
        */
+      var mutatingRepair = !!(
+        opts.force ||
+        opts.replaceTrusted ||
+        opts.forceDayOffReplace ||
+        opts.allowMutatingRepair ||
+        opts.allowRevive
+      );
+      var interactiveHold =
+        hasInteractiveScheduleEditsThisSession() ||
+        scheduleLocalAuthorityActive() ||
+        schedulePersonRowProtectActive(currentRestaurantId, targetWi);
       var trimmed = false;
-      if (slotsRes && !slotsRes.skipped) {
+      if (mutatingRepair && !interactiveHold && slotsRes && !slotsRes.skipped) {
         try {
           trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi });
         } catch (_trim) {
@@ -6263,21 +6293,31 @@
         if (gen !== scheduleCellsPollGeneration) return false;
         if (slotsForced && slotsForced.ok === false) return false;
         slotsRes = slotsForced || { ok: true };
-        try {
-          trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi }) || trimmed;
-        } catch (_trim0) {
-          /* ignore */
+        if (mutatingRepair && !interactiveHold) {
+          try {
+            trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi }) || trimmed;
+          } catch (_trim0) {
+            /* ignore */
+          }
         }
       }
       var wantTrusted =
         !!opts.replaceTrusted ||
         !!opts.forceDayOffReplace ||
-        scheduleVisibleWeekNeedsTrustedCloudReplace(targetWi, cloudTimedVisible);
+        (!interactiveHold &&
+          scheduleVisibleWeekNeedsTrustedCloudReplace(targetWi, cloudTimedVisible));
       /*
        * Revive / wrong-role clear only on force Refresh or trusted replace — every soft
        * poll used to re-enqueue ops, freeze peer apply, and fight other devices.
+       * Never revive during hard-revert / template forceDayOffReplace — that re-uploaded
+       * pre-assert timed cells and rolled the week back on peers.
        */
-      if (opts.force || opts.replaceTrusted || opts.allowRevive) {
+      if (
+        mutatingRepair &&
+        !interactiveHold &&
+        (opts.force || opts.replaceTrusted || opts.allowRevive) &&
+        !opts.forceDayOffReplace
+      ) {
         try {
           reviveDeletedTimedCellsForWeek(targetWi, currentRestaurantId);
           clearWrongRoleCloudWorkersForWeek(targetWi, currentRestaurantId);
@@ -6302,80 +6342,83 @@
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
-      /* Soft apply can still leave extras — trim again after cells merge. */
-      try {
-        if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
-          trimmed = true;
-        }
-        if (clearPhantomRowOwnersForEmptySlots(targetWi, currentRestaurantId)) {
-          trimmed = true;
-        }
-        if (trimTrailingGhostScheduleSlots(targetWi, currentRestaurantId)) {
-          trimmed = true;
-        }
+      /* Mutating cleanup only on Refresh / trusted / hard assert — never on idle soft poll. */
+      if (mutatingRepair && !interactiveHold) {
         try {
+          if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
+            trimmed = true;
+          }
+          if (clearPhantomRowOwnersForEmptySlots(targetWi, currentRestaurantId)) {
+            trimmed = true;
+          }
+          if (trimTrailingGhostScheduleSlots(targetWi, currentRestaurantId)) {
+            trimmed = true;
+          }
+          try {
+            if (
+              restoreWeekPeopleOntoTimedDraftRows(targetWi, currentRestaurantId, {
+                skipDirty: true,
+                skipInteractiveMark: true,
+                writeCloud: false,
+                allowRosterDefaults: false,
+              })
+            ) {
+              trimmed = true;
+            }
+            /* One-shot: undo Karl invent stamped onto last week FOH by roster defaults. */
+            if (
+              targetWi < SCHEDULE_TEMPLATE_WEEK_INDEX &&
+              clearInventedWorkerFromWeekRole(
+                targetWi,
+                'Bartender',
+                'KARL SANTIAGO',
+                currentRestaurantId,
+                {
+                  skipDirty: true,
+                  skipInteractiveMark: true,
+                  writeCloud: true,
+                  onceKey: 'gm-scrub-karl-foh-w' + targetWi + '-v1',
+                }
+              )
+            ) {
+              trimmed = true;
+            }
+          } catch (_rest) {
+            /* ignore */
+          }
           if (
-            restoreWeekPeopleOntoTimedDraftRows(targetWi, currentRestaurantId, {
+            (opts.force || opts.replaceTrusted || opts.allowRevive) &&
+            repairFlippedFohBohRolesForWeek(targetWi, currentRestaurantId, {
               skipDirty: true,
               skipInteractiveMark: true,
-              writeCloud: false,
-              allowRosterDefaults: false,
+              writeCloud: true,
             })
           ) {
             trimmed = true;
           }
-          /* One-shot: undo Karl invent stamped onto last week FOH by roster defaults. */
-          if (
-            targetWi < SCHEDULE_TEMPLATE_WEEK_INDEX &&
-            clearInventedWorkerFromWeekRole(
-              targetWi,
-              'Bartender',
-              'KARL SANTIAGO',
-              currentRestaurantId,
-              {
-                skipDirty: true,
-                skipInteractiveMark: true,
-                writeCloud: true,
-                onceKey: 'gm-scrub-karl-foh-w' + targetWi + '-v1',
-              }
-            )
-          ) {
+          try {
+            if (
+              (opts.force || opts.replaceTrusted || opts.allowRevive) &&
+              clearWrongRoleCloudWorkersForWeek(targetWi, currentRestaurantId)
+            ) {
+              trimmed = true;
+            }
+          } catch (_clr) {
+            /* ignore */
+          }
+          if (dedupeSamePersonRoleRowsForWeek(targetWi, currentRestaurantId)) {
             trimmed = true;
           }
-        } catch (_rest) {
+        } catch (_trim2) {
           /* ignore */
         }
-        if (
-          (opts.force || opts.replaceTrusted || opts.allowRevive) &&
-          repairFlippedFohBohRolesForWeek(targetWi, currentRestaurantId, {
-            skipDirty: true,
-            skipInteractiveMark: true,
-            writeCloud: true,
-          })
-        ) {
-          trimmed = true;
-        }
-        try {
-          if (
-            (opts.force || opts.replaceTrusted || opts.allowRevive) &&
-            clearWrongRoleCloudWorkersForWeek(targetWi, currentRestaurantId)
-          ) {
-            trimmed = true;
-          }
-        } catch (_clr) {
-          /* ignore */
-        }
-        if (dedupeSamePersonRoleRowsForWeek(targetWi, currentRestaurantId)) {
-          trimmed = true;
-        }
-      } catch (_trim2) {
-        /* ignore */
       }
       /*
        * One recovery pass: dense cloud still not in local draft → refetch slots and
        * trusted-replace (projection often failed on a cold/stale slot map).
        */
       if (
+        !interactiveHold &&
         cloudTimedVisible >= 4 &&
         countLocalTimedDraftWeek(targetWi) < 4 &&
         !opts._slotRetry
@@ -6393,11 +6436,16 @@
             replaceTrusted: true,
             replaceWeekIndex: targetWi,
             forceDayOffReplace: false,
+            allowMutatingRepair: true,
             _slotRetry: true,
           })
         );
       }
-      if ((applied || trimmed || countLocalTimedDraftWeek(targetWi) >= 4) && currentScreen === 1) {
+      /*
+       * Paint only when local schedule actually changed. Painting every soft poll
+       * (timed>=4) remounted Person selects and made Eugene flicker Unassigned.
+       */
+      if ((applied || trimmed) && currentScreen === 1) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
@@ -6411,8 +6459,16 @@
         });
         if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
         scheduleDeferredScheduleChrome(targetWi);
+      } else if (
+        !scheduleAuthoritativePaintReady &&
+        currentScreen === 1 &&
+        (cloudTimedVisible <= 0 || countLocalTimedDraftWeek(targetWi) >= 4)
+      ) {
+        /* First hydrate only — never on every idle poll. */
+        scheduleUiAwaitingInitialCloudHydrate = false;
+        if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
       }
-      return !!(applied || trimmed || countLocalTimedDraftWeek(targetWi) >= 4);
+      return !!(applied || trimmed);
     } catch (_poll) {
       return false;
     } finally {
@@ -6662,6 +6718,9 @@
              * Do not chop intentional all-day-off Person rows past cloud activeSlotCount
              * while a local assign / opAddSlot is in flight — that snapped Eugene → Unassigned.
              */
+            if (schedulePersonRowProtectActive(rid, wi)) {
+              /* keep full local length during protect */
+            } else {
             var keepThrough = want;
             for (var trKeep = want; trKeep < layers[role].length; trKeep += 1) {
               var keepOwner = false;
@@ -6689,20 +6748,26 @@
               layers[role] = layers[role].slice(0, keepThrough);
               layerChanged = true;
             }
+            }
           }
           Object.keys(rs).forEach(function (shiftId) {
             var p = parseShiftIdParts(shiftId);
             if (!p || p.roleIdx !== roleIdx) return;
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekStart + 7) return;
             if (p.trIdx < want) return;
-            if (p.trIdx < layers[role].length) {
-              var protect = normalizeScheduleAssignment(rs[shiftId]);
-              if (
-                (protect && protect.rowOwner && protect.rowOwner !== 'Unassigned') ||
-                scheduleAssignmentHasStaffedWorkers(protect)
-              ) {
-                return;
-              }
+            /*
+             * Always honor rowOwner / staffed — even when draft length already shrank
+             * below this trIdx. Old gate (trIdx < layers.length) deleted Eugene stubs.
+             */
+            var protect = normalizeScheduleAssignment(rs[shiftId]);
+            if (
+              (protect && protect.rowOwner && protect.rowOwner !== 'Unassigned') ||
+              scheduleAssignmentHasStaffedWorkers(protect)
+            ) {
+              return;
+            }
+            if (schedulePersonRowProtectActive(rid, wi) && p.trIdx >= want) {
+              return;
             }
             delete rs[shiftId];
             changed = true;
@@ -6801,6 +6866,8 @@
     if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return false;
     var rid = restaurantId || currentRestaurantId;
     if (!rid) return false;
+    /* Hold while manager is adding/assigning a Person row — soft apply used to trim it. */
+    if (schedulePersonRowProtectActive(rid, wi)) return false;
     var v2 = gmScheduleV2();
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var store = loadScheduleAssignmentsStore();
@@ -7005,7 +7072,7 @@
             delete entry.timeLabel;
             delete entry.hours;
             if (writeCloud && dayIso && slotKey && v2.opSetDayOff) {
-              ops.push(v2.opSetDayOff(rid, dayIso, role, slotKey, null));
+              ops.push(v2.opSetDayOff(rid, dayIso, role, slotKey, person));
             }
           }
           rs[sid] = entry;
@@ -7115,7 +7182,9 @@
   function enqueueV2RowWorker(role, trIdx, personName) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2) return Promise.resolve({ ok: false });
-    armScheduleLocalAuthority(4000);
+    armScheduleLocalAuthority(20000);
+    armSchedulePersonRowProtect(currentRestaurantId, scheduleCalendarWeekIndex, 45000);
+    markScheduleInteractiveEdit();
     return syncScheduleSlotsFromCloudThen(function () {
       var slotKey =
         (v2.resolveSlotKey && v2.resolveSlotKey(currentRestaurantId, role, trIdx)) ||
@@ -7142,24 +7211,47 @@
         var worker =
           personName && personName !== 'Unassigned' ? personName : null;
         /*
-         * All-day-off Person rows must only emit set_day_off — never set_worker on a
-         * cloud slot that still has stale times (that re-surfaced clock times).
+         * All-day-off Person rows must clear times via set_day_off, then force
+         * worker_name via set_worker. Older apply_schedule_ops kept coalesce(old,new)
+         * on set_day_off alone — names never stuck without the set_worker follow-up.
          */
         if (rowAllDayOff && v2.opSetDayOff) {
           ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, worker));
+          if (worker && v2.opSetWorker) {
+            ops.push(
+              v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, worker, null)
+            );
+          }
         } else if (hasTimed) {
           ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, worker, null));
         } else if (v2.opSetDayOff) {
           ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, worker));
+          if (worker && v2.opSetWorker) {
+            ops.push(
+              v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, worker, null)
+            );
+          }
         } else {
           ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, worker, null));
         }
       });
       enqueueScheduleV2Ops(ops);
+      enqueueV2RowWorker._lastDayOff = !!rowAllDayOff;
     }).then(function () {
       return flushScheduleV2Outbox();
     }).then(function (res) {
-      scheduleLocalAuthorityUntil = 0;
+      if (enqueueV2RowWorker._lastDayOff) {
+        armScheduleLocalAuthority(30000);
+        armSchedulePersonRowProtect(currentRestaurantId, scheduleCalendarWeekIndex, 45000);
+        /* Blob dual-write so reload / non-cell peers still see the Person row. */
+        scheduleAssignmentsDirty = true;
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateWriteThroughSoon();
+      } else {
+        scheduleLocalAuthorityUntil = 0;
+      }
+      enqueueV2RowWorker._lastDayOff = false;
       return res || { ok: true };
     });
   }
@@ -7755,19 +7847,11 @@
         var key = person && person !== 'Unassigned' ? normalizeWorkerKey(person) : '';
         if (key && seen[key]) {
           /*
-           * Duplicate timed rows still collapse. All-day-off Person identity on a second
-           * row must not delete the row — that snapped Eugene → Unassigned.
+           * Collapse duplicate TIMED rows only. Never strip or drop an all-day-off
+           * Person row (Eugene on a newly added line) — soft poll dedupe used to
+           * clear rowOwner → Unassigned flicker.
            */
           if (!rowHasTimed) {
-            for (var diClr = 0; diClr < 7; diClr += 1) {
-              var clrId = 'shift-' + (weekStart + diClr) + '-' + roleIdx + '-' + trIdx;
-              if (rs[clrId] == null) continue;
-              var clrEnt = cloneScheduleAssignment(rs[clrId]);
-              clrEnt.workers = ['Unassigned'];
-              delete clrEnt.rowOwner;
-              rs[clrId] = clrEnt;
-              changed = true;
-            }
             keep.push(layers[role][trIdx]);
             continue;
           }
@@ -8000,6 +8084,8 @@
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     /* Hard-revert guard is absolute — force must not re-apply stale cloud mid-write. */
     if (Date.now() < scheduleHardRevertGuardUntil) return false;
+    /* Person-row add/assign protect is absolute — in-flight force applies used to stomp. */
+    if (schedulePersonRowApplyHardBlocked()) return false;
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     if (typeof v2.projectCellsToAssignmentPatch !== 'function') return false;
     var pendingOutboxKeys = schedulePendingOutboxCellKeys();
@@ -8117,6 +8203,24 @@
             if (!p) return;
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
             if (!patchCells[shiftId]) {
+              /*
+               * Keep intentional all-day-off Person stubs (Eugene on a new row) that
+               * cloud has not echoed yet — deleting them snapped assigns to Unassigned.
+               */
+              var keepLocal = normalizeScheduleAssignment(rs[shiftId]);
+              if (
+                keepLocal &&
+                ((keepLocal.rowOwner && keepLocal.rowOwner !== 'Unassigned') ||
+                  scheduleAssignmentHasStaffedWorkers(keepLocal)) &&
+                !(
+                  keepLocal.timeLabel &&
+                  String(keepLocal.timeLabel).trim() &&
+                  String(keepLocal.timeLabel).toUpperCase() !== 'DAY-OFF'
+                )
+              ) {
+                return;
+              }
+              if (schedulePersonRowProtectActive(rid, wi)) return;
               delete rs[shiftId];
               changed = true;
             }
@@ -8144,14 +8248,51 @@
           if (upsertTimedOnly) {
             if (!cellHasTimed(cells[shiftId])) {
               /*
-               * Soft peer day-off only when this week still has a dense timed cloud
-               * (intentional single-shift clear). Sparse all-day-off fetches must not
-               * erase a staffed local week (last week collapsed to one person).
+               * Soft peer day-off only when:
+               * - this week still has a dense timed cloud (intentional single-shift clear), OR
+               * - cloud carries day-off Person identity (Eugene on a new all-day-off row).
+               * Sparse empty day-offs must not erase a staffed local week.
                */
               var weekTimedN = countTimedCellsInPatchWeek(patch, wi);
-              if (!(cell && cell.dayOff && prevWasTimed && weekTimedN >= 4)) return;
+              var dayOffPerson =
+                cell &&
+                cell.dayOff &&
+                ((cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+                  (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned'));
+              if (!(dayOffPerson || (cell && cell.dayOff && prevWasTimed && weekTimedN >= 4))) {
+                return;
+              }
+            }
+            /*
+             * Soft timed cells must not overwrite an intentional all-day-off Person
+             * (rowOwner + no local times). That snapped Eugene → Unassigned.
+             */
+            if (
+              cellHasTimed(cells[shiftId]) &&
+              prevLocal &&
+              !prevWasTimed
+            ) {
+              var prevNormSoft = normalizeScheduleAssignment(prevLocal);
+              if (
+                prevNormSoft &&
+                prevNormSoft.rowOwner &&
+                prevNormSoft.rowOwner !== 'Unassigned'
+              ) {
+                return;
+              }
             }
           } else if (!timedWeeks[wi] && !replaceWeeks[wi]) {
+            return;
+          }
+          /*
+           * After hard revert / template assert, soft merges for this store+week are
+           * blocked until the watermark expires (peers take forceDayOffReplace instead).
+           */
+          if (
+            upsertTimedOnly &&
+            !replaceWeeks[wi] &&
+            scheduleWeekSoftApplyBlockedByHardEpoch(rid, wi)
+          ) {
             return;
           }
           /* During trusted replace, skip sparse restaurants (same guard as draft). */
@@ -8169,8 +8310,13 @@
             if (ridTimedG < 4 && localRidTimedG >= 4) return;
             if (ridTimedG <= 0 && localRidTimedG > 0) return;
           }
-          /* Day-offs from soft upsert only when replacing a known timed local shift. */
-          if (cell.dayOff && !replaceWeeks[wi] && !(upsertTimedOnly && prevWasTimed)) return;
+          /* Day-offs from soft upsert: replacing a timed local shift, OR Person identity. */
+          if (cell.dayOff && !replaceWeeks[wi]) {
+            var softDayOffPerson =
+              (cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+              (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned');
+            if (!(upsertTimedOnly && (prevWasTimed || softDayOffPerson))) return;
+          }
           /* Protect unsent local ops from peer paint. */
           if (pendingOutboxKeys && Object.keys(pendingOutboxKeys).length) {
             var roleForPend =
@@ -8278,10 +8424,47 @@
           }
         });
       });
+      if (schedulePersonRowApplyHardBlocked()) {
+        return false;
+      }
       if (scheduleCellRemoteApplyBlocked() && !opts.force) {
         return false;
       }
       if (changed) {
+        /*
+         * Re-merge intentional day-off Person stubs that landed in LS while this apply
+         * held a stale store snapshot (add→assign race stomped Eugene within ~500ms).
+         */
+        try {
+          var liveStore = loadScheduleAssignmentsStore();
+          Object.keys(liveStore || {}).forEach(function (ridLive) {
+            var liveRs = liveStore[ridLive] || {};
+            if (!store[ridLive]) store[ridLive] = {};
+            Object.keys(liveRs).forEach(function (shiftId) {
+              var liveEnt = normalizeScheduleAssignment(liveRs[shiftId]);
+              if (
+                !liveEnt ||
+                !(
+                  (liveEnt.rowOwner && liveEnt.rowOwner !== 'Unassigned') ||
+                  scheduleAssignmentHasStaffedWorkers(liveEnt)
+                )
+              ) {
+                return;
+              }
+              var liveTimed =
+                liveEnt.timeLabel &&
+                String(liveEnt.timeLabel).trim() &&
+                String(liveEnt.timeLabel).toUpperCase() !== 'DAY-OFF';
+              if (liveTimed) return;
+              if (store[ridLive][shiftId] == null) {
+                store[ridLive][shiftId] = liveRs[shiftId];
+                changed = true;
+              }
+            });
+          });
+        } catch (_mergeLive) {
+          /* ignore */
+        }
         saveScheduleAssignmentsStore(store, {
           skipDirty: true,
           skipInteractiveMark: true,
@@ -8331,21 +8514,59 @@
               activeN = Number(v2.activeSlotCount(rid, role)) || 0;
             }
             /*
-             * Only allocate rows that have timed cloud cells. Using full activeSlotCount
-             * recreated empty Unassigned trailing FOH/BOH rows from forked slots.
+             * Allocate rows for timed cloud cells AND day-off Person identity
+             * (Eugene all-day-off on slot 5). maxTimedTr alone left draft length 4
+             * so Refresh dropped the 5th FOH row even when cloud had worker_name.
              */
-            var maxTimedTr = -1;
+            var maxRowTr = -1;
             Object.keys(patchCells).forEach(function (sid) {
               var pCell = parseShiftIdParts(sid);
               if (!pCell || pCell.roleIdx !== roleIdx) return;
               if (pCell.globalDayIdx < weekStart || pCell.globalDayIdx >= weekStart + 7) return;
-              if (!cellHasTimed(patchCells[sid])) return;
-              if (pCell.trIdx > maxTimedTr) maxTimedTr = pCell.trIdx;
+              var pc = patchCells[sid];
+              var person =
+                (pc && pc.rowOwner && pc.rowOwner !== 'Unassigned' && pc.rowOwner) ||
+                (pc &&
+                  pc.workers &&
+                  pc.workers[0] &&
+                  pc.workers[0] !== 'Unassigned' &&
+                  pc.workers[0]) ||
+                null;
+              if (!cellHasTimed(pc) && !person) return;
+              if (pCell.trIdx > maxRowTr) maxRowTr = pCell.trIdx;
             });
-            var n = maxTimedTr >= 0 ? maxTimedTr + 1 : 0;
-            if (n <= 0) n = Math.min(slotCountForRole(role, wi, rid) || 1, activeN > 0 ? activeN : 1);
-            if (activeN > 0) n = Math.min(n, activeN);
+            var n = maxRowTr >= 0 ? maxRowTr + 1 : 0;
+            if (n <= 0) {
+              n = Math.min(slotCountForRole(role, wi, rid) || 1, activeN > 0 ? activeN : 1);
+              if (activeN > 0) n = Math.min(n, activeN);
+            }
+            /* Never cap below a cloud person/timed row — activeN can lag a new add_slot. */
+            if (maxRowTr >= 0) n = Math.max(n, maxRowTr + 1);
             if (n <= 0) n = 1;
+            /*
+             * Keep trailing day-off Person rows (rowOwner / staffed) only — never inflate
+             * n for empty Unassigned shells (that flashed a ghost FOH row on Refresh).
+             */
+            var keepOwnerThrough = n;
+            for (var trOwn = n; trOwn < ((layers[role] && layers[role].length) || 0); trOwn += 1) {
+              var hasOwn = false;
+              for (var dOwn = 0; dOwn < 7; dOwn += 1) {
+                var ownEnt = normalizeScheduleAssignment(
+                  store[rid] &&
+                    store[rid]['shift-' + (weekStart + dOwn) + '-' + roleIdx + '-' + trOwn]
+                );
+                if (
+                  (ownEnt && ownEnt.rowOwner && ownEnt.rowOwner !== 'Unassigned') ||
+                  scheduleAssignmentHasStaffedWorkers(ownEnt)
+                ) {
+                  hasOwn = true;
+                  break;
+                }
+              }
+              if (hasOwn) keepOwnerThrough = trOwn + 1;
+              else break;
+            }
+            n = Math.max(n, keepOwnerThrough);
             if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
             while (layers[role].length < n) {
               layers[role].push([null, null, null, null, null, null, null]);
@@ -8492,11 +8713,37 @@
       if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
         changed = true;
       }
+      /*
+       * Drop empty trailing Unassigned rows BEFORE paint. Apply used to coalesce-paint
+       * first; trim in the outer poll ran after — ghost FOH row flashed then vanished.
+       */
+      var trimWeeks = Object.create(null);
+      trimWeeks[trimWi] = true;
+      Object.keys(replaceWeeks).forEach(function (k) {
+        trimWeeks[k] = true;
+      });
+      Object.keys(timedWeeks).forEach(function (k) {
+        trimWeeks[k] = true;
+      });
+      Object.keys(trimWeeks).forEach(function (wiStr) {
+        var tw = Number(wiStr);
+        if (isNaN(tw)) return;
+        restaurantsList.forEach(function (rest) {
+          if (trimTrailingGhostScheduleSlots(tw, rest.id)) changed = true;
+        });
+      });
     } finally {
       endTeamStateRemoteApply();
     }
     scheduleLastAppliedFingerprint = fp;
     if (!changed) return false;
+    try {
+      if (ensureDraftRowsCoverStaffedAssignments(loadScheduleAssignmentsStore())) {
+        changed = true;
+      }
+    } catch (_coverApply) {
+      /* ignore */
+    }
     if (opts.rebuild !== false && currentScreen === 1) {
       var trustedPaint = !!opts.replaceTrusted || Object.keys(replaceWeeks).length > 0;
       coalesceVisibleSchedulePaint({
@@ -8898,6 +9145,55 @@
   var scheduleLastCellFlushAt = 0;
   /** Block peer/stale cell applies until hard-revert cloud flush finishes. */
   var scheduleHardRevertGuardUntil = 0;
+  /**
+   * Per store+week watermark after hard revert / template apply.
+   * Soft polls must not resurrect pre-assert cells until this expires.
+   * key: restaurantId + '\\0' + weekIndex → { epoch, until }
+   */
+  var scheduleHardReplaceEpochByWeek = Object.create(null);
+
+  function scheduleHardReplaceWeekKey(restaurantId, weekIndex) {
+    return (
+      String(restaurantId || currentRestaurantId || '') +
+      '\0' +
+      String(weekIndex != null ? weekIndex : scheduleCalendarWeekIndex)
+    );
+  }
+
+  function markScheduleHardReplaceEpoch(restaurantId, weekIndex, ttlMs) {
+    var key = scheduleHardReplaceWeekKey(restaurantId, weekIndex);
+    var epoch = Date.now();
+    scheduleHardReplaceEpochByWeek[key] = {
+      epoch: epoch,
+      until: epoch + (ttlMs != null ? Number(ttlMs) : 120000),
+    };
+    return epoch;
+  }
+
+  function scheduleWeekSoftApplyBlockedByHardEpoch(restaurantId, weekIndex) {
+    var ent = scheduleHardReplaceEpochByWeek[scheduleHardReplaceWeekKey(restaurantId, weekIndex)];
+    return !!(ent && Date.now() < ent.until);
+  }
+
+  /**
+   * Protect newly added / day-off Person rows (e.g. Eugene) from soft/trusted cloud
+   * replace until ops land and peers can echo them.
+   * key: restaurantId + '\\0' + weekIndex → until ms
+   */
+  var schedulePersonRowProtectUntilByWeek = Object.create(null);
+
+  function armSchedulePersonRowProtect(restaurantId, weekIndex, ttlMs) {
+    var key = scheduleHardReplaceWeekKey(restaurantId, weekIndex);
+    schedulePersonRowProtectUntilByWeek[key] = Math.max(
+      schedulePersonRowProtectUntilByWeek[key] || 0,
+      Date.now() + (ttlMs != null ? Number(ttlMs) : 45000)
+    );
+  }
+
+  function schedulePersonRowProtectActive(restaurantId, weekIndex) {
+    var until = schedulePersonRowProtectUntilByWeek[scheduleHardReplaceWeekKey(restaurantId, weekIndex)];
+    return !!(until && Date.now() < until);
+  }
   /** True after a successful cells+slots hydrate — then blob schedule merges are skipped. */
   var scheduleCellsHydratedOk = false;
   /**
@@ -9044,7 +9340,15 @@
      * land in the outbox; not a multi-minute authority window.
      */
     if (scheduleLocalAuthorityActive()) return true;
+    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
     return false;
+  }
+
+  /** Absolute block — even Refresh/force must not stomp an in-progress Person-row add. */
+  function schedulePersonRowApplyHardBlocked() {
+    return schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex);
   }
 
   /** Cell keys (restaurant|day|role|slot) with unsent outbox ops — protect from peer paint. */
@@ -9084,6 +9388,10 @@
    */
   function hasInteractiveScheduleEditsThisSession() {
     if (!scheduleInteractiveEditAt) return false;
+    if (scheduleLocalAuthorityActive()) return true;
+    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
     if (scheduleSyncV2WriteOnly()) {
       return scheduleInteractiveEditAt > (scheduleLastCellFlushAt || 0);
     }
@@ -11058,14 +11366,30 @@
         if (!payload) return;
         if (payload.clientId && payload.clientId === TEAM_STATE_CLIENT_INSTANCE_ID) return;
         var hardPeer = !!payload.forceDayOffReplace;
-        /* Soft upsert by default; hard-revert peers may full-replace including day-offs. */
+        var peerWi =
+          payload.weekIndex != null && !isNaN(Number(payload.weekIndex))
+            ? Number(payload.weekIndex)
+            : scheduleCalendarWeekIndex;
+        if (
+          hardPeer &&
+          payload.hardEpoch != null &&
+          payload.restaurantId
+        ) {
+          markScheduleHardReplaceEpoch(
+            payload.restaurantId,
+            peerWi,
+            120000
+          );
+        }
+        /* Soft upsert by default; hard-revert / template peers full-replace including day-offs. */
         void pollVisibleScheduleCellsFromCloud({
           rebuild: true,
           force: hardPeer,
           forceSlots: hardPeer,
           replaceTrusted: hardPeer,
           forceDayOffReplace: hardPeer,
-          replaceWeekIndex: hardPeer ? scheduleCalendarWeekIndex : undefined,
+          replaceWeekIndex: hardPeer ? peerWi : undefined,
+          allowStaleWeekApply: hardPeer,
           upsertTimedOnly: !hardPeer,
           /* Soft peer ping: still pull — outbox no longer freezes the whole apply. */
         });
@@ -17620,6 +17944,9 @@
     }
     rows[role].push(makeNullDraftWeekRow());
     var newTrIdx = rows[role].length - 1;
+    markScheduleInteractiveEdit();
+    armScheduleLocalAuthority(30000);
+    armSchedulePersonRowProtect(rid, wi, 60000);
     /* Persist first so undo snapshot captures pre-add draft + slot order. */
     persistDraftScheduleRows(rows, wi, rid, null, []);
     var weekMon = mondayIsoForScheduleWeekIndex(wi);
@@ -17628,6 +17955,26 @@
       existingOrder.push(newTrIdx);
       setCustomSlotOrderForRole(rid, role, existingOrder, weekMon);
       scheduleTeamStateDebouncedSync();
+    }
+    /* Register the new slot in cloud immediately so soft polls cannot trim it as a ghost. */
+    try {
+      var v2add = gmScheduleV2();
+      if (scheduleSyncV2Enabled() && v2add) {
+        void syncScheduleSlotsFromCloudThen(function () {
+          var slotKey =
+            (v2add.resolveSlotKey && v2add.resolveSlotKey(rid, role, newTrIdx)) ||
+            (v2add.ensureSlotKey && v2add.ensureSlotKey(rid, role, newTrIdx));
+          if (!slotKey) return;
+          enqueueScheduleV2Ops([v2add.opAddSlot(rid, role, slotKey, newTrIdx, null)]);
+        }).then(function () {
+          return flushScheduleV2Outbox();
+        }).then(function () {
+          armScheduleLocalAuthority(20000);
+          armSchedulePersonRowProtect(rid, wi, 45000);
+        });
+      }
+    } catch (_addSlotCloud) {
+      /* ignore */
     }
     showScheduleNotice('Added slot ' + rows[role].length + ' for ' + (STAFF_TYPE_LABELS[role] || role) + '.', true);
   }
@@ -21936,15 +22283,7 @@
       if (scheduleBody) renderSchedule();
       notifyTimecardsScheduleChanged();
       scheduleTeamStateDebouncedSync();
-      /* Cells SoT: push restored week as ISO ops so Apply cannot snap back. */
-      try {
-        if (scheduleSyncV2Enabled()) {
-          enqueueScheduleV2OpsFromLocalStores();
-          void flushScheduleV2Outbox();
-        }
-      } catch (_tplV2) {
-        console.warn('gm-callout: template apply cell ops', _tplV2);
-      }
+      /* Cell SoT push happens in assertAuthoritativeScheduleWeekToCloud on Apply. */
       if (!appliedSlots && weekPatternHasStaffedSlots(weekPattern)) {
         appliedSlots = Object.keys(weekPattern).length;
       }
@@ -22637,6 +22976,117 @@
       }
       return drainMore();
     });
+  }
+
+  /**
+   * Authoritative cloud write for one store+week (hard revert / template apply).
+   * Dual-writes team_state blobs + scoped schedule_cells, confirms local dirty,
+   * and broadcasts forceDayOffReplace so every device converges on this week.
+   */
+  async function assertAuthoritativeScheduleWeekToCloud(opts) {
+    opts = opts || {};
+    var rid = resolveDraftRestaurantId(opts.restaurantId || currentRestaurantId);
+    var wi = resolveDraftWeekIndex(
+      opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex
+    );
+    var hardEpoch = markScheduleHardReplaceEpoch(rid, wi, 120000);
+    scheduleHardRevertGuardUntil = Date.now() + 120000;
+    armScheduleLocalAuthority(120000);
+    markScheduleInteractiveEdit();
+    teamStateForcePushIgnoreVersion = true;
+    teamStateForcePushActive = true;
+    teamStateForcePushIgnoreVersionSticky = true;
+
+    var pushOk = false;
+    var cellsOk = false;
+    try {
+      await flushTeamStateSyncNow();
+      pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
+      if (!pushOk) {
+        /* Upsert may leave dirty flags; lock confirmed from live if push recorded. */
+        if (teamStateLastLocalPushAt && teamStateLastLocalPushAt >= Date.now() - 5000) {
+          syncScheduleConfirmedFromLiveLocal();
+          pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
+        }
+      }
+      if (scheduleSyncV2Enabled()) {
+        var v2hr = gmScheduleV2();
+        var cidHr = gmCalloutCompanyId();
+        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+          await v2hr.fetchSlots(window.gmSupabase, cidHr);
+        }
+        if (opts.alignSlots !== false) {
+          enqueueHardRevertSlotAlignmentOps(rid, wi);
+          await drainScheduleV2OutboxBounded(12);
+          if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+            await v2hr.fetchSlots(window.gmSupabase, cidHr);
+          }
+        }
+        var cellPush = await forcePushLocalScheduleCellsToCloud({
+          restaurantId: rid,
+          weekIndex: wi,
+        });
+        cellsOk = !!(cellPush && cellPush.ok !== false);
+        var fromIso = dayIsoForScheduleWeekDay(wi, 0);
+        var toIso = dayIsoForScheduleWeekDay(wi, 6);
+        if (cellsOk && v2hr && cidHr && fromIso && toIso) {
+          var verify = await v2hr.fetchCellsRange(window.gmSupabase, cidHr, fromIso, toIso);
+          if (!verify || verify.ok === false) {
+            cellsOk = false;
+          } else {
+            var timed = 0;
+            ((verify.rows) || []).forEach(function (row) {
+              if (!row || row.deleted) return;
+              if (String(row.restaurant_id) !== String(rid)) return;
+              if (row.start_hhmm && row.end_hhmm) timed += 1;
+            });
+            var localTimed = countLocalTimedDraftWeek(wi, rid);
+            if (localTimed > 0 && timed === 0) {
+              cellsOk = false;
+            }
+          }
+        }
+        if (cellsOk) {
+          scheduleLastCellFlushAt = Date.now();
+          void broadcastScheduleCellsChanged({
+            forceDayOffReplace: true,
+            weekIndex: wi,
+            restaurantId: rid,
+            hardEpoch: hardEpoch,
+          });
+        }
+      } else {
+        cellsOk = pushOk;
+      }
+      if (pushOk || cellsOk) {
+        syncScheduleConfirmedFromLiveLocal();
+        var liveHash = liveScheduleBundleHash();
+        if (liveHash) {
+          scheduleLastPushHash = liveHash;
+          persistSchedulePushGuard();
+        }
+      }
+    } catch (syncErr) {
+      console.warn('gm-callout: authoritative week cloud sync', syncErr);
+      cellsOk = false;
+    } finally {
+      teamStateForcePushActive = false;
+      scheduleHardRevertGuardUntil = Date.now() + (cellsOk ? 20000 : 60000);
+      armScheduleLocalAuthority(cellsOk ? 25000 : 60000);
+      if (cellsOk) {
+        /* Sticky ignore only while asserting — clear so peers can soft-converge later. */
+        teamStateForcePushIgnoreVersionSticky = false;
+        teamStateForcePushIgnoreVersion = false;
+      }
+    }
+    return {
+      ok: !!(pushOk || cellsOk),
+      pushOk: pushOk,
+      cellsOk: cellsOk,
+      restaurantId: rid,
+      weekIndex: wi,
+      hardEpoch: hardEpoch,
+    };
   }
 
   /**
@@ -23859,6 +24309,26 @@
       }
     });
     if (bestCount > 0) return best;
+    /*
+     * Intentional all-day-off Person rows store identity on rowOwner with Unassigned
+     * workers. Prefer that when this row has no timed draft cells — do not require
+     * allowStickyOwner (that flag stayed off to avoid Irineo on trailing ghosts).
+     */
+    var stickyOwner = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays || getVisibleWeekDays());
+    if (stickyOwner) {
+      var layersSticky = getDraftScheduleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId);
+      var rowSticky = layersSticky && layersSticky[role] && layersSticky[role][trIdx];
+      var timedSticky = false;
+      if (rowSticky) {
+        for (var si = 0; si < 7; si += 1) {
+          if (rowSticky[si] && rowSticky[si][0] && rowSticky[si][1]) {
+            timedSticky = true;
+            break;
+          }
+        }
+      }
+      if (!timedSticky) return stickyOwner;
+    }
     if (allowStickyOwner) {
       var sticky = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays);
       if (sticky) return sticky;
@@ -24401,6 +24871,30 @@
     if (!templateScratch) {
       scheduleTeamStateDebouncedSync();
       scheduleTeamStateWriteThroughSoon();
+      armSchedulePersonRowProtect(currentRestaurantId, scheduleCalendarWeekIndex, 60000);
+      try {
+        /*
+         * Force draft length to cover this Person row in LS. In-memory can already be
+         * long enough while a stomped LS draft stays at 4 — Refresh then drops Eugene.
+         */
+        var coverLayers = cloneDraftSchedule(
+          getDraftScheduleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId)
+        );
+        if (!Array.isArray(coverLayers[role])) coverLayers[role] = [];
+        while (coverLayers[role].length <= trIdx) {
+          coverLayers[role].push(makeNullDraftWeekRow());
+        }
+        saveDraftScheduleRowsForWeek(
+          scheduleCalendarWeekIndex,
+          coverLayers,
+          currentRestaurantId
+        );
+        ensureDraftRowsCoverStaffedAssignments(loadScheduleAssignmentsStore());
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+      } catch (_cover) {
+        /* ignore */
+      }
       enqueueV2RowWorker(role, trIdx, canon);
     }
   }
@@ -30708,58 +31202,13 @@
       false
     );
 
-    teamStateForcePushIgnoreVersion = true;
-    teamStateForcePushActive = true;
-    teamStateForcePushIgnoreVersionSticky = true;
-
-    var pushOk = false;
-    var cellsOk = false;
+    var syncRes = { ok: false, pushOk: false, cellsOk: false };
     try {
-      await flushTeamStateSyncNow();
-      pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
-      if (scheduleSyncV2Enabled()) {
-        var v2hr = gmScheduleV2();
-        var cidHr = gmCalloutCompanyId();
-        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
-          await v2hr.fetchSlots(sb, cidHr);
-        }
-        enqueueHardRevertSlotAlignmentOps(rid, wi);
-        await drainScheduleV2OutboxBounded(12);
-        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
-          await v2hr.fetchSlots(sb, cidHr);
-        }
-        /* Full week cell rewrite (times + day-offs) then drain until outbox empty. */
-        var cellPush = await forcePushLocalScheduleCellsToCloud({
-          restaurantId: rid,
-          weekIndex: wi,
-        });
-        cellsOk = !!(cellPush && cellPush.ok !== false);
-        var fromIso = dayIsoForScheduleWeekDay(wi, 0);
-        var toIso = dayIsoForScheduleWeekDay(wi, 6);
-        if (cellsOk && v2hr && cidHr && fromIso && toIso) {
-          var verify = await v2hr.fetchCellsRange(sb, cidHr, fromIso, toIso);
-          if (!verify || verify.ok === false) {
-            cellsOk = false;
-          } else {
-            var timed = 0;
-            ((verify.rows) || []).forEach(function (row) {
-              if (!row || row.deleted) return;
-              if (String(row.restaurant_id) !== String(rid)) return;
-              if (row.start_hhmm && row.end_hhmm) timed += 1;
-            });
-            var localTimed = countLocalTimedDraftWeek(wi, rid);
-            if (localTimed > 0 && timed === 0) {
-              cellsOk = false;
-            }
-          }
-        }
-        if (cellsOk) {
-          scheduleLastCellFlushAt = Date.now();
-          void broadcastScheduleCellsChanged({ forceDayOffReplace: true });
-        }
-      } else {
-        cellsOk = pushOk;
-      }
+      syncRes = await assertAuthoritativeScheduleWeekToCloud({
+        restaurantId: rid,
+        weekIndex: wi,
+        alignSlots: true,
+      });
       void insertScheduleRevisionRow({
         source: 'hard_revert',
         assignments: loadScheduleAssignmentsStore(),
@@ -30777,13 +31226,11 @@
       });
     } catch (syncErr) {
       console.warn('gm-callout: hard revert cloud sync', syncErr);
-      cellsOk = false;
-    } finally {
-      teamStateForcePushActive = false;
-      /* Keep guarding briefly so a late poll cannot resurrect the pre-revert cloud. */
-      scheduleHardRevertGuardUntil = Date.now() + (cellsOk ? 15000 : 60000);
-      armScheduleLocalAuthority(cellsOk ? 20000 : 60000);
+      syncRes = { ok: false, pushOk: false, cellsOk: false };
     }
+
+    var pushOk = !!syncRes.pushOk;
+    var cellsOk = !!syncRes.cellsOk;
 
     paintVisibleScheduleWeekFast({
       weekIndex: wi,
@@ -30810,7 +31257,9 @@
     }
     showScheduleNotice(
       gmT('schedule.hardRevertDoneScoped', { range: range }) ||
-        'Restored this store’s schedule for ' + range + ' from history. Other devices will match on Refresh.',
+        'Restored this store’s schedule for ' +
+          range +
+          ' from history. Other devices will match automatically.',
       true
     );
   }
@@ -31076,8 +31525,14 @@
         if (applyConfirmYes) applyConfirmYes.disabled = false;
         return;
       }
-      Promise.resolve(flushTeamStateSyncNow())
-        .then(function () {
+      Promise.resolve(
+        assertAuthoritativeScheduleWeekToCloud({
+          restaurantId: currentRestaurantId,
+          weekIndex: scheduleCalendarWeekIndex,
+          alignSlots: true,
+        })
+      )
+        .then(function (syncRes) {
           var successMsg =
             'Preview applied to ' +
             range +
@@ -31088,7 +31543,13 @@
                 (appliedSlots === 1 ? '' : 's') +
                 ').'
               : '.');
-          showScheduleNotice(successMsg, false);
+          if (syncRes && syncRes.cellsOk) {
+            successMsg += ' Cloud updated — other devices will match.';
+          } else if (syncRes && !syncRes.ok) {
+            successMsg +=
+              ' Cloud sync incomplete — click Save to cloud, then Refresh on other computers.';
+          }
+          showScheduleNotice(successMsg, !!(syncRes && syncRes.ok));
           closeScheduleTemplateModal({ keepLiveSchedule: true });
         })
         .finally(function () {

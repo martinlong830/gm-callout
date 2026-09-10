@@ -31,11 +31,17 @@ function emptyState() {
     sync.opSetWorker('rp-9', '2026-09-05', 'Bartender', slot, 'MARK ONG', null),
   ]);
   var r2 = sync.applyOpsLocal(r1.state, [
-    sync.opSetDayOff('rp-9', '2026-09-05', 'Bartender', slot, null),
+    /* Omit worker_name → preserve row owner (explicit null would clear). */
+    sync.opSetDayOff('rp-9', '2026-09-05', 'Bartender', slot),
   ]);
   var cell = r2.state.cells[sync.cellKey('rp-9', '2026-09-05', 'Bartender', slot)];
   assert(cell.start_hhmm == null && cell.end_hhmm == null, 'day-off clears times');
   assert(cell.worker_name === 'MARK ONG', 'day-off keeps row owner MARK ONG');
+  var r3 = sync.applyOpsLocal(r2.state, [
+    sync.opSetDayOff('rp-9', '2026-09-05', 'Bartender', slot, null),
+  ]);
+  var cleared = r3.state.cells[sync.cellKey('rp-9', '2026-09-05', 'Bartender', slot)];
+  assert(cleared.worker_name == null, 'explicit null clears day-off worker_name');
 })();
 
 // 2) Tip-style non-op cannot resurrect times — only set_times can
