@@ -140,6 +140,30 @@ export function opAddSlot(
   });
 }
 
+export function opDeactivateSlot(
+  restaurantId: string,
+  role: string,
+  slotKey: string
+): ScheduleOp {
+  return makeOp('deactivate_slot', {
+    restaurant_id: restaurantId,
+    role,
+    slot_key: slotKey,
+  });
+}
+
+export function opReorderSlots(
+  restaurantId: string,
+  role: string,
+  slotKeys: string[]
+): ScheduleOp {
+  return makeOp('reorder_slots', {
+    restaurant_id: restaurantId,
+    role,
+    slot_keys: slotKeys,
+  });
+}
+
 export async function ensureSlotKey(
   restaurantId: string,
   role: string,

@@ -137,6 +137,25 @@
     return sk;
   }
 
+  /** Look up slot_key without minting a new UUID (for deactivate / delete). */
+  function resolveSlotKey(restaurantId, role, trIdx) {
+    var map = getSlotMap();
+    var k = slotMapKey(restaurantId, role, trIdx);
+    if (map[k]) return map[k];
+    var slots = getSlotCache();
+    var candidates = [];
+    Object.keys(slots).forEach(function (pk) {
+      var s = slots[pk];
+      if (!s || s.active === false) return;
+      if (String(s.restaurant_id) !== String(restaurantId)) return;
+      if (String(s.role) !== String(role)) return;
+      if (Number(s.sort_order) !== Number(trIdx)) return;
+      if (s.slot_key) candidates.push(String(s.slot_key));
+    });
+    candidates.sort();
+    return candidates.length ? candidates[0] : null;
+  }
+
   function getCellCache() {
     return readJson(CELL_CACHE_KEY, {});
   }
@@ -232,11 +251,51 @@
     });
   }
 
+  function opDeactivateSlot(restaurantId, role, slotKey) {
+    return makeOp('deactivate_slot', {
+      restaurant_id: restaurantId,
+      role: role,
+      slot_key: slotKey,
+    });
+  }
+
   function opPublishWeek(restaurantId, weekMondayIso) {
     return makeOp('publish_week', {
       restaurant_id: restaurantId,
       week_monday_iso: weekMondayIso,
     });
+  }
+
+  /**
+   * After deleting draft row trIdx, shift local restaurant|role|n map keys down
+   * so cloud cells for remaining slots keep lining up with the UI.
+   */
+  function remapSlotMapAfterDelete(restaurantId, role, deletedTrIdx) {
+    var map = getSlotMap();
+    var prefix = String(restaurantId) + '|' + String(role) + '|';
+    var del = Number(deletedTrIdx);
+    if (isNaN(del) || del < 0) return;
+    var indices = [];
+    Object.keys(map).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
+      var n = Number(k.slice(prefix.length));
+      if (!isNaN(n) && n >= 0) indices.push(n);
+    });
+    indices.sort(function (a, b) {
+      return a - b;
+    });
+    var next = {};
+    Object.keys(map).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) next[k] = map[k];
+    });
+    indices.forEach(function (n) {
+      if (n === del) return;
+      var sk = map[prefix + String(n)];
+      if (!sk) return;
+      var dest = n > del ? n - 1 : n;
+      next[prefix + String(dest)] = sk;
+    });
+    setSlotMap(next);
   }
 
   /**
@@ -403,7 +462,8 @@
       var ck = cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key);
       var local = cache[ck];
       var remoteRev = Number(row.rev) || 0;
-      if (local && Number(local.rev) > remoteRev) return;
+      /* Keep optimistic / newer local cells — equal rev must not snap edits back. */
+      if (local && Number(local.rev) >= remoteRev) return;
       cache[ck] = {
         restaurant_id: row.restaurant_id,
         day_iso: String(row.day_iso).slice(0, 10),
@@ -584,6 +644,9 @@
 
   /** Reverse map: restaurant|role|slot_key → trIdx (from ensureSlotKey map + slot sort_order). */
   function trIdxForSlotKey(restaurantId, role, slotKey) {
+    var slots = getSlotCache();
+    var spk = [restaurantId, role, slotKey].join('\0');
+    if (slots[spk] && slots[spk].active === false) return null;
     var map = getSlotMap();
     var found = null;
     Object.keys(map).forEach(function (k) {
@@ -595,8 +658,6 @@
       if (!isNaN(n)) found = n;
     });
     if (found != null) return found;
-    var slots = getSlotCache();
-    var spk = [restaurantId, role, slotKey].join('\0');
     if (slots[spk] && slots[spk].sort_order != null) return Number(slots[spk].sort_order) || 0;
     return null;
   }
@@ -609,10 +670,13 @@
    */
   function projectCellsToAssignmentPatch(isoToGlobalDayIdx, roleToIdx) {
     var cache = getCellCache();
+    var slots = getSlotCache();
     var patch = {};
     Object.keys(cache).forEach(function (ck) {
       var cell = cache[ck];
       if (!cell || cell.deleted) return;
+      var spk = [cell.restaurant_id, cell.role, cell.slot_key].join('\0');
+      if (slots[spk] && slots[spk].active === false) return;
       var dayIso = String(cell.day_iso || '').slice(0, 10);
       var gdi = isoToGlobalDayIdx && isoToGlobalDayIdx[dayIso];
       if (gdi == null || gdi < 0) return;
@@ -653,6 +717,7 @@
     deviceId: deviceId,
     uuid: uuid,
     ensureSlotKey: ensureSlotKey,
+    resolveSlotKey: resolveSlotKey,
     getSlotMap: getSlotMap,
     setSlotMap: setSlotMap,
     getSlotCache: getSlotCache,
@@ -663,6 +728,8 @@
     opSetWorker: opSetWorker,
     opAddSlot: opAddSlot,
     opReorderSlots: opReorderSlots,
+    opDeactivateSlot: opDeactivateSlot,
+    remapSlotMapAfterDelete: remapSlotMapAfterDelete,
     opPublishWeek: opPublishWeek,
     applyOpsLocal: applyOpsLocal,
     enqueueOps: enqueueOps,

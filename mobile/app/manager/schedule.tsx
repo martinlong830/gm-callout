@@ -134,6 +134,7 @@ import {
   flushOutbox,
   flushOutboxFully,
   opAddSlot,
+  opDeactivateSlot,
   opSetDayOff,
   opSetTimes,
   opSetWorker,
@@ -2293,29 +2294,46 @@ export default function ManagerScheduleScreen() {
         return;
       }
       suppressHydrateUndoClearRef.current = true;
-      const nextStore = compactAssignmentsAfterDraftSlotDeletes(
-        liveStore,
-        currentRestaurantId,
-        weekIndex,
-        [{ role: roleKey, originalTrIdx: trIdx }]
-      );
-      let draftPayload = patchDraftScheduleForWeek(
-        draftScheduleRawRef.current,
-        weekIndex,
-        currentRestaurantId,
-        nextRows
-      );
-      draftPayload = patchSlotOrderAfterDelete(
-        draftPayload,
-        selectedWeekMonday,
-        currentRestaurantId,
-        roleKey,
-        trIdx
-      );
-      setAssignmentStore(nextStore);
-      setRolledDraftRaw(draftPayload);
-      applyLocalScheduleAssignments(nextStore, draftPayload);
-      queuePersist(nextStore, draftPayload);
+      /* Resolve slot key before local remap so we deactivate the real cloud row. */
+      void (async () => {
+        let slotKey: string | null = null;
+        try {
+          slotKey = await ensureSlotKey(currentRestaurantId, roleKey, trIdx);
+        } catch (_sk) {
+          slotKey = null;
+        }
+        const nextStore = compactAssignmentsAfterDraftSlotDeletes(
+          liveStore,
+          currentRestaurantId,
+          weekIndex,
+          [{ role: roleKey, originalTrIdx: trIdx }]
+        );
+        let draftPayload = patchDraftScheduleForWeek(
+          draftScheduleRawRef.current,
+          weekIndex,
+          currentRestaurantId,
+          nextRows
+        );
+        draftPayload = patchSlotOrderAfterDelete(
+          draftPayload,
+          selectedWeekMonday,
+          currentRestaurantId,
+          roleKey,
+          trIdx
+        );
+        setAssignmentStore(nextStore);
+        setRolledDraftRaw(draftPayload);
+        applyLocalScheduleAssignments(nextStore, draftPayload);
+        queuePersist(nextStore, draftPayload);
+        if (slotKey) {
+          try {
+            await enqueueOps([opDeactivateSlot(currentRestaurantId, roleKey, slotKey)]);
+            await flushOutbox(supabase);
+          } catch (_deact) {
+            /* best-effort — local delete already applied */
+          }
+        }
+      })();
     };
     const liveDraft = loadDraftFromTeamState(
       draftScheduleRawRef.current,

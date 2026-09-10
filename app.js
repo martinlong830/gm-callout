@@ -6006,8 +6006,8 @@
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    /* Do not let peer cells overwrite a Keep-mine / Save-to-cloud assertion. */
-    if (scheduleLocalAuthorityActive() && !opts.force) return false;
+    /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
+    if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
     if (scheduleCellsPollInFlight) return false;
@@ -6066,50 +6066,106 @@
   function enqueueV2SlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff, workerName) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2) return;
-    syncScheduleSlotsFromCloudThen(function () {
-      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-      if (!dayIso) return;
-      var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-      var ops = [
-        v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null),
-      ];
-      if (isDayOff) {
-        ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
-      } else {
-        ops.push(
-          v2.opSetTimes(
-            currentRestaurantId,
-            dayIso,
-            role,
-            slotKey,
-            start,
-            end,
-            breakText || null,
-            null
-          )
-        );
-        if (workerName && workerName !== 'Unassigned') {
-          ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+    /* Enqueue immediately — do not wait on fetchSlots or cell poll paints stale cloud first. */
+    armScheduleLocalAuthority(15000);
+    var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+    if (!dayIso) return;
+    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+    var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
+    if (isDayOff) {
+      ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
+    } else {
+      ops.push(
+        v2.opSetTimes(
+          currentRestaurantId,
+          dayIso,
+          role,
+          slotKey,
+          start,
+          end,
+          breakText || null,
+          null
+        )
+      );
+      if (workerName && workerName !== 'Unassigned') {
+        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+      }
+    }
+    enqueueScheduleV2Ops(ops);
+    /* Refresh slot map in the background without delaying the write. */
+    void syncScheduleSlotsFromCloudThen(function () {});
+  }
+
+  /**
+   * Soft-delete ISO slots on the server when a draft row is removed, so cell poll
+   * cannot recreate the row (slot 6 bounce).
+   * deletes: [{ role, originalTrIdx }, ...] — process high→low per role.
+   */
+  function enqueueV2DeactivateSlots(restaurantId, weekIndex, deletes) {
+    var v2 = gmScheduleV2();
+    if (!scheduleSyncV2Enabled() || !v2 || !deletes || !deletes.length) return;
+    var rid = restaurantId || currentRestaurantId;
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    var byRole = {};
+    deletes.forEach(function (d) {
+      if (!d || !d.role || d.originalTrIdx == null || isNaN(Number(d.originalTrIdx))) return;
+      if (!byRole[d.role]) byRole[d.role] = [];
+      byRole[d.role].push(Number(d.originalTrIdx));
+    });
+    Object.keys(byRole).forEach(function (role) {
+      var indices = byRole[role]
+        .slice()
+        .sort(function (a, b) {
+          return b - a;
+        });
+      indices.forEach(function (trIdx) {
+        var slotKey =
+          (v2.resolveSlotKey && v2.resolveSlotKey(rid, role, trIdx)) ||
+          null;
+        /* Fall back to map peek via ensure only if resolve missing — never mint for delete. */
+        if (!slotKey) {
+          try {
+            var map = v2.getSlotMap && v2.getSlotMap();
+            var mk = rid + '|' + role + '|' + String(trIdx);
+            if (map && map[mk]) slotKey = map[mk];
+          } catch (_peek) {
+            slotKey = null;
+          }
+        }
+        if (!slotKey || !v2.opDeactivateSlot) {
+          if (v2.remapSlotMapAfterDelete) v2.remapSlotMapAfterDelete(rid, role, trIdx);
+          return;
+        }
+        enqueueScheduleV2Ops([v2.opDeactivateSlot(rid, role, slotKey)]);
+        if (v2.remapSlotMapAfterDelete) v2.remapSlotMapAfterDelete(rid, role, trIdx);
+      });
+      if (v2.opReorderSlots) {
+        var remain = [];
+        var postCount = slotCountForRole(role, wi, rid);
+        for (var i = 0; i < postCount; i += 1) {
+          remain.push(v2.ensureSlotKey(rid, role, i));
+        }
+        if (remain.length) {
+          enqueueScheduleV2Ops([v2.opReorderSlots(rid, role, remain)]);
         }
       }
-      enqueueScheduleV2Ops(ops);
     });
   }
 
   function enqueueV2RowWorker(role, trIdx, personName) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2) return;
-    syncScheduleSlotsFromCloudThen(function () {
-      var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-      var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
-      var days = getVisibleWeekDays() || [];
-      days.forEach(function (_dayStr, dayInWeek) {
-        var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-        if (!dayIso) return;
-        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
-      });
-      enqueueScheduleV2Ops(ops);
+    armScheduleLocalAuthority(15000);
+    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+    var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
+    var days = getVisibleWeekDays() || [];
+    days.forEach(function (_dayStr, dayInWeek) {
+      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+      if (!dayIso) return;
+      ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
     });
+    enqueueScheduleV2Ops(ops);
+    void syncScheduleSlotsFromCloudThen(function () {});
   }
 
   /**
@@ -6193,7 +6249,7 @@
     opts = opts || {};
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
-    if (scheduleLocalAuthorityActive() && !opts.force) return false;
+    if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     if (typeof v2.projectCellsToAssignmentPatch !== 'function') return false;
     var isoToGdi = Object.create(null);
     for (var i = 0; i < WEEK_META.length; i += 1) {
@@ -6348,7 +6404,7 @@
         function (payload) {
           var row = payload && (payload.new || payload.old);
           if (!row) return;
-          if (scheduleLocalAuthorityActive()) return;
+          if (scheduleCellRemoteApplyBlocked()) return;
           /* Same browser — already applied optimistically; other devices still apply. */
           if (
             row.updated_by_device &&
@@ -6484,6 +6540,32 @@
     scheduleInteractiveEditAt = Date.now();
     /* A real edit means this tab is SoT — stop sticky "Load cloud" from discarding day-offs. */
     if (schedulePreferCloudOnConflict) setPreferCloudOnConflict(false);
+    /*
+     * Block cell poll/realtime from painting stale cloud over this edit while the
+     * outbox flushes (past-week Mark Ong snap-back).
+     */
+    armScheduleLocalAuthority(15000);
+  }
+
+  /**
+   * True when remote ISO cells must not overwrite the local calendar (in-flight edits).
+   */
+  function scheduleCellRemoteApplyBlocked() {
+    if (scheduleLocalAuthorityActive()) return true;
+    if (scheduleDayOffPushGuardActive()) return true;
+    var v2 = gmScheduleV2();
+    if (v2 && typeof v2.getOutbox === 'function') {
+      var box = v2.getOutbox();
+      if (box && box.length) return true;
+    }
+    if (
+      hasInteractiveScheduleEditsThisSession() &&
+      scheduleInteractiveEditAt &&
+      Date.now() - scheduleInteractiveEditAt < 8000
+    ) {
+      return true;
+    }
+    return false;
   }
 
   function scheduleDayOffPushGuardActive() {
@@ -13865,6 +13947,8 @@
         });
         setCustomSlotOrderForRole(rid, delRole, remapped, weekMon);
       });
+      /* Deactivate cloud slots after local draft shrinks so poll cannot resurrect rows. */
+      enqueueV2DeactivateSlots(rid, wi, pendingSlotDeletes);
     }
     syncAssignmentBreaksFromDraftModal(wi, rid, nextRows, breakRows);
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
