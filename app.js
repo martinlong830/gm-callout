@@ -7254,9 +7254,9 @@
   var SCHEDULE_REVISION_RETENTION = 150;
   var SCHEDULE_REVISION_LIST_LIMIT = 100;
   /** Wait for editing to settle before writing an auto-save checkpoint. */
-  var SCHEDULE_REVISION_AUTOSAVE_QUIET_MS = 15 * 60 * 1000;
+  var SCHEDULE_REVISION_AUTOSAVE_QUIET_MS = 30 * 60 * 1000;
   /** Minimum gap between auto-save checkpoints (publish/revert always save). */
-  var SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS = 15 * 60 * 1000;
+  var SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS = 30 * 60 * 1000;
   var scheduleRevisionInsertTimer = null;
   var scheduleRevisionPending = null;
   var scheduleRevisionLastAutoSaveAt = 0;
@@ -9691,7 +9691,7 @@
         opts.assignments != null ? opts.assignments : loadScheduleAssignmentsStore(),
         opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
       );
-      /* No schedule changes since last auto-save — do not arm a 15‑minute timer. */
+      /* No schedule changes since last auto-save — do not arm a 30‑minute timer. */
       if (scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === pendingHash) {
         return;
       }
