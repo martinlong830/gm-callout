@@ -6845,12 +6845,14 @@
            * Soft upsert: do not replace a real local name with Unassigned from a
            * partial cloud cell — that made names blink while scrolling weeks.
            */
-          if (
-            upsertTimedOnly &&
-            prev &&
+          /*
+           * Never flash Unassigned over a staffed local name — soft polls / partial
+           * cloud cells were wiping names then restoring them half a second later.
+           */
+          var incomingUnassigned =
             !entry.rowOwner &&
-            (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned')
-          ) {
+            (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned');
+          if (prev && incomingUnassigned) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
@@ -7086,14 +7088,7 @@
         if (v2.setWriteOnlyCells) v2.setWriteOnlyCells(false);
         scheduleCellsHydratedOk = false;
         markScheduleAuthoritativePaintReady();
-        if (currentScreen === 1) {
-          paintVisibleScheduleWeekFast({
-            weekIndex: scheduleCalendarWeekIndex,
-            forcePaint: true,
-            allowDayOffShell: true,
-            allowEmptyPaint: true,
-          });
-        }
+        startScheduleCellsPoll();
         return;
       }
       if (bf && bf.ok !== false && v2.setWriteOnlyCells) {
@@ -7110,14 +7105,6 @@
       if (!weekFrom || !weekTo) {
         markScheduleAuthoritativePaintReady();
         startScheduleCellsPoll();
-        if (currentScreen === 1) {
-          paintVisibleScheduleWeekFast({
-            weekIndex: wi,
-            forcePaint: true,
-            allowDayOffShell: true,
-            allowEmptyPaint: true,
-          });
-        }
         return;
       }
       /*
@@ -7235,10 +7222,11 @@
               persistTeamStateDirtyFlags();
             }
           }
-          /* No forced repaint — visible week already correct; fingerprint skips no-ops. */
-          if (currentScreen === 1) {
-            coalesceVisibleSchedulePaint({ weekIndex: scheduleCalendarWeekIndex });
-          }
+          /*
+           * Never repaint the visible week from the full-window pass — that fetch
+           * remapped/tombstoned cells and flashed all day-off / Unassigned.
+           */
+          void 0;
         } catch (_full) {
           console.warn('gm-callout: full schedule window hydrate', _full);
           scheduleCellsHydratedOk = true;
@@ -8129,6 +8117,10 @@
     scheduleVisibleWeekFetchDone = true;
   }
 
+  /** Timed SCHEDULE rows at last good paint for the visible week — refuse regressions. */
+  var scheduleLastGoodTimedPaintCount = 0;
+  var scheduleLastGoodTimedPaintWeek = -1;
+
   function paintVisibleScheduleWeekFast(opts) {
     opts = opts || {};
     scheduleUiAwaitingInitialCloudHydrate = false;
@@ -8182,6 +8174,25 @@
         }
         return;
       }
+      /*
+       * After a good paint, refuse a worse rebuild (all day-off / sparse) that soft
+       * polls and full-window hydrates were flashing over the correct grid.
+       */
+      if (
+        !opts.weekNav &&
+        !opts.allowEmptyPaint &&
+        !opts.forceDegrade &&
+        scheduleAuthoritativePaintReady &&
+        prevSchedule &&
+        prevSchedule.length >= 6 &&
+        (!SCHEDULE || SCHEDULE.length < Math.max(4, Math.floor(prevSchedule.length * 0.5)))
+      ) {
+        SCHEDULE.length = 0;
+        for (var pri = 0; pri < prevSchedule.length; pri += 1) {
+          SCHEDULE.push(prevSchedule[pri]);
+        }
+        return;
+      }
       if (opts.render === false) return;
       /*
        * Hold blank only before first authoritative load. Week scroll always paints.
@@ -8206,6 +8217,11 @@
           weekNav: !!opts.weekNav,
         });
       }
+      if (SCHEDULE && SCHEDULE.length) {
+        scheduleLastGoodTimedPaintCount = SCHEDULE.length;
+        scheduleLastGoodTimedPaintWeek = wi;
+        if (!scheduleAuthoritativePaintReady) markScheduleAuthoritativePaintReady();
+      }
       if (!fast && scheduleBody && typeof renderSchedule === 'function') {
         renderSchedule();
       }
@@ -8227,19 +8243,19 @@
         var readOnly =
           document.documentElement.classList.contains('manager-app') &&
           !managerCanEditCurrentRestaurant();
-        /* Same column layout as fast paint — only fill labor numbers + below panels. */
-        if (typeof renderCalendar === 'function' && SCHEDULE && SCHEDULE.length) {
-          renderCalendar({ force: true, fast: false });
-        } else {
-          renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
-          requestAnimationFrame(function () {
-            syncSchedulePanelColumnAlignment();
-          });
-        }
+        /*
+         * Do NOT re-render the calendar matrix here — a second rebuild ~60ms after
+         * first paint flashed DAY-OFF / Unassigned over the correct grid.
+         */
+        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
         if (scheduleBody) renderSchedule();
         updateSchedulePublishNotifyButton();
         updateScheduleDownloadWeekButton();
         if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
+        requestAnimationFrame(function () {
+          syncCalendarTheadStickyOffset(calendarGrid);
+          syncSchedulePanelColumnAlignment();
+        });
       } catch (_chrome) {
         /* ignore */
       }
@@ -8255,8 +8271,8 @@
       var o = schedulePaintCoalesceOpts || {};
       schedulePaintCoalesceOpts = null;
       if (currentScreen !== 1) return;
+      var wi = o.weekIndex != null ? o.weekIndex : scheduleCalendarWeekIndex;
       if (!scheduleAuthoritativePaintReady) {
-        var wi = o.weekIndex != null ? o.weekIndex : scheduleCalendarWeekIndex;
         paintVisibleScheduleWeekFast({
           weekIndex: wi,
           forcePaint: true,
@@ -8274,7 +8290,12 @@
         }
         return;
       }
-      paintVisibleScheduleWeekFast(o);
+      /* Already showing a good grid — only repaint if not a regression. */
+      paintVisibleScheduleWeekFast({
+        weekIndex: wi,
+        forcePaint: !!o.forcePaint,
+        fast: o.fast !== false,
+      });
     }, 48);
   }
 
@@ -9381,14 +9402,13 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
-    /* Soft-first refresh: upsert timed cells; trusted replace only when cloud is rich. */
+    /* Soft upsert only — trusted replace flashed day-off / Unassigned after a good load. */
     try {
       await pollVisibleScheduleCellsFromCloud({
         rebuild: true,
         force: true,
         forceSlots: true,
-        replaceTrusted: true,
-        replaceWeekIndex: scheduleCalendarWeekIndex,
+        upsertTimedOnly: true,
       });
     } catch (_refPoll) {
       /* ignore */
@@ -22982,36 +23002,50 @@
                 currentRestaurantId
               );
               if (trOff) {
+                /*
+                 * Draft has times but SCHEDULE row missing mid-rebuild — show the
+                 * timed cell, never a bold DAY-OFF flash over a real shift.
+                 */
                 var rpTimeOff = redPokeShiftTimeLabel(trOff.start, trOff.end);
-                var dayOffLbl = displayDayOffLabel();
-                var offLabel =
-                  (otherLblOff ? dayOffLbl + ' · ' + otherLblOff : dayOffLbl) +
-                  ' · ' +
+                var rpBreakOff = redPokeBreakAnnotation(
+                  trOff.start,
+                  trOff.end,
+                  rd.role,
+                  dayStr
+                );
+                var rpHoursOff = redPokeShiftHoursDecimal(trOff.start, trOff.end);
+                var timedLabel =
+                  (rowPerson && rowPerson !== 'Unassigned' ? rowPerson + ' · ' : '') +
                   rd.groupLabel +
                   ' · ' +
                   dayStr +
                   ' · ' +
                   rpTimeOff;
                 return (
-                  '<td><div class="calendar-slot-wrap calendar-slot-empty calendar-slot-empty--timed ' +
+                  '<td><div class="calendar-slot-wrap calendar-slot-compact ' +
                   escapeHtml(rd.roleClass) +
                   reviewOpenClass +
                   (readOnly ? ' calendar-slot-readonly' : '') +
                   '"' +
                   (readOnly ? '' : ' tabindex="0"') +
                   ' role="group" aria-label="' +
-                  escapeHtml(offLabel) +
+                  escapeHtml(timedLabel) +
                   '"' +
                   (readOnly ? '' : ' title="Click to edit shift times"') +
                   slotMetaAttrs +
                   '>' +
-                  '<div class="calendar-slot-rp calendar-slot-rp--dayoff">' +
+                  '<div class="calendar-slot-rp">' +
                   '<div class="calendar-slot-rp-time">' +
                   escapeHtml(rpTimeOff) +
                   '</div>' +
+                  '<div class="calendar-slot-rp-break">' +
+                  escapeHtml(rpBreakOff || '') +
                   '</div>' +
-                  '<div class="calendar-slot-empty-label">' +
-                  escapeHtml(dayOffLbl) +
+                  '<div class="calendar-slot-rp-hours">' +
+                  escapeHtml(
+                    rpHoursOff != null ? formatScheduleDayHoursLabel(rpHoursOff) : ''
+                  ) +
+                  '</div>' +
                   '</div>' +
                   otherBadgeOff +
                   '</div></td>'
