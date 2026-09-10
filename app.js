@@ -5971,7 +5971,8 @@
     void flushScheduleV2Outbox();
   }
 
-  function broadcastScheduleCellsChanged() {
+  function broadcastScheduleCellsChanged(opts) {
+    opts = opts || {};
     if (!teamStateRealtimeChannel || !GM_SUPABASE_DATA) return Promise.resolve();
     var v2 = gmScheduleV2();
     return teamStateRealtimeChannel
@@ -5983,6 +5984,7 @@
           clientId: TEAM_STATE_CLIENT_INSTANCE_ID,
           deviceId: v2 && v2.deviceId ? v2.deviceId() : null,
           ts: Date.now(),
+          forceDayOffReplace: !!opts.forceDayOffReplace,
         },
       })
       .catch(function () {
@@ -6112,6 +6114,8 @@
         upsertTimedOnly: opts.upsertTimedOnly !== false && !opts.replaceTrusted,
         replaceWeekIndex: opts.replaceTrusted ? targetWi : undefined,
         replaceTrusted: !!opts.replaceTrusted,
+        forceDayOffReplace: !!opts.forceDayOffReplace,
+        allowEmptyReplace: !!opts.allowEmptyReplace,
       });
     } catch (_poll) {
       return false;
@@ -6685,13 +6689,16 @@
   function cloudWeekReplaceIsSafe(weekIndex, patch, opts) {
     opts = opts || {};
     if (opts.allowEmptyReplace || opts.forceDayOffReplace) return true;
-    /*
-     * Trusted replace (Refresh / hard-revert peer pull): cloud is SoT for that
-     * week — including all day-offs. Sparse guard must not block it.
-     */
-    if (opts.replaceTrusted) return true;
     var cloudTimed = countTimedCellsInPatchWeek(patch, weekIndex);
     var localTimed = countLocalTimedDraftWeek(weekIndex);
+    /*
+     * Trusted replace (Refresh / peer hard-revert): still refuse an empty/incomplete
+     * cloud projection — that wiped staffed weeks to "No shifts" then refilled (flicker).
+     */
+    if (opts.replaceTrusted) {
+      if (cloudTimed > 0) return true;
+      return localTimed <= 0;
+    }
     if (localTimed <= 0) return cloudTimed > 0 || !!opts.allowEmptyReplace;
     if (cloudTimed <= 0) return false;
     /* Cloud must carry a meaningful share of local timed cells before wipe/replace. */
@@ -6737,8 +6744,7 @@
             ? Number(opts.replaceWeekIndex)
             : scheduleCalendarWeekIndex;
         if (
-          (opts.replaceTrusted ||
-            timedWeeks[replaceWi] ||
+          (timedWeeks[replaceWi] ||
             opts.allowEmptyReplace ||
             opts.forceDayOffReplace) &&
           cloudWeekReplaceIsSafe(replaceWi, patch, opts)
@@ -6996,7 +7002,7 @@
       endTeamStateRemoteApply();
     }
     scheduleLastAppliedFingerprint = fp;
-    if (!changed && !opts.force) return false;
+    if (!changed) return false;
     if (opts.rebuild !== false && currentScreen === 1) {
       coalesceVisibleSchedulePaint({
         weekIndex: scheduleCalendarWeekIndex,
@@ -7130,8 +7136,13 @@
       applyScheduleCellsCacheToLocalStore({
         rebuild: false,
         force: true,
-        replaceTrusted: true,
-        replaceWeekIndex: wi,
+        /*
+         * First visible-week load may replace; later hydrates (tab focus) soft-upsert
+         * only so an incomplete fetch cannot wipe a staffed week to "No shifts".
+         */
+        replaceTrusted: !scheduleVisibleWeekFetchDone,
+        upsertTimedOnly: !!scheduleVisibleWeekFetchDone,
+        replaceWeekIndex: scheduleVisibleWeekFetchDone ? undefined : wi,
       });
       scheduleVisibleWeekFetchDone = true;
       /* One paint after cells land — avoids empty → filled flash. */
@@ -7254,7 +7265,12 @@
             return;
           }
           v2.mergeRemoteCells([row]);
-          applyScheduleCellsCacheToLocalStore({ rebuild: true, force: false });
+          /* Soft merge only — never week-wipe from a single realtime row. */
+          applyScheduleCellsCacheToLocalStore({
+            rebuild: true,
+            force: false,
+            upsertTimedOnly: true,
+          });
         }
       )
       .subscribe();
@@ -7973,9 +7989,11 @@
   function scheduleShouldSuppressEmptyCalendar() {
     if (SCHEDULE && SCHEDULE.length) return false;
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
-    if (scheduleVisibleWeekFetchDone) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    return true;
+    /* Always suppress empty flash while cloud sync is the SoT — never show "No shifts"
+       over a blank rebuild when a painted grid already exists (handled in render). */
+    if (!scheduleVisibleWeekFetchDone) return true;
+    return false;
   }
 
   function paintVisibleScheduleWeekFast(opts) {
@@ -7995,7 +8013,11 @@
     } else {
       scheduleLastPaintFingerprint = scheduleVisibleWeekPaintFingerprint(wi);
     }
+    var prevSchedule = null;
     try {
+      if (SCHEDULE && SCHEDULE.length) {
+        prevSchedule = SCHEDULE.slice();
+      }
       if (typeof rebuildSchedule === 'function') {
         rebuildSchedule({
           weekIndex: wi,
@@ -8007,11 +8029,23 @@
           skipRebind: fast ? true : !!opts.skipRebind,
         });
       }
-      if (opts.render === false) return;
       /*
-       * Do not paint an empty "No shifts" shell while the first cloud week is still
-       * loading — wait and paint once when cells arrive.
+       * If rebuild produced an empty week but we already had shifts, keep the previous
+       * rows — empty rebuilds were flashing "No shifts to show" during soft polls.
        */
+      if (
+        (!SCHEDULE || !SCHEDULE.length) &&
+        prevSchedule &&
+        prevSchedule.length &&
+        !opts.allowEmptyPaint
+      ) {
+        SCHEDULE.length = 0;
+        for (var psi = 0; psi < prevSchedule.length; psi += 1) {
+          SCHEDULE.push(prevSchedule[psi]);
+        }
+        return;
+      }
+      if (opts.render === false) return;
       if (scheduleShouldSuppressEmptyCalendar()) return;
       if (typeof renderCalendar === 'function') {
         renderCalendar({
@@ -9072,13 +9106,16 @@
         var payload = msg && msg.payload;
         if (!payload) return;
         if (payload.clientId && payload.clientId === TEAM_STATE_CLIENT_INSTANCE_ID) return;
-        /* Peer schedule edit — full week replace so hard-revert day-offs stick. */
+        var hardPeer = !!payload.forceDayOffReplace;
+        /* Soft upsert by default; hard-revert peers may full-replace including day-offs. */
         void pollVisibleScheduleCellsFromCloud({
           rebuild: true,
-          force: true,
-          forceSlots: true,
-          replaceTrusted: true,
-          replaceWeekIndex: scheduleCalendarWeekIndex,
+          force: hardPeer,
+          forceSlots: hardPeer,
+          replaceTrusted: hardPeer,
+          forceDayOffReplace: hardPeer,
+          replaceWeekIndex: hardPeer ? scheduleCalendarWeekIndex : undefined,
+          upsertTimedOnly: !hardPeer,
         });
       })
       .on(
@@ -9160,7 +9197,7 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
-    /* Trusted week replace so peer hard-reverts (incl. day-offs) paint immediately. */
+    /* Soft-first refresh: upsert timed cells; trusted replace only when cloud is rich. */
     try {
       await pollVisibleScheduleCellsFromCloud({
         rebuild: true,
@@ -9188,9 +9225,11 @@
       return res || { ok: false };
     }
     if (currentScreen === 1 || opts.forceRender) {
-      rebuildSchedule();
-      renderCalendar({ force: true });
-      if (scheduleBody) renderSchedule();
+      paintVisibleScheduleWeekFast({
+        weekIndex: scheduleCalendarWeekIndex,
+        forcePaint: true,
+      });
+      scheduleDeferredScheduleChrome(scheduleCalendarWeekIndex);
     }
     if (!opts.silent) {
       showScheduleNotice(
@@ -22433,12 +22472,18 @@
       return;
     }
     if (!SCHEDULE.length) {
+      /*
+       * Never tear down a painted calendar for "No shifts to show" — that flash
+       * loop made the schedule unusable. Keep the last good grid until a real
+       * non-empty rebuild paints, or the week is confirmed empty with no prior grid.
+       */
+      if (targetEl.querySelector('table, .calendar-table')) {
+        targetEl.setAttribute('aria-busy', 'false');
+        return;
+      }
       if (scheduleShouldSuppressEmptyCalendar()) {
-        /* Keep prior grid (or blank) — never flash "No shifts to show" mid-load. */
         targetEl.setAttribute('aria-busy', 'true');
-        if (!targetEl.querySelector('table, .calendar-table')) {
-          targetEl.innerHTML = '';
-        }
+        targetEl.innerHTML = '';
         return;
       }
       targetEl.removeAttribute('aria-busy');
@@ -28269,7 +28314,7 @@
         }
         if (cellsOk) {
           scheduleLastCellFlushAt = Date.now();
-          void broadcastScheduleCellsChanged();
+          void broadcastScheduleCellsChanged({ forceDayOffReplace: true });
         }
       } else {
         cellsOk = pushOk;
