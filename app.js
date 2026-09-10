@@ -6670,16 +6670,32 @@
       if (bf && bf.ok !== false && v2.setWriteOnlyCells) {
         v2.setWriteOnlyCells(true);
       }
-      /* Flush pending ops first so peers see our edits, then take cloud as display SoT. */
-      await flushScheduleV2Outbox();
       var wi = scheduleCalendarWeekIndex;
+      /* Instant: project any already-cached cells so UI is not blank while network runs. */
+      applyScheduleCellsCacheToLocalStore({
+        rebuild: currentScreen === 1,
+        force: true,
+        replaceWeekIndex: wi,
+      });
+      /* Flush outbox in parallel — do not block first paint on RPC. */
+      void flushScheduleV2Outbox();
       var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
       var weekTo = dayIsoForScheduleWeekDay(wi, 6);
       var fullFrom = dayIsoForScheduleWeekDay(0, 0);
       var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
       if (weekFrom && weekTo) {
+        var needSlots = true;
+        try {
+          var map = v2.getSlotMap && v2.getSlotMap();
+          needSlots = !(map && Object.keys(map).length);
+        } catch (_sm) {
+          needSlots = true;
+        }
+        var slotsPromise = needSlots
+          ? v2.fetchSlots(window.gmSupabase, cid)
+          : Promise.resolve({ ok: true, skipped: true });
         var fastPair = await Promise.all([
-          v2.fetchSlots(window.gmSupabase, cid),
+          slotsPromise,
           v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo),
         ]);
         if (fastPair[0] && fastPair[0].ok === false) {
@@ -6700,7 +6716,6 @@
       });
       reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
       scheduleCellsHydratedOk = true;
-      /* Never re-upload local stores on hydrate — that rolled peers back to this PC's cache. */
       if (draftScheduleDirty || scheduleAssignmentsDirty) {
         if (!hasInteractiveScheduleEditsThisSession()) {
           draftScheduleDirty = false;
@@ -15404,40 +15419,27 @@
     scheduleLastAppliedFingerprint = '';
     deferUiWork(function () {
       if (scheduleCalendarWeekIndex !== w) return;
-      function paintWeek() {
-        if (scheduleCalendarWeekIndex !== w) return;
-        rebuildSchedule({ weekIndex: w, preserveOtherWeeks: true });
-        renderCalendar({ force: true });
-        if (scheduleBody) renderSchedule();
-        if (
-          document.documentElement.classList.contains('employee-app') &&
-          document.getElementById('empCalendarGrid')
-        ) {
-          renderEmployeeMasterSchedule();
-        }
+      rebuildSchedule({ weekIndex: w, preserveOtherWeeks: true });
+      renderCalendar({ force: true });
+      if (scheduleBody) renderSchedule();
+      if (
+        document.documentElement.classList.contains('employee-app') &&
+        document.getElementById('empCalendarGrid')
+      ) {
+        renderEmployeeMasterSchedule();
       }
+      /* Background cloud pull — do not block week navigation paint. */
       if (scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase) {
         void Promise.resolve(
           pollVisibleScheduleCellsFromCloud({
-            rebuild: false,
+            rebuild: true,
             force: true,
-            forceSlots: true,
+            forceSlots: false,
             replaceWeekIndex: w,
           })
-        )
-          .catch(function () {
-            return false;
-          })
-          .then(function () {
-            applyScheduleCellsCacheToLocalStore({
-              rebuild: false,
-              force: true,
-              replaceWeekIndex: w,
-            });
-            paintWeek();
-          });
-      } else {
-        paintWeek();
+        ).catch(function () {
+          return false;
+        });
       }
     });
   }
@@ -20077,39 +20079,22 @@
         prefetchScheduleWeekDownloadDeps();
       }
       /*
-       * Always re-pull cloud cells when opening Schedule so this device matches
-       * every other computer (localStorage alone is not SoT).
+       * Paint immediately from local stores, then pull cloud in the background.
+       * Waiting on network before first paint made Schedule feel stuck every open.
        */
       function openScheduleFromCloudThenPaint() {
         if (currentScreen !== 1) return;
-        var paint = function () {
-          refreshScheduleScreenUi();
-        };
-        if (scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase) {
-          void Promise.resolve(
-            pollVisibleScheduleCellsFromCloud({
-              rebuild: false,
-              force: true,
-              forceSlots: true,
-            })
-          )
-            .catch(function () {
-              return false;
-            })
-            .then(function () {
-              if (currentScreen !== 1) return;
-              applyScheduleCellsCacheToLocalStore({
-                rebuild: false,
-                force: true,
-                replaceWeekIndex: scheduleCalendarWeekIndex,
-              });
-              paint();
-            });
-        } else if (scrollPending) {
-          paint();
-        } else {
-          deferUiWork(paint);
-        }
+        refreshScheduleScreenUi();
+        if (!(scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase)) return;
+        void Promise.resolve(
+          pollVisibleScheduleCellsFromCloud({
+            rebuild: true,
+            force: true,
+            forceSlots: false,
+          })
+        ).catch(function () {
+          return false;
+        });
       }
       if (scrollPending) {
         openScheduleFromCloudThenPaint();
@@ -29890,9 +29875,29 @@
         allowDiscardDirty: takeCloudHydrate,
       });
     }
-    /* Schedule sync v2: backfill cells once, then prefer cell SoT over blob apply. */
-    await hydrateScheduleSyncV2FromCloud();
+    /*
+     * Paint ASAP from local assignment/draft + any cached cells. Network cell hydrate
+     * continues in the background — awaiting it here made first Schedule open laggy.
+     */
+    try {
+      applyScheduleCellsCacheToLocalStore({
+        rebuild: false,
+        force: true,
+        replaceWeekIndex: scheduleCalendarWeekIndex,
+      });
+    } catch (_cachePaint) {
+      /* ignore */
+    }
+    releaseScheduleCloudHydrateGate();
+    renderCalendar({ force: true });
+    if (scheduleBody) renderSchedule();
+    if (typeof renderEmployeeList === 'function') renderEmployeeList();
+    if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
+      renderManagerHomeShifts();
+    }
+    gmCalloutShellUiRendered = true;
     setupScheduleCellsRealtimeSubscription();
+    void hydrateScheduleSyncV2FromCloud();
     if (isManager) {
       /* Reviews are optional + can be large — fetch after paint, never on critical path. */
       void fetchScheduleReviewsFromRemoteOptional();
@@ -29904,15 +29909,6 @@
     } else {
       rebuildEmployeeDerivedData();
     }
-    /* First paint after cloud SoT is applied — avoids Maeve→Jon blink from stale cache. */
-    releaseScheduleCloudHydrateGate();
-    renderCalendar({ force: true });
-    if (scheduleBody) renderSchedule();
-    if (typeof renderEmployeeList === 'function') renderEmployeeList();
-    if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
-      renderManagerHomeShifts();
-    }
-    gmCalloutShellUiRendered = true;
     if (opts.deferSecondary) {
       void hydrateSupabaseSecondary(sb, sessRes, isManager);
     } else {

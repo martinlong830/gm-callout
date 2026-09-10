@@ -742,6 +742,10 @@
 
   async function backfillIfNeeded(sb, companyId) {
     if (!sb || !companyId) return { ok: false };
+    /* Hot path: already cut over — skip extra probes on every hydrate. */
+    if (writeOnlyCells() && getLastRev() > 0) {
+      return { ok: true, skipped: true };
+    }
     var probe = await sb
       .from('schedule_company_state')
       .select('schedule_rev')
@@ -757,6 +761,7 @@
     /* Schema is live — cells are SoT (no schedule blob apply/push). */
     setWriteOnlyCells(true);
     if (probe.data && Number(probe.data.schedule_rev) > 0) {
+      setLastRev(Number(probe.data.schedule_rev) || getLastRev());
       return { ok: true, skipped: true };
     }
     var cellProbe = await sb
