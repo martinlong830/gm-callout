@@ -22677,6 +22677,7 @@
         weekIndex: scheduleCalendarWeekIndex,
         allowEmptyPaint: !!opts.allowEmptyPaint,
         allowDayOffShell: !!opts.allowDayOffShell,
+        weekNav: !!opts.weekNav,
       })
     ) {
       /* Blank until authoritative week — do not paint DAY-OFF shells. */
