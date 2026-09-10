@@ -6770,66 +6770,82 @@
         v2.setWriteOnlyCells(true);
       }
       var wi = scheduleCalendarWeekIndex;
-      /* Instant paint from any local cell cache. */
+      /* Instant paint from any local cell cache (visible week only). */
       applyScheduleCellsCacheToLocalStore({
         rebuild: currentScreen === 1,
         force: true,
-        replaceAllTimedWeeks: true,
+        replaceWeekIndex: wi,
       });
       void flushScheduleV2Outbox();
-      var fullFrom = dayIsoForScheduleWeekDay(0, 0);
-      var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
-      if (!fullFrom || !fullTo) {
+      var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
+      var weekTo = dayIsoForScheduleWeekDay(wi, 6);
+      if (!weekFrom || !weekTo) {
         startScheduleCellsPoll();
         return;
       }
       /*
-       * ALWAYS load the full rolling window (past + current + future). Loading only
-       * the current week left previous weeks blank on other computers.
+       * Fast path: slots + visible week only (keeps Schedule open under ~1s).
+       * Full rolling window loads in the background so past weeks still converge.
        */
-      var slotsRes = await v2.fetchSlots(window.gmSupabase, cid);
-      if (slotsRes && slotsRes.ok === false) {
-        console.warn('gm-callout: schedule slots fetch failed', slotsRes.error);
-        startScheduleCellsPoll();
-        return;
+      var pair = await Promise.all([
+        v2.fetchSlots(window.gmSupabase, cid),
+        v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo),
+      ]);
+      if (pair[0] && pair[0].ok === false) {
+        console.warn('gm-callout: schedule slots fetch failed', pair[0].error);
       }
-      var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fullFrom, fullTo);
-      if (cellsRes && cellsRes.ok === false) {
-        console.warn('gm-callout: schedule cells fetch failed', cellsRes.error);
+      if (pair[1] && pair[1].ok === false) {
+        console.warn('gm-callout: schedule cells fetch failed', pair[1].error);
         startScheduleCellsPoll();
         return;
       }
       applyScheduleCellsCacheToLocalStore({
-        rebuild: true,
+        rebuild: currentScreen === 1,
         force: true,
-        replaceAllTimedWeeks: true,
+        replaceWeekIndex: wi,
       });
-      reconcileLocalScheduleToActiveSlots({});
-      /* Push any local timed past weeks that never made it into schedule_cells. */
-      /* Blobs first for weeks cells never covered, then managers seed those weeks up. */
-      if (teamStateLastRowCache) {
-        fillUntimedWeeksFromTeamStateBlobs(teamStateLastRowCache);
-      }
-      seedMissingTimedWeeksToCloudCells();
-      scheduleCellsHydratedOk = true;
-      if (draftScheduleDirty || scheduleAssignmentsDirty) {
-        if (!hasInteractiveScheduleEditsThisSession()) {
-          draftScheduleDirty = false;
-          scheduleAssignmentsDirty = false;
-          persistTeamStateDirtyFlags();
-        }
-      }
+      reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
       startScheduleCellsPoll();
       if (currentScreen === 1) {
-        deferUiWork(function () {
-          rebuildSchedule({
-            weekIndex: scheduleCalendarWeekIndex,
-            preserveOtherWeeks: true,
-          });
-          renderCalendar({ force: true });
-          if (scheduleBody) renderSchedule();
-        });
+        paintVisibleScheduleWeekFast({ weekIndex: wi });
       }
+
+      var fullFrom = dayIsoForScheduleWeekDay(0, 0);
+      var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
+      if (!fullFrom || !fullTo) return;
+
+      void (async function hydrateFullScheduleWindow() {
+        try {
+          var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fullFrom, fullTo);
+          if (cellsRes && cellsRes.ok === false) {
+            console.warn('gm-callout: full schedule cells fetch failed', cellsRes.error);
+            return;
+          }
+          applyScheduleCellsCacheToLocalStore({
+            rebuild: false,
+            force: true,
+            replaceAllTimedWeeks: true,
+          });
+          reconcileLocalScheduleToActiveSlots({});
+          if (teamStateLastRowCache) {
+            fillUntimedWeeksFromTeamStateBlobs(teamStateLastRowCache);
+          }
+          seedMissingTimedWeeksToCloudCells();
+          scheduleCellsHydratedOk = true;
+          if (draftScheduleDirty || scheduleAssignmentsDirty) {
+            if (!hasInteractiveScheduleEditsThisSession()) {
+              draftScheduleDirty = false;
+              scheduleAssignmentsDirty = false;
+              persistTeamStateDirtyFlags();
+            }
+          }
+          if (currentScreen === 1) {
+            paintVisibleScheduleWeekFast();
+          }
+        } catch (_full) {
+          console.warn('gm-callout: full schedule window hydrate', _full);
+        }
+      })();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
     }
@@ -6956,12 +6972,10 @@
     );
   }
   /**
-   * Hold first schedule paint until team_state hydrate finishes so a stale localStorage
-   * snapshot (e.g. Maeve) cannot flash before cloud (Jon) applies.
+   * Legacy gate — kept for callers. Always start false so Schedule paints from local
+   * stores in <1s; cloud hydrate overlays when ready.
    */
-  var scheduleUiAwaitingInitialCloudHydrate = !!(
-    typeof GM_SUPABASE_DATA !== 'undefined' && GM_SUPABASE_DATA
-  );
+  var scheduleUiAwaitingInitialCloudHydrate = false;
   /** Allow one remote schedule apply even if local guard would refuse (manager chose cloud). */
   var forceAcceptRemoteScheduleOnce = false;
   /** Pending remote team_state row when local edits conflict with a newer cloud version. */
@@ -7496,13 +7510,40 @@
     return false;
   }
 
-  function releaseScheduleCloudHydrateGate() {
-    if (!scheduleUiAwaitingInitialCloudHydrate) return;
+  function paintVisibleScheduleWeekFast(opts) {
+    opts = opts || {};
     scheduleUiAwaitingInitialCloudHydrate = false;
+    var wi =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex)
+        : scheduleCalendarWeekIndex;
     try {
-      if (typeof rebuildSchedule === 'function') rebuildSchedule();
+      if (typeof rebuildSchedule === 'function') {
+        rebuildSchedule({
+          weekIndex: wi,
+          preserveOtherWeeks: true,
+          skipRebind: !!opts.skipRebind,
+        });
+      }
+      if (opts.render === false) return;
       if (typeof renderCalendar === 'function') renderCalendar({ force: true });
       if (scheduleBody && typeof renderSchedule === 'function') renderSchedule();
+    } catch (_paint) {
+      /* ignore */
+    }
+  }
+
+  function releaseScheduleCloudHydrateGate() {
+    if (!scheduleUiAwaitingInitialCloudHydrate) {
+      /* Still refresh visible week if Schedule is open and empty. */
+      if (currentScreen === 1 && (!SCHEDULE || !SCHEDULE.length)) {
+        paintVisibleScheduleWeekFast();
+      }
+      return;
+    }
+    scheduleUiAwaitingInitialCloudHydrate = false;
+    try {
+      paintVisibleScheduleWeekFast();
     } catch (_rel) {
       /* ignore */
     }
@@ -20327,18 +20368,27 @@
         if (currentScreen !== 1) return;
         ensureRollingFutureScheduleWeeks();
         populateScheduleTemplateSelect();
-        rebuildSchedule();
-        renderCalendar({ force: true });
-        if (scheduleBody) renderSchedule();
+        /* Visible week only — rebuilding all 15 weeks made open feel ~5s. */
+        paintVisibleScheduleWeekFast({
+          weekIndex: scheduleCalendarWeekIndex,
+        });
         if (scrollPending) {
           calendarScrollRestorePending = null;
           applyCalendarScrollRestore(scrollPending);
         }
-        prefetchScheduleWeekDownloadDeps();
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(
+            function () {
+              prefetchScheduleWeekDownloadDeps();
+            },
+            { timeout: 8000 }
+          );
+        } else {
+          setTimeout(prefetchScheduleWeekDownloadDeps, 2500);
+        }
       }
       /*
-       * Paint immediately from local stores, then pull cloud in the background.
-       * Waiting on network before first paint made Schedule feel stuck every open.
+       * Paint local stores first (sync), then cloud poll in the background.
        */
       function openScheduleFromCloudThenPaint() {
         if (currentScreen !== 1) return;
@@ -20354,11 +20404,8 @@
           return false;
         });
       }
-      if (scrollPending) {
-        openScheduleFromCloudThenPaint();
-      } else {
-        deferUiWork(openScheduleFromCloudThenPaint);
-      }
+      /* Sync first paint so Schedule is not blank for a frame. */
+      openScheduleFromCloudThenPaint();
     }
     if (num === 14) {
       deferUiWork(function () {
@@ -30026,6 +30073,13 @@
       return { ok: true, skipped: 'timeclock' };
     }
     var sb = window.gmSupabase;
+    /* Paint Schedule from local stores immediately — never wait on network for first view. */
+    releaseScheduleCloudHydrateGate();
+    try {
+      paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+    } catch (_earlyPaint) {
+      /* ignore */
+    }
     var session = await gmCalloutEnsureSupabaseSession(sb);
     if (!session) {
       releaseScheduleCloudHydrateGate();
@@ -30035,13 +30089,21 @@
     var empRes;
     var profRes;
     var teamRes;
+    /*
+     * Fetch roster, profile, and schedule blobs together. Schedule columns alone are
+     * enough for first paint; tip/meta columns load after.
+     */
+    var scheduleHydrateCols =
+      TEAM_STATE_SCHEDULE_COLUMNS + ',current_restaurant_id,callout_history';
     try {
       var batch = await Promise.all([
         employeesSelectWithEmailFallback(sb),
         sb.from('profiles').select('role, display_name').eq('id', sessRes.data.session.user.id).maybeSingle(),
+        selectTeamStateRow(sb, scheduleHydrateCols),
       ]);
       empRes = batch[0];
       profRes = batch[1];
+      teamRes = batch[2];
     } catch (fetchErr) {
       console.warn('gm-callout: hydrate fetch', fetchErr);
       releaseScheduleCloudHydrateGate();
@@ -30080,14 +30142,8 @@
     setupSelfProfileRoleWatch();
     /* Admin account-role list is Team-page only — don't block hydrate. */
 
-    try {
-      teamRes = await selectTeamStateRow(
-        sb,
-        isManager ? TEAM_STATE_MANAGER_COLUMNS : TEAM_STATE_EMPLOYEE_COLUMNS
-      );
-    } catch (teamFetchErr) {
-      console.warn('gm-callout: team_state hydrate', teamFetchErr);
-      teamRes = { data: null, error: teamFetchErr };
+    if (teamRes && teamRes.error) {
+      console.warn('gm-callout: team_state hydrate', teamRes.error);
     }
     if (teamRes.error) {
       console.warn('gm-callout: team_state select', teamRes.error);
@@ -30191,8 +30247,7 @@
       /* ignore */
     }
     releaseScheduleCloudHydrateGate();
-    renderCalendar({ force: true });
-    if (scheduleBody) renderSchedule();
+    paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
       renderManagerHomeShifts();
@@ -30200,6 +30255,22 @@
     gmCalloutShellUiRendered = true;
     setupScheduleCellsRealtimeSubscription();
     void hydrateScheduleSyncV2FromCloud();
+    /* Tip/payroll + messaging blobs are not needed for Schedule first paint. */
+    if (isManager) {
+      void selectTeamStateRow(sb, TEAM_STATE_MANAGER_COLUMNS)
+        .then(function (fullTeam) {
+          if (!fullTeam || fullTeam.error || !fullTeam.data) return;
+          applyTeamStateRowFromRemote(fullTeam.data, {
+            isManager: true,
+            fromInitialHydrate: false,
+            forceAcceptRemote: false,
+            allowDiscardDirty: false,
+          });
+        })
+        .catch(function () {
+          /* ignore */
+        });
+    }
     if (isManager) {
       /* Reviews are optional + can be large — fetch after paint, never on critical path. */
       void fetchScheduleReviewsFromRemoteOptional();
@@ -30330,10 +30401,14 @@
       currentRestaurantId
     );
     /* restoreFoh already rebuilds when it writes; skip a duplicate full rebuild. */
-    if (!fohRestored) rebuildSchedule();
+    if (!fohRestored) {
+      paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+    } else {
+      scheduleUiAwaitingInitialCloudHydrate = false;
+      renderCalendar({ force: true });
+      if (scheduleBody) renderSchedule();
+    }
     ensureManagerScheduleRestaurantDefault();
-    renderCalendar();
-    if (scheduleBody) renderSchedule();
     renderEmployeeList();
     if (!gmManagerShellBootstrapped) {
       if (opts.navigateToSchedule || currentScreen === 1 || gmCalloutSessionIsAdmin) {
