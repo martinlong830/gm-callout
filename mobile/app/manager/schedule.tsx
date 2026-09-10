@@ -463,7 +463,7 @@ export default function ManagerScheduleScreen() {
     pollTimer = setInterval(() => {
       if (cancelled || localEditPendingRef.current) return;
       void pullCells();
-    }, 2000);
+    }, 5000);
 
     return () => {
       cancelled = true;

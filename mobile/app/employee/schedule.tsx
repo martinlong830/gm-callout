@@ -275,7 +275,7 @@ export default function EmployeeScheduleScreen() {
     void pullCells();
     pollTimer = setInterval(() => {
       if (!cancelled) void pullCells();
-    }, 2000);
+    }, 5000);
 
     return () => {
       cancelled = true;

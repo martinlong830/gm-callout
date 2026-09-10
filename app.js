@@ -5868,8 +5868,13 @@
   var TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS = 200;
   /** Poll cloud so other devices' edits appear even if Realtime broadcast is missed. */
   var TEAM_STATE_POLL_MS = 4000;
-  /** Backup poll for schedule cells when postgres realtime is flaky (~peer update within 2s). */
-  var SCHEDULE_CELLS_POLL_MS = 2000;
+  /** Poll peer cell edits (~5s). Realtime handles most updates; this is backup only. */
+  var SCHEDULE_CELLS_POLL_MS = 5000;
+  /** Refetch slot rows less often than cells (slots rarely change). */
+  var SCHEDULE_SLOTS_POLL_EVERY_N = 6;
+  var scheduleSlotsPollTick = 0;
+  var scheduleLastAppliedFingerprint = '';
+  var scheduleCellsBackgroundHydratePromise = null;
   var teamStatePollTimer = null;
   var scheduleCellsPollTimer = null;
   var scheduleV2FlushPromise = null;
@@ -6022,9 +6027,19 @@
       var fromIso = dayIsoForScheduleWeekDay(wi, 0);
       var toIso = dayIsoForScheduleWeekDay(wi, 6);
       if (!fromIso || !toIso) return false;
-      var slotsRes = await v2.fetchSlots(window.gmSupabase, cid);
+      scheduleSlotsPollTick += 1;
+      var needSlots =
+        !!opts.forceSlots ||
+        scheduleSlotsPollTick === 1 ||
+        scheduleSlotsPollTick % SCHEDULE_SLOTS_POLL_EVERY_N === 0;
+      var slotsPromise = needSlots
+        ? v2.fetchSlots(window.gmSupabase, cid)
+        : Promise.resolve({ ok: true, skipped: true });
+      var cellsPromise = v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+      var pair = await Promise.all([slotsPromise, cellsPromise]);
+      var slotsRes = pair[0];
+      var cellsRes = pair[1];
       if (slotsRes && slotsRes.ok === false) return false;
-      var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
       if (cellsRes && cellsRes.ok === false) return false;
       return applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
@@ -6386,6 +6401,33 @@
     return 0;
   }
 
+  function scheduleCellsProjectionFingerprint(patch) {
+    if (!patch || typeof patch !== 'object') return '';
+    var parts = [];
+    Object.keys(patch)
+      .sort()
+      .forEach(function (rid) {
+        var cells = patch[rid] || {};
+        Object.keys(cells)
+          .sort()
+          .forEach(function (shiftId) {
+            var c = cells[shiftId] || {};
+            parts.push(
+              [
+                rid,
+                shiftId,
+                c.rowOwner || '',
+                c.dayOff ? '1' : '0',
+                c.start || '',
+                c.end || '',
+                c.rev || 0,
+              ].join('\t')
+            );
+          });
+      });
+    return parts.join('\n');
+  }
+
   function applyScheduleCellsCacheToLocalStore(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -6404,9 +6446,12 @@
       roleToIdx[ROLE_DEFS[ri].role] = ri;
     }
     var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
+    var fp = scheduleCellsProjectionFingerprint(patch);
+    if (!opts.force && fp && fp === scheduleLastAppliedFingerprint) {
+      return false;
+    }
     var rids = Object.keys(patch);
     if (!rids.length) {
-      /* Slot deactivated with no remaining cells — still shrink local draft rows. */
       var onlyShrink = reconcileLocalScheduleToActiveSlots({
         weekIndex: scheduleCalendarWeekIndex,
       });
@@ -6420,6 +6465,7 @@
           if (scheduleBody) renderSchedule();
         });
       }
+      if (onlyShrink) scheduleLastAppliedFingerprint = fp;
       return onlyShrink;
     }
     beginTeamStateRemoteApply();
@@ -6437,28 +6483,37 @@
           var entry = { workers: cell.workers || ['Unassigned'] };
           if (cell.rowOwner) entry.rowOwner = cell.rowOwner;
           if (cell.dayOff) {
-            /* day-off: keep owner, no times */
+            /* day-off */
           } else if (cell.start && cell.end) {
             entry.break = cell.break || formatBreakAnnotation('3:00PM', 'BREAK TIME');
             if (cell.breakPaid === true || cell.breakPaid === false) entry.breakPaid = cell.breakPaid;
             entry.timeLabel = redPokeShiftTimeLabel(cell.start, cell.end);
             entry.hours = redPokeShiftHoursDecimal(cell.start, cell.end);
           }
-          store[rid][shiftId] = entry;
-          changed = true;
+          var prev = store[rid][shiftId];
+          if (
+            !prev ||
+            String(prev.rowOwner || '') !== String(entry.rowOwner || '') ||
+            String((prev.workers && prev.workers[0]) || '') !==
+              String((entry.workers && entry.workers[0]) || '') ||
+            String(prev.timeLabel || '') !== String(entry.timeLabel || '') ||
+            !!prev.breakPaid !== !!entry.breakPaid
+          ) {
+            store[rid][shiftId] = entry;
+            changed = true;
+          }
         });
       });
       if (scheduleCellRemoteApplyBlocked() && !opts.force) {
         return false;
       }
       if (changed) {
-        saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
+        saveScheduleAssignmentsStore(store, {
+          skipDirty: true,
+          skipInteractiveMark: true,
+          skipTimecardsNotify: true,
+        });
       }
-      /*
-       * Cloud cells are SoT — always project into the draft grid. Do not keep local
-       * "interactive" times over cloud (that caused forever-forked device views).
-       * Pending edits are already protected by scheduleCellRemoteApplyBlocked (outbox).
-       */
       var draftsByWeekRid = Object.create(null);
       rids.forEach(function (rid) {
         var cells = patch[rid];
@@ -6486,28 +6541,39 @@
             layers[role][p.trIdx] = row;
           }
           var cell = cells[shiftId];
-          if (cell.dayOff || !cell.start || !cell.end) {
-            row[di] = null;
-          } else {
-            row[di] = [String(cell.start), String(cell.end)];
+          var nextCell =
+            cell.dayOff || !cell.start || !cell.end
+              ? null
+              : [String(cell.start), String(cell.end)];
+          var prevCell = row[di];
+          var same =
+            (!nextCell && !prevCell) ||
+            (nextCell &&
+              prevCell &&
+              normalizeHHMM(prevCell[0]) === normalizeHHMM(nextCell[0]) &&
+              normalizeHHMM(prevCell[1]) === normalizeHHMM(nextCell[1]));
+          if (!same) {
+            row[di] = nextCell;
+            changed = true;
           }
-          changed = true;
         });
       });
       if (scheduleCellRemoteApplyBlocked() && !opts.force) {
         return false;
       }
-      Object.keys(draftsByWeekRid).forEach(function (draftKey) {
-        var bits = draftKey.split('\0');
-        saveDraftScheduleRowsForWeek(Number(bits[0]), draftsByWeekRid[draftKey], bits[1]);
-      });
-      /* Drop local rows for deactivated cloud slots (peer delete / Refresh). */
+      if (changed) {
+        Object.keys(draftsByWeekRid).forEach(function (draftKey) {
+          var bits = draftKey.split('\0');
+          saveDraftScheduleRowsForWeek(Number(bits[0]), draftsByWeekRid[draftKey], bits[1]);
+        });
+      }
       if (reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex })) {
         changed = true;
       }
     } finally {
       endTeamStateRemoteApply();
     }
+    scheduleLastAppliedFingerprint = fp;
     if (!changed) return false;
     if (opts.rebuild !== false && currentScreen === 1) {
       deferUiWork(function () {
@@ -6537,29 +6603,29 @@
       if (bf && bf.ok !== false && v2.setWriteOnlyCells) {
         v2.setWriteOnlyCells(true);
       }
-      var fromIso = dayIsoForScheduleWeekDay(0, 0);
-      var toIso = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
-      /*
-       * Cloud cells are the schedule. Apply them first. Only flush ops that were
-       * enqueued from live edits this session — never re-upload recovered dirty
-       * localStorage over the shared store (that rolled peers back).
-       */
-      if (fromIso && toIso) {
-        var slotsRes = await v2.fetchSlots(window.gmSupabase, cid);
-        if (slotsRes && slotsRes.ok === false) {
-          console.warn('gm-callout: schedule slots fetch failed', slotsRes.error);
+      var wi = scheduleCalendarWeekIndex;
+      var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
+      var weekTo = dayIsoForScheduleWeekDay(wi, 6);
+      var fullFrom = dayIsoForScheduleWeekDay(0, 0);
+      var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
+      if (weekFrom && weekTo) {
+        var fastPair = await Promise.all([
+          v2.fetchSlots(window.gmSupabase, cid),
+          v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo),
+        ]);
+        if (fastPair[0] && fastPair[0].ok === false) {
+          console.warn('gm-callout: schedule slots fetch failed', fastPair[0].error);
           startScheduleCellsPoll();
           return;
         }
-        var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
-        if (cellsRes && cellsRes.ok === false) {
-          console.warn('gm-callout: schedule cells fetch failed', cellsRes.error);
+        if (fastPair[1] && fastPair[1].ok === false) {
+          console.warn('gm-callout: schedule cells fetch failed', fastPair[1].error);
           startScheduleCellsPoll();
           return;
         }
       }
       applyScheduleCellsCacheToLocalStore({ rebuild: true, force: true });
-      reconcileLocalScheduleToActiveSlots({});
+      reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
       scheduleCellsHydratedOk = true;
       if (hasInteractiveScheduleEditsThisSession()) {
         enqueueScheduleV2OpsFromLocalStores({});
@@ -6572,16 +6638,33 @@
           if (!fr || fr.ok === false) break;
           drain += 1;
         }
-      } else {
-        /* Stale dirty flags must not fight cloud — take cloud as SoT. */
-        if (draftScheduleDirty || scheduleAssignmentsDirty) {
-          draftScheduleDirty = false;
-          scheduleAssignmentsDirty = false;
-          persistTeamStateDirtyFlags();
-        }
-        await flushScheduleV2Outbox();
+      } else if (draftScheduleDirty || scheduleAssignmentsDirty) {
+        draftScheduleDirty = false;
+        scheduleAssignmentsDirty = false;
+        persistTeamStateDirtyFlags();
       }
       startScheduleCellsPoll();
+      if (
+        fullFrom &&
+        fullTo &&
+        (fullFrom !== weekFrom || fullTo !== weekTo) &&
+        !scheduleCellsBackgroundHydratePromise
+      ) {
+        scheduleCellsBackgroundHydratePromise = Promise.resolve(
+          v2.fetchCellsRange(window.gmSupabase, cid, fullFrom, fullTo)
+        )
+          .then(function (cellsRes) {
+            if (cellsRes && cellsRes.ok === false) return;
+            if (scheduleCellRemoteApplyBlocked()) return;
+            applyScheduleCellsCacheToLocalStore({
+              rebuild: currentScreen === 1,
+            });
+          })
+          .catch(function () {})
+          .finally(function () {
+            scheduleCellsBackgroundHydratePromise = null;
+          });
+      }
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
     }
@@ -13118,7 +13201,7 @@
       /* ignore */
     }
     if (opts.skipDirty) {
-      notifyTimecardsScheduleChanged();
+      if (!opts.skipTimecardsNotify) notifyTimecardsScheduleChanged();
       return;
     }
     if (GM_SUPABASE_DATA && window.gmSupabase) {
