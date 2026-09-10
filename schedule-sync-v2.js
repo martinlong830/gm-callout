@@ -487,8 +487,15 @@
       var ck = cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key);
       var local = cache[ck];
       var remoteRev = Number(row.rev) || 0;
-      /* Keep optimistic / newer local cells — equal rev must not snap edits back. */
-      if (local && Number(local.rev) >= remoteRev) return;
+      var remoteDeleted = !!row.deleted;
+      /*
+       * Keep optimistic / newer local cells. Equal rev must not snap edits back —
+       * except revive cells wrongly marked deleted locally (empty slot-cache prune).
+       */
+      if (local && Number(local.rev) > remoteRev) return;
+      if (local && Number(local.rev) === remoteRev && !(local.deleted && !remoteDeleted)) {
+        return;
+      }
       cache[ck] = {
         restaurant_id: row.restaurant_id,
         day_iso: String(row.day_iso).slice(0, 10),
@@ -500,7 +507,7 @@
         worker_id: row.worker_id || null,
         break_annotation: row.break_annotation || null,
         break_paid: row.break_paid == null ? null : !!row.break_paid,
-        deleted: !!row.deleted,
+        deleted: remoteDeleted,
         rev: remoteRev,
       };
       if (remoteRev > getLastRev()) setLastRev(remoteRev);
@@ -509,18 +516,22 @@
   }
 
   /**
-   * Drop cached cells whose slot is no longer active (peer deleted the row).
-   * Safer than wiping a whole date range — that destroyed in-flight local edits.
+   * Drop cached cells whose slot is known-inactive (peer deleted the row).
+   * Never treat "slot missing from cache" as inactive — an empty/failed slot fetch
+   * used to mark every cell deleted and blank the schedule.
    */
   function pruneCellsForInactiveSlots() {
     var slots = getSlotCache();
+    if (!slots || !Object.keys(slots).length) return false;
     var cache = getCellCache();
     var changed = false;
     Object.keys(cache).forEach(function (ck) {
       var c = cache[ck];
       if (!c || c.deleted) return;
       var spk = [c.restaurant_id, c.role, c.slot_key].join('\0');
-      if (slots[spk] && slots[spk].active !== false) return;
+      var slot = slots[spk];
+      if (!slot) return;
+      if (slot.active !== false) return;
       c.deleted = true;
       changed = true;
     });
@@ -583,8 +594,10 @@
   /**
    * Replace local active-slot SoT from a full company fetch (active rows only).
    * Removes deactivated slots from map/cache so peers drop deleted rows.
+   * Refuse empty replace — a failed/empty fetch must not wipe the map (blank schedule).
    */
   function replaceActiveSlots(rows) {
+    if (!rows || !rows.length) return;
     var prevMap = getSlotMap();
     var nextSlots = {};
     var nextMap = {};
@@ -604,6 +617,7 @@
       if (!bySort[mk]) bySort[mk] = [];
       bySort[mk].push(String(row.slot_key));
     });
+    if (!Object.keys(nextSlots).length) return;
     Object.keys(bySort).forEach(function (mk) {
       var chosen = pickStableSlotKey(mk, bySort[mk], prevMap);
       if (chosen) nextMap[mk] = chosen;

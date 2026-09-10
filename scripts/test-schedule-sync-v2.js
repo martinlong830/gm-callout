@@ -255,6 +255,38 @@ function emptyState() {
   assert(aKitchen.start === '09:00' && aBar.start === '10:00', 'times stay on the correct role rows');
 })();
 
+// 14) Empty slot fetch must not wipe map; prune must not delete unknown slots
+(function () {
+  var slot = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: slot, sort_order: 0, active: true },
+  ]);
+  sync.mergeRemoteCells([
+    {
+      restaurant_id: 'rp-9',
+      role: 'Bartender',
+      slot_key: slot,
+      day_iso: '2026-09-08',
+      start_hhmm: '10:00',
+      end_hhmm: '18:00',
+      worker_name: 'EUGENE',
+      rev: 5,
+      deleted: false,
+    },
+  ]);
+  sync.replaceActiveSlots([]);
+  assert(sync.getSlotMap()['rp-9|Bartender|0'] === slot, 'empty slot fetch refuses wipe');
+  sync.pruneCellsForInactiveSlots();
+  var patch = sync.projectCellsToAssignmentPatch(
+    { '2026-09-08': 7 },
+    { Kitchen: 0, Bartender: 1, Server: 2 }
+  );
+  assert(
+    patch['rp-9'] && patch['rp-9']['shift-7-1-0'] && patch['rp-9']['shift-7-1-0'].rowOwner === 'EUGENE',
+    'prune without inactive slot does not blank schedule'
+  );
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

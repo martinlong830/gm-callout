@@ -6022,8 +6022,10 @@
       var fromIso = dayIsoForScheduleWeekDay(wi, 0);
       var toIso = dayIsoForScheduleWeekDay(wi, 6);
       if (!fromIso || !toIso) return false;
-      await v2.fetchSlots(window.gmSupabase, cid);
-      await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+      var slotsRes = await v2.fetchSlots(window.gmSupabase, cid);
+      if (slotsRes && slotsRes.ok === false) return false;
+      var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+      if (cellsRes && cellsRes.ok === false) return false;
       return applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
       });
@@ -6057,9 +6059,10 @@
       ) {
         return;
       }
+      /* Only poll while Schedule is open — avoids constant fetch/rebuild lag. */
+      if (currentScreen !== 1) return;
       if (!scheduleSyncV2WriteOnly()) return;
-      /* Every authed role/device polls the same cell SoT (~2s). Rebuild UI only on Schedule. */
-      void pollVisibleScheduleCellsFromCloud({ rebuild: currentScreen === 1 });
+      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
     }, SCHEDULE_CELLS_POLL_MS);
   }
 
@@ -6528,6 +6531,7 @@
       var bf = await v2.backfillIfNeeded(window.gmSupabase, cid);
       if (bf && bf.schemaMissing) {
         if (v2.setWriteOnlyCells) v2.setWriteOnlyCells(false);
+        scheduleCellsHydratedOk = false;
         return;
       }
       if (bf && bf.ok !== false && v2.setWriteOnlyCells) {
@@ -6541,11 +6545,22 @@
        * localStorage over the shared store (that rolled peers back).
        */
       if (fromIso && toIso) {
-        await v2.fetchSlots(window.gmSupabase, cid);
-        await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+        var slotsRes = await v2.fetchSlots(window.gmSupabase, cid);
+        if (slotsRes && slotsRes.ok === false) {
+          console.warn('gm-callout: schedule slots fetch failed', slotsRes.error);
+          startScheduleCellsPoll();
+          return;
+        }
+        var cellsRes = await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+        if (cellsRes && cellsRes.ok === false) {
+          console.warn('gm-callout: schedule cells fetch failed', cellsRes.error);
+          startScheduleCellsPoll();
+          return;
+        }
       }
       applyScheduleCellsCacheToLocalStore({ rebuild: true, force: true });
       reconcileLocalScheduleToActiveSlots({});
+      scheduleCellsHydratedOk = true;
       if (hasInteractiveScheduleEditsThisSession()) {
         enqueueScheduleV2OpsFromLocalStores({});
         await flushScheduleV2Outbox();
@@ -6637,6 +6652,8 @@
    * Blob team_state push must NOT clear interactive protection — cells can still be pending.
    */
   var scheduleLastCellFlushAt = 0;
+  /** True after a successful cells+slots hydrate — then blob schedule merges are skipped. */
+  var scheduleCellsHydratedOk = false;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
@@ -9795,20 +9812,14 @@
     row = alignRemoteTeamStateScheduleBundleToLocalWindow(row);
 
     /*
-     * WRITE-ONLY HARD RULE: schedule_assignments / draft_schedule blobs are NOT SoT.
-     * Applying them reshuffles people/times vs ISO cells. Strip before any merge so
-     * tip/meta/publish still flow while every device shares one cell schedule.
+     * WRITE-ONLY: after cells have hydrated once, skip blob schedule merges (cells are SoT).
+     * Before that, still apply blobs so the calendar is not blank while cells load.
      */
-    if (scheduleSyncV2WriteOnly()) {
-      row = Object.assign({}, row, {
-        schedule_assignments: null,
-        draft_schedule: null,
-      });
-    }
+    var skipBlobSchedule = !!(scheduleSyncV2WriteOnly() && scheduleCellsHydratedOk);
 
     /*
      * Dual-write (legacy): apply schedule blobs for fast peer transport, then overlay
-     * cells. Write-only path above skips blob schedule entirely.
+     * cells. Write-only path skips assignment/draft merges once cells are ready.
      */
 
     if (row.updated_at != null) {
@@ -9981,7 +9992,7 @@
       scheduleHashBeforeApply = null;
     }
 
-    var sched = row.schedule_assignments;
+    var sched = skipBlobSchedule ? null : row.schedule_assignments;
     if (scheduleAssignmentsStoreIsPopulated(sched) && !scheduleBundleLocked && !refuseStaleSchedule) {
       if (scheduleAssignmentsRemoteMergeIsStale(sched) && !forceAccept) {
         if (isMgr) {
@@ -10099,7 +10110,7 @@
       scheduleTeamStateDebouncedSync();
     }
 
-    var dr = row.draft_schedule;
+    var dr = skipBlobSchedule ? null : row.draft_schedule;
     if (dr && typeof dr === 'object') {
       if (!scheduleBundleLocked && !refuseStaleSchedule) {
         if (draftScheduleRemoteMergeIsStale(dr) && !forceAccept) {
