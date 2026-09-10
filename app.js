@@ -261,6 +261,37 @@
     return [a, b];
   }
 
+  /** Keep role row counts; wipe every day cell to null (no invented DEFAULT times). */
+  function blankDraftTimesKeepingRows(layers) {
+    var src = layers && typeof layers === 'object' ? layers : DEFAULT_DRAFT_SCHEDULE_ROWS;
+    var out = { Bartender: [], Kitchen: [], Server: [] };
+    ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+      var rows = Array.isArray(src[role]) ? src[role] : [];
+      if (!rows.length && DEFAULT_DRAFT_SCHEDULE_ROWS[role]) {
+        rows = DEFAULT_DRAFT_SCHEDULE_ROWS[role];
+      }
+      out[role] = rows.map(function () {
+        return [null, null, null, null, null, null, null];
+      });
+    });
+    return out;
+  }
+
+  function clearCustomSlotOrderForWeek(weekIndex, restaurantId) {
+    var mon = mondayIsoForScheduleWeekIndex(
+      weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex
+    );
+    if (!mon || !slotOrderByWeekStore[mon]) return false;
+    var rid = resolveDraftRestaurantId(restaurantId);
+    if (!slotOrderByWeekStore[mon][rid]) return false;
+    delete slotOrderByWeekStore[mon][rid];
+    if (!Object.keys(slotOrderByWeekStore[mon]).length) {
+      delete slotOrderByWeekStore[mon];
+    }
+    persistSlotOrderStores({ skipDirty: true });
+    return true;
+  }
+
   function sanitizeDraftRoleRows(rows, defaultRows) {
     if (!Array.isArray(rows) || !rows.length) {
       return cloneDraftSchedule(defaultRows);
@@ -1216,13 +1247,20 @@
     if (layers) return layers;
     /*
      * Future empty weeks may inherit structure from the rolling "this week" draft.
-     * Past weeks must NOT — mirroring this week's rows onto Aug 24–30 (etc.) created
-     * phantom slots that then inherited this week's people (duplicate Maeve, etc.).
+     * Past weeks must NOT inherit DEFAULT/template times — that painted a fake
+     * Red Poke pattern (wrong people / extra FOH rows) until cloud scrolled in.
      */
     if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
       var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
       layers = draftLayersFromWeekEntry(tplSaved, restaurantId);
       if (layers) return layers;
+      return cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+    }
+    if (wi < SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      var pastTpl = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
+      var pastBase =
+        draftLayersFromWeekEntry(pastTpl, restaurantId) || DEFAULT_DRAFT_SCHEDULE_ROWS;
+      return blankDraftTimesKeepingRows(pastBase);
     }
     return cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   }
@@ -6170,7 +6208,7 @@
       void pollVisibleScheduleCellsFromCloud({
         rebuild: true,
         force: false,
-        forceSlots: false,
+        forceSlots: true,
         replaceWeekIndex: w,
         upsertTimedOnly: true,
       }).catch(function () {
@@ -7052,11 +7090,23 @@
           var roleDef = ROLE_DEFS[p.roleIdx];
           if (!roleDef) return;
           var role = roleDef.role;
+          var maxSlots = 0;
+          if (typeof v2.activeSlotCount === 'function') {
+            maxSlots = Number(v2.activeSlotCount(rid, role)) || 0;
+          }
+          if (maxSlots <= 0) maxSlots = slotCountForRole(role, wi, rid);
+          /*
+           * Never grow draft past cloud active slots — forked slot_keys / high
+           * sort_order created phantom Unassigned FOH rows that differed per device.
+           */
+          if (maxSlots > 0 && p.trIdx >= maxSlots) return;
           var layers = ensureDraftWeek(wi, rid);
           if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
           while (layers[role].length <= p.trIdx) {
+            if (maxSlots > 0 && layers[role].length >= maxSlots) break;
             layers[role].push([null, null, null, null, null, null, null]);
           }
+          if (p.trIdx >= layers[role].length) return;
           var row = layers[role][p.trIdx];
           if (!Array.isArray(row) || row.length < 7) {
             row = [null, null, null, null, null, null, null];
@@ -7089,7 +7139,20 @@
         if (reconcileLocalScheduleToActiveSlots({ weekIndex: Number(wiStr) })) {
           changed = true;
         }
+        /* Trusted cloud week: drop per-device ↑↓ order so peers share sort_order 0..n-1. */
+        clearCustomSlotOrderForWeek(Number(wiStr), null);
+        restaurantsList.forEach(function (rest) {
+          clearCustomSlotOrderForWeek(Number(wiStr), rest.id);
+        });
       });
+      /* Soft upsert can still leave trailing local rows — trim to active slots. */
+      if (upsertTimedOnly) {
+        Object.keys(timedWeeks).forEach(function (wiStr) {
+          if (reconcileLocalScheduleToActiveSlots({ weekIndex: Number(wiStr) })) {
+            changed = true;
+          }
+        });
+      }
     } finally {
       endTeamStateRemoteApply();
     }
@@ -7129,6 +7192,18 @@
       }
     }
     return false;
+  }
+
+  /** True only when this week has a saved draft in store — not the built-in DEFAULT fallback. */
+  function weekHasPersistedDraftLayers(weekIndex, restaurantId) {
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var saved = draftScheduleByWeekStore[String(wi)];
+    return !!draftLayersFromWeekEntry(saved, restaurantId);
+  }
+
+  function localWeekHasAuthoritativeTimedDraft(weekIndex, restaurantId) {
+    if (!weekHasPersistedDraftLayers(weekIndex, restaurantId)) return false;
+    return localWeekHasTimedDraft(weekIndex, restaurantId);
   }
 
   /**
@@ -7522,8 +7597,9 @@
     );
   }
   /**
-   * Legacy gate — kept for callers. Always start false so Schedule paints from local
-   * stores in <1s; cloud hydrate overlays when ready.
+   * Gate Schedule matrix until the first visible-week slots+cells apply finishes.
+   * Legacy comment said "always false" for speed — that painted DEFAULT / day-off
+   * shells with wrong people order before cloud landed.
    */
   var scheduleUiAwaitingInitialCloudHydrate = false;
   /** Allow one remote schedule apply even if local guard would refuse (manager chose cloud). */
@@ -8198,6 +8274,7 @@
     } catch (_rep) {
       console.warn('gm-callout: trusted week replace before paint', _rep);
     }
+    scheduleUiAwaitingInitialCloudHydrate = false;
     /* Mark ready before paint so nested renderCalendarInto cannot hold/clear. */
     if (localWeekHasTimedDraft(weekIndex) || cloudTimed <= 0) {
       markScheduleAuthoritativePaintReady();
@@ -8207,6 +8284,7 @@
       forcePaint: true,
       fast: true,
       forceInitial: true,
+      forceCloudPending: true,
       allowEmptyPaint: cloudTimed <= 0,
       confirmedEmpty: cloudTimed <= 0,
     });
@@ -8236,6 +8314,7 @@
         forcePaint: true,
         fast: true,
         forceInitial: true,
+        forceCloudPending: true,
         allowEmptyPaint: false,
         confirmedEmpty: false,
       });
@@ -8428,6 +8507,7 @@
           weekNav: !!opts.weekNav,
           forceInitial: !!opts.forceInitial,
           confirmedEmpty: !!opts.confirmedEmpty,
+          forceCloudPending: !!opts.forceCloudPending,
         });
       }
       if (SCHEDULE && SCHEDULE.length) {
@@ -18714,7 +18794,7 @@
       console.warn('gm-callout: renderSchedule shell', _rs);
     }
     try {
-      renderCalendar({ force: true, forceInitial: true, allowEmptyPaint: false });
+      renderCalendar({ force: true, forceInitial: false, allowEmptyPaint: false });
     } catch (_rc) {
       console.warn('gm-callout: renderCalendar shell', _rc);
     }
@@ -23942,13 +24022,18 @@
 
   function renderCalendar(opts) {
     opts = opts || {};
-    if (
-      scheduleUiAwaitingInitialCloudHydrate &&
-      !opts.forceCloudPending &&
-      !opts.forceInitial &&
-      !opts.force
-    ) {
-      return;
+    if (scheduleUiAwaitingInitialCloudHydrate && !opts.forceCloudPending) {
+      /*
+       * Do not paint DEFAULT / day-off shells while the first cloud week is in flight.
+       * Only paint if we already have authoritative timed rows for this week.
+       */
+      if (
+        !localWeekHasAuthoritativeTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId) &&
+        !(SCHEDULE && SCHEDULE.length)
+      ) {
+        if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
+        return;
+      }
     }
     var readOnly =
       document.documentElement.classList.contains('manager-app') &&
@@ -31744,19 +31829,27 @@
     /* restoreFoh already rebuilds when it writes; skip a duplicate full rebuild. */
     void fohRestored;
     try {
-      var hasLocalTimed = localWeekHasTimedDraft(
+      var hasLocalTimed = localWeekHasAuthoritativeTimedDraft(
         scheduleCalendarWeekIndex,
         currentRestaurantId
       );
-      paintVisibleScheduleWeekFast({
-        weekIndex: scheduleCalendarWeekIndex,
-        forcePaint: true,
-        fast: true,
-        forceInitial: true,
-        /* Never flash "No shifts" before the visible-week cell fetch finishes. */
-        allowEmptyPaint: false,
-      });
-      if (hasLocalTimed) {
+      if (
+        scheduleSyncV2Enabled() &&
+        scheduleSyncV2WriteOnly() &&
+        GM_SUPABASE_DATA &&
+        window.gmSupabase &&
+        !hasLocalTimed
+      ) {
+        scheduleUiAwaitingInitialCloudHydrate = true;
+        if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
+      } else if (hasLocalTimed) {
+        paintVisibleScheduleWeekFast({
+          weekIndex: scheduleCalendarWeekIndex,
+          forcePaint: true,
+          fast: true,
+          forceInitial: true,
+          allowEmptyPaint: false,
+        });
         markScheduleAuthoritativePaintReady();
       }
       updateScheduleWeekNav();
