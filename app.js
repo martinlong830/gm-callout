@@ -7137,21 +7137,36 @@
         startScheduleCellsPoll();
         return;
       }
+      /*
+       * Count timed cells across ALL restaurants — filtering by currentRestaurantId
+       * during boot (id not ready yet) made cloudTimed=0 and painted the DAY-OFF shell.
+       */
+      var fetchRows = (pair[1] && pair[1].rows) || [];
       var cloudTimedVisible = countTimedCellsInFetchRows(
-        (pair[1] && pair[1].rows) || [],
+        fetchRows,
+        null,
+        weekFrom,
+        weekTo
+      );
+      var cloudTimedThisStore = countTimedCellsInFetchRows(
+        fetchRows,
         currentRestaurantId,
         weekFrom,
         weekTo
       );
-      var firstVisible = !scheduleAuthoritativePaintReady;
+      /*
+       * Soft upsert only on first load — replaceTrusted rewrote missing projections
+       * to null and painted every tile as DAY-OFF before times landed.
+       */
       applyScheduleCellsCacheToLocalStore({
         rebuild: false,
         force: true,
-        replaceTrusted: firstVisible,
-        upsertTimedOnly: !firstVisible,
-        replaceWeekIndex: firstVisible ? wi : undefined,
+        upsertTimedOnly: true,
       });
-      if (cloudTimedVisible > 0 && !localWeekHasTimedDraft(wi, currentRestaurantId)) {
+      if (
+        (cloudTimedThisStore > 0 || cloudTimedVisible > 0) &&
+        !localWeekHasTimedDraft(wi, currentRestaurantId)
+      ) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
@@ -7160,15 +7175,16 @@
       }
       /* Paint only when timed shifts rebuilt — never the DAY-OFF name shell. */
       if (currentScreen === 1) {
-        var painted = paintAuthoritativeVisibleWeekOrHold(wi, cloudTimedVisible);
-        if (!painted && cloudTimedVisible > 0) {
-          /* Leave hold on; soft poll will paint once SCHEDULE has real times. */
-          startScheduleCellsPoll();
-        } else {
-          startScheduleCellsPoll();
-        }
+        paintAuthoritativeVisibleWeekOrHold(
+          wi,
+          cloudTimedThisStore > 0 ? cloudTimedThisStore : cloudTimedVisible
+        );
+        startScheduleCellsPoll();
       } else {
-        if (cloudTimedVisible <= 0 || localWeekHasTimedDraft(wi, currentRestaurantId)) {
+        if (
+          cloudTimedVisible <= 0 ||
+          localWeekHasTimedDraft(wi, currentRestaurantId)
+        ) {
           markScheduleAuthoritativePaintReady();
         }
         startScheduleCellsPoll();
@@ -7230,19 +7246,7 @@
       })();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
-      markScheduleAuthoritativePaintReady();
-      if (currentScreen === 1) {
-        try {
-          paintVisibleScheduleWeekFast({
-            weekIndex: scheduleCalendarWeekIndex,
-            forcePaint: true,
-            allowDayOffShell: true,
-            allowEmptyPaint: true,
-          });
-        } catch (_paintFail) {
-          /* ignore */
-        }
-      }
+      startScheduleCellsPoll();
     }
   }
 
@@ -8042,12 +8046,11 @@
       render: false,
     });
     var localTimed = SCHEDULE && SCHEDULE.length ? SCHEDULE.length : 0;
-    var minKeep =
-      cloudTimed > 0 ? Math.max(3, Math.floor(cloudTimed * 0.35)) : 0;
-    if (cloudTimed > 0 && localTimed < minKeep) {
-      /* Incomplete apply — stay blank; poll will fill then paint. */
-      return false;
-    }
+    /*
+     * Prefer any real timed rebuild. Do NOT require cloudTimed match — restaurant
+     * filter / slot-map lag used to under-count and block forever, then a later
+     * path painted the DAY-OFF shell.
+     */
     if (localTimed > 0) {
       markScheduleAuthoritativePaintReady();
       paintVisibleScheduleWeekFast({
@@ -8058,19 +8061,20 @@
       scheduleDeferredScheduleChrome(weekIndex);
       return true;
     }
-    if (cloudTimed <= 0) {
-      markScheduleAuthoritativePaintReady();
-      paintVisibleScheduleWeekFast({
-        weekIndex: weekIndex,
-        forcePaint: true,
-        fast: true,
-        allowEmptyPaint: true,
-        allowDayOffShell: true,
-      });
-      scheduleDeferredScheduleChrome(weekIndex);
-      return true;
+    if (cloudTimed > 0) {
+      /* Cloud has times but local rebuild empty — keep blank for soft poll. */
+      return false;
     }
-    return false;
+    /* Confirmed no timed cells in fetch — allow empty "No shifts", not DAY-OFF shell. */
+    markScheduleAuthoritativePaintReady();
+    paintVisibleScheduleWeekFast({
+      weekIndex: weekIndex,
+      forcePaint: true,
+      fast: true,
+      allowEmptyPaint: true,
+    });
+    scheduleDeferredScheduleChrome(weekIndex);
+    return true;
   }
 
   function scheduleDraftHasSlotRows(weekIndex, restaurantId) {
@@ -8105,16 +8109,11 @@
 
   function scheduleShouldHoldCalendarPaint(opts) {
     opts = opts || {};
-    if (opts.weekNav) return false;
-    if (opts.allowEmptyPaint || opts.allowDayOffShell) return false;
+    if (opts.allowDayOffShell) return false;
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    /* Before first good paint: stay blank. */
-    if (!scheduleAuthoritativePaintReady) return true;
-    /*
-     * After ready: still never paint a DAY-OFF-only shell (names + empty tiles).
-     * Week nav passes weekNav/allowDayOffShell so scrolling stays instant.
-     */
+    if (!scheduleAuthoritativePaintReady && !opts.weekNav) return true;
+    /* DAY-OFF shell (slot rows, no times) — never show; blank or keep prior grid. */
     if (
       scheduleWeekIsDayOffShellOnly(
         opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex
@@ -8228,14 +8227,19 @@
         var readOnly =
           document.documentElement.classList.contains('manager-app') &&
           !managerCanEditCurrentRestaurant();
-        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
+        /* Same column layout as fast paint — only fill labor numbers + below panels. */
+        if (typeof renderCalendar === 'function' && SCHEDULE && SCHEDULE.length) {
+          renderCalendar({ force: true, fast: false });
+        } else {
+          renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
+          requestAnimationFrame(function () {
+            syncSchedulePanelColumnAlignment();
+          });
+        }
         if (scheduleBody) renderSchedule();
         updateSchedulePublishNotifyButton();
         updateScheduleDownloadWeekButton();
         if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
-        requestAnimationFrame(function () {
-          syncSchedulePanelColumnAlignment();
-        });
       } catch (_chrome) {
         /* ignore */
       }
@@ -16590,7 +16594,6 @@
       forcePaint: true,
       fast: true,
       weekNav: true,
-      allowDayOffShell: true,
       allowEmptyPaint: true,
     });
     scheduleDeferredScheduleChrome(w);
@@ -22724,7 +22727,16 @@
     const showPersonTotals = showDayTotals;
     const dayColCount = visibleDays.length;
     const colCount = dayColCount + 1 + (showPersonTotals ? 1 : 0);
-    var laborMap = showPersonTotals ? computeScheduleWeekLaborTotals(visibleDays) : null;
+    /*
+     * Fast week scroll: keep totals column (stable widths) but skip labor math;
+     * deferred chrome fills real numbers without changing column count.
+     */
+    var laborMap = null;
+    if (showPersonTotals && !opts.deferLaborTotals) {
+      laborMap = computeScheduleWeekLaborTotals(visibleDays);
+    } else if (showPersonTotals) {
+      laborMap = Object.create(null);
+    }
     var shiftByKey = Object.create(null);
     var visibleSet = Object.create(null);
     for (var vdi = 0; vdi < visibleDays.length; vdi += 1) {
@@ -23646,21 +23658,30 @@
       document.documentElement.classList.contains('manager-app') &&
       !managerCanEditCurrentRestaurant();
     var fast = !!opts.fast;
-    var showDayTotals = !readOnly && !fast;
+    /*
+     * Always keep the person-totals column for managers — toggling it on after fast
+     * week-scroll paints caused jarring width/position jumps.
+     */
+    var showDayTotals = !readOnly;
     renderCalendarInto(calendarGrid, {
       readOnly: readOnly,
       force: !!opts.force,
-      /* Hide person hour totals when viewing another store (view-only). */
       showDayTotals: showDayTotals,
+      /* Badges inside cells; safe to defer without column reflow. */
       showOtherStoreBadges: !fast,
       fast: fast,
       useCachedPersonOptions: true,
       allowEmptyPaint: !!opts.allowEmptyPaint,
       allowDayOffShell: !!opts.allowDayOffShell,
       weekNav: !!opts.weekNav,
+      deferLaborTotals: fast,
     });
     if (fast) {
       updateManagerScheduleViewOnlyHint();
+      requestAnimationFrame(function () {
+        syncCalendarTheadStickyOffset(calendarGrid);
+        syncSchedulePanelColumnAlignment();
+      });
       return;
     }
     renderScheduleManagerBelowPanels(getVisibleWeekDays(), showDayTotals, readOnly);
