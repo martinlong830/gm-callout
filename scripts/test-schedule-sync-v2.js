@@ -287,7 +287,7 @@ function emptyState() {
   );
 })();
 
-// 15) Fetch tombstones missing cells in range so peers drop cleared shifts
+// 15) Empty fetch must NOT tombstone; non-empty fetch can tombstone omitted cells
 (function () {
   var slot = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
   sync.replaceActiveSlots([
@@ -306,15 +306,46 @@ function emptyState() {
       deleted: false,
     },
   ]);
-  /* Later fetch: cell gone from cloud (deleted) — empty rows for that day range. */
   sync.replaceCellsInRange([], '2026-09-08', '2026-09-08');
-  var patch = sync.projectCellsToAssignmentPatch(
+  var patchKeep = sync.projectCellsToAssignmentPatch(
     { '2026-09-08': 7 },
     { Kitchen: 0, Bartender: 1, Server: 2 }
   );
   assert(
-    !(patch['rp-9'] && patch['rp-9']['shift-7-1-0']),
-    'tombstone removes cleared cell from projection'
+    patchKeep['rp-9'] &&
+      patchKeep['rp-9']['shift-7-1-0'] &&
+      patchKeep['rp-9']['shift-7-1-0'].rowOwner === 'EUGENE',
+    'empty fetch does not tombstone / blank schedule'
+  );
+  /* Authoritative non-empty fetch for another day in range, omitting Sep 8 cell. */
+  sync.replaceCellsInRange(
+    [
+      {
+        restaurant_id: 'rp-9',
+        role: 'Bartender',
+        slot_key: slot,
+        day_iso: '2026-09-09',
+        start_hhmm: '11:00',
+        end_hhmm: '19:00',
+        worker_name: 'EUGENE',
+        rev: 9,
+        deleted: false,
+      },
+    ],
+    '2026-09-08',
+    '2026-09-09'
+  );
+  var patchDrop = sync.projectCellsToAssignmentPatch(
+    { '2026-09-08': 7, '2026-09-09': 8 },
+    { Kitchen: 0, Bartender: 1, Server: 2 }
+  );
+  assert(
+    !(patchDrop['rp-9'] && patchDrop['rp-9']['shift-7-1-0']),
+    'non-empty fetch tombstones omitted cell in range'
+  );
+  assert(
+    patchDrop['rp-9'] && patchDrop['rp-9']['shift-8-1-0'] && patchDrop['rp-9']['shift-8-1-0'].start === '11:00',
+    'non-empty fetch keeps returned cell'
   );
 })();
 

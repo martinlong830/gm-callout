@@ -541,16 +541,25 @@
 
   /**
    * Apply a cells fetch for [fromIso, toIso]. Merge returned rows, then tombstone
-   * cached cells in that range for active slots that were not returned (peer delete /
-   * clear). Without this, stale local cache keeps projecting old people/times.
+   * cached cells in that range for active slots that were not returned (peer delete).
+   * NEVER tombstone on an empty fetch — that wiped every cell and painted all day-offs.
    */
   function replaceCellsInRange(rows, fromIso, toIso) {
+    var list = Array.isArray(rows) ? rows : [];
     var seen = Object.create(null);
-    (rows || []).forEach(function (row) {
+    list.forEach(function (row) {
       if (!row) return;
       seen[cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key)] = true;
     });
-    if (rows && rows.length) mergeRemoteCells(rows);
+    if (list.length) mergeRemoteCells(list);
+    /*
+     * Only tombstone when the fetch returned at least one live cell for the range.
+     * Empty arrays are treated as incomplete/failed (RLS, race, wrong range) — keep cache.
+     */
+    if (!list.length) {
+      pruneCellsForInactiveSlots();
+      return;
+    }
     var slots = getSlotCache();
     var hasSlots = !!(slots && Object.keys(slots).length);
     if (hasSlots && fromIso && toIso) {

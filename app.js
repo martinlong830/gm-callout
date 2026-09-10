@@ -6467,22 +6467,51 @@
         return false;
       }
       var store = loadScheduleAssignmentsStore();
-      /* REPLACE visible week from cloud cells — drop stale local keys not in patch. */
-      restaurantsList.forEach(function (rest) {
-        var rid = rest.id;
-        if (!store[rid]) store[rid] = {};
-        var rs = store[rid];
-        var patchCells = (patch[rid] && patch[rid]) || {};
-        Object.keys(rs).forEach(function (shiftId) {
+      /*
+       * Count timed cells in the visible week. An empty/all-day-off projection is not
+       * authoritative enough to wipe the week (peer blank schedule after hard revert).
+       */
+      var timedInWeek = 0;
+      var dayOffInWeek = 0;
+      rids.forEach(function (rid) {
+        var cells = patch[rid] || {};
+        Object.keys(cells).forEach(function (shiftId) {
           var p = parseShiftIdParts(shiftId);
-          if (!p) return;
-          if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
-          if (!patchCells[shiftId]) {
-            delete rs[shiftId];
-            changed = true;
+          if (!p || p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+          if (cells[shiftId].dayOff || !cells[shiftId].start || !cells[shiftId].end) {
+            dayOffInWeek += 1;
+          } else {
+            timedInWeek += 1;
           }
         });
       });
+      var allowReplaceWipe =
+        !!opts.allowEmptyReplace || timedInWeek > 0 || (dayOffInWeek > 0 && timedInWeek === 0 && opts.forceDayOffReplace);
+      if (!allowReplaceWipe && !rids.length) {
+        /* Empty patch — keep local schedule. */
+        return false;
+      }
+      if (!allowReplaceWipe && timedInWeek === 0 && dayOffInWeek === 0) {
+        return false;
+      }
+      /* REPLACE visible week from cloud cells — drop stale local keys not in patch. */
+      if (allowReplaceWipe) {
+        restaurantsList.forEach(function (rest) {
+          var rid = rest.id;
+          if (!store[rid]) store[rid] = {};
+          var rs = store[rid];
+          var patchCells = (patch[rid] && patch[rid]) || {};
+          Object.keys(rs).forEach(function (shiftId) {
+            var p = parseShiftIdParts(shiftId);
+            if (!p) return;
+            if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+            if (!patchCells[shiftId]) {
+              delete rs[shiftId];
+              changed = true;
+            }
+          });
+        });
+      }
       rids.forEach(function (rid) {
         if (!store[rid]) store[rid] = {};
         var cells = patch[rid];
@@ -6561,6 +6590,7 @@
               var shiftId = 'shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx;
               var cell =
                 patch[rid] && patch[rid][shiftId] ? patch[rid][shiftId] : null;
+              if (!cell && !allowReplaceWipe) continue;
               var nextCell =
                 cell && !cell.dayOff && cell.start && cell.end
                   ? [String(cell.start), String(cell.end)]
@@ -27057,36 +27087,21 @@
   function applyScopedHardRevertFromRevision(revisionAssign, revisionDraft, restaurantId, weekIndex) {
     var rid = resolveDraftRestaurantId(restaurantId);
     var wi = resolveDraftWeekIndex(weekIndex);
-    var liveStore = loadScheduleAssignmentsStore();
-    var nextStore = JSON.parse(JSON.stringify(liveStore));
-    if (!nextStore[rid]) nextStore[rid] = {};
-    var revRs =
-      revisionAssign && typeof revisionAssign === 'object' && !Array.isArray(revisionAssign)
-        ? revisionAssign[rid] || {}
-        : {};
-    /*
-     * Clear this week (seed Unassigned so inheritance cannot leak), then overlay
-     * only revision keys for this restaurant + week. Do not use a full-week wipe
-     * after seeding — empty history weeks must stay explicitly unassigned.
-     */
-    resetRestaurantWeekDirectAssignments(nextStore, rid, wi, {});
     var weekStart = wi * 7;
     var weekEnd = weekStart + 7;
-    Object.keys(revRs || {}).forEach(function (shiftId) {
-      var p = parseShiftIdParts(shiftId);
-      if (!p) return;
-      if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
-      nextStore[rid][shiftId] = JSON.parse(JSON.stringify(revRs[shiftId]));
-    });
-    saveScheduleAssignmentsStore(nextStore, { skipInteractiveMark: true });
 
+    /*
+     * Restore draft FIRST so slot counts match the revision (not live extra rows).
+     * Seeding assignments from live slotCount first left trailing FOH rows (e.g. Irineo)
+     * that were never in the revision.
+     */
     var revPayload = draftSchedulePayloadFromRemote(revisionDraft);
+    var revLayers = null;
     if (revPayload && revPayload.byWeek) {
-      var revLayers = draftLayersFromWeekEntry(revPayload.byWeek[String(wi)], rid);
+      revLayers = draftLayersFromWeekEntry(revPayload.byWeek[String(wi)], rid);
       if (revLayers) {
         saveDraftScheduleRowsForWeek(wi, cloneDraftSchedule(revLayers), rid);
       }
-      /* Group order / net sales / slot order: this week Monday + this restaurant only. */
       var mon = mondayIsoForScheduleWeekIndex(wi);
       if (mon) {
         var revGroup = sanitizeGroupOrderPotentialByWeek(revPayload.groupOrderPotentialByWeek);
@@ -27126,6 +27141,26 @@
         persistSlotOrderStores({ skipDirty: true });
       }
     }
+
+    var liveStore = loadScheduleAssignmentsStore();
+    var nextStore = JSON.parse(JSON.stringify(liveStore));
+    if (!nextStore[rid]) nextStore[rid] = {};
+    var revRs =
+      revisionAssign && typeof revisionAssign === 'object' && !Array.isArray(revisionAssign)
+        ? revisionAssign[rid] || {}
+        : {};
+    /* Seed Unassigned only for revision draft row counts, then overlay revision names. */
+    resetRestaurantWeekDirectAssignments(nextStore, rid, wi, {});
+    Object.keys(revRs || {}).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+      nextStore[rid][shiftId] = JSON.parse(JSON.stringify(revRs[shiftId]));
+    });
+    /* Drop any week keys past the restored draft length (no sticky trailing FOH rows). */
+    pruneOrphanScheduleAssignmentsBeyondDraft(nextStore, { preserveStaffed: false });
+    saveScheduleAssignmentsStore(nextStore, { skipInteractiveMark: true });
+
     scheduleAssignmentsDirty = true;
     draftScheduleDirty = true;
     persistTeamStateDirtyFlags();
@@ -27155,7 +27190,6 @@
       /* ignore */
     }
     clearScheduleSyncConflictState();
-    /* Safety snapshot of full state — do not abort revert if this insert fails. */
     try {
       await insertScheduleRevisionRow({
         source: 'pre_revert',
@@ -27198,10 +27232,6 @@
       rid,
       wi
     );
-    /*
-     * Force-push schedule blobs even when cells are SoT (write-only), and also
-     * upsert matching ISO cells for this store/week only.
-     */
     teamStateForcePushIgnoreVersion = true;
     teamStateForcePushActive = true;
     var pushOk = false;
@@ -27210,6 +27240,12 @@
       await flushTeamStateSyncNow();
       pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
       if (scheduleSyncV2Enabled()) {
+        var v2hr = gmScheduleV2();
+        var cidHr = gmCalloutCompanyId();
+        /* Bind slot UUIDs to server before writing cells — forked keys blank peers. */
+        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+          await v2hr.fetchSlots(sb, cidHr);
+        }
         enqueueScheduleV2OpsFromLocalStores({ restaurantId: rid, weekIndex: wi });
         var cellFlush = await flushScheduleV2Outbox();
         var drain = 0;
@@ -27222,7 +27258,45 @@
           drain += 1;
         }
         cellsOk = !!(cellFlush && cellFlush.ok !== false);
-        applyScheduleCellsCacheToLocalStore({ rebuild: true });
+        var fromIso = dayIsoForScheduleWeekDay(wi, 0);
+        var toIso = dayIsoForScheduleWeekDay(wi, 6);
+        if (cellsOk && v2hr && cidHr && fromIso && toIso) {
+          var verify = await v2hr.fetchCellsRange(sb, cidHr, fromIso, toIso);
+          if (verify && verify.ok === false) {
+            cellsOk = false;
+          } else {
+            var timed = 0;
+            ((verify && verify.rows) || []).forEach(function (row) {
+              if (!row || row.deleted) return;
+              if (String(row.restaurant_id) !== String(rid)) return;
+              if (row.start_hhmm && row.end_hhmm) timed += 1;
+            });
+            /*
+             * Local draft has timed shifts — cloud must too, or peers paint all day-offs.
+             */
+            var localTimed = 0;
+            var roles = ['Bartender', 'Kitchen', 'Server'];
+            roles.forEach(function (role) {
+              var n = slotCountForRole(role, wi, rid);
+              for (var tr = 0; tr < n; tr += 1) {
+                for (var di = 0; di < 7; di += 1) {
+                  var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
+                  var slot = draftTimeSlotFor(role, wk, tr, wi, rid);
+                  if (slot && slot.start && slot.end) localTimed += 1;
+                }
+              }
+            });
+            if (localTimed > 0 && timed === 0) {
+              cellsOk = false;
+            }
+            scheduleLastAppliedFingerprint = '';
+            applyScheduleCellsCacheToLocalStore({
+              rebuild: true,
+              force: true,
+              replaceWeekIndex: wi,
+            });
+          }
+        }
       }
     } finally {
       teamStateForcePushActive = false;
@@ -27262,8 +27336,8 @@
     if (!cellsOk) {
       showScheduleNotice(
         gmT('schedule.hardRevertCellsLag') ||
-          'Schedule restored. Cell sync is still catching up — refresh in a moment if peers look stale.',
-        true
+          'Schedule restored here, but cloud cells may be incomplete — click Refresh on other computers after a moment, or Save to cloud again.',
+        false
       );
       return;
     }
