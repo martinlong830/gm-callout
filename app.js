@@ -6068,6 +6068,7 @@
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
+    if (Date.now() < scheduleHardRevertGuardUntil) return false;
     /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     var cid = gmCalloutCompanyId();
@@ -6684,6 +6685,11 @@
   function cloudWeekReplaceIsSafe(weekIndex, patch, opts) {
     opts = opts || {};
     if (opts.allowEmptyReplace || opts.forceDayOffReplace) return true;
+    /*
+     * Trusted replace (Refresh / hard-revert peer pull): cloud is SoT for that
+     * week — including all day-offs. Sparse guard must not block it.
+     */
+    if (opts.replaceTrusted) return true;
     var cloudTimed = countTimedCellsInPatchWeek(patch, weekIndex);
     var localTimed = countLocalTimedDraftWeek(weekIndex);
     if (localTimed <= 0) return cloudTimed > 0 || !!opts.allowEmptyReplace;
@@ -6697,6 +6703,8 @@
     opts = opts || {};
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
+    /* Hard-revert guard is absolute — force must not re-apply stale cloud mid-write. */
+    if (Date.now() < scheduleHardRevertGuardUntil) return false;
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     if (typeof v2.projectCellsToAssignmentPatch !== 'function') return false;
     var isoToGdi = Object.create(null);
@@ -6729,7 +6737,10 @@
             ? Number(opts.replaceWeekIndex)
             : scheduleCalendarWeekIndex;
         if (
-          (timedWeeks[replaceWi] || opts.allowEmptyReplace || opts.forceDayOffReplace) &&
+          (opts.replaceTrusted ||
+            timedWeeks[replaceWi] ||
+            opts.allowEmptyReplace ||
+            opts.forceDayOffReplace) &&
           cloudWeekReplaceIsSafe(replaceWi, patch, opts)
         ) {
           replaceWeeks[replaceWi] = true;
@@ -7054,14 +7065,27 @@
 
   async function hydrateScheduleSyncV2FromCloud() {
     var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) {
+      scheduleVisibleWeekFetchDone = true;
+      return;
+    }
     var cid = gmCalloutCompanyId();
-    if (!cid) return;
+    if (!cid) {
+      scheduleVisibleWeekFetchDone = true;
+      return;
+    }
     try {
       var bf = await v2.backfillIfNeeded(window.gmSupabase, cid);
       if (bf && bf.schemaMissing) {
         if (v2.setWriteOnlyCells) v2.setWriteOnlyCells(false);
         scheduleCellsHydratedOk = false;
+        scheduleVisibleWeekFetchDone = true;
+        if (currentScreen === 1) {
+          paintVisibleScheduleWeekFast({
+            weekIndex: scheduleCalendarWeekIndex,
+            forcePaint: true,
+          });
+        }
         return;
       }
       if (bf && bf.ok !== false && v2.setWriteOnlyCells) {
@@ -7076,7 +7100,11 @@
       var weekFrom = dayIsoForScheduleWeekDay(wi, 0);
       var weekTo = dayIsoForScheduleWeekDay(wi, 6);
       if (!weekFrom || !weekTo) {
+        scheduleVisibleWeekFetchDone = true;
         startScheduleCellsPoll();
+        if (currentScreen === 1) {
+          paintVisibleScheduleWeekFast({ weekIndex: wi, forcePaint: true });
+        }
         return;
       }
       /*
@@ -7092,14 +7120,29 @@
       }
       if (pair[1] && pair[1].ok === false) {
         console.warn('gm-callout: schedule cells fetch failed', pair[1].error);
+        scheduleVisibleWeekFetchDone = true;
         startScheduleCellsPoll();
+        if (currentScreen === 1) {
+          paintVisibleScheduleWeekFast({ weekIndex: wi, forcePaint: true });
+        }
         return;
       }
       applyScheduleCellsCacheToLocalStore({
-        rebuild: currentScreen === 1,
-        force: false,
-        upsertTimedOnly: true,
+        rebuild: false,
+        force: true,
+        replaceTrusted: true,
+        replaceWeekIndex: wi,
       });
+      scheduleVisibleWeekFetchDone = true;
+      /* One paint after cells land — avoids empty → filled flash. */
+      if (currentScreen === 1) {
+        paintVisibleScheduleWeekFast({
+          weekIndex: wi,
+          forcePaint: true,
+          fast: true,
+        });
+        scheduleDeferredScheduleChrome(wi);
+      }
       startScheduleCellsPoll();
 
       var fullFrom = dayIsoForScheduleWeekDay(0, 0);
@@ -7158,6 +7201,17 @@
       })();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);
+      scheduleVisibleWeekFetchDone = true;
+      if (currentScreen === 1) {
+        try {
+          paintVisibleScheduleWeekFast({
+            weekIndex: scheduleCalendarWeekIndex,
+            forcePaint: true,
+          });
+        } catch (_paintFail) {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -7226,8 +7280,15 @@
    * Blob team_state push must NOT clear interactive protection — cells can still be pending.
    */
   var scheduleLastCellFlushAt = 0;
+  /** Block peer/stale cell applies until hard-revert cloud flush finishes. */
+  var scheduleHardRevertGuardUntil = 0;
   /** True after a successful cells+slots hydrate — then blob schedule merges are skipped. */
   var scheduleCellsHydratedOk = false;
+  /**
+   * True after the first visible-week cell fetch finishes (ok or fail).
+   * Until then, never flash "No shifts to show" while cloud is still loading.
+   */
+  var scheduleVisibleWeekFetchDone = false;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
@@ -7350,6 +7411,7 @@
    */
   function scheduleCellRemoteApplyBlocked() {
     if (teamStateForcePushActive) return true;
+    if (Date.now() < scheduleHardRevertGuardUntil) return true;
     if (scheduleV2FlushPromise) return true;
     var v2 = gmScheduleV2();
     if (v2 && typeof v2.getOutbox === 'function') {
@@ -7908,6 +7970,14 @@
     return withSel;
   }
 
+  function scheduleShouldSuppressEmptyCalendar() {
+    if (SCHEDULE && SCHEDULE.length) return false;
+    if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
+    if (scheduleVisibleWeekFetchDone) return false;
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
+    return true;
+  }
+
   function paintVisibleScheduleWeekFast(opts) {
     opts = opts || {};
     scheduleUiAwaitingInitialCloudHydrate = false;
@@ -7938,6 +8008,11 @@
         });
       }
       if (opts.render === false) return;
+      /*
+       * Do not paint an empty "No shifts" shell while the first cloud week is still
+       * loading — wait and paint once when cells arrive.
+       */
+      if (scheduleShouldSuppressEmptyCalendar()) return;
       if (typeof renderCalendar === 'function') {
         renderCalendar({
           force: true,
@@ -8997,8 +9072,14 @@
         var payload = msg && msg.payload;
         if (!payload) return;
         if (payload.clientId && payload.clientId === TEAM_STATE_CLIENT_INSTANCE_ID) return;
-        /* Peer schedule edit — pull visible week cells immediately (don't wait for poll). */
-        void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+        /* Peer schedule edit — full week replace so hard-revert day-offs stick. */
+        void pollVisibleScheduleCellsFromCloud({
+          rebuild: true,
+          force: true,
+          forceSlots: true,
+          replaceTrusted: true,
+          replaceWeekIndex: scheduleCalendarWeekIndex,
+        });
       })
       .on(
         'postgres_changes',
@@ -9079,8 +9160,18 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
-    /* Ensure deleted slots disappear even if cell patch was empty. */
-    reconcileLocalScheduleToActiveSlots({});
+    /* Trusted week replace so peer hard-reverts (incl. day-offs) paint immediately. */
+    try {
+      await pollVisibleScheduleCellsFromCloud({
+        rebuild: true,
+        force: true,
+        forceSlots: true,
+        replaceTrusted: true,
+        replaceWeekIndex: scheduleCalendarWeekIndex,
+      });
+    } catch (_refPoll) {
+      /* ignore */
+    }
     if (!res || !res.ok) {
       teamStateCachedUpdatedAt = prevCached;
       if (!opts.silent) {
@@ -22342,12 +22433,22 @@
       return;
     }
     if (!SCHEDULE.length) {
+      if (scheduleShouldSuppressEmptyCalendar()) {
+        /* Keep prior grid (or blank) — never flash "No shifts to show" mid-load. */
+        targetEl.setAttribute('aria-busy', 'true');
+        if (!targetEl.querySelector('table, .calendar-table')) {
+          targetEl.innerHTML = '';
+        }
+        return;
+      }
+      targetEl.removeAttribute('aria-busy');
       targetEl.innerHTML = '<p class="calendar-hint">' + escapeHtml(gmT('schedule.noShifts')) + '</p>';
       if (!readOnly && !opts.skipMainCalendarSideEffects && !calendarScheduleUiBlocksRender()) {
         flushDeferredCalendarRemoteRefresh();
       }
       return;
     }
+    targetEl.removeAttribute('aria-busy');
 
     function parseDayHeader(dayStr) {
       var parts = dayStr.split(' ');
@@ -28056,7 +28157,6 @@
     var sb = window.gmSupabase;
     clearScheduleSyncConflictState();
 
-    /* Snapshot current local before overwrite — do not await (was a multi-second stall). */
     var preAssign = loadScheduleAssignmentsStore();
     var preDraft = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
     var prePublished = schedulePublishedPayload();
@@ -28102,11 +28202,13 @@
       rid,
       wi
     );
-    armScheduleLocalAuthority(30000);
+    /* Block any cloud apply until this revert is fully written. */
+    scheduleHardRevertGuardUntil = Date.now() + 120000;
+    armScheduleLocalAuthority(120000);
     scheduleLastAppliedFingerprint = '';
     scheduleLastPaintFingerprint = '';
+    markScheduleInteractiveEdit();
 
-    /* Paint immediately — cloud sync continues in the background. */
     paintVisibleScheduleWeekFast({
       weekIndex: wi,
       forcePaint: true,
@@ -28115,61 +28217,116 @@
     scheduleDeferredScheduleChrome(wi);
     closeScheduleHistoryModal();
     showScheduleNotice(
-      gmT('schedule.hardRevertDoneScoped', { range: range }) ||
-        'Restored this store’s schedule for ' + range + ' from history.',
-      true
+      gmT('schedule.hardRevertSyncing') ||
+        'Restored locally — saving to cloud so every device matches…',
+      false
     );
 
     teamStateForcePushIgnoreVersion = true;
     teamStateForcePushActive = true;
     teamStateForcePushIgnoreVersionSticky = true;
 
-    void (async function hardRevertCloudSyncInBackground() {
-      try {
-        await flushTeamStateSyncNow();
-        if (!scheduleSyncV2Enabled()) return;
+    var pushOk = false;
+    var cellsOk = false;
+    try {
+      await flushTeamStateSyncNow();
+      pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
+      if (scheduleSyncV2Enabled()) {
         var v2hr = gmScheduleV2();
         var cidHr = gmCalloutCompanyId();
         if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
           await v2hr.fetchSlots(sb, cidHr);
         }
-        /* One enqueue wave: align slots + write week cells, then drain. */
         enqueueHardRevertSlotAlignmentOps(rid, wi);
-        enqueueScheduleV2OpsFromLocalStores({ restaurantId: rid, weekIndex: wi });
-        var cellFlush = await drainScheduleV2OutboxBounded(16);
-        if (!cellFlush || cellFlush.ok === false) {
-          showScheduleNotice(
-            gmT('schedule.hardRevertCellsLag') ||
-              'Schedule restored here, but cloud sync is still catching up — keep this tab open a moment.',
-            false
-          );
+        await drainScheduleV2OutboxBounded(12);
+        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+          await v2hr.fetchSlots(sb, cidHr);
         }
-        void insertScheduleRevisionRow({
-          source: 'hard_revert',
-          assignments: loadScheduleAssignmentsStore(),
-          draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
-          published: schedulePublishedPayload(),
-          label:
-            formatScheduleRevisionWhen(new Date()) +
-            ' · ' +
-            (gmT('schedule.historySourceHardRevert') || 'Hard revert') +
-            ' · ' +
-            range,
-          dedupe: false,
-        }).catch(function (_hrIns) {
-          console.warn('gm-callout: hard_revert snapshot', _hrIns);
+        /* Full week cell rewrite (times + day-offs) then drain until outbox empty. */
+        var cellPush = await forcePushLocalScheduleCellsToCloud({
+          restaurantId: rid,
+          weekIndex: wi,
         });
-      } catch (syncErr) {
-        console.warn('gm-callout: hard revert cloud sync', syncErr);
-        showScheduleNotice(
-          gmT('schedule.hardRevertCloudFailed') ||
-            'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
-          false
-        );
-      } finally {
-        teamStateForcePushActive = false;
+        cellsOk = !!(cellPush && cellPush.ok !== false);
+        var fromIso = dayIsoForScheduleWeekDay(wi, 0);
+        var toIso = dayIsoForScheduleWeekDay(wi, 6);
+        if (cellsOk && v2hr && cidHr && fromIso && toIso) {
+          var verify = await v2hr.fetchCellsRange(sb, cidHr, fromIso, toIso);
+          if (!verify || verify.ok === false) {
+            cellsOk = false;
+          } else {
+            var timed = 0;
+            ((verify.rows) || []).forEach(function (row) {
+              if (!row || row.deleted) return;
+              if (String(row.restaurant_id) !== String(rid)) return;
+              if (row.start_hhmm && row.end_hhmm) timed += 1;
+            });
+            var localTimed = countLocalTimedDraftWeek(wi, rid);
+            if (localTimed > 0 && timed === 0) {
+              cellsOk = false;
+            }
+          }
+        }
+        if (cellsOk) {
+          scheduleLastCellFlushAt = Date.now();
+          void broadcastScheduleCellsChanged();
+        }
+      } else {
+        cellsOk = pushOk;
       }
-    })();
+      void insertScheduleRevisionRow({
+        source: 'hard_revert',
+        assignments: loadScheduleAssignmentsStore(),
+        draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
+        published: schedulePublishedPayload(),
+        label:
+          formatScheduleRevisionWhen(new Date()) +
+          ' · ' +
+          (gmT('schedule.historySourceHardRevert') || 'Hard revert') +
+          ' · ' +
+          range,
+        dedupe: false,
+      }).catch(function (_hrIns) {
+        console.warn('gm-callout: hard_revert snapshot', _hrIns);
+      });
+    } catch (syncErr) {
+      console.warn('gm-callout: hard revert cloud sync', syncErr);
+      cellsOk = false;
+    } finally {
+      teamStateForcePushActive = false;
+      /* Keep guarding briefly so a late poll cannot resurrect the pre-revert cloud. */
+      scheduleHardRevertGuardUntil = Date.now() + (cellsOk ? 15000 : 60000);
+      armScheduleLocalAuthority(cellsOk ? 20000 : 60000);
+    }
+
+    paintVisibleScheduleWeekFast({
+      weekIndex: wi,
+      forcePaint: true,
+      fast: true,
+    });
+    scheduleDeferredScheduleChrome(wi);
+
+    if (!pushOk && !cellsOk) {
+      showScheduleNotice(
+        gmT('schedule.hardRevertCloudFailed') ||
+          'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
+        false
+      );
+      return;
+    }
+    if (!cellsOk) {
+      showScheduleNotice(
+        gmT('schedule.hardRevertCellsLag') ||
+          'Schedule restored here, but cloud cells may be incomplete — click Save to cloud, then Refresh on other computers.',
+        false
+      );
+      return;
+    }
+    showScheduleNotice(
+      gmT('schedule.hardRevertDoneScoped', { range: range }) ||
+        'Restored this store’s schedule for ' + range + ' from history. Other devices will match on Refresh.',
+      true
+    );
   }
 
   async function saveScheduleManualSavePoint() {
@@ -30622,13 +30779,19 @@
       return { ok: true, skipped: 'timeclock' };
     }
     var sb = window.gmSupabase;
-    /* Paint Schedule from local stores immediately — never wait on network for first view. */
+    /*
+     * Paint from local only when this week already has timed draft rows. Otherwise
+     * leave the calendar blank until cells hydrate (avoids "No shifts to show" flash).
+     */
     releaseScheduleCloudHydrateGate();
     try {
-      paintVisibleScheduleWeekFast({
-        weekIndex: scheduleCalendarWeekIndex,
-        forcePaint: true,
-      });
+      if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
+        scheduleVisibleWeekFetchDone = true;
+        paintVisibleScheduleWeekFast({
+          weekIndex: scheduleCalendarWeekIndex,
+          forcePaint: true,
+        });
+      }
     } catch (_earlyPaint) {
       /* ignore */
     }
@@ -30786,18 +30949,17 @@
       });
     }
     /*
-     * Paint ASAP from local assignment/draft + any cached cells. Network cell hydrate
-     * continues in the background — awaiting it here made first Schedule open laggy.
-     */
-    /*
-     * Paint from assignment/draft stores only. Applying a stale cell cache here caused
-     * local → all day-off → cloud restore flicker.
+     * Paint from assignment/draft only when local already has this week. Otherwise
+     * wait for hydrateScheduleSyncV2FromCloud so the first paint is the real week.
      */
     releaseScheduleCloudHydrateGate();
-    paintVisibleScheduleWeekFast({
-      weekIndex: scheduleCalendarWeekIndex,
-      forcePaint: true,
-    });
+    if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
+      scheduleVisibleWeekFetchDone = true;
+      paintVisibleScheduleWeekFast({
+        weekIndex: scheduleCalendarWeekIndex,
+        forcePaint: true,
+      });
+    }
     if (typeof renderEmployeeList === 'function') renderEmployeeList();
     if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
       renderManagerHomeShifts();
@@ -30967,9 +31129,14 @@
     );
     /* restoreFoh already rebuilds when it writes; skip a duplicate full rebuild. */
     if (!fohRestored) {
-      paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+      if (localWeekHasTimedDraft(scheduleCalendarWeekIndex, currentRestaurantId)) {
+        scheduleVisibleWeekFetchDone = true;
+        paintVisibleScheduleWeekFast({ weekIndex: scheduleCalendarWeekIndex });
+      }
+      /* else: stay blank until first cell hydrate paints the real week */
     } else {
       scheduleUiAwaitingInitialCloudHydrate = false;
+      scheduleVisibleWeekFetchDone = true;
       renderCalendar({ force: true });
       if (scheduleBody) renderSchedule();
     }

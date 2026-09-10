@@ -310,13 +310,16 @@ window.GM_I18N_EN = {
   'schedule.hardRevertConfirmScoped':
     'Hard revert only this store’s schedule for {range}? Other weeks and other restaurants stay unchanged. A safety snapshot is saved first.',
   'schedule.hardRevertDone': 'Restored this store’s schedule for {range} from history.',
-  'schedule.hardRevertDoneScoped': 'Restored this store’s schedule for {range} from history.',
+  'schedule.hardRevertDoneScoped':
+    'Restored this store’s schedule for {range} from history. Other devices match on Refresh.',
+  'schedule.hardRevertSyncing':
+    'Restored locally — saving to cloud so every device matches…',
   'schedule.hardRevertBadRevision':
     'This history entry has no schedule data. Nothing was changed.',
   'schedule.hardRevertCloudFailed':
     'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
   'schedule.hardRevertCellsLag':
-    'Schedule restored. Cell sync is still catching up — refresh in a moment if peers look stale.',
+    'Schedule restored here, but cloud cells may be incomplete — click Save to cloud, then Refresh on other computers.',
   'schedule.hardRevertNoStoreWeek':
     'This history entry has no schedule for the current store. Nothing was changed.',
   'schedule.syncConflict':

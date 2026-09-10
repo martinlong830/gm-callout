@@ -310,13 +310,15 @@ window.GM_I18N_ES = {
     '¿Revertir solo el horario de este local para {range}? Otras semanas y otros restaurantes no cambian. Primero se guarda una copia de seguridad.',
   'schedule.hardRevertDone': 'Horario de este local restaurado para {range} desde el historial.',
   'schedule.hardRevertDoneScoped':
-    'Horario de este local restaurado para {range} desde el historial.',
+    'Horario de este local restaurado para {range} desde el historial. Otros dispositivos coinciden al actualizar.',
+  'schedule.hardRevertSyncing':
+    'Restaurado aquí — guardando en la nube para que todos los dispositivos coincidan…',
   'schedule.hardRevertBadRevision':
     'Esta entrada del historial no tiene datos de horario. No se cambió nada.',
   'schedule.hardRevertCloudFailed':
     'Restaurado en este dispositivo, pero falló la sincronización en la nube. Mantén esta pestaña abierta e intenta Guardar en la nube.',
   'schedule.hardRevertCellsLag':
-    'Horario restaurado. La sincronización de celdas aún continúa — actualiza en un momento si otros ven datos viejos.',
+    'Horario restaurado aquí, pero las celdas en la nube pueden estar incompletas — haz clic en Guardar en la nube y luego Actualizar en otros equipos.',
   'schedule.hardRevertNoStoreWeek':
     'Esta entrada del historial no tiene horario para el local actual. No se cambió nada.',
   'schedule.syncConflict':
