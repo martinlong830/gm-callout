@@ -6145,7 +6145,7 @@
       }).catch(function () {
         return false;
       });
-    }, 320);
+    }, 120);
   }
 
   function stopScheduleCellsPoll() {
@@ -8071,13 +8071,11 @@
 
   function scheduleShouldHoldCalendarPaint(opts) {
     opts = opts || {};
-    if (opts.allowEmptyPaint || opts.allowDayOffShell) return false;
+    if (opts.allowEmptyPaint || opts.allowDayOffShell || opts.weekNav) return false;
     if (!scheduleSyncV2Enabled() || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
+    /* Only hold before the first authoritative load — never block week scrolling. */
     if (!scheduleAuthoritativePaintReady) return true;
-    if (scheduleWeekIsDayOffShellOnly(opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex)) {
-      return true;
-    }
     return false;
   }
 
@@ -8100,8 +8098,11 @@
         return;
       }
       scheduleLastPaintFingerprint = fp;
-    } else {
+    } else if (!fast) {
       scheduleLastPaintFingerprint = scheduleVisibleWeekPaintFingerprint(wi);
+    } else {
+      /* Week scroll: skip expensive draft JSON fingerprint. */
+      scheduleLastPaintFingerprint = '';
     }
     var prevSchedule = null;
     try {
@@ -8120,14 +8121,15 @@
         });
       }
       /*
-       * If rebuild produced an empty week but we already had shifts, keep the previous
-       * rows — empty rebuilds were flashing "No shifts to show" during soft polls.
+       * Soft-poll empty rebuild: keep prior rows so we don't flash blank.
+       * Week nav must NOT keep the previous week — paint the target week immediately.
        */
       if (
         (!SCHEDULE || !SCHEDULE.length) &&
         prevSchedule &&
         prevSchedule.length &&
-        !opts.allowEmptyPaint
+        !opts.allowEmptyPaint &&
+        !opts.weekNav
       ) {
         SCHEDULE.length = 0;
         for (var psi = 0; psi < prevSchedule.length; psi += 1) {
@@ -8137,10 +8139,16 @@
       }
       if (opts.render === false) return;
       /*
-       * Hold blank until authoritative cells land. Never paint the all-DAY-OFF /
-       * wrong-name-order shell that appears before timed cells are applied.
+       * Hold blank only before first authoritative load. Week scroll always paints.
        */
-      if (scheduleShouldHoldCalendarPaint({ weekIndex: wi, allowEmptyPaint: opts.allowEmptyPaint, allowDayOffShell: opts.allowDayOffShell })) {
+      if (
+        scheduleShouldHoldCalendarPaint({
+          weekIndex: wi,
+          allowEmptyPaint: opts.allowEmptyPaint,
+          allowDayOffShell: opts.allowDayOffShell,
+          weekNav: opts.weekNav,
+        })
+      ) {
         return;
       }
       if (scheduleShouldSuppressEmptyCalendar()) return;
@@ -8175,6 +8183,7 @@
         if (scheduleBody) renderSchedule();
         updateSchedulePublishNotifyButton();
         updateScheduleDownloadWeekButton();
+        if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
         requestAnimationFrame(function () {
           syncSchedulePanelColumnAlignment();
         });
@@ -16494,13 +16503,16 @@
     persistSelectedScheduleWeekMonday(w);
     /* Invalidate in-flight week polls so a slower prior week cannot apply late. */
     scheduleCellsPollGeneration += 1;
-    updateScheduleWeekNav();
+    updateScheduleWeekNav({ lite: true });
     updateEmpScheduleWeekNav();
-    /* Instant local paint — visible week only, skip labor/panels until idle. */
+    /* Instant local paint — never wait on cloud or keep the previous week on screen. */
     paintVisibleScheduleWeekFast({
       weekIndex: w,
       forcePaint: true,
       fast: true,
+      weekNav: true,
+      allowDayOffShell: true,
+      allowEmptyPaint: true,
     });
     scheduleDeferredScheduleChrome(w);
     if (
@@ -16516,7 +16528,8 @@
     scheduleDebouncedWeekCloudPoll(w);
   }
 
-  function updateScheduleWeekNav() {
+  function updateScheduleWeekNav(opts) {
+    opts = opts || {};
     var label = document.getElementById('scheduleWeekNavLabel');
     var badge = document.getElementById('scheduleWeekNavBadge');
     var prev = document.getElementById('scheduleWeekNavPrev');
@@ -16528,6 +16541,7 @@
     if (prev) prev.disabled = scheduleCalendarWeekIndex <= 0;
     if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
     if (today) today.hidden = isCurrent;
+    if (opts.lite) return;
     updateSchedulePublishNotifyButton();
     updateScheduleDownloadWeekButton();
     if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
@@ -21854,7 +21868,9 @@
   }
 
   function buildCalendarRowPersonSelectHtml(role, trIdx, rd, visibleDays, readOnly, moveFlags) {
-    var selected = scheduleRowPrimaryPerson(role, trIdx, visibleDays) || 'Unassigned';
+    var personOpts = moveFlags && moveFlags.personOpts ? moveFlags.personOpts : null;
+    var selected =
+      scheduleRowPrimaryPerson(role, trIdx, visibleDays, null, personOpts) || 'Unassigned';
     var selectedLabel = displayScheduleWorkerName(selected);
     var awayPrimaryHtml = '';
     var employmentStatusHtml = '';
@@ -22786,6 +22802,8 @@
         managedWorkerKeysForAbbrev = Object.create(null);
       }
     }
+    /* Fast week-scroll: skip scanning other weeks for row names (was a major lag). */
+    var rowPersonOpts = opts.fast ? { allowOtherWeeks: false } : null;
 
     SCHEDULE_GRID_ROLE_ORDER.forEach(function (roleKey) {
       var rd = ROLE_DEFS.find(function (r) {
@@ -22803,7 +22821,8 @@
               rd.role,
               trIdx,
               visibleDays,
-              shiftByKey
+              shiftByKey,
+              rowPersonOpts
             );
             return managerSeesWorkerOnOtherStoreSchedule(
               rowPerson,
@@ -22828,8 +22847,15 @@
           up: !readOnly && oi > 0,
           down: !readOnly && oi < visibleSlotOrder.length - 1,
           optionsHtml: readOnly ? null : personSelectOptionsHtml,
+          personOpts: rowPersonOpts,
         });
-        var rowPerson = scheduleRowPrimaryPerson(rd.role, trIdx, visibleDays);
+        var rowPerson = scheduleRowPrimaryPerson(
+          rd.role,
+          trIdx,
+          visibleDays,
+          shiftByKey,
+          rowPersonOpts
+        );
         const tds = visibleDays
           .map(function (dayStr) {
             const shift = shiftByKey[dayStr + '|' + rd.role + '|' + trIdx];
