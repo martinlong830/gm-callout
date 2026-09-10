@@ -6267,7 +6267,8 @@
     }).then(function () {
       return flushScheduleV2Outbox();
     }).then(function (res) {
-      armScheduleLocalAuthority(12000);
+      /* Hold peer/cell apply so corrected names cannot snap back to poisoned cloud. */
+      armScheduleLocalAuthority(45000);
       return res || { ok: true };
     });
   }
@@ -6349,6 +6350,96 @@
     return ops.length;
   }
 
+  function patchEntryPrimaryName(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    if (entry.rowOwner && entry.rowOwner !== 'Unassigned') return String(entry.rowOwner);
+    var w = entry.workers;
+    if (Array.isArray(w) && w[0] && w[0] !== 'Unassigned') return String(w[0]);
+    return '';
+  }
+
+  function workerNameOnFohRoster(name) {
+    var key = normalizeWorkerKey(name);
+    if (!key) return false;
+    return TEAM_ROSTER_BARTENDER.some(function (n) {
+      return normalizeWorkerKey(n) === key;
+    });
+  }
+
+  function workerNameOnBohRoster(name) {
+    var key = normalizeWorkerKey(name);
+    if (!key) return false;
+    return TEAM_ROSTER_KITCHEN.some(function (n) {
+      return normalizeWorkerKey(n) === key;
+    });
+  }
+
+  /**
+   * Cells written while Bartender/Kitchen roleIdx were swapped left FOH names on
+   * Kitchen keys and BOH names on Bartender keys. Swap those worker fields back.
+   * Returns number of day-slot pairs repaired.
+   */
+  function repairCrossRoleNameSwapInAssignmentPatch(patch) {
+    if (!patch || typeof patch !== 'object') return 0;
+    var kitchenIdx = roleIdxForDraftRole('Kitchen');
+    var bartenderIdx = roleIdxForDraftRole('Bartender');
+    if (kitchenIdx < 0 || bartenderIdx < 0) return 0;
+    var repaired = 0;
+    Object.keys(patch).forEach(function (rid) {
+      var cells = patch[rid];
+      if (!cells || typeof cells !== 'object') return;
+      var pairs = Object.create(null);
+      Object.keys(cells).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        if (p.roleIdx !== kitchenIdx && p.roleIdx !== bartenderIdx) return;
+        var gk = String(p.globalDayIdx) + '|' + String(p.trIdx);
+        if (!pairs[gk]) pairs[gk] = {};
+        if (p.roleIdx === kitchenIdx) pairs[gk].kitchenId = shiftId;
+        else pairs[gk].bartenderId = shiftId;
+      });
+      Object.keys(pairs).forEach(function (gk) {
+        var pair = pairs[gk];
+        if (!pair.kitchenId || !pair.bartenderId) return;
+        var ek = cells[pair.kitchenId];
+        var eb = cells[pair.bartenderId];
+        var nk = patchEntryPrimaryName(ek);
+        var nb = patchEntryPrimaryName(eb);
+        if (!nk && !nb) return;
+        var kitchenHasFoh = workerNameOnFohRoster(nk);
+        var bartenderHasBoh = workerNameOnBohRoster(nb);
+        var kitchenHasBoh = workerNameOnBohRoster(nk);
+        var bartenderHasFoh = workerNameOnFohRoster(nb);
+        if (kitchenHasFoh && bartenderHasBoh) {
+          var tmpWorkers = ek.workers;
+          var tmpOwner = ek.rowOwner;
+          ek.workers = eb.workers;
+          ek.rowOwner = eb.rowOwner;
+          eb.workers = tmpWorkers;
+          eb.rowOwner = tmpOwner;
+          repaired += 1;
+          return;
+        }
+        if (kitchenHasFoh && !bartenderHasFoh && (!nb || nb === 'Unassigned')) {
+          eb.workers = ek.workers ? ek.workers.slice() : [nk];
+          eb.rowOwner = nk;
+          ek.workers = ['Unassigned'];
+          delete ek.rowOwner;
+          repaired += 1;
+          return;
+        }
+        if (bartenderHasBoh && !kitchenHasBoh && (!nk || nk === 'Unassigned')) {
+          ek.workers = eb.workers ? eb.workers.slice() : [nb];
+          ek.rowOwner = nb;
+          eb.workers = ['Unassigned'];
+          delete eb.rowOwner;
+          repaired += 1;
+        }
+      });
+    });
+    return repaired;
+  }
+
   function applyScheduleCellsCacheToLocalStore(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -6360,8 +6451,14 @@
       var m = WEEK_META[i];
       if (m && m.iso) isoToGdi[String(m.iso).slice(0, 10)] = i;
     }
-    var roleToIdx = { Bartender: 0, Kitchen: 1, Server: 2 };
+    /* Must match ROLE_DEFS indices (Kitchen=0, Bartender=1, Server=2). Swapping
+     * Bartender/Kitchen here remaps FOH names onto BOH rows on every cell apply. */
+    var roleToIdx = Object.create(null);
+    for (var ri = 0; ri < ROLE_DEFS.length; ri += 1) {
+      roleToIdx[ROLE_DEFS[ri].role] = ri;
+    }
     var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
+    var repairedPairs = repairCrossRoleNameSwapInAssignmentPatch(patch);
     var rids = Object.keys(patch);
     if (!rids.length) {
       /* Slot deactivated with no remaining cells — still shrink local draft rows. */
@@ -6524,28 +6621,30 @@
       var fromIso = dayIsoForScheduleWeekDay(0, 0);
       var toIso = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
       /*
-       * Push local draft/assignments to cells BEFORE applying remote cells.
-       * Otherwise reload paints stale cloud times over Mark Ong edits still only in local draft.
+       * Apply cloud cells first (correct role indices). Only then push local dirty
+       * draft/assignments — pushing first re-uploaded FOH↔BOH shuffled names.
        */
-      if (draftScheduleDirty || scheduleAssignmentsDirty) {
-        markScheduleInteractiveEdit();
-        enqueueScheduleV2OpsFromLocalStores({});
-      }
-      await flushScheduleV2Outbox();
-      var drain = 0;
-      while (drain < 20) {
-        var left = v2.getOutbox ? v2.getOutbox() : [];
-        if (!left || !left.length) break;
-        var fr = await flushScheduleV2Outbox();
-        if (!fr || fr.ok === false) break;
-        drain += 1;
-      }
       if (fromIso && toIso) {
         await v2.fetchSlots(window.gmSupabase, cid);
         await v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
       }
       applyScheduleCellsCacheToLocalStore({ rebuild: true });
       reconcileLocalScheduleToActiveSlots({});
+      if (draftScheduleDirty || scheduleAssignmentsDirty) {
+        markScheduleInteractiveEdit();
+        enqueueScheduleV2OpsFromLocalStores({});
+        await flushScheduleV2Outbox();
+        var drain = 0;
+        while (drain < 20) {
+          var left = v2.getOutbox ? v2.getOutbox() : [];
+          if (!left || !left.length) break;
+          var fr = await flushScheduleV2Outbox();
+          if (!fr || fr.ok === false) break;
+          drain += 1;
+        }
+      } else {
+        await flushScheduleV2Outbox();
+      }
       startScheduleCellsPoll();
     } catch (_h) {
       console.warn('gm-callout: schedule v2 hydrate', _h);

@@ -156,7 +156,7 @@ function emptyState() {
     /* seed cache via apply result isn't in localStorage in node — use cells from state */
     var fakeCache = r.state.cells;
     var isoMap = { '2026-08-31': 0 };
-    var roleMap = { Bartender: 0, Kitchen: 1, Server: 2 };
+    var roleMap = { Kitchen: 0, Bartender: 1, Server: 2 };
     /* Direct projection from state cells */
     var gdi = isoMap['2026-08-31'];
     var cell = fakeCache[sync.cellKey('rp-9', '2026-08-31', 'Bartender', slot)];

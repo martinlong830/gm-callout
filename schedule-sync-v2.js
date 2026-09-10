@@ -738,7 +738,7 @@
   /**
    * Project ISO cell cache onto legacy rolling-index assignment keys for UI render.
    * isoToGlobalDayIdx: { 'YYYY-MM-DD': number }
-   * roleToIdx: { Bartender: 0, Kitchen: 1, Server: 2 }
+   * roleToIdx: { Kitchen: 0, Bartender: 1, Server: 2 } — must match ROLE_DEFS indices
    * Returns { restaurantId: { 'shift-g-r-t': entry } } patches (merged per restaurant).
    */
   function projectCellsToAssignmentPatch(isoToGlobalDayIdx, roleToIdx) {

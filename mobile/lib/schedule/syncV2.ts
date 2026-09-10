@@ -272,7 +272,7 @@ export function projectCellsOntoLocalStores(opts: {
     const iso = m?.iso ? String(m.iso).slice(0, 10) : '';
     if (iso) isoToGdi[iso] = i;
   });
-  const roleToIdx: Record<string, number> = { Bartender: 0, Kitchen: 1, Server: 2 };
+  const roleToIdx: Record<string, number> = { Kitchen: 0, Bartender: 1, Server: 2 };
   const slotTr = new Map<string, number>();
   (opts.slots || []).forEach((s) => {
     if (!s?.restaurant_id || !s.role || !s.slot_key) return;
