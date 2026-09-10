@@ -6006,6 +6006,8 @@
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
+    /* Do not let peer cells overwrite a Keep-mine / Save-to-cloud assertion. */
+    if (scheduleLocalAuthorityActive() && !opts.force) return false;
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
     if (scheduleCellsPollInFlight) return false;
@@ -6038,6 +6040,10 @@
     stopScheduleCellsPoll();
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     if (!scheduleSyncV2Enabled()) return;
+    /* Clear any stuck Keep/Load freeze from older builds — cell sync is automatic. */
+    if (scheduleSyncV2WriteOnly() && scheduleSyncConflictActive) {
+      clearScheduleSyncConflictState();
+    }
     scheduleCellsPollTimer = setInterval(function () {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       if (
@@ -6187,6 +6193,7 @@
     opts = opts || {};
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
+    if (scheduleLocalAuthorityActive() && !opts.force) return false;
     if (typeof v2.projectCellsToAssignmentPatch !== 'function') return false;
     var isoToGdi = Object.create(null);
     for (var i = 0; i < WEEK_META.length; i += 1) {
@@ -6341,6 +6348,7 @@
         function (payload) {
           var row = payload && (payload.new || payload.old);
           if (!row) return;
+          if (scheduleLocalAuthorityActive()) return;
           /* Same browser — already applied optimistically; other devices still apply. */
           if (
             row.updated_by_device &&
@@ -6406,6 +6414,22 @@
   var teamStateForcePushIgnoreVersionSticky = false;
   /** True while forcePushLocalScheduleToCloud is running — bypass conflict short-circuit. */
   var teamStateForcePushActive = false;
+  /**
+   * After "Keep my schedule" / Save to cloud, refuse peer cell/blob apply briefly so the
+   * other device's cells cannot paint over the schedule we just asserted as SoT.
+   */
+  var scheduleLocalAuthorityUntil = 0;
+
+  function scheduleLocalAuthorityActive() {
+    return !!(teamStateForcePushActive || Date.now() < scheduleLocalAuthorityUntil);
+  }
+
+  function armScheduleLocalAuthority(ms) {
+    scheduleLocalAuthorityUntil = Math.max(
+      scheduleLocalAuthorityUntil,
+      Date.now() + (ms != null ? Number(ms) : 20000)
+    );
+  }
   /**
    * Hold first schedule paint until team_state hydrate finishes so a stale localStorage
    * snapshot (e.g. Maeve) cannot flash before cloud (Jon) applies.
@@ -7950,8 +7974,13 @@
   async function manualRefreshScheduleFromCloud(opts) {
     opts = opts || {};
     if (scheduleSyncConflictActive) {
-      showScheduleConflictNotice();
-      return { ok: false, reason: 'conflict' };
+      /* Write-only: never block refresh behind Keep/Load — clear and continue. */
+      if (scheduleSyncV2WriteOnly()) {
+        clearScheduleSyncConflictState();
+      } else {
+        showScheduleConflictNotice();
+        return { ok: false, reason: 'conflict' };
+      }
     }
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
       if (!opts.silent) {
@@ -9529,6 +9558,7 @@
       isMgr &&
       !ctx.allowDiscardDirty &&
       !teamStateForcePushActive &&
+      !scheduleLocalAuthorityActive() &&
       !scheduleDayOffPushGuardActive() &&
       !hasInteractiveScheduleEditsThisSession() &&
       !shouldRefuseStaleSelfPushEcho(row) &&
@@ -9571,10 +9601,18 @@
     /* Publish-notification / Take cloud: apply remote even when local dirty locks merge. */
     var scheduleBundleLocked = forceAccept
       ? false
-      : !!(teamStateScheduleBundleMergeLocked() || protectLocalDayOff);
+      : !!(
+          teamStateScheduleBundleMergeLocked() ||
+          protectLocalDayOff ||
+          scheduleLocalAuthorityActive()
+        );
     var refuseStaleSchedule = forceAccept
       ? false
-      : !!(shouldRefuseRemoteScheduleSnapshot(row) || protectLocalDayOff);
+      : !!(
+          shouldRefuseRemoteScheduleSnapshot(row) ||
+          protectLocalDayOff ||
+          scheduleLocalAuthorityActive()
+        );
     if (protectLocalDayOff && isMgr) {
       teamStateForcePushIgnoreVersionSticky = true;
       scheduleTeamStateDebouncedSync();
@@ -9585,7 +9623,9 @@
       persistTeamStateDirtyFlags();
     }
     if (refuseStaleSchedule && isMgr) {
-      if (shouldRefuseStaleSelfPushEcho(row) || scheduleDayOffPushGuardActive()) {
+      if (scheduleLocalAuthorityActive() && !ctx.allowDiscardDirty) {
+        /* Keep-mine / Upload: do not silently take peer blobs or clear refuse. */
+      } else if (shouldRefuseStaleSelfPushEcho(row) || scheduleDayOffPushGuardActive()) {
         /*
          * Keep local × day-off / last push. Do not unlock apply — a stale Postgres echo
          * can carry a newer updated_at (tip bump) with old Sat/Sun draft cells.
@@ -10055,7 +10095,9 @@
         /* ignore */
       }
       /* Overlay ISO cells on top of blob apply so cell SoT wins when present. */
-      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+      if (!scheduleLocalAuthorityActive()) {
+        void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+      }
       /* rebuildEmployeeDerivedData already rebuilds SCHEDULE — do not rebuild again. */
       rebuildEmployeeDerivedData({ scheduleOnly: true });
       if (
@@ -18804,6 +18846,20 @@
       }
       return;
     }
+    /*
+     * Cell SoT (write-only): never freeze sync behind Keep/Load buttons.
+     * Per-shift rev merge + poll/realtime converge automatically (Google Docs–style).
+     */
+    if (scheduleSyncV2WriteOnly()) {
+      clearScheduleSyncConflictState();
+      if (scheduleAssignmentsDirty || draftScheduleDirty) {
+        teamStateForcePushIgnoreVersionSticky = true;
+        scheduleTeamStateDebouncedSync();
+      }
+      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+      return;
+    }
+    /* Legacy blob-only path — whole-schedule conflict UI (kept for non–write-only). */
     if (scheduleSyncConflictActive && pendingScheduleConflictRow) {
       pendingScheduleConflictRow = row;
       showScheduleConflictNotice();
@@ -18816,10 +18872,15 @@
   }
 
   function showScheduleConflictNotice() {
+    /* Write-only cell sync: never show Keep/Load — clear any stuck conflict freeze. */
+    if (scheduleSyncV2WriteOnly()) {
+      clearScheduleSyncConflictState();
+      return;
+    }
     if (!scheduleNotice || !scheduleNoticeText) return;
     scheduleNoticeText.textContent =
       gmT('schedule.syncConflict') ||
-      'You and another manager edited the schedule at the same time. Keep yours (overwrites the cloud), or load theirs (discards your unsaved edits).';
+      'Schedule changes sync automatically per shift. Refresh if something looks out of date.';
     scheduleNotice.classList.remove('hidden');
     scheduleNotice.dataset.actions = 'conflict';
     var keepBtn =
@@ -18827,25 +18888,18 @@
     var cloudBtn =
       scheduleConflictTakeCloudBtn || document.getElementById('scheduleConflictTakeCloudBtn');
     if (keepBtn) {
-      keepBtn.disabled = false;
-      keepBtn.textContent = gmT('schedule.syncConflictKeepMine') || 'Keep my schedule';
+      keepBtn.hidden = true;
+      keepBtn.disabled = true;
     }
     if (cloudBtn) {
-      cloudBtn.disabled = false;
-      cloudBtn.textContent = gmT('schedule.syncConflictTakeCloud') || 'Load cloud schedule';
+      cloudBtn.hidden = true;
+      cloudBtn.disabled = true;
     }
     var actionsEl =
       scheduleNoticeActions || document.getElementById('scheduleNoticeActions');
     if (actionsEl) {
-      actionsEl.hidden = false;
-      actionsEl.removeAttribute('hidden');
-      try {
-        actionsEl.style.pointerEvents = 'auto';
-        actionsEl.style.position = 'relative';
-        actionsEl.style.zIndex = '50';
-      } catch (_z) {
-        /* ignore */
-      }
+      actionsEl.hidden = true;
+      actionsEl.setAttribute('hidden', '');
     }
   }
 
@@ -18920,6 +18974,42 @@
   }
 
   /**
+   * After blob force-push, also upsert ISO cells so peer cell-poll cannot re-apply
+   * the other device's schedule on top of what we just asserted.
+   */
+  function forcePushLocalScheduleCellsToCloud(opts) {
+    opts = opts || {};
+    if (!scheduleSyncV2Enabled()) return Promise.resolve({ ok: true, skipped: true });
+    enqueueScheduleV2OpsFromLocalStores({
+      restaurantId: opts.restaurantId || null,
+      weekIndex: opts.weekIndex != null ? opts.weekIndex : null,
+    });
+    return Promise.resolve(flushScheduleV2Outbox()).then(function (firstFlush) {
+      var cellFlush = firstFlush;
+      var drain = 0;
+      function drainMore() {
+        var v2 = gmScheduleV2();
+        var remain = v2 && v2.getOutbox ? v2.getOutbox() : [];
+        if (!remain || !remain.length || drain >= 20) {
+          return { ok: !!(cellFlush && cellFlush.ok !== false), cellFlush: cellFlush };
+        }
+        drain += 1;
+        return Promise.resolve(flushScheduleV2Outbox()).then(function (next) {
+          cellFlush = next;
+          if (!cellFlush || !cellFlush.ok) {
+            return { ok: false, cellFlush: cellFlush };
+          }
+          return drainMore();
+        });
+      }
+      if (!cellFlush || cellFlush.ok === false) {
+        return { ok: false, cellFlush: cellFlush };
+      }
+      return drainMore();
+    });
+  }
+
+  /**
    * Force-upload this browser's schedule (assignments + draft/slot order) to Supabase
    * so every client matches what you see here. Always sends both fields together and
    * ignores version races / open conflict dialogs.
@@ -18948,7 +19038,11 @@
         /* Do not leave sticky ignore-version on after a failed override. */
         teamStateForcePushIgnoreVersionSticky = false;
         teamStateForcePushIgnoreVersion = false;
+        /* Brief guard so a concurrent peer poll cannot paint over a failed mid-push. */
+        armScheduleLocalAuthority(8000);
       } else {
+        /* Hold local SoT until our cell upserts propagate and peers stop replaying old cells. */
+        armScheduleLocalAuthority(45000);
         syncScheduleConfirmedFromLiveLocal();
         var liveHash = liveScheduleBundleHash();
         if (liveHash) {
@@ -18964,6 +19058,7 @@
       setPreferCloudOnConflict(false);
       clearScheduleSyncConflictState();
       scheduleConflictSuppressOfferUntil = Date.now() + 30000;
+      armScheduleLocalAuthority(60000);
       prepareLocalScheduleBundleForCloudPush();
       scheduleAssignmentsDirty = true;
       draftScheduleDirty = true;
@@ -18972,27 +19067,43 @@
       teamStateForcePushIgnoreVersionSticky = true;
       teamStateForcePushActive = true;
       var pushStartedAt = Date.now();
-      return Promise.resolve(flushTeamStateSyncNow()).then(function () {
-        if (scheduleSyncConflictActive) {
-          return { ok: false, reason: 'conflict' };
-        }
-        var stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
-        /*
-         * Upsert can succeed while a later prune/payload rebuild leaves dirty true.
-         * If we just recorded a local push, treat that as success and lock confirmed.
-         */
-        if (
-          stillDirty &&
-          teamStateLastLocalPushAt &&
-          teamStateLastLocalPushAt >= pushStartedAt - 250
-        ) {
-          syncScheduleConfirmedFromLiveLocal();
-          stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
-        }
-        if (stillDirty) {
-          return { ok: false, reason: 'incomplete' };
-        }
-        return { ok: true };
+      return Promise.resolve(flushTeamStateSyncNow())
+        .then(function () {
+          if (scheduleSyncConflictActive) {
+            return { ok: false, reason: 'conflict' };
+          }
+          var stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
+          /*
+           * Upsert can succeed while a later prune/payload rebuild leaves dirty true.
+           * If we just recorded a local push, treat that as success and lock confirmed.
+           */
+          if (
+            stillDirty &&
+            teamStateLastLocalPushAt &&
+            teamStateLastLocalPushAt >= pushStartedAt - 250
+          ) {
+            syncScheduleConfirmedFromLiveLocal();
+            stillDirty = !!(scheduleAssignmentsDirty || draftScheduleDirty);
+          }
+          if (stillDirty) {
+            return { ok: false, reason: 'incomplete' };
+          }
+          return forcePushLocalScheduleCellsToCloud().then(function (cells) {
+            if (cells && cells.ok === false) {
+              return { ok: false, reason: 'cells_incomplete', cells: cells };
+            }
+            return { ok: true, cells: cells };
+          });
+        });
+    }
+
+    function refreshAuthBeforePush() {
+      var sb = window.gmSupabase;
+      if (!sb || !sb.auth || typeof sb.auth.refreshSession !== 'function') {
+        return Promise.resolve();
+      }
+      return Promise.resolve(sb.auth.refreshSession()).catch(function () {
+        /* Best-effort — push may still succeed with the existing session. */
       });
     }
 
@@ -19003,7 +19114,10 @@
       );
     }
 
-    return runForcePushAttempt()
+    return refreshAuthBeforePush()
+      .then(function () {
+        return runForcePushAttempt();
+      })
       .then(function (first) {
         if (first && first.ok) {
           finishForcePushFlags(true);
@@ -19016,34 +19130,36 @@
           }
           return first;
         }
-        /* One automatic retry — covers mid-flight conflict / coalesce races. */
-        return runForcePushAttempt().then(function (second) {
-          var result = second || first || { ok: false, reason: 'incomplete' };
-          finishForcePushFlags(!!(result && result.ok));
-          if (result && result.ok) {
+        /* One automatic retry — covers mid-flight conflict / coalesce / auth races. */
+        return refreshAuthBeforePush().then(function () {
+          return runForcePushAttempt().then(function (second) {
+            var result = second || first || { ok: false, reason: 'incomplete' };
+            finishForcePushFlags(!!(result && result.ok));
+            if (result && result.ok) {
+              if (!opts.silent) {
+                showScheduleNotice(
+                  gmT('schedule.pushCloudDone') ||
+                    'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
+                  true
+                );
+              }
+              return result;
+            }
             if (!opts.silent) {
+              var failReason =
+                (result && result.reason) || (first && first.reason) || 'incomplete';
+              console.warn('gm-callout: force push failed', failReason, result || first);
               showScheduleNotice(
-                gmT('schedule.pushCloudDone') ||
-                  'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
-                true
+                failReason === 'conflict'
+                  ? gmT('schedule.syncConflict') ||
+                      'You and another manager edited the schedule at the same time. Keep yours, or load theirs.'
+                  : gmT('schedule.pushCloudFailed') ||
+                      'Could not save to the cloud. Check your connection and try again.',
+                false
               );
             }
             return result;
-          }
-          if (!opts.silent) {
-            var failReason =
-              (result && result.reason) || (first && first.reason) || 'incomplete';
-            console.warn('gm-callout: force push failed', failReason, result || first);
-            showScheduleNotice(
-              failReason === 'conflict'
-                ? gmT('schedule.syncConflict') ||
-                    'You and another manager edited the schedule at the same time. Keep yours, or load theirs.'
-                : gmT('schedule.pushCloudFailed') ||
-                    'Could not save to the cloud. Check your connection and try again.',
-              false
-            );
-          }
-          return result;
+          });
         });
       })
       .catch(function (err) {
@@ -19078,6 +19194,8 @@
     scheduleConflictResolveLock = true;
     /* Long enough that migrate/absorb dirty + push cannot re-prompt the same snapshot. */
     scheduleConflictSuppressOfferUntil = Date.now() + 60000;
+    /* Explicitly accept cloud — clear Keep-mine local-authority guard. */
+    scheduleLocalAuthorityUntil = 0;
     var row = pendingScheduleConflictRow;
     clearScheduleSyncConflictState();
     scheduleAssignmentsDirty = false;
@@ -19196,10 +19314,18 @@
         if (t.id === 'scheduleConflictKeepMineBtn') {
           e.preventDefault();
           e.stopPropagation();
+          if (scheduleSyncV2WriteOnly()) {
+            clearScheduleSyncConflictState();
+            return;
+          }
           resolveScheduleConflictKeepMine();
         } else if (t.id === 'scheduleConflictTakeCloudBtn') {
           e.preventDefault();
           e.stopPropagation();
+          if (scheduleSyncV2WriteOnly()) {
+            clearScheduleSyncConflictState();
+            return;
+          }
           resolveScheduleConflictTakeCloud();
         }
       },
@@ -19209,6 +19335,13 @@
 
   function showScheduleNotice(text, showActions) {
     if (!scheduleNotice || !scheduleNoticeText) return;
+    /* Write-only: never hold the notice hostage to a retired conflict dialog. */
+    if (
+      scheduleSyncV2WriteOnly() &&
+      (scheduleNotice.dataset.actions === 'conflict' || scheduleSyncConflictActive)
+    ) {
+      clearScheduleSyncConflictState();
+    }
     /* Never replace the conflict prompt while unresolved — refresh/peer notices can race. */
     if (
       !scheduleConflictResolveLock &&
@@ -19228,6 +19361,9 @@
 
   function hideScheduleNotice() {
     if (!scheduleNotice) return;
+    if (scheduleSyncV2WriteOnly() && scheduleSyncConflictActive) {
+      clearScheduleSyncConflictState();
+    }
     if (scheduleSyncConflictActive || scheduleNotice.dataset.actions === 'conflict') return;
     scheduleNotice.classList.add('hidden');
     if (scheduleNoticeActions) scheduleNoticeActions.hidden = true;
@@ -26179,10 +26315,30 @@
     scheduleUndoBtn.addEventListener('click', undoScheduleChange);
   }
   if (scheduleConflictKeepMineBtn) {
+    scheduleConflictKeepMineBtn.hidden = true;
+    scheduleConflictKeepMineBtn.setAttribute('aria-hidden', 'true');
     scheduleConflictKeepMineBtn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
+      /* Conflict UI retired — cell sync auto-merges; localhost recovery uses Upload button. */
+      if (scheduleSyncV2WriteOnly()) {
+        clearScheduleSyncConflictState();
+        return;
+      }
       resolveScheduleConflictKeepMine();
+    });
+  }
+  if (scheduleConflictTakeCloudBtn) {
+    scheduleConflictTakeCloudBtn.hidden = true;
+    scheduleConflictTakeCloudBtn.setAttribute('aria-hidden', 'true');
+    scheduleConflictTakeCloudBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (scheduleSyncV2WriteOnly()) {
+        clearScheduleSyncConflictState();
+        return;
+      }
+      resolveScheduleConflictTakeCloud();
     });
   }
   var schedulePushLocalToCloudBtn = document.getElementById('schedulePushLocalToCloudBtn');
@@ -26209,13 +26365,6 @@
       void forcePushLocalScheduleToCloud();
     });
   }
-  if (scheduleConflictTakeCloudBtn) {
-    scheduleConflictTakeCloudBtn.addEventListener('click', function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-      resolveScheduleConflictTakeCloud();
-    });
-  }
   if (scheduleNotice) {
     scheduleNotice.addEventListener('click', function (e) {
       var t = e.target && e.target.closest ? e.target.closest('button') : e.target;
@@ -26223,10 +26372,18 @@
       if (t.id === 'scheduleConflictKeepMineBtn') {
         e.preventDefault();
         e.stopPropagation();
+        if (scheduleSyncV2WriteOnly()) {
+          clearScheduleSyncConflictState();
+          return;
+        }
         resolveScheduleConflictKeepMine();
       } else if (t.id === 'scheduleConflictTakeCloudBtn') {
         e.preventDefault();
         e.stopPropagation();
+        if (scheduleSyncV2WriteOnly()) {
+          clearScheduleSyncConflictState();
+          return;
+        }
         resolveScheduleConflictTakeCloud();
       }
     });

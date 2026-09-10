@@ -320,19 +320,19 @@ window.GM_I18N_ES = {
   'schedule.hardRevertNoStoreWeek':
     'Esta entrada del historial no tiene horario para el local actual. No se cambió nada.',
   'schedule.syncConflict':
-    'Tú y otro gerente editaron el horario a la vez. Conserva el tuyo (sobrescribe a todos) o carga la versión en la nube (descarta tus cambios sin guardar en este dispositivo).',
-  'schedule.syncConflictKeepMine': 'Conservar mi horario',
-  'schedule.syncConflictTakeCloud': 'Cargar horario de la nube',
-  'schedule.syncConflictKeptMine': 'Conservando tu horario y actualizando la copia compartida en la nube…',
+    'Los cambios del horario se sincronizan automáticamente entre dispositivos. Actualiza si algo se ve desactualizado.',
+  'schedule.syncConflictKeepMine': 'Subir el mío a la nube',
+  'schedule.syncConflictTakeCloud': 'Cargar nube (descartar el mío)',
+  'schedule.syncConflictKeptMine': 'Subiendo tu horario a la copia compartida en la nube…',
   'schedule.syncConflictKeptMineDone': 'Tu horario es ahora la copia compartida en la nube.',
-  'schedule.pushToCloud': 'Guardar en la nube',
+  'schedule.pushToCloud': 'Subir este PC a la nube',
   'schedule.pushToCloudTitle':
-    'Sube el horario de este navegador para que shiflow.app coincida con lo que ves aquí (solo recuperación en localhost)',
-  'schedule.pushCloudSaving': 'Guardando tu horario local en la nube…',
+    'Sube el horario de este navegador para que la nube y otros dispositivos coincidan con lo que ves aquí (solo recuperación en localhost)',
+  'schedule.pushCloudSaving': 'Subiendo el horario de este PC a la nube…',
   'schedule.pushCloudDone':
-    'Horario local guardado en la nube. Actualiza shiflow.app para verlo.',
+    'El horario de este PC es ahora la copia compartida en la nube. Los otros dispositivos se actualizarán en breve.',
   'schedule.pushCloudFailed':
-    'No se pudo guardar en la nube. Revisa la conexión e inténtalo de nuevo.',
+    'No se pudo conectar a la nube. Revisa la conexión, espera un momento e intenta Subir de nuevo.',
   'schedule.pushCloudUnavailable':
     'La sincronización en la nube no está disponible. Inicia sesión como gerente e inténtalo de nuevo.',
   'schedule.pushCloudManagersOnly': 'Solo los gerentes pueden guardar el horario en la nube.',

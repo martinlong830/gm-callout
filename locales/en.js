@@ -320,17 +320,19 @@ window.GM_I18N_EN = {
   'schedule.hardRevertNoStoreWeek':
     'This history entry has no schedule for the current store. Nothing was changed.',
   'schedule.syncConflict':
-    'You and another manager edited the schedule at the same time. Keep yours (overwrites everyone else), or load the cloud version (discards your unsaved edits on this device).',
-  'schedule.syncConflictKeepMine': 'Keep my schedule',
-  'schedule.syncConflictTakeCloud': 'Load cloud schedule',
-  'schedule.syncConflictKeptMine': 'Keeping your schedule and updating the shared cloud copy…',
+    'Schedule changes sync automatically across devices. Refresh if something looks out of date.',
+  'schedule.syncConflictKeepMine': 'Upload mine to cloud',
+  'schedule.syncConflictTakeCloud': 'Load cloud (discard mine)',
+  'schedule.syncConflictKeptMine': 'Uploading your schedule to the shared cloud copy…',
   'schedule.syncConflictKeptMineDone': 'Your schedule is now the shared cloud copy.',
-  'schedule.pushToCloud': 'Save to cloud',
+  'schedule.pushToCloud': 'Upload this PC to cloud',
   'schedule.pushToCloudTitle':
-    'Upload this browser’s schedule so shiflow.app matches what you see here (localhost recovery only)',
-  'schedule.pushCloudSaving': 'Saving your local schedule to the cloud…',
-  'schedule.pushCloudDone': 'Local schedule saved to the cloud. Refresh shiflow.app to see it.',
-  'schedule.pushCloudFailed': 'Could not save to the cloud. Check your connection and try again.',
+    'Upload this browser’s schedule so the cloud and other devices match what you see here (localhost recovery only)',
+  'schedule.pushCloudSaving': 'Uploading this PC’s schedule to the cloud…',
+  'schedule.pushCloudDone':
+    'This PC’s schedule is now the shared cloud copy. Other devices will update shortly.',
+  'schedule.pushCloudFailed':
+    'Could not connect to the cloud. Check your connection, wait a moment, and try Upload again.',
   'schedule.pushCloudUnavailable':
     'Cloud sync is not available. Sign in as a manager and try again.',
   'schedule.pushCloudManagersOnly': 'Only managers can save the schedule to the cloud.',
