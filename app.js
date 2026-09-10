@@ -6302,6 +6302,94 @@
    * Used by hard revert / template apply — never deletes cells; only writes restored content.
    * opts.restaurantId / opts.weekIndex — limit to one store + week (hard revert).
    */
+
+  /**
+   * Make cloud schedule_slots.sort_order match restored draft row indices (0..n-1),
+   * and deactivate extra rows so peers cannot keep trailing/jumbled FOH lines.
+   */
+  function enqueueHardRevertSlotAlignmentOps(restaurantId, weekIndex) {
+    var v2 = gmScheduleV2();
+    if (!scheduleSyncV2Enabled() || !v2) return 0;
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    var ops = [];
+    var slots = (v2.getSlotCache && v2.getSlotCache()) || {};
+    roles.forEach(function (role) {
+      var want = slotCountForRole(role, wi, rid);
+      if (want < 0) want = 0;
+      var existing = [];
+      Object.keys(slots).forEach(function (pk) {
+        var s = slots[pk];
+        if (!s || s.active === false) return;
+        if (String(s.restaurant_id) !== String(rid)) return;
+        if (String(s.role) !== String(role)) return;
+        if (!s.slot_key) return;
+        existing.push({
+          slot_key: String(s.slot_key),
+          sort_order: Number(s.sort_order) || 0,
+        });
+      });
+      existing.sort(function (a, b) {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+        return a.slot_key.localeCompare(b.slot_key);
+      });
+      var keepKeys = [];
+      var used = Object.create(null);
+      for (var trIdx = 0; trIdx < want; trIdx += 1) {
+        var mapped =
+          (v2.resolveSlotKey && v2.resolveSlotKey(rid, role, trIdx)) || null;
+        if (mapped && !used[mapped]) {
+          keepKeys.push(mapped);
+          used[mapped] = true;
+          continue;
+        }
+        var picked = null;
+        for (var ei = 0; ei < existing.length; ei += 1) {
+          if (used[existing[ei].slot_key]) continue;
+          picked = existing[ei].slot_key;
+          break;
+        }
+        if (!picked) {
+          picked = v2.ensureSlotKey(rid, role, trIdx);
+        }
+        keepKeys.push(picked);
+        used[picked] = true;
+      }
+      keepKeys.forEach(function (sk, idx) {
+        ops.push(v2.opAddSlot(rid, role, sk, idx, null));
+      });
+      if (v2.opReorderSlots && keepKeys.length) {
+        ops.push(v2.opReorderSlots(rid, role, keepKeys.slice()));
+      }
+      existing.forEach(function (e) {
+        if (used[e.slot_key]) return;
+        if (v2.opDeactivateSlot) {
+          ops.push(v2.opDeactivateSlot(rid, role, e.slot_key));
+        }
+      });
+      /* Rewrite local map so enqueue writes cells to the aligned keys. */
+      if (v2.setSlotMap && v2.getSlotMap) {
+        var map = v2.getSlotMap() || {};
+        var prefix = String(rid) + '|' + String(role) + '|';
+        Object.keys(map).forEach(function (k) {
+          if (k.indexOf(prefix) === 0) delete map[k];
+        });
+        keepKeys.forEach(function (sk, idx) {
+          map[prefix + String(idx)] = sk;
+        });
+        v2.setSlotMap(map);
+      }
+    });
+    if (!ops.length) return 0;
+    var i = 0;
+    while (i < ops.length) {
+      enqueueScheduleV2Ops(ops.slice(i, i + 40));
+      i += 40;
+    }
+    return ops.length;
+  }
+
   function enqueueScheduleV2OpsFromLocalStores(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -10145,6 +10233,87 @@
    * After cells hydrate, weeks with no timed cloud cells still use team_state blobs
    * so past weeks match across computers.
    */
+
+  /**
+   * Cells own times/names; ↑↓ row order still lives in draft_schedule.slotOrderByWeek.
+   * After hard revert / Refresh, peers must take that order or names look jumbled.
+   */
+  function applyDraftRowOrderMetaFromRemote(dr, opts) {
+    opts = opts || {};
+    if (!dr || typeof dr !== 'object') return false;
+    if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
+    if (hasInteractiveScheduleEditsThisSession() && !opts.force) return false;
+    var remoteDraftPayload = draftSchedulePayloadFromRemote(dr);
+    if (!remoteDraftPayload) return false;
+    try {
+      var localWindowMon = currentScheduleWeekMondayIso();
+      var remoteWindowMon = remoteDraftPayload.windowMondayIso
+        ? String(remoteDraftPayload.windowMondayIso).slice(0, 10)
+        : '';
+      if (localWindowMon && remoteWindowMon && remoteWindowMon !== localWindowMon) {
+        /* Slot-order keys are Monday ISOs — remap if the rolling window moved. */
+        var remapped = Object.create(null);
+        var delta = mondayIsoDiffWeeks(remoteWindowMon, localWindowMon);
+        var srcOrder = sanitizeSlotOrderByWeek(remoteDraftPayload.slotOrderByWeek);
+        Object.keys(srcOrder).forEach(function (mon) {
+          var nextMon = mon;
+          try {
+            var d = new Date(mon + 'T12:00:00');
+            d.setDate(d.getDate() + delta * 7);
+            nextMon =
+              d.getFullYear() +
+              '-' +
+              String(d.getMonth() + 1).padStart(2, '0') +
+              '-' +
+              String(d.getDate()).padStart(2, '0');
+          } catch (_sm) {
+            nextMon = mon;
+          }
+          if (nextMon) remapped[nextMon] = srcOrder[mon];
+        });
+        remoteDraftPayload.slotOrderByWeek = remapped;
+      }
+    } catch (_alignMeta) {
+      /* ignore */
+    }
+    var remoteSlotOnly = sanitizeSlotOrderByWeek(remoteDraftPayload.slotOrderByWeek);
+    var remoteGroupOnly = sanitizeGroupOrderPotentialByWeek(
+      remoteDraftPayload.groupOrderPotentialByWeek
+    );
+    var remoteSalesOnly = sanitizeScheduleNetSalesByWeek(
+      remoteDraftPayload.scheduleNetSalesByWeek
+    );
+    if (!Object.keys(remoteSlotOnly).length && !Object.keys(remoteGroupOnly).length) {
+      return false;
+    }
+    var takeRemote = !!opts.forceAccept || !!opts.takeRemoteOrder;
+    var nextSlot = takeRemote
+      ? remoteSlotOnly
+      : mergeSlotOrderByWeekMapsStable(slotOrderByWeekStore, remoteSlotOnly, {});
+    var nextGroup = takeRemote
+      ? remoteGroupOnly
+      : mergeGroupOrderPotentialByWeekMaps(
+          groupOrderPotentialByWeekStore,
+          remoteGroupOnly,
+          'remote'
+        );
+    var nextSales = takeRemote
+      ? remoteSalesOnly
+      : mergeScheduleNetSalesByWeekMaps(scheduleNetSalesByWeekStore, remoteSalesOnly, 'remote');
+    var changed =
+      JSON.stringify(slotOrderByWeekStore) !== JSON.stringify(nextSlot) ||
+      JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(nextGroup) ||
+      JSON.stringify(scheduleNetSalesByWeekStore) !== JSON.stringify(nextSales);
+    if (!changed) return false;
+    slotOrderByWeekStore = nextSlot;
+    groupOrderPotentialByWeekStore = nextGroup;
+    scheduleNetSalesByWeekStore = nextSales;
+    persistSlotOrderStores({ skipDirty: true });
+    persistGroupOrderPotentialStore({ skipDirty: true });
+    persistScheduleNetSalesStore({ skipDirty: true });
+    return true;
+  }
+
   function fillUntimedWeeksFromTeamStateBlobs(row) {
     if (!row || !scheduleSyncV2WriteOnly()) return false;
     if (scheduleCellRemoteApplyBlocked()) return false;
@@ -10227,6 +10396,9 @@
       }
     } finally {
       endTeamStateRemoteApply();
+    }
+    if (applyDraftRowOrderMetaFromRemote(row.draft_schedule, { takeRemoteOrder: true })) {
+      changed = true;
     }
     return changed;
   }
@@ -10448,13 +10620,18 @@
       scheduleHashBeforeApply = null;
     }
 
-    if (
-      skipBlobSchedule &&
-      !scheduleBundleLocked &&
-      !refuseStaleSchedule &&
-      fillUntimedWeeksFromTeamStateBlobs(row)
-    ) {
-      touchedScheduleBundle = true;
+    if (skipBlobSchedule && !scheduleBundleLocked && !refuseStaleSchedule) {
+      if (
+        applyDraftRowOrderMetaFromRemote(row.draft_schedule, {
+          takeRemoteOrder: !hasInteractiveScheduleEditsThisSession(),
+          forceAccept: forceAccept,
+        })
+      ) {
+        touchedScheduleBundle = true;
+      }
+      if (fillUntimedWeeksFromTeamStateBlobs(row)) {
+        touchedScheduleBundle = true;
+      }
     }
 
     var sched = skipBlobSchedule ? null : row.schedule_assignments;
@@ -27521,6 +27698,24 @@
         if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
           await v2hr.fetchSlots(sb, cidHr);
         }
+        /*
+         * Align cloud sort_order to restored draft row indices, then write cells.
+         * Without reorder, peers project names/times onto the pre-revert row order.
+         */
+        enqueueHardRevertSlotAlignmentOps(rid, wi);
+        var alignFlush = await flushScheduleV2Outbox();
+        var alignDrain = 0;
+        while (alignDrain < 20) {
+          var v2align = gmScheduleV2();
+          var alignRemain = v2align && v2align.getOutbox ? v2align.getOutbox() : [];
+          if (!alignRemain || !alignRemain.length) break;
+          alignFlush = await flushScheduleV2Outbox();
+          if (!alignFlush || !alignFlush.ok) break;
+          alignDrain += 1;
+        }
+        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+          await v2hr.fetchSlots(sb, cidHr);
+        }
         enqueueScheduleV2OpsFromLocalStores({ restaurantId: rid, weekIndex: wi });
         var cellFlush = await flushScheduleV2Outbox();
         var drain = 0;
@@ -27564,12 +27759,12 @@
             if (localTimed > 0 && timed === 0) {
               cellsOk = false;
             }
+            /*
+             * Do NOT re-project cells onto local after hard revert — that reshuffled
+             * tiles/names away from the revision we just restored. Peers poll cells.
+             */
+            armScheduleLocalAuthority(25000);
             scheduleLastAppliedFingerprint = '';
-            applyScheduleCellsCacheToLocalStore({
-              rebuild: true,
-              force: true,
-              replaceWeekIndex: wi,
-            });
           }
         }
       }
