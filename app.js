@@ -7157,18 +7157,48 @@
         upsertTimedOnly: !firstVisible,
         replaceWeekIndex: firstVisible ? wi : undefined,
       });
+      /*
+       * If the first replace left a DAY-OFF shell while cloud still has timed cells,
+       * soft-upsert once more before painting — never show the wrong intermediate grid.
+       */
+      var cloudTimedVisible = 0;
+      try {
+        var isoToGdiPaint = Object.create(null);
+        for (var gdi = 0; gdi < WEEK_META.length; gdi += 1) {
+          var metaPaint = WEEK_META[gdi];
+          if (metaPaint && metaPaint.iso) isoToGdiPaint[String(metaPaint.iso).slice(0, 10)] = gdi;
+        }
+        var roleToIdxPaint = Object.create(null);
+        for (var rpi = 0; rpi < ROLE_DEFS.length; rpi += 1) {
+          roleToIdxPaint[ROLE_DEFS[rpi].role] = rpi;
+        }
+        var patchPaint = v2.projectCellsToAssignmentPatch(isoToGdiPaint, roleToIdxPaint);
+        cloudTimedVisible = countTimedCellsInPatchWeek(patchPaint, wi);
+      } catch (_ctp) {
+        cloudTimedVisible = 0;
+      }
+      if (cloudTimedVisible > 0 && !localWeekHasTimedDraft(wi, currentRestaurantId)) {
+        applyScheduleCellsCacheToLocalStore({
+          rebuild: false,
+          force: true,
+          upsertTimedOnly: true,
+        });
+      }
       markScheduleAuthoritativePaintReady();
       /* First paint only after cells applied — never the pre-cell DAY-OFF shell. */
       if (currentScreen === 1) {
-        var allowShell = !localWeekHasTimedDraft(wi, currentRestaurantId);
-        paintVisibleScheduleWeekFast({
-          weekIndex: wi,
-          forcePaint: true,
-          fast: true,
-          allowDayOffShell: allowShell,
-          allowEmptyPaint: allowShell,
-        });
-        scheduleDeferredScheduleChrome(wi);
+        var hasTimed = localWeekHasTimedDraft(wi, currentRestaurantId);
+        if (hasTimed || cloudTimedVisible <= 0) {
+          paintVisibleScheduleWeekFast({
+            weekIndex: wi,
+            forcePaint: true,
+            fast: true,
+            allowDayOffShell: !hasTimed,
+            allowEmptyPaint: !hasTimed,
+          });
+          scheduleDeferredScheduleChrome(wi);
+        }
+        /* else: stay blank; soft poll will land timed cells then paint */
       }
       startScheduleCellsPoll();
 
