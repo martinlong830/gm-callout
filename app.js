@@ -6011,6 +6011,9 @@
       });
   }
 
+  var scheduleCellsPollGeneration = 0;
+  var scheduleWeekNavPollTimer = null;
+
   async function pollVisibleScheduleCellsFromCloud(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -6020,13 +6023,20 @@
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
-    if (scheduleCellsPollInFlight) return false;
+    var targetWi =
+      opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+        ? Number(opts.replaceWeekIndex)
+        : scheduleCalendarWeekIndex;
+    var fromIso = dayIsoForScheduleWeekDay(targetWi, 0);
+    var toIso = dayIsoForScheduleWeekDay(targetWi, 6);
+    if (!fromIso || !toIso) return false;
+    var gen = ++scheduleCellsPollGeneration;
+    /*
+     * Allow overlapping week fetches while scrolling, but only the latest generation
+     * may apply — older responses must not stomp the week the user is viewing.
+     */
     scheduleCellsPollInFlight = true;
     try {
-      var wi = scheduleCalendarWeekIndex;
-      var fromIso = dayIsoForScheduleWeekDay(wi, 0);
-      var toIso = dayIsoForScheduleWeekDay(wi, 6);
-      if (!fromIso || !toIso) return false;
       scheduleSlotsPollTick += 1;
       var needSlots =
         !!opts.forceSlots ||
@@ -6037,6 +6047,10 @@
         : Promise.resolve({ ok: true, skipped: true });
       var cellsPromise = v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
       var pair = await Promise.all([slotsPromise, cellsPromise]);
+      if (gen !== scheduleCellsPollGeneration) return false;
+      if (scheduleCalendarWeekIndex !== targetWi && !opts.allowStaleWeekApply) {
+        return false;
+      }
       var slotsRes = pair[0];
       var cellsRes = pair[1];
       if (slotsRes && slotsRes.ok === false) return false;
@@ -6044,16 +6058,40 @@
       return applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
         force: !!opts.force,
-        replaceWeekIndex:
-          opts.replaceWeekIndex != null
-            ? opts.replaceWeekIndex
-            : scheduleCalendarWeekIndex,
+        /* Week nav / soft poll: only upsert timed cells — never wipe to day-off. */
+        upsertTimedOnly: opts.upsertTimedOnly !== false && !opts.replaceTrusted,
+        replaceWeekIndex: opts.replaceTrusted ? targetWi : undefined,
+        replaceTrusted: !!opts.replaceTrusted,
       });
     } catch (_poll) {
       return false;
     } finally {
-      scheduleCellsPollInFlight = false;
+      if (gen === scheduleCellsPollGeneration) {
+        scheduleCellsPollInFlight = false;
+      }
     }
+  }
+
+  function scheduleDebouncedWeekCloudPoll(weekIndex) {
+    var w = Number(weekIndex);
+    if (scheduleWeekNavPollTimer) {
+      clearTimeout(scheduleWeekNavPollTimer);
+      scheduleWeekNavPollTimer = null;
+    }
+    scheduleWeekNavPollTimer = setTimeout(function () {
+      scheduleWeekNavPollTimer = null;
+      if (scheduleCalendarWeekIndex !== w) return;
+      if (!(scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase)) return;
+      void pollVisibleScheduleCellsFromCloud({
+        rebuild: true,
+        force: false,
+        forceSlots: false,
+        replaceWeekIndex: w,
+        upsertTimedOnly: true,
+      }).catch(function () {
+        return false;
+      });
+    }, 180);
   }
 
   function stopScheduleCellsPoll() {
@@ -6082,7 +6120,11 @@
       /* Only poll while Schedule is open — avoids constant fetch/rebuild lag. */
       if (currentScreen !== 1) return;
       if (!scheduleSyncV2WriteOnly()) return;
-      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
+      void pollVisibleScheduleCellsFromCloud({
+        rebuild: true,
+        force: false,
+        upsertTimedOnly: true,
+      });
     }, SCHEDULE_CELLS_POLL_MS);
   }
 
@@ -6538,6 +6580,10 @@
     return out;
   }
 
+  function cellHasTimed(cell) {
+    return !!(cell && !cell.dayOff && cell.start && cell.end);
+  }
+
   function countTimedCellsInPatchWeek(patch, weekIndex) {
     var wi = Number(weekIndex);
     var weekStart = wi * 7;
@@ -6620,29 +6666,33 @@
     }
     var timedWeeks = weekIndicesWithTimedCells(patch);
     var replaceWeeks = Object.create(null);
-    if (opts.replaceAllTimedWeeks) {
-      Object.keys(timedWeeks).forEach(function (k) {
-        if (cloudWeekReplaceIsSafe(Number(k), patch, opts)) {
-          replaceWeeks[k] = true;
+    var upsertTimedOnly = !!opts.upsertTimedOnly && !opts.replaceTrusted;
+    if (!upsertTimedOnly) {
+      if (opts.replaceAllTimedWeeks) {
+        Object.keys(timedWeeks).forEach(function (k) {
+          if (cloudWeekReplaceIsSafe(Number(k), patch, opts)) {
+            replaceWeeks[k] = true;
+          }
+        });
+      } else if (opts.replaceWeekIndex != null || opts.replaceTrusted) {
+        var replaceWi =
+          opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+            ? Number(opts.replaceWeekIndex)
+            : scheduleCalendarWeekIndex;
+        if (
+          (timedWeeks[replaceWi] || opts.allowEmptyReplace || opts.forceDayOffReplace) &&
+          cloudWeekReplaceIsSafe(replaceWi, patch, opts)
+        ) {
+          replaceWeeks[replaceWi] = true;
         }
-      });
-    } else {
-      var replaceWi =
-        opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
-          ? Number(opts.replaceWeekIndex)
-          : scheduleCalendarWeekIndex;
-      if (
-        (timedWeeks[replaceWi] || opts.allowEmptyReplace || opts.forceDayOffReplace) &&
-        cloudWeekReplaceIsSafe(replaceWi, patch, opts)
-      ) {
-        replaceWeeks[replaceWi] = true;
       }
     }
     /*
-     * If local week is staffed and cloud is too sparse to replace, skip the whole apply
-     * for that week (including day-off upserts) so the UI does not flash all day-off.
+     * If local week is staffed and cloud is too sparse to replace, skip wipe applies.
+     * upsertTimedOnly still merges timed cells without blanking the rest.
      */
     if (
+      !upsertTimedOnly &&
       opts.replaceWeekIndex != null &&
       !opts.replaceAllTimedWeeks &&
       !replaceWeeks[Number(opts.replaceWeekIndex)] &&
@@ -6653,16 +6703,18 @@
       return false;
     }
     if (
+      !upsertTimedOnly &&
       opts.replaceAllTimedWeeks &&
       !Object.keys(replaceWeeks).length &&
       !opts.allowEmptyReplace &&
       !opts.forceDayOffReplace
     ) {
-      /* Nothing safe to replace — keep local. */
       return false;
     }
     var rids = Object.keys(patch);
-    if (!rids.length && !Object.keys(replaceWeeks).length) {
+    if (upsertTimedOnly) {
+      if (!Object.keys(timedWeeks).length) return false;
+    } else if (!rids.length && !Object.keys(replaceWeeks).length) {
       return false;
     }
     beginTeamStateRemoteApply();
@@ -6704,7 +6756,11 @@
            * Never paint day-off / Unassigned cells onto weeks with ZERO timed cloud
            * cells. Incomplete past-week sync used to wipe every peer to day-off.
            */
-          if (!timedWeeks[wi] && !replaceWeeks[wi]) return;
+          if (upsertTimedOnly) {
+            if (!cellHasTimed(cells[shiftId])) return;
+          } else if (!timedWeeks[wi] && !replaceWeeks[wi]) {
+            return;
+          }
           var cell = cells[shiftId];
           /* Day-offs only land during a trusted week replace — never from sparse cache. */
           if (cell.dayOff && !replaceWeeks[wi]) return;
@@ -6719,6 +6775,26 @@
             entry.hours = redPokeShiftHoursDecimal(cell.start, cell.end);
           }
           var prev = store[rid][shiftId];
+          /*
+           * Soft upsert: do not replace a real local name with Unassigned from a
+           * partial cloud cell — that made names blink while scrolling weeks.
+           */
+          if (
+            upsertTimedOnly &&
+            prev &&
+            !entry.rowOwner &&
+            (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned')
+          ) {
+            var prevName =
+              (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
+              (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
+                ? prev.workers[0]
+                : '');
+            if (prevName) {
+              entry.rowOwner = prevName;
+              entry.workers = [prevName];
+            }
+          }
           if (
             !prev ||
             String(prev.rowOwner || '') !== String(entry.rowOwner || '') ||
@@ -6972,12 +7048,10 @@
       }
       applyScheduleCellsCacheToLocalStore({
         rebuild: currentScreen === 1,
-        force: true,
-        replaceWeekIndex: wi,
+        force: false,
+        upsertTimedOnly: true,
       });
-      reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
       startScheduleCellsPoll();
-      /* apply already coalesces paint when it changes something */
 
       var fullFrom = dayIsoForScheduleWeekDay(0, 0);
       var fullTo = dayIsoForScheduleWeekDay(SCHEDULE_VIEW_WEEK_COUNT - 1, 6);
@@ -6994,29 +7068,29 @@
             scheduleCellsHydratedOk = true;
             return;
           }
+          /*
+           * Full window: upsert timed cells only. Full wipe/replace caused day-off blink
+           * and name reshuffles while scrolling. Blobs no longer refill times (cells SoT).
+           */
           applyScheduleCellsCacheToLocalStore({
             rebuild: false,
-            force: true,
-            replaceAllTimedWeeks: true,
+            force: false,
+            upsertTimedOnly: true,
           });
-          reconcileLocalScheduleToActiveSlots({});
-          if (teamStateLastRowCache) {
-            fillUntimedWeeksFromTeamStateBlobs(teamStateLastRowCache);
-          }
-          /* Seed in idle time — never block / reflash the open week. */
+          scheduleCellsHydratedOk = true;
+          /* Seed missing weeks to cloud without touching local UI. */
           if (typeof requestIdleCallback === 'function') {
             requestIdleCallback(
               function () {
                 seedMissingTimedWeeksToCloudCells();
               },
-              { timeout: 12000 }
+              { timeout: 30000 }
             );
           } else {
             setTimeout(function () {
               seedMissingTimedWeeksToCloudCells();
-            }, 2500);
+            }, 8000);
           }
-          scheduleCellsHydratedOk = true;
           if (draftScheduleDirty || scheduleAssignmentsDirty) {
             if (!hasInteractiveScheduleEditsThisSession()) {
               draftScheduleDirty = false;
@@ -10788,15 +10862,19 @@
     }
 
     if (skipBlobSchedule && !scheduleBundleLocked && !refuseStaleSchedule) {
+      /*
+       * Cells own times/names. Only sync ↑↓ row-order meta from blobs — never
+       * re-fill assignments/draft from blobs (that fought cells and reshuffled names).
+       */
       if (
         applyDraftRowOrderMetaFromRemote(row.draft_schedule, {
-          takeRemoteOrder: !hasInteractiveScheduleEditsThisSession(),
+          takeRemoteOrder:
+            !!forceAccept ||
+            (!hasInteractiveScheduleEditsThisSession() &&
+              remoteTeamStateIsStrictlyNewer(row)),
           forceAccept: forceAccept,
         })
       ) {
-        touchedScheduleBundle = true;
-      }
-      if (fillUntimedWeeksFromTeamStateBlobs(row)) {
         touchedScheduleBundle = true;
       }
     }
@@ -16057,34 +16135,23 @@
     if (isNaN(w) || w < 0 || w >= SCHEDULE_VIEW_WEEK_COUNT) return;
     if (w !== scheduleCalendarWeekIndex) clearScheduleUndoStack();
     scheduleCalendarWeekIndex = w;
+    /* Invalidate in-flight week polls so a slower prior week cannot apply late. */
+    scheduleCellsPollGeneration += 1;
     updateScheduleWeekNav();
     updateEmpScheduleWeekNav();
-    scheduleLastAppliedFingerprint = '';
-    deferUiWork(function () {
-      if (scheduleCalendarWeekIndex !== w) return;
-      rebuildSchedule({ weekIndex: w, preserveOtherWeeks: true });
-      renderCalendar({ force: true });
-      if (scheduleBody) renderSchedule();
-      if (
-        document.documentElement.classList.contains('employee-app') &&
-        document.getElementById('empCalendarGrid')
-      ) {
+    /* Instant local paint — never wait on cloud for week scrolling. */
+    paintVisibleScheduleWeekFast({ weekIndex: w, forcePaint: true });
+    if (
+      document.documentElement.classList.contains('employee-app') &&
+      document.getElementById('empCalendarGrid')
+    ) {
+      deferUiWork(function () {
+        if (scheduleCalendarWeekIndex !== w) return;
         renderEmployeeMasterSchedule();
-      }
-      /* Background cloud pull — do not block week navigation paint. */
-      if (scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase) {
-        void Promise.resolve(
-          pollVisibleScheduleCellsFromCloud({
-            rebuild: true,
-            force: true,
-            forceSlots: false,
-            replaceWeekIndex: w,
-          })
-        ).catch(function () {
-          return false;
-        });
-      }
-    });
+      });
+    }
+    /* Debounced soft cloud upsert for this week only (no day-off wipe). */
+    scheduleDebouncedWeekCloudPoll(w);
   }
 
   function updateScheduleWeekNav() {
@@ -20744,6 +20811,7 @@
             rebuild: true,
             force: false,
             forceSlots: false,
+            upsertTimedOnly: true,
           })
         ).catch(function () {
           return false;
