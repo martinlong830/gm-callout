@@ -114,6 +114,23 @@
     var map = getSlotMap();
     var k = slotMapKey(restaurantId, role, trIdx);
     if (map[k]) return map[k];
+    /* Prefer an existing server slot for this row so devices do not fork UUIDs. */
+    var slots = getSlotCache();
+    var candidates = [];
+    Object.keys(slots).forEach(function (pk) {
+      var s = slots[pk];
+      if (!s || s.active === false) return;
+      if (String(s.restaurant_id) !== String(restaurantId)) return;
+      if (String(s.role) !== String(role)) return;
+      if (Number(s.sort_order) !== Number(trIdx)) return;
+      if (s.slot_key) candidates.push(String(s.slot_key));
+    });
+    candidates.sort();
+    if (candidates.length) {
+      map[k] = candidates[0];
+      setSlotMap(map);
+      return candidates[0];
+    }
     var sk = uuid();
     map[k] = sk;
     setSlotMap(map);
@@ -410,6 +427,8 @@
     if (!rows || !rows.length) return;
     var slots = getSlotCache();
     var map = getSlotMap();
+    /* Group by restaurant|role|sort_order — pick stable canonical slot_key (lexicographically smallest). */
+    var bySort = {};
     rows.forEach(function (row) {
       if (!row) return;
       var pk = [row.restaurant_id, row.role, row.slot_key].join('\0');
@@ -421,9 +440,14 @@
         label: row.label || null,
         active: row.active !== false,
       };
-      // Prefer remote slot_key for each sort_order so devices share the same keys.
+      if (row.active === false) return;
       var mk = slotMapKey(row.restaurant_id, row.role, row.sort_order);
-      map[mk] = row.slot_key;
+      if (!bySort[mk]) bySort[mk] = [];
+      bySort[mk].push(String(row.slot_key));
+    });
+    Object.keys(bySort).forEach(function (mk) {
+      var list = bySort[mk].slice().sort();
+      map[mk] = list[0];
     });
     setSlotCache(slots);
     setSlotMap(map);
@@ -462,6 +486,17 @@
     });
     setOutbox(remain);
     if (data && data.schedule_rev != null) setLastRev(data.schedule_rev);
+    /* If nothing applied and conflicts remain, surface failure so callers can fall back. */
+    var appliedCount = applied.length;
+    var conflictCount = ((data && data.conflicts) || []).length;
+    if (!appliedCount && conflictCount && remain.length) {
+      return {
+        ok: false,
+        error: { message: 'schedule ops conflicted' },
+        data: data,
+        conflicts: data.conflicts,
+      };
+    }
     return { ok: true, data: data, conflicts: (data && data.conflicts) || [] };
   }
 
@@ -588,7 +623,11 @@
       var rid = cell.restaurant_id;
       if (!patch[rid]) patch[rid] = {};
       var shiftId = 'shift-' + gdi + '-' + roleIdx + '-' + trIdx;
-      var entry = { workers: ['Unassigned'] };
+      var remoteRev = Number(cell.rev) || 0;
+      var existing = patch[rid][shiftId];
+      /* Duplicate slots (forked UUIDs, same sort_order) can collide — keep higher rev. */
+      if (existing && Number(existing.rev || 0) > remoteRev) return;
+      var entry = { workers: ['Unassigned'], rev: remoteRev };
       if (cell.worker_name && cell.worker_name !== 'Unassigned') {
         entry.rowOwner = String(cell.worker_name);
       }

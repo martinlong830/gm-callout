@@ -1247,13 +1247,14 @@
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
       if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
         markScheduleInteractiveEdit();
-        /* Cells are SoT — do not dirty/push schedule blobs (rollback source). */
-        if (!scheduleSyncV2WriteOnly()) {
-          draftScheduleDirty = true;
-          persistTeamStateDirtyFlags();
-          scheduleTeamStateDebouncedSync();
-          scheduleTeamStateWriteThroughSoon();
-        }
+        /*
+         * Dual-write: always mark draft dirty so team_state blobs stay a backup transport
+         * while cells are SoT for apply. Prevents silent desync when cell RPC fails.
+         */
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateDebouncedSync();
+        scheduleTeamStateWriteThroughSoon();
       }
     } catch (eDraftSave) {
       /* ignore */
@@ -5946,16 +5947,58 @@
         if (res && res.ok && !res.empty) {
           void broadcastScheduleCellsChanged();
         }
+        if (res && res.ok === false) {
+          /*
+           * Cell RPC failed (missing migration / RLS / etc). Fall back to blob push so
+           * peers still converge, and tell the manager something is wrong.
+           */
+          scheduleAssignmentsDirty = true;
+          draftScheduleDirty = true;
+          persistTeamStateDirtyFlags();
+          scheduleTeamStateWriteThroughSoon();
+          if (currentScreen === 1) {
+            showScheduleNotice(
+              (res.error && res.error.message) ||
+                gmT('schedule.pushCloudFailed') ||
+                'Schedule cell sync failed — falling back to cloud blob save.',
+              false
+            );
+          }
+        }
         return res;
       })
       .catch(function (err) {
         console.warn('gm-callout: schedule v2 flush', err);
+        scheduleAssignmentsDirty = true;
+        draftScheduleDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateWriteThroughSoon();
         return { ok: false, error: err };
       })
       .finally(function () {
         scheduleV2FlushPromise = null;
       });
     return scheduleV2FlushPromise;
+  }
+
+  function syncScheduleSlotsFromCloudThen(fn) {
+    var v2 = gmScheduleV2();
+    if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) {
+      if (typeof fn === 'function') fn();
+      return Promise.resolve();
+    }
+    var cid = gmCalloutCompanyId();
+    if (!cid || typeof v2.fetchSlots !== 'function') {
+      if (typeof fn === 'function') fn();
+      return Promise.resolve();
+    }
+    return Promise.resolve(v2.fetchSlots(window.gmSupabase, cid))
+      .catch(function () {
+        return null;
+      })
+      .then(function () {
+        if (typeof fn === 'function') fn();
+      });
   }
 
   async function pollVisibleScheduleCellsFromCloud(opts) {
@@ -6017,46 +6060,50 @@
   function enqueueV2SlotEdit(role, trIdx, dayInWeek, start, end, breakText, isDayOff, workerName) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2) return;
-    var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-    if (!dayIso) return;
-    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-    var ops = [
-      v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null),
-    ];
-    if (isDayOff) {
-      ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
-    } else {
-      ops.push(
-        v2.opSetTimes(
-          currentRestaurantId,
-          dayIso,
-          role,
-          slotKey,
-          start,
-          end,
-          breakText || null,
-          null
-        )
-      );
-      if (workerName && workerName !== 'Unassigned') {
-        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+    syncScheduleSlotsFromCloudThen(function () {
+      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+      if (!dayIso) return;
+      var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+      var ops = [
+        v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null),
+      ];
+      if (isDayOff) {
+        ops.push(v2.opSetDayOff(currentRestaurantId, dayIso, role, slotKey, workerName || null));
+      } else {
+        ops.push(
+          v2.opSetTimes(
+            currentRestaurantId,
+            dayIso,
+            role,
+            slotKey,
+            start,
+            end,
+            breakText || null,
+            null
+          )
+        );
+        if (workerName && workerName !== 'Unassigned') {
+          ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, workerName, null));
+        }
       }
-    }
-    enqueueScheduleV2Ops(ops);
+      enqueueScheduleV2Ops(ops);
+    });
   }
 
   function enqueueV2RowWorker(role, trIdx, personName) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2) return;
-    var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
-    var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
-    var days = getVisibleWeekDays() || [];
-    days.forEach(function (_dayStr, dayInWeek) {
-      var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
-      if (!dayIso) return;
-      ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
+    syncScheduleSlotsFromCloudThen(function () {
+      var slotKey = v2.ensureSlotKey(currentRestaurantId, role, trIdx);
+      var ops = [v2.opAddSlot(currentRestaurantId, role, slotKey, trIdx, null)];
+      var days = getVisibleWeekDays() || [];
+      days.forEach(function (_dayStr, dayInWeek) {
+        var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
+        if (!dayIso) return;
+        ops.push(v2.opSetWorker(currentRestaurantId, dayIso, role, slotKey, personName, null));
+      });
+      enqueueScheduleV2Ops(ops);
     });
-    enqueueScheduleV2Ops(ops);
   }
 
   /**
@@ -6230,7 +6277,8 @@
           weekIndex: scheduleCalendarWeekIndex,
           preserveOtherWeeks: true,
         });
-        renderCalendar();
+        renderCalendar({ force: true });
+        if (scheduleBody) renderSchedule();
       });
     }
     return true;
@@ -9012,12 +9060,11 @@
        */
       var pushScheduleBundle =
         teamStateForcePushActive || scheduleAssignmentsDirty || draftScheduleDirty;
-      /* Cells are SoT — do not push legacy schedule blobs (tip/meta still may). */
-      if (scheduleSyncV2WriteOnly() && !teamStateForcePushActive) {
-        pushScheduleBundle = false;
-        scheduleAssignmentsDirty = false;
-        draftScheduleDirty = false;
-      }
+      /*
+       * Dual-write: still push schedule blobs as a backup transport.
+       * Write-only only controls APPLY (ignore remote blobs) so stale blobs cannot
+       * roll back cell SoT — it must not silence the push path.
+       */
       if (pushScheduleBundle) {
         var bundleAssign = prepareLocalScheduleBundleForCloudPush();
         payload.schedule_assignments = bundleAssign;
@@ -9424,14 +9471,10 @@
     row = alignRemoteTeamStateScheduleBundleToLocalWindow(row);
 
     /*
-     * Schedule sync v2 write-only: never paint team_state schedule blobs over cell SoT.
-     * Tip/meta/templates still apply; schedule fields are stripped for this apply.
+     * Dual-write: apply schedule blobs for fast peer transport, then overlay cells
+     * (hydrate/poll) so ISO cells win when present. Do not strip blobs here — that
+     * left peers blank whenever cell realtime lagged.
      */
-    if (scheduleSyncV2WriteOnly() && !ctx.forceAcceptRemote && !forceAcceptRemoteScheduleOnce) {
-      row = Object.assign({}, row);
-      delete row.schedule_assignments;
-      delete row.draft_schedule;
-    }
 
     if (row.updated_at != null) {
       teamStateCachedUpdatedAt = String(row.updated_at);
@@ -10011,6 +10054,8 @@
       } catch (_p) {
         /* ignore */
       }
+      /* Overlay ISO cells on top of blob apply so cell SoT wins when present. */
+      void pollVisibleScheduleCellsFromCloud({ rebuild: true });
       /* rebuildEmployeeDerivedData already rebuilds SCHEDULE — do not rebuild again. */
       rebuildEmployeeDerivedData({ scheduleOnly: true });
       if (
@@ -12717,19 +12762,19 @@
       notifyTimecardsScheduleChanged();
       return;
     }
-    if (GM_SUPABASE_DATA && window.gmSupabase && !scheduleSyncV2WriteOnly()) {
+    if (GM_SUPABASE_DATA && window.gmSupabase) {
       scheduleAssignmentsDirty = true;
     }
     if (!opts.skipInteractiveMark) markScheduleInteractiveEdit();
-    /* Cells SoT: skip blob debounce/write-through — ops outbox carries the edit. */
-    if (!scheduleSyncV2WriteOnly()) {
-      scheduleTeamStateDebouncedSync();
-      if (opts.flushNow) flushTeamStateSyncNow();
-      else if (opts.writeThrough !== false) scheduleTeamStateWriteThroughSoon();
-      persistTeamStateDirtyFlags();
-    } else if (opts.flushNow) {
+    /* Dual-write blobs as backup; cells flush via enqueueV2 / flushNow. */
+    scheduleTeamStateDebouncedSync();
+    if (opts.flushNow) {
       void flushScheduleV2Outbox();
+      flushTeamStateSyncNow();
+    } else if (opts.writeThrough !== false) {
+      scheduleTeamStateWriteThroughSoon();
     }
+    persistTeamStateDirtyFlags();
     notifyTimecardsScheduleChanged();
   }
 
