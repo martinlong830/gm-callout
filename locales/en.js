@@ -289,7 +289,7 @@ window.GM_I18N_EN = {
   'employee.pastShifts': 'Past shifts',
   'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
-    'Saved schedule versions (auto-saves about every 15 minutes when the schedule changed, plus publish/revert). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
+    'Saved schedule versions (auto-saves about every 30 minutes when the schedule changed, plus publish/revert). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
   'schedule.historyEmpty': 'No saved versions yet. Keep editing — checkpoints appear after a short pause.',
   'schedule.historyFailed': 'Could not load schedule history.',
   'schedule.historySourcePublish': 'Publish',

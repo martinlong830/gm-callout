@@ -288,7 +288,7 @@ window.GM_I18N_ES = {
   'employee.pastShifts': 'Turnos pasados',
   'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
-    'Versiones guardadas (autoguardado ~cada 15 minutos si el horario cambió, más publicar/revertir). Usa «Punto de guardado» para un checkpoint con nombre. La reversión fuerte restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
+    'Versiones guardadas (autoguardado ~cada 30 minutos si el horario cambió, más publicar/revertir). Usa «Punto de guardado» para un checkpoint con nombre. La reversión fuerte restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
   'schedule.historyEmpty': 'Aún no hay versiones. Sigue editando: los puntos de control aparecen tras una pausa.',
   'schedule.historyFailed': 'No se pudo cargar el historial del horario.',
   'schedule.historySourcePublish': 'Publicar',
