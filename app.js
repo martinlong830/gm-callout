@@ -27972,6 +27972,21 @@
     return { restaurantId: rid, weekIndex: wi };
   }
 
+  async function drainScheduleV2OutboxBounded(maxRounds) {
+    var rounds = 0;
+    var last = { ok: true };
+    var limit = maxRounds != null ? Number(maxRounds) : 12;
+    while (rounds < limit) {
+      var v2 = gmScheduleV2();
+      var remain = v2 && v2.getOutbox ? v2.getOutbox() : [];
+      if (!remain || !remain.length) return last;
+      last = await flushScheduleV2Outbox();
+      if (!last || last.ok === false) return last || { ok: false };
+      rounds += 1;
+    }
+    return last;
+  }
+
   async function hardRevertScheduleRevision(revisionId) {
     if (!revisionId || !managerCanEditCurrentRestaurant()) return;
     var rid = currentRestaurantId;
@@ -27989,23 +28004,22 @@
     }
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     var sb = window.gmSupabase;
-    try {
-      await sb.auth.refreshSession();
-    } catch (_authRev) {
-      /* ignore */
-    }
     clearScheduleSyncConflictState();
-    try {
-      await insertScheduleRevisionRow({
-        source: 'pre_revert',
-        assignments: loadScheduleAssignmentsStore(),
-        draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
-        published: schedulePublishedPayload(),
-        dedupe: false,
-      });
-    } catch (_pre) {
+
+    /* Snapshot current local before overwrite — do not await (was a multi-second stall). */
+    var preAssign = loadScheduleAssignmentsStore();
+    var preDraft = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
+    var prePublished = schedulePublishedPayload();
+    void insertScheduleRevisionRow({
+      source: 'pre_revert',
+      assignments: preAssign,
+      draft: preDraft,
+      published: prePublished,
+      dedupe: false,
+    }).catch(function (_pre) {
       console.warn('gm-callout: pre_revert snapshot', _pre);
-    }
+    });
+
     var fetched = await sb
       .from('team_state_schedule_revisions')
       .select('schedule_assignments, draft_schedule, schedule_published')
@@ -28030,6 +28044,7 @@
       );
       return;
     }
+
     pushScheduleUndoSnapshot();
     applyScopedHardRevertFromRevision(
       nextAssign,
@@ -28037,138 +28052,74 @@
       rid,
       wi
     );
-    teamStateForcePushIgnoreVersion = true;
-    teamStateForcePushActive = true;
-    var pushOk = false;
-    var cellsOk = true;
-    try {
-      await flushTeamStateSyncNow();
-      pushOk = !scheduleAssignmentsDirty && !draftScheduleDirty;
-      if (scheduleSyncV2Enabled()) {
-        var v2hr = gmScheduleV2();
-        var cidHr = gmCalloutCompanyId();
-        /* Bind slot UUIDs to server before writing cells — forked keys blank peers. */
-        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
-          await v2hr.fetchSlots(sb, cidHr);
-        }
-        /*
-         * Align cloud sort_order to restored draft row indices, then write cells.
-         * Without reorder, peers project names/times onto the pre-revert row order.
-         */
-        enqueueHardRevertSlotAlignmentOps(rid, wi);
-        var alignFlush = await flushScheduleV2Outbox();
-        var alignDrain = 0;
-        while (alignDrain < 20) {
-          var v2align = gmScheduleV2();
-          var alignRemain = v2align && v2align.getOutbox ? v2align.getOutbox() : [];
-          if (!alignRemain || !alignRemain.length) break;
-          alignFlush = await flushScheduleV2Outbox();
-          if (!alignFlush || !alignFlush.ok) break;
-          alignDrain += 1;
-        }
-        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
-          await v2hr.fetchSlots(sb, cidHr);
-        }
-        enqueueScheduleV2OpsFromLocalStores({ restaurantId: rid, weekIndex: wi });
-        var cellFlush = await flushScheduleV2Outbox();
-        var drain = 0;
-        while (drain < 20) {
-          var v2 = gmScheduleV2();
-          var remain = v2 && v2.getOutbox ? v2.getOutbox() : [];
-          if (!remain || !remain.length) break;
-          cellFlush = await flushScheduleV2Outbox();
-          if (!cellFlush || !cellFlush.ok) break;
-          drain += 1;
-        }
-        cellsOk = !!(cellFlush && cellFlush.ok !== false);
-        var fromIso = dayIsoForScheduleWeekDay(wi, 0);
-        var toIso = dayIsoForScheduleWeekDay(wi, 6);
-        if (cellsOk && v2hr && cidHr && fromIso && toIso) {
-          var verify = await v2hr.fetchCellsRange(sb, cidHr, fromIso, toIso);
-          if (verify && verify.ok === false) {
-            cellsOk = false;
-          } else {
-            var timed = 0;
-            ((verify && verify.rows) || []).forEach(function (row) {
-              if (!row || row.deleted) return;
-              if (String(row.restaurant_id) !== String(rid)) return;
-              if (row.start_hhmm && row.end_hhmm) timed += 1;
-            });
-            /*
-             * Local draft has timed shifts — cloud must too, or peers paint all day-offs.
-             */
-            var localTimed = 0;
-            var roles = ['Bartender', 'Kitchen', 'Server'];
-            roles.forEach(function (role) {
-              var n = slotCountForRole(role, wi, rid);
-              for (var tr = 0; tr < n; tr += 1) {
-                for (var di = 0; di < 7; di += 1) {
-                  var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
-                  var slot = draftTimeSlotFor(role, wk, tr, wi, rid);
-                  if (slot && slot.start && slot.end) localTimed += 1;
-                }
-              }
-            });
-            if (localTimed > 0 && timed === 0) {
-              cellsOk = false;
-            }
-            /*
-             * Do NOT re-project cells onto local after hard revert — that reshuffled
-             * tiles/names away from the revision we just restored. Peers poll cells.
-             */
-            armScheduleLocalAuthority(25000);
-            scheduleLastAppliedFingerprint = '';
-          }
-        }
-      }
-    } finally {
-      teamStateForcePushActive = false;
-    }
-    try {
-      await insertScheduleRevisionRow({
-        source: 'hard_revert',
-        assignments: loadScheduleAssignmentsStore(),
-        draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
-        published: schedulePublishedPayload(),
-        label:
-          formatScheduleRevisionWhen(new Date()) +
-          ' · ' +
-          (gmT('schedule.historySourceHardRevert') || 'Hard revert') +
-          ' · ' +
-          range,
-        dedupe: false,
-      });
-    } catch (_hrIns) {
-      console.warn('gm-callout: hard_revert snapshot', _hrIns);
-    }
-    rebuildSchedule({
+    armScheduleLocalAuthority(30000);
+    scheduleLastAppliedFingerprint = '';
+    scheduleLastPaintFingerprint = '';
+
+    /* Paint immediately — cloud sync continues in the background. */
+    paintVisibleScheduleWeekFast({
       weekIndex: wi,
-      preserveOtherWeeks: true,
+      forcePaint: true,
+      fast: true,
     });
-    renderCalendar({ force: true });
-    if (scheduleBody) renderSchedule();
+    scheduleDeferredScheduleChrome(wi);
     closeScheduleHistoryModal();
-    if (!pushOk && !cellsOk) {
-      showScheduleNotice(
-        gmT('schedule.hardRevertCloudFailed') ||
-          'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
-        false
-      );
-      return;
-    }
-    if (!cellsOk) {
-      showScheduleNotice(
-        gmT('schedule.hardRevertCellsLag') ||
-          'Schedule restored here, but cloud cells may be incomplete — click Refresh on other computers after a moment, or Save to cloud again.',
-        false
-      );
-      return;
-    }
     showScheduleNotice(
       gmT('schedule.hardRevertDoneScoped', { range: range }) ||
         'Restored this store’s schedule for ' + range + ' from history.',
       true
     );
+
+    teamStateForcePushIgnoreVersion = true;
+    teamStateForcePushActive = true;
+    teamStateForcePushIgnoreVersionSticky = true;
+
+    void (async function hardRevertCloudSyncInBackground() {
+      try {
+        await flushTeamStateSyncNow();
+        if (!scheduleSyncV2Enabled()) return;
+        var v2hr = gmScheduleV2();
+        var cidHr = gmCalloutCompanyId();
+        if (v2hr && cidHr && typeof v2hr.fetchSlots === 'function') {
+          await v2hr.fetchSlots(sb, cidHr);
+        }
+        /* One enqueue wave: align slots + write week cells, then drain. */
+        enqueueHardRevertSlotAlignmentOps(rid, wi);
+        enqueueScheduleV2OpsFromLocalStores({ restaurantId: rid, weekIndex: wi });
+        var cellFlush = await drainScheduleV2OutboxBounded(16);
+        if (!cellFlush || cellFlush.ok === false) {
+          showScheduleNotice(
+            gmT('schedule.hardRevertCellsLag') ||
+              'Schedule restored here, but cloud sync is still catching up — keep this tab open a moment.',
+            false
+          );
+        }
+        void insertScheduleRevisionRow({
+          source: 'hard_revert',
+          assignments: loadScheduleAssignmentsStore(),
+          draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
+          published: schedulePublishedPayload(),
+          label:
+            formatScheduleRevisionWhen(new Date()) +
+            ' · ' +
+            (gmT('schedule.historySourceHardRevert') || 'Hard revert') +
+            ' · ' +
+            range,
+          dedupe: false,
+        }).catch(function (_hrIns) {
+          console.warn('gm-callout: hard_revert snapshot', _hrIns);
+        });
+      } catch (syncErr) {
+        console.warn('gm-callout: hard revert cloud sync', syncErr);
+        showScheduleNotice(
+          gmT('schedule.hardRevertCloudFailed') ||
+            'Restored on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
+          false
+        );
+      } finally {
+        teamStateForcePushActive = false;
+      }
+    })();
   }
 
   async function saveScheduleManualSavePoint() {
