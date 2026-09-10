@@ -223,6 +223,8 @@
 
   const DRAFT_SCHEDULE_STORAGE_KEY = 'gm-callout-draft-schedule-v1';
   const DRAFT_SCHEDULE_BY_WEEK_KEY = 'gm-callout-draft-schedule-by-week-v1';
+  /** Monday ISO for the schedule week the user last viewed (survive refresh). */
+  const SCHEDULE_SELECTED_WEEK_MONDAY_KEY = 'gm-callout-schedule-selected-week-monday-v1';
   /** Per-week custom schedule row order (mondayIso → restaurant → role → trIdx[]). Synced via draft_schedule. */
   const SLOT_ORDER_BY_WEEK_KEY = 'gm-callout-slot-order-by-week-v1';
   const GROUP_ORDER_POTENTIAL_KEY = 'gm-callout-group-order-potential-v1';
@@ -4240,6 +4242,53 @@
   const ALL_WEEK_DAYS = WEEK_META.map(function (m) {
     return m.label;
   });
+
+  function readPersistedScheduleWeekMondayIso() {
+    try {
+      var s = sessionStorage.getItem(SCHEDULE_SELECTED_WEEK_MONDAY_KEY);
+      if (s && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    } catch (_s) {
+      /* ignore */
+    }
+    try {
+      var l = localStorage.getItem(SCHEDULE_SELECTED_WEEK_MONDAY_KEY);
+      if (l && /^\d{4}-\d{2}-\d{2}$/.test(l)) return l;
+    } catch (_l) {
+      /* ignore */
+    }
+    return '';
+  }
+
+  function persistSelectedScheduleWeekMonday(weekIndex) {
+    var wi =
+      weekIndex != null && !isNaN(Number(weekIndex))
+        ? Number(weekIndex)
+        : scheduleCalendarWeekIndex;
+    var mon = mondayIsoForScheduleWeekIndex(wi);
+    if (!mon) return;
+    try {
+      sessionStorage.setItem(SCHEDULE_SELECTED_WEEK_MONDAY_KEY, mon);
+    } catch (_ss) {
+      /* ignore */
+    }
+    try {
+      localStorage.setItem(SCHEDULE_SELECTED_WEEK_MONDAY_KEY, mon);
+    } catch (_ls) {
+      /* ignore */
+    }
+  }
+
+  function restoreSelectedScheduleWeekIndex() {
+    var mon = readPersistedScheduleWeekMondayIso();
+    if (!mon) return SCHEDULE_TEMPLATE_WEEK_INDEX;
+    for (var w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+      if (mondayIsoForScheduleWeekIndex(w) === mon) return w;
+    }
+    return SCHEDULE_TEMPLATE_WEEK_INDEX;
+  }
+
+  /* Restore last viewed week before any Schedule paint (refresh must not jump to current). */
+  scheduleCalendarWeekIndex = restoreSelectedScheduleWeekIndex();
 
   function getVisibleWeekDays() {
     const start = scheduleCalendarWeekIndex * 7;
@@ -16215,6 +16264,7 @@
     if (isNaN(w) || w < 0 || w >= SCHEDULE_VIEW_WEEK_COUNT) return;
     if (w !== scheduleCalendarWeekIndex) clearScheduleUndoStack();
     scheduleCalendarWeekIndex = w;
+    persistSelectedScheduleWeekMonday(w);
     /* Invalidate in-flight week polls so a slower prior week cannot apply late. */
     scheduleCellsPollGeneration += 1;
     updateScheduleWeekNav();
@@ -30896,6 +30946,21 @@
     syncAdminManagerHomeNav();
     bindScheduleReviewUiOnce();
     updateScheduleReviewToolbarUi();
+    /* Keep the week the user had selected across refresh. */
+    try {
+      var restoredWi = restoreSelectedScheduleWeekIndex();
+      if (
+        restoredWi !== scheduleCalendarWeekIndex &&
+        restoredWi >= 0 &&
+        restoredWi < SCHEDULE_VIEW_WEEK_COUNT
+      ) {
+        scheduleCalendarWeekIndex = restoredWi;
+      }
+      persistSelectedScheduleWeekMonday(scheduleCalendarWeekIndex);
+      updateScheduleWeekNav();
+    } catch (_rw) {
+      /* ignore */
+    }
     var fohRestored = restoreFohTemplateWeekBreaks(
       SCHEDULE_TEMPLATE_WEEK_INDEX,
       currentRestaurantId
@@ -31051,7 +31116,10 @@
     } catch (_bakHint) {
       hadAuthBackup = false;
     }
-    /* Login is already open from index.html. Restore session; never leave gate stuck closed. */
+    /*
+     * Login gate stays closed when a stored session was detected in index.html.
+     * Restore quietly; only open login if restore truly fails.
+     */
     if (GM_SUPABASE_DATA) {
       try {
         var restored = await gmCalloutWithTimeout(
@@ -31074,6 +31142,12 @@
             void window.gmCalloutPromptRecoveryEmailIfNeeded();
           }
         } else if (!gmCalloutIsTimeclockKiosk()) {
+          document.documentElement.classList.remove(
+            'authed',
+            'manager-app',
+            'employee-app',
+            'timeclock-app'
+          );
           gmCalloutSetLoginGateOpen(true);
           if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
             window.gmCalloutEnsureLoginPanelVisible();
@@ -31085,9 +31159,21 @@
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
         if (!gmCalloutIsTimeclockKiosk()) {
-          gmCalloutSetLoginGateOpen(true);
-          if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-            window.gmCalloutEnsureLoginPanelVisible();
+          if (hadStoredSessionHint || hadAuthBackup) {
+            /* Keep provisional shell; retry quietly — do not flash login on a blip. */
+            gmCalloutKeepAuthedShellPainted();
+            gmCalloutStartSessionKeepAlive();
+          } else {
+            document.documentElement.classList.remove(
+              'authed',
+              'manager-app',
+              'employee-app',
+              'timeclock-app'
+            );
+            gmCalloutSetLoginGateOpen(true);
+            if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+              window.gmCalloutEnsureLoginPanelVisible();
+            }
           }
         }
       }
