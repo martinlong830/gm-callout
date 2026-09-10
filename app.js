@@ -6165,6 +6165,27 @@
       var fetchRows = (cellsRes && cellsRes.rows) || [];
       var cloudTimedVisible = countTimedCellsInFetchRows(fetchRows, null, fromIso, toIso);
       markScheduleVisibleWeekFetch(targetWi, cloudTimedVisible);
+      /*
+       * Dense fetch + empty local: always load slots before project. Skipping slots
+       * left trIdxForSlotKey null → empty patch → DAY-OFF shell forever.
+       */
+      if (
+        cloudTimedVisible >= 4 &&
+        !localWeekHasAuthoritativeTimedDraft(targetWi) &&
+        slotsRes &&
+        slotsRes.skipped &&
+        !opts._slotRetry
+      ) {
+        var slotsForced = await v2.fetchSlots(window.gmSupabase, cid);
+        if (gen !== scheduleCellsPollGeneration) return false;
+        if (slotsForced && slotsForced.ok === false) return false;
+        slotsRes = slotsForced || { ok: true };
+        try {
+          trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi }) || trimmed;
+        } catch (_trim0) {
+          /* ignore */
+        }
+      }
       var wantTrusted =
         !!opts.replaceTrusted ||
         !!opts.forceDayOffReplace ||
@@ -6190,10 +6211,39 @@
         if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
           trimmed = true;
         }
+        if (clearPhantomRowOwnersForEmptySlots(targetWi, currentRestaurantId)) {
+          trimmed = true;
+        }
       } catch (_trim2) {
         /* ignore */
       }
-      if ((applied || trimmed) && currentScreen === 1) {
+      /*
+       * One recovery pass: dense cloud still not in local draft → refetch slots and
+       * trusted-replace (projection often failed on a cold/stale slot map).
+       */
+      if (
+        cloudTimedVisible >= 4 &&
+        countLocalTimedDraftWeek(targetWi) < 4 &&
+        !opts._slotRetry
+      ) {
+        try {
+          await v2.fetchSlots(window.gmSupabase, cid);
+        } catch (_sr) {
+          /* ignore */
+        }
+        if (gen !== scheduleCellsPollGeneration) return false;
+        return pollVisibleScheduleCellsFromCloud(
+          Object.assign({}, opts, {
+            force: true,
+            forceSlots: true,
+            replaceTrusted: true,
+            replaceWeekIndex: targetWi,
+            forceDayOffReplace: false,
+            _slotRetry: true,
+          })
+        );
+      }
+      if ((applied || trimmed || countLocalTimedDraftWeek(targetWi) >= 4) && currentScreen === 1) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
@@ -6208,7 +6258,7 @@
         if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
         scheduleDeferredScheduleChrome(targetWi);
       }
-      return !!(applied || trimmed);
+      return !!(applied || trimmed || countLocalTimedDraftWeek(targetWi) >= 4);
     } catch (_poll) {
       return false;
     } finally {
@@ -6470,6 +6520,66 @@
         if (layerChanged) {
           saveDraftScheduleRowsForWeek(wi, layers, rid);
           changed = true;
+        }
+      }
+    });
+    if (changed) {
+      saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
+    }
+    return changed;
+  }
+
+  /**
+   * Drop sticky rowOwner / ghost worker stubs on slots that have no timed draft this
+   * week — stops Irineo (etc.) from labeling an empty trailing BOH/FOH row.
+   */
+  function clearPhantomRowOwnersForEmptySlots(weekIndex, restaurantId) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return false;
+    var rid = restaurantId || currentRestaurantId;
+    if (!rid) return false;
+    var store = loadScheduleAssignmentsStore();
+    if (!store[rid]) return false;
+    var rs = store[rid];
+    var weekStart = wi * 7;
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    var changed = false;
+    roles.forEach(function (role) {
+      var roleIdx = roleIdxForDraftRole(role);
+      if (roleIdx < 0) return;
+      var n = slotCountForRole(role, wi, rid);
+      for (var trIdx = 0; trIdx < n; trIdx += 1) {
+        var hasTimed = false;
+        var hasStaffed = false;
+        for (var di = 0; di < 7; di += 1) {
+          var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
+          var tr = draftTimeSlotFor(role, wk, trIdx, wi, rid);
+          if (tr && tr.start && tr.end) hasTimed = true;
+          var entry = normalizeScheduleAssignment(
+            rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx]
+          );
+          if (scheduleAssignmentHasStaffedWorkers(entry) && entry.timeLabel) {
+            hasStaffed = true;
+          }
+        }
+        if (hasTimed || hasStaffed) continue;
+        for (var d2 = 0; d2 < 7; d2 += 1) {
+          var sid = 'shift-' + (weekStart + d2) + '-' + roleIdx + '-' + trIdx;
+          if (rs[sid] == null) continue;
+          var cur = cloneScheduleAssignment(rs[sid]);
+          var dirty = false;
+          if (cur.rowOwner && cur.rowOwner !== 'Unassigned') {
+            delete cur.rowOwner;
+            dirty = true;
+          }
+          if (scheduleAssignmentHasStaffedWorkers(cur) && !cur.timeLabel) {
+            cur.workers = ['Unassigned'];
+            dirty = true;
+          }
+          if (dirty) {
+            rs[sid] = cur;
+            changed = true;
+          }
         }
       }
     });
@@ -6815,8 +6925,22 @@
    */
   function cloudWeekReplaceIsSafe(weekIndex, patch, opts) {
     opts = opts || {};
-    if (opts.allowEmptyReplace || opts.forceDayOffReplace) return true;
     var cloudTimed = countTimedCellsInPatchWeek(patch, weekIndex);
+    var fetchTimed = Number(opts.fetchTimedCount);
+    var fetchDense = Number.isFinite(fetchTimed) && fetchTimed >= 4;
+    /*
+     * Never wipe local draft to DAY-OFF when the network fetch was dense but
+     * projection mapped zero/sparse timed cells (cold slot map / unmapped keys).
+     * forceDayOffReplace used to bypass this and cement all-null shells on Refresh.
+     */
+    if (fetchDense && cloudTimed < Math.max(4, Math.floor(fetchTimed * 0.5))) {
+      return false;
+    }
+    if (opts.allowEmptyReplace || opts.forceDayOffReplace) {
+      /* Confirmed-empty cloud only — never empty-replace after a dense fetch. */
+      if (fetchDense) return false;
+      return true;
+    }
     var localTimed = countLocalTimedDraftWeek(weekIndex);
     /*
      * Trusted replace must be dense enough to be the shared week — a single timed
@@ -6824,12 +6948,11 @@
      * never rebuild the draft.
      */
     if (opts.replaceTrusted) {
-      if (cloudTimed <= 0) return localTimed <= 0;
-      /*
-       * Projection must cover most of the fetched timed rows — otherwise replace
-       * rewrites the draft to nulls (DAY-OFF shell) before soft upsert refills.
-       */
-      var fetchTimed = Number(opts.fetchTimedCount);
+      if (cloudTimed <= 0) {
+        /* Empty projection is only safe when fetch also confirmed empty. */
+        if (Number.isFinite(fetchTimed) && fetchTimed > 0) return false;
+        return localTimed <= 0;
+      }
       if (Number.isFinite(fetchTimed) && fetchTimed > 0) {
         if (cloudTimed < Math.max(4, Math.floor(fetchTimed * 0.5))) return false;
       }
@@ -7408,6 +7531,7 @@
       }
       try {
         reconcileLocalScheduleToActiveSlots({ weekIndex: wi });
+        clearPhantomRowOwnersForEmptySlots(wi, currentRestaurantId);
       } catch (_hydTrim2) {
         /* ignore */
       }
@@ -8335,12 +8459,20 @@
           upsertTimedOnly: true,
         });
       }
+      reconcileLocalScheduleToActiveSlots({ weekIndex: weekIndex });
+      clearPhantomRowOwnersForEmptySlots(weekIndex, currentRestaurantId);
     } catch (_rep) {
       console.warn('gm-callout: trusted week replace before paint', _rep);
     }
     scheduleUiAwaitingInitialCloudHydrate = false;
+    var localTimed = countLocalTimedDraftWeek(weekIndex);
+    /* Dense cloud but still no local times — hold blank; do not cement DAY-OFF. */
+    if (cloudTimed >= 4 && localTimed < 4) {
+      if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
+      return false;
+    }
     /* Mark ready before paint so nested renderCalendarInto cannot hold/clear. */
-    if (localWeekHasTimedDraft(weekIndex) || cloudTimed <= 0) {
+    if (localTimed > 0 || cloudTimed <= 0) {
       markScheduleAuthoritativePaintReady();
     }
     paintVisibleScheduleWeekFast({
@@ -8370,8 +8502,13 @@
             fetchTimedCount: cloudTimed,
           });
         }
+        clearPhantomRowOwnersForEmptySlots(weekIndex, currentRestaurantId);
       } catch (_rep2) {
         /* ignore */
+      }
+      if (countLocalTimedDraftWeek(weekIndex) < 4) {
+        if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
+        return false;
       }
       paintVisibleScheduleWeekFast({
         weekIndex: weekIndex,
@@ -9757,13 +9894,15 @@
         forceSlots: true,
         replaceTrusted: true,
         replaceWeekIndex: scheduleCalendarWeekIndex,
-        forceDayOffReplace: !localWeekHasAuthoritativeTimedDraft(scheduleCalendarWeekIndex),
+        /* Never force empty wipe — that cemented all-DAY-OFF when projection failed. */
+        forceDayOffReplace: false,
       });
     } catch (_refPoll) {
       /* ignore */
     }
     try {
       reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex });
+      clearPhantomRowOwnersForEmptySlots(scheduleCalendarWeekIndex, currentRestaurantId);
     } catch (_refTrim) {
       /* ignore */
     }
@@ -16012,26 +16151,41 @@
       /*
        * Always write explicit Unassigned. Leaving the person on a day-off cell meant
        * cloud/DEFAULT time restores brought Mark (etc.) back on Sat/Sun.
-       * Direct Unassigned also blocks template-week pattern re-staffing for this week.
-       * Keep rowOwner so the Person column still shows Eugene (etc.) when the whole
-       * row is day-off — otherwise the last × makes them "disappear to Unassigned".
+       * Do NOT pull sticky/other-week names onto empty day-off cells — that put
+       * Irineo on trailing BOH rows nobody staffed this week.
        */
       var offEntry =
         rs[shiftId] != null
           ? cloneScheduleAssignment(rs[shiftId])
           : { workers: ['Unassigned'] };
+      var weekStaffedSameRow = false;
+      for (var od = 0; od < 7; od += 1) {
+        if (od === dayInWeekN) continue;
+        var otherId = 'shift-' + (weekStart + od) + '-' + roleIdx + '-' + trIdx;
+        if (scheduleAssignmentHasStaffedWorkers(rs[otherId])) {
+          weekStaffedSameRow = true;
+          break;
+        }
+      }
       var prevPerson =
         scheduleAssignmentPrimaryWorker(offEntry) ||
-        (offEntry.rowOwner && offEntry.rowOwner !== 'Unassigned' ? offEntry.rowOwner : null) ||
-        scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays());
+        (offEntry.rowOwner && offEntry.rowOwner !== 'Unassigned' ? offEntry.rowOwner : null);
+      if (!prevPerson || prevPerson === 'Unassigned') {
+        prevPerson = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays(), null, {
+          allowOtherWeeks: false,
+          allowStickyOwner: false,
+        });
+      }
       offEntry.workers = ['Unassigned'];
       delete offEntry.break;
       delete offEntry.timeLabel;
       delete offEntry.hours;
       delete offEntry.breakPaid;
-      if (prevPerson && prevPerson !== 'Unassigned') {
+      if (weekStaffedSameRow && prevPerson && prevPerson !== 'Unassigned') {
         offEntry.rowOwner =
           canonicalScheduleWorkerName(prevPerson, rid) || String(prevPerson).trim();
+      } else {
+        delete offEntry.rowOwner;
       }
       rs[shiftId] = offEntry;
     } else {
@@ -16041,7 +16195,10 @@
           ? cloneScheduleAssignment(rs[shiftId])
           : { workers: ['Unassigned'] };
       if (!scheduleAssignmentHasStaffedWorkers(entry)) {
-        var rowPerson = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays());
+        var rowPerson = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays(), null, {
+          allowOtherWeeks: false,
+          allowStickyOwner: true,
+        });
         entry.workers =
           rowPerson && rowPerson !== 'Unassigned' ? [rowPerson] : ['Unassigned'];
       } else {
@@ -22175,7 +22332,8 @@
     }
   }
 
-  /** Read staffed workers from a pending assignment stub (empty draft day / Unassigned shift). */
+  /** Read staffed workers from a pending assignment stub (empty draft day / Unassigned shift).
+   *  Ignore day-off / no-time stubs — those ghost workers labeled empty BOH rows (Irineo). */
   function scheduleRowStubWorkers(rs, roleIdx, trIdx, dayStr, dayInWeek, shiftId) {
     if (!rs || roleIdx < 0) return [];
     var entry = null;
@@ -22191,6 +22349,7 @@
         rs['shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx]
       );
     }
+    if (!entry || !entry.timeLabel) return [];
     return (entry.workers || []).filter(function (n) {
       return n && n !== 'Unassigned';
     });
@@ -22255,10 +22414,12 @@
   /** Dominant assigned person across staffed days in a calendar row (visible week).
    *  Also reads pending assignment stubs for days with no draft times yet (new empty slots),
    *  and for SCHEDULE rows still Unassigned when the store already has a person.
-   *  opts.allowOtherWeeks — default true for live calendar; false in template editor. */
+   *  opts.allowOtherWeeks — default false (opt-in); other weeks reinfected trailing BOH names.
+   *  opts.allowStickyOwner — default false for calendar; sticky day-off owners showed Irineo. */
   function scheduleRowPrimaryPerson(role, trIdx, visibleDays, shiftByKeyOpt, opts) {
     opts = opts || {};
-    var allowOtherWeeks = opts.allowOtherWeeks !== false;
+    var allowOtherWeeks = opts.allowOtherWeeks === true;
+    var allowStickyOwner = opts.allowStickyOwner === true;
     var counts = Object.create(null);
     var order = [];
     var roleIdx = roleIdxForDraftRole(role);
@@ -22309,8 +22470,10 @@
       }
     });
     if (bestCount > 0) return best;
-    var sticky = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays);
-    if (sticky) return sticky;
+    if (allowStickyOwner) {
+      var sticky = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays);
+      if (sticky) return sticky;
+    }
     if (allowOtherWeeks) {
       var fromOther = scheduleRowPersonFromOtherWeeks(role, trIdx);
       if (fromOther) return fromOther;
@@ -23343,9 +23506,9 @@
         managedWorkerKeysForAbbrev = Object.create(null);
       }
     }
-    /* Never borrow Person labels from other weeks — that put Irineo (etc.) on
-       trailing FOH day-off rows until cloud/slots caught up. */
-    var rowPersonOpts = { allowOtherWeeks: false };
+    /* Never borrow Person labels from other weeks / sticky day-off owners —
+       that put Irineo (etc.) on trailing empty BOH/FOH rows. */
+    var rowPersonOpts = { allowOtherWeeks: false, allowStickyOwner: false };
 
     SCHEDULE_GRID_ROLE_ORDER.forEach(function (roleKey) {
       var rd = ROLE_DEFS.find(function (r) {

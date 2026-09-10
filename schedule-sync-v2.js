@@ -637,18 +637,22 @@
     var bySort = {};
     (rows || []).forEach(function (row) {
       if (!row || row.active === false) return;
-      var pk = [row.restaurant_id, row.role, row.slot_key].join('\0');
+      var rid = String(row.restaurant_id || '');
+      var role = String(row.role || '');
+      var slotKey = String(row.slot_key || '');
+      if (!rid || !role || !slotKey) return;
+      var pk = [rid, role, slotKey].join('\0');
       nextSlots[pk] = {
-        restaurant_id: row.restaurant_id,
-        role: row.role,
-        slot_key: row.slot_key,
+        restaurant_id: rid,
+        role: role,
+        slot_key: slotKey,
         sort_order: Number(row.sort_order) || 0,
         label: row.label || null,
         active: true,
       };
-      var mk = slotMapKey(row.restaurant_id, row.role, row.sort_order);
+      var mk = slotMapKey(rid, role, row.sort_order);
       if (!bySort[mk]) bySort[mk] = [];
-      bySort[mk].push(String(row.slot_key));
+      bySort[mk].push(slotKey);
     });
     if (!Object.keys(nextSlots).length) return;
     Object.keys(bySort).forEach(function (mk) {
@@ -808,21 +812,30 @@
 
   /** Reverse map: restaurant|role|slot_key → trIdx (from ensureSlotKey map + slot sort_order). */
   function trIdxForSlotKey(restaurantId, role, slotKey) {
+    var rid = String(restaurantId || '');
+    var roleS = String(role || '');
+    var key = String(slotKey || '');
+    if (!rid || !roleS || !key) return null;
     var slots = getSlotCache();
-    var spk = [restaurantId, role, slotKey].join('\0');
-    if (slots[spk] && slots[spk].active === false) return null;
+    var spk = [rid, roleS, key].join('\0');
+    /* Also try raw ids in case cache was keyed without String(). */
+    var spkAlt = [restaurantId, role, slotKey].join('\0');
+    if ((slots[spk] && slots[spk].active === false) || (slots[spkAlt] && slots[spkAlt].active === false)) {
+      return null;
+    }
     var map = getSlotMap();
     var found = null;
     Object.keys(map).forEach(function (k) {
-      if (map[k] !== slotKey) return;
+      if (String(map[k]) !== key) return;
       var parts = String(k).split('|');
       if (parts.length < 3) return;
-      if (parts[0] !== restaurantId || parts[1] !== role) return;
+      if (String(parts[0]) !== rid || String(parts[1]) !== roleS) return;
       var n = Number(parts[2]);
       if (!isNaN(n)) found = n;
     });
     if (found != null) return found;
-    if (slots[spk] && slots[spk].sort_order != null) return Number(slots[spk].sort_order) || 0;
+    var slotRow = slots[spk] || slots[spkAlt];
+    if (slotRow && slotRow.sort_order != null) return Number(slotRow.sort_order) || 0;
     return null;
   }
 
@@ -839,16 +852,21 @@
     Object.keys(cache).forEach(function (ck) {
       var cell = cache[ck];
       if (!cell || cell.deleted) return;
-      var spk = [cell.restaurant_id, cell.role, cell.slot_key].join('\0');
-      if (slots[spk] && slots[spk].active === false) return;
+      var rid = String(cell.restaurant_id || '');
+      var role = String(cell.role || '');
+      var slotKey = String(cell.slot_key || '');
+      var spk = [rid, role, slotKey].join('\0');
+      var spkAlt = [cell.restaurant_id, cell.role, cell.slot_key].join('\0');
+      if ((slots[spk] && slots[spk].active === false) || (slots[spkAlt] && slots[spkAlt].active === false)) {
+        return;
+      }
       var dayIso = String(cell.day_iso || '').slice(0, 10);
       var gdi = isoToGlobalDayIdx && isoToGlobalDayIdx[dayIso];
       if (gdi == null || gdi < 0) return;
-      var roleIdx = roleToIdx && roleToIdx[cell.role];
+      var roleIdx = roleToIdx && (roleToIdx[role] != null ? roleToIdx[role] : roleToIdx[cell.role]);
       if (roleIdx == null || roleIdx < 0) return;
-      var trIdx = trIdxForSlotKey(cell.restaurant_id, cell.role, cell.slot_key);
+      var trIdx = trIdxForSlotKey(rid, role, slotKey);
       if (trIdx == null || isNaN(trIdx) || trIdx < 0) return;
-      var rid = cell.restaurant_id;
       if (!patch[rid]) patch[rid] = {};
       var shiftId = 'shift-' + gdi + '-' + roleIdx + '-' + trIdx;
       var remoteRev = Number(cell.rev) || 0;
