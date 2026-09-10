@@ -9634,12 +9634,14 @@
     }
     if (currentScreen === 1 || opts.forceRender) {
       updateScheduleWeekNav();
+      var emptyOk = scheduleCloudConfirmedWeekEmpty(scheduleCalendarWeekIndex);
       paintVisibleScheduleWeekFast({
         weekIndex: scheduleCalendarWeekIndex,
         forcePaint: true,
         fast: true,
         forceInitial: true,
-        allowEmptyPaint: true,
+        allowEmptyPaint: emptyOk,
+        confirmedEmpty: emptyOk,
       });
       scheduleDeferredScheduleChrome(scheduleCalendarWeekIndex);
     }
