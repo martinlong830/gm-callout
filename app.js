@@ -6091,7 +6091,7 @@
       }).catch(function () {
         return false;
       });
-    }, 180);
+    }, 320);
   }
 
   function stopScheduleCellsPoll() {
@@ -7774,49 +7774,89 @@
   var schedulePaintCoalesceTimer = null;
   var schedulePaintCoalesceOpts = null;
   var scheduleLastPaintFingerprint = '';
+  var schedulePersonOptionsCache = Object.create(null);
+  var scheduleBelowPanelsTimer = null;
 
+  /** Cheap fingerprint — never scan every cell (that made scroll lag). */
   function scheduleVisibleWeekPaintFingerprint(weekIndex) {
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
     var rid = currentRestaurantId || '';
-    var parts = [String(wi), String(rid)];
+    var draftLen = 0;
+    var assignLen = 0;
     try {
-      var roles = ['Bartender', 'Kitchen', 'Server'];
-      roles.forEach(function (role) {
-        var n = slotCountForRole(role, wi, rid);
-        parts.push(role + ':' + n);
-        for (var tr = 0; tr < n; tr += 1) {
-          for (var di = 0; di < 7; di += 1) {
-            var wk = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][di];
-            var slot = draftTimeSlotFor(role, wk, tr, wi, rid);
-            var shiftId =
-              'shift-' +
-              (wi * 7 + di) +
-              '-' +
-              roleIdxForDraftRole(role) +
-              '-' +
-              tr;
-            var store = getCurrentRestaurantAssignments();
-            var entry = store && store[shiftId];
-            var name =
-              (entry && entry.rowOwner) ||
-              (entry && entry.workers && entry.workers[0]) ||
-              '';
-            parts.push(
-              [
-                tr,
-                di,
-                slot && slot.start ? slot.start : '',
-                slot && slot.end ? slot.end : '',
-                name,
-              ].join('~')
-            );
-          }
-        }
-      });
-    } catch (_fp) {
-      /* ignore */
+      var draft = draftScheduleByWeekStore[String(wi)];
+      draftLen = draft ? JSON.stringify(draft).length : 0;
+    } catch (_d) {
+      draftLen = 0;
     }
-    return parts.join('|');
+    try {
+      var store = loadScheduleAssignmentsStore();
+      var rs = store && store[rid] ? store[rid] : null;
+      assignLen = rs ? Object.keys(rs).length : 0;
+    } catch (_a) {
+      assignLen = 0;
+    }
+    return [wi, rid, draftLen, assignLen].join('|');
+  }
+
+  function invalidateSchedulePersonOptionsCache() {
+    schedulePersonOptionsCache = Object.create(null);
+  }
+
+  function cachedPersonSelectOptionsHtml(role, selected) {
+    var rid = currentRestaurantId || '';
+    var cacheKey = rid + '\0' + role;
+    var base = schedulePersonOptionsCache[cacheKey];
+    if (!base) {
+      var pool = namesForScheduleRowPersonPicker(role, rid);
+      var borrow = employeesForScheduleBorrowPicker(role).length > 0;
+      base =
+        '<option value="Unassigned">' +
+        escapeHtml(gmDisplayUnassigned()) +
+        '</option>' +
+        pool
+          .map(function (n) {
+            return (
+              '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'
+            );
+          })
+          .join('') +
+        (borrow
+          ? '<option value="' +
+            SCHEDULE_BORROW_PERSON_VALUE +
+            '">' +
+            escapeHtml(gmT('schedule.borrowEmployee')) +
+            '</option>'
+          : '');
+      schedulePersonOptionsCache[cacheKey] = base;
+    }
+    if (!selected || selected === 'Unassigned') {
+      return base.replace(
+        'value="Unassigned"',
+        'value="Unassigned" selected'
+      );
+    }
+    var esc = escapeHtml(selected);
+    var withSel = base.replace(
+      'value="' + esc + '"',
+      'value="' + esc + '" selected'
+    );
+    if (withSel === base) {
+      return (
+        '<option value="Unassigned">' +
+        escapeHtml(gmDisplayUnassigned()) +
+        '</option><option value="' +
+        esc +
+        '" selected>' +
+        esc +
+        '</option>' +
+        base.replace(
+          '<option value="Unassigned">' + escapeHtml(gmDisplayUnassigned()) + '</option>',
+          ''
+        )
+      );
+    }
+    return withSel;
   }
 
   function paintVisibleScheduleWeekFast(opts) {
@@ -7826,27 +7866,67 @@
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
         ? Number(opts.weekIndex)
         : scheduleCalendarWeekIndex;
-    if (!opts.forcePaint) {
+    var fast = !!opts.fast;
+    if (!opts.forcePaint && !fast) {
       var fp = scheduleVisibleWeekPaintFingerprint(wi);
       if (fp && fp === scheduleLastPaintFingerprint && SCHEDULE && SCHEDULE.length) {
         return;
       }
       scheduleLastPaintFingerprint = fp;
+    } else {
+      scheduleLastPaintFingerprint = scheduleVisibleWeekPaintFingerprint(wi);
     }
     try {
       if (typeof rebuildSchedule === 'function') {
         rebuildSchedule({
           weekIndex: wi,
-          preserveOtherWeeks: true,
-          skipRebind: !!opts.skipRebind,
+          /*
+           * Never accumulate every visited week in SCHEDULE — that made each scroll
+           * slower. Visible week only.
+           */
+          preserveOtherWeeks: false,
+          skipRebind: fast ? true : !!opts.skipRebind,
         });
       }
       if (opts.render === false) return;
-      if (typeof renderCalendar === 'function') renderCalendar({ force: true });
-      if (scheduleBody && typeof renderSchedule === 'function') renderSchedule();
+      if (typeof renderCalendar === 'function') {
+        renderCalendar({
+          force: true,
+          fast: fast,
+        });
+      }
+      if (!fast && scheduleBody && typeof renderSchedule === 'function') {
+        renderSchedule();
+      }
     } catch (_paint) {
       /* ignore */
     }
+  }
+
+  function scheduleDeferredScheduleChrome(weekIndex) {
+    var w = Number(weekIndex);
+    if (scheduleBelowPanelsTimer) {
+      clearTimeout(scheduleBelowPanelsTimer);
+      scheduleBelowPanelsTimer = null;
+    }
+    scheduleBelowPanelsTimer = setTimeout(function () {
+      scheduleBelowPanelsTimer = null;
+      if (currentScreen !== 1 || scheduleCalendarWeekIndex !== w) return;
+      try {
+        var readOnly =
+          document.documentElement.classList.contains('manager-app') &&
+          !managerCanEditCurrentRestaurant();
+        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
+        if (scheduleBody) renderSchedule();
+        updateSchedulePublishNotifyButton();
+        updateScheduleDownloadWeekButton();
+        requestAnimationFrame(function () {
+          syncSchedulePanelColumnAlignment();
+        });
+      } catch (_chrome) {
+        /* ignore */
+      }
+    }, 60);
   }
 
   /** Collapse bursty cloud applies into one paint (stops load → day-off → reload flicker). */
@@ -7859,7 +7939,7 @@
       schedulePaintCoalesceOpts = null;
       if (currentScreen !== 1) return;
       paintVisibleScheduleWeekFast(o);
-    }, 40);
+    }, 48);
   }
 
   function releaseScheduleCloudHydrateGate() {
@@ -16139,8 +16219,13 @@
     scheduleCellsPollGeneration += 1;
     updateScheduleWeekNav();
     updateEmpScheduleWeekNav();
-    /* Instant local paint — never wait on cloud for week scrolling. */
-    paintVisibleScheduleWeekFast({ weekIndex: w, forcePaint: true });
+    /* Instant local paint — visible week only, skip labor/panels until idle. */
+    paintVisibleScheduleWeekFast({
+      weekIndex: w,
+      forcePaint: true,
+      fast: true,
+    });
+    scheduleDeferredScheduleChrome(w);
     if (
       document.documentElement.classList.contains('employee-app') &&
       document.getElementById('empCalendarGrid')
@@ -17979,6 +18064,7 @@
   }
 
   function rebuildEmployeeDerivedData(opts) {
+    try { invalidateSchedulePersonOptionsCache(); } catch (_ic) {}
     opts = opts || {};
     /* Remote schedule apply: skip pool/eligible rebuilds — roster did not change. */
     if (!opts.scheduleOnly) {
@@ -20777,45 +20863,59 @@
       var scrollPending = calendarScrollRestorePending;
       function refreshScheduleScreenUi() {
         if (currentScreen !== 1) return;
-        ensureRollingFutureScheduleWeeks();
-        populateScheduleTemplateSelect();
-        /* Visible week only — rebuilding all 15 weeks made open feel ~5s. */
+        /* Fast grid first — templates / rolling window / labor chrome after paint. */
         paintVisibleScheduleWeekFast({
           weekIndex: scheduleCalendarWeekIndex,
+          forcePaint: true,
+          fast: true,
         });
         if (scrollPending) {
           calendarScrollRestorePending = null;
           applyCalendarScrollRestore(scrollPending);
         }
+        scheduleDeferredScheduleChrome(scheduleCalendarWeekIndex);
+        deferUiWork(function () {
+          if (currentScreen !== 1) return;
+          try {
+            ensureRollingFutureScheduleWeeks();
+          } catch (_roll) {
+            /* ignore */
+          }
+          try {
+            populateScheduleTemplateSelect();
+          } catch (_tpl) {
+            /* ignore */
+          }
+        });
         if (typeof requestIdleCallback === 'function') {
           requestIdleCallback(
             function () {
               prefetchScheduleWeekDownloadDeps();
             },
-            { timeout: 8000 }
+            { timeout: 12000 }
           );
         } else {
-          setTimeout(prefetchScheduleWeekDownloadDeps, 2500);
+          setTimeout(prefetchScheduleWeekDownloadDeps, 4000);
         }
       }
       /*
-       * Paint local stores first (sync), then cloud poll in the background.
+       * Paint local stores first (sync), then soft cloud poll in the background.
        */
       function openScheduleFromCloudThenPaint() {
         if (currentScreen !== 1) return;
         refreshScheduleScreenUi();
         if (!(scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase)) return;
-        /* Soft poll — never force-apply sparse cells over a staffed local week. */
-        void Promise.resolve(
-          pollVisibleScheduleCellsFromCloud({
+        setTimeout(function () {
+          if (currentScreen !== 1) return;
+          void pollVisibleScheduleCellsFromCloud({
             rebuild: true,
             force: false,
             forceSlots: false,
             upsertTimedOnly: true,
-          })
-        ).catch(function () {
-          return false;
-        });
+          }).catch(function () {
+            return false;
+          });
+        }, 400);
       }
       /* Sync first paint so Schedule is not blank for a frame. */
       openScheduleFromCloudThenPaint();
@@ -22214,14 +22314,21 @@
     const colCount = dayColCount + 1 + (showPersonTotals ? 1 : 0);
     var laborMap = showPersonTotals ? computeScheduleWeekLaborTotals(visibleDays) : null;
     var shiftByKey = Object.create(null);
+    var visibleSet = Object.create(null);
+    for (var vdi = 0; vdi < visibleDays.length; vdi += 1) {
+      visibleSet[visibleDays[vdi]] = true;
+    }
     for (var sxi = 0; sxi < SCHEDULE.length; sxi += 1) {
       var sx = SCHEDULE[sxi];
-      if (!sx) continue;
+      if (!sx || !visibleSet[sx.day]) continue;
       shiftByKey[sx.day + '|' + sx.role + '|' + sx.trIdx] = sx;
     }
     var personPoolByRole = Object.create(null);
     var borrowAvailableByRole = Object.create(null);
     function personSelectOptionsHtml(role, selected) {
+      if (opts.useCachedPersonOptions && typeof cachedPersonSelectOptionsHtml === 'function') {
+        return cachedPersonSelectOptionsHtml(role, selected);
+      }
       var pool = personPoolByRole[role];
       if (!pool) {
         pool = namesForScheduleRowPersonPicker(role, currentRestaurantId);
@@ -22280,10 +22387,12 @@
       '</div>' +
       '</th>' +
       visibleDays
-        .map(function (dayStr) {
-          var meta = WEEK_META.find(function (m) {
-            return m.label === dayStr;
-          });
+        .map(function (dayStr, dayIdx) {
+          var meta =
+            WEEK_META[scheduleCalendarWeekIndex * 7 + dayIdx] ||
+            WEEK_META.find(function (m) {
+              return m.label === dayStr;
+            });
           var d = parseDayHeader(dayStr);
           var full =
             meta && meta.dayNameUpper
@@ -23114,13 +23223,21 @@
     var readOnly =
       document.documentElement.classList.contains('manager-app') &&
       !managerCanEditCurrentRestaurant();
-    var showDayTotals = !readOnly;
+    var fast = !!opts.fast;
+    var showDayTotals = !readOnly && !fast;
     renderCalendarInto(calendarGrid, {
       readOnly: readOnly,
       force: !!opts.force,
       /* Hide person hour totals when viewing another store (view-only). */
       showDayTotals: showDayTotals,
+      showOtherStoreBadges: !fast,
+      fast: fast,
+      useCachedPersonOptions: true,
     });
+    if (fast) {
+      updateManagerScheduleViewOnlyHint();
+      return;
+    }
     renderScheduleManagerBelowPanels(getVisibleWeekDays(), showDayTotals, readOnly);
     requestAnimationFrame(function () {
       syncSchedulePanelColumnAlignment();
