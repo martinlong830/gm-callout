@@ -27,3 +27,10 @@ If schedule data looks wrong, **diagnose and report** (who/what week/cloud vs lo
 - Prefer read-only queries when investigating
 - Prefer local/`npm` tests and fixtures over production Supabase mutations
 - If a fix requires a one-shot data repair, stop and get explicit approval first
+
+## Cloud is king (sync code)
+
+- Cloud cells win on Refresh and soft peer apply; denser local must not soft-win
+- Only conscious interactive edits (or explicit force-push / assert week) may write `set_times` / `set_day_off` / `set_worker`
+- Auto-repair, revive, Karl scrub, and seed-missing-weeks must not push to cloud
+- Admin and manager share the same cell poll / Refresh SoT path

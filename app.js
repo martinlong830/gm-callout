@@ -6038,15 +6038,47 @@
     return !!(v2 && v2.writeOnlyCells && v2.writeOnlyCells());
   }
 
-  function enqueueScheduleV2Ops(ops) {
+  function enqueueScheduleV2Ops(ops, opts) {
     var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2 || !ops || !ops.length) return;
+    if (!scheduleSyncV2Enabled() || !v2 || !ops || !ops.length) return 0;
+    opts = opts || {};
+    /*
+     * Cloud is king: drop cell-mutating ops unless this tab just did a conscious
+     * interactive edit, or the caller explicitly stamps (force-push / assert week).
+     * Slot/role/structure ops (add_slot, deactivate_slot, …) still flow for layout.
+     */
+    var allowMutate =
+      !!opts.forceFullWeekStamp ||
+      !!opts.allowUnconsciousCloudWrite ||
+      scheduleConsciousCloudWriteActive() ||
+      !!teamStateForcePushActive;
+    if (!allowMutate) {
+      var kept = [];
+      var di;
+      for (di = 0; di < ops.length; di++) {
+        var dop = ops[di];
+        var dType = dop && dop.type ? String(dop.type) : '';
+        if (
+          dType === 'set_times' ||
+          dType === 'set_day_off' ||
+          dType === 'set_worker' ||
+          dType === 'clear_worker'
+        ) {
+          continue;
+        }
+        kept.push(dop);
+      }
+      ops = kept;
+      if (!ops.length) return 0;
+    }
     try {
       v2.enqueueOps(ops);
     } catch (_enq) {
       console.warn('gm-callout: schedule v2 enqueue', _enq);
+      return 0;
     }
     void flushScheduleV2Outbox();
+    return ops.length;
   }
 
   function broadcastScheduleCellsChanged(opts) {
@@ -6307,16 +6339,15 @@
         (!interactiveHold &&
           scheduleVisibleWeekNeedsTrustedCloudReplace(targetWi, cloudTimedVisible));
       /*
-       * Revive / wrong-role clear only on force Refresh or trusted replace — every soft
-       * poll used to re-enqueue ops, freeze peer apply, and fight other devices.
-       * Never revive during hard-revert / template forceDayOffReplace — that re-uploaded
-       * pre-assert timed cells and rolled the week back on peers.
+       * Revive deleted cloud cells only when explicitly requested — never on Refresh /
+       * trusted replace. Cloud is king; auto-revive used to re-upload wiped shifts.
        */
       if (
         mutatingRepair &&
         !interactiveHold &&
-        (opts.force || opts.replaceTrusted || opts.allowRevive) &&
-        !opts.forceDayOffReplace
+        !!opts.allowRevive &&
+        !opts.forceDayOffReplace &&
+        !opts.cloudAuthorityReplace
       ) {
         try {
           reviveDeletedTimedCellsForWeek(targetWi, currentRestaurantId);
@@ -6326,21 +6357,47 @@
           /* ignore */
         }
       }
+      /*
+       * Soft peer/poll: if local still has times where cloud says day-off, escalate to
+       * cloud SoT so devices converge (admin + manager share this path).
+       */
+      var cloudAuthority =
+        !!opts.cloudAuthorityReplace || !!opts.noSoftFallback;
+      if (!cloudAuthority && !interactiveHold && typeof v2.projectCellsToAssignmentPatch === 'function') {
+        try {
+          var isoToGdiEsc = Object.create(null);
+          for (var giEsc = 0; giEsc < WEEK_META.length; giEsc += 1) {
+            var mEsc = WEEK_META[giEsc];
+            if (mEsc && mEsc.iso) isoToGdiEsc[String(mEsc.iso).slice(0, 10)] = giEsc;
+          }
+          var roleToIdxEsc = Object.create(null);
+          for (var riEsc = 0; riEsc < ROLE_DEFS.length; riEsc += 1) {
+            roleToIdxEsc[ROLE_DEFS[riEsc].role] = riEsc;
+          }
+          var patchEsc = v2.projectCellsToAssignmentPatch(isoToGdiEsc, roleToIdxEsc);
+          if (localDraftConflictsWithCloudDayOffs(patchEsc, targetWi)) {
+            cloudAuthority = true;
+            wantTrusted = true;
+          }
+        } catch (_escConf) {
+          /* ignore */
+        }
+      }
       var applied = applyScheduleCellsCacheToLocalStore({
         rebuild: opts.rebuild !== false,
-        force: !!opts.force || wantTrusted || trimmed,
+        force: !!opts.force || wantTrusted || trimmed || cloudAuthority,
         /*
          * Soft poll for incremental edits. Escalate to trusted week replace when this
          * device is on an empty/DAY-OFF shell (or sparse draft) and cloud is dense —
          * otherwise peers never converge.
          */
-        upsertTimedOnly: !wantTrusted && opts.upsertTimedOnly !== false,
-        replaceWeekIndex: wantTrusted ? targetWi : undefined,
-        replaceTrusted: wantTrusted,
+        upsertTimedOnly: !wantTrusted && opts.upsertTimedOnly !== false && !cloudAuthority,
+        replaceWeekIndex: wantTrusted || cloudAuthority ? targetWi : undefined,
+        replaceTrusted: wantTrusted || cloudAuthority,
         forceDayOffReplace: !!opts.forceDayOffReplace,
         allowEmptyReplace: !!opts.allowEmptyReplace,
-        cloudAuthorityReplace: !!opts.cloudAuthorityReplace,
-        noSoftFallback: !!opts.noSoftFallback || !!opts.cloudAuthorityReplace,
+        cloudAuthorityReplace: cloudAuthority,
+        noSoftFallback: !!opts.noSoftFallback || cloudAuthority,
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
@@ -6367,7 +6424,7 @@
             ) {
               trimmed = true;
             }
-            /* One-shot: undo Karl invent stamped onto last week FOH by roster defaults. */
+            /* One-shot local scrub only — never push Karl wipe to cloud. */
             if (
               targetWi < SCHEDULE_TEMPLATE_WEEK_INDEX &&
               clearInventedWorkerFromWeekRole(
@@ -6378,7 +6435,7 @@
                 {
                   skipDirty: true,
                   skipInteractiveMark: true,
-                  writeCloud: true,
+                  writeCloud: false,
                   onceKey: 'gm-scrub-karl-foh-w' + targetWi + '-v1',
                 }
               )
@@ -6390,10 +6447,11 @@
           }
           if (
             (opts.force || opts.replaceTrusted || opts.allowRevive) &&
+            !cloudAuthority &&
             repairFlippedFohBohRolesForWeek(targetWi, currentRestaurantId, {
               skipDirty: true,
               skipInteractiveMark: true,
-              writeCloud: true,
+              writeCloud: false,
             })
           ) {
             trimmed = true;
@@ -6401,6 +6459,7 @@
           try {
             if (
               (opts.force || opts.replaceTrusted || opts.allowRevive) &&
+              !cloudAuthority &&
               clearWrongRoleCloudWorkersForWeek(targetWi, currentRestaurantId)
             ) {
               trimmed = true;
@@ -6550,6 +6609,7 @@
      * missed the real cell; second save worked.
      */
     armScheduleLocalAuthority(4000);
+    armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
     return syncScheduleSlotsFromCloudThen(function () {
       var dayIso = dayIsoForScheduleWeekDay(scheduleCalendarWeekIndex, dayInWeek);
       if (!dayIso) return;
@@ -6580,7 +6640,13 @@
     }).then(function () {
       return flushScheduleV2Outbox();
     }).then(function (res) {
-      scheduleLocalAuthorityUntil = 0;
+      if (isDayOff) {
+        /* Keep soft polls blocked briefly after day-off flush (replica lag). */
+        armScheduleLocalAuthority(6000);
+        armScheduleDayOffPushGuard();
+      } else {
+        scheduleLocalAuthorityUntil = 0;
+      }
       return res || { ok: true };
     });
   }
@@ -6599,6 +6665,7 @@
     var rid = restaurantId || currentRestaurantId;
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
     armScheduleLocalAuthority(4000);
+    armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
     var byRole = {};
     deletes.forEach(function (d) {
       if (!d || !d.role || d.originalTrIdx == null || isNaN(Number(d.originalTrIdx))) return;
@@ -6980,7 +7047,7 @@
     var changed = false;
     var ops = [];
     var v2 = gmScheduleV2();
-    var writeCloud = opts.writeCloud !== false && scheduleSyncV2Enabled() && v2;
+    var writeCloud = opts.writeCloud === true && scheduleSyncV2Enabled() && v2;
     var roles = ['Bartender', 'Kitchen', 'Server'];
     /*
      * Never invent Team-roster / sheet defaults onto a week (that stamped Karl Santiago
@@ -7127,7 +7194,7 @@
     var changed = false;
     var ops = [];
     var v2 = gmScheduleV2();
-    var writeCloud = opts.writeCloud !== false && scheduleSyncV2Enabled() && v2;
+    var writeCloud = opts.writeCloud === true && scheduleSyncV2Enabled() && v2;
     var layers = getDraftScheduleRowsForWeek(wi, rid);
     var rowCount = (layers && layers[role] && layers[role].length) || 0;
     for (var trIdx = 0; trIdx < Math.max(rowCount, 8); trIdx += 1) {
@@ -7361,6 +7428,13 @@
     var onlyRid = opts.restaurantId ? String(opts.restaurantId) : '';
     var onlyWi =
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : null;
+    /*
+     * forceFullWeekStamp: hard revert / template assert — local week wins including empties.
+     * Otherwise never push blank day-offs over live cloud timed cells (that wiped Charles
+     * Aug 31–Sep 6 when a device with an incomplete local draft stamped the week).
+     */
+    var forceFullWeekStamp = !!opts.forceFullWeekStamp;
+    var timedOnly = !!opts.timedOnly;
     var rests = restaurantsList.filter(function (rest) {
       return !onlyRid || rest.id === onlyRid;
     });
@@ -7391,6 +7465,19 @@
                   ? entry.rowOwner
                   : null);
               if (!tr || !tr.start || !tr.end) {
+                if (timedOnly) continue;
+                if (!forceFullWeekStamp && typeof v2.getCell === 'function') {
+                  var cloudCell = v2.getCell(rid, dayIso, role, slotKey);
+                  if (
+                    cloudCell &&
+                    !cloudCell.deleted &&
+                    cloudCell.start_hhmm &&
+                    cloudCell.end_hhmm
+                  ) {
+                    /* Keep cloud timed shift — local blank is incomplete, not an edit. */
+                    continue;
+                  }
+                }
                 ops.push(v2.opSetDayOff(rid, dayIso, role, slotKey, worker || null));
               } else {
                 ops.push(
@@ -7415,9 +7502,10 @@
       }
     });
     if (!ops.length) return 0;
+    var stampOpts = forceFullWeekStamp ? { forceFullWeekStamp: true } : {};
     var i = 0;
     while (i < ops.length) {
-      enqueueScheduleV2Ops(ops.slice(i, i + 40));
+      enqueueScheduleV2Ops(ops.slice(i, i + 40), stampOpts);
       i += 40;
     }
     return ops.length;
@@ -7536,7 +7624,7 @@
     var nextRs = Object.assign({}, rs);
     var ops = [];
     var v2 = gmScheduleV2();
-    var writeCloud = opts.writeCloud !== false && scheduleSyncV2Enabled() && v2;
+    var writeCloud = opts.writeCloud === true && scheduleSyncV2Enabled() && v2;
 
     for (di = 0; di < 7; di += 1) {
       var dayIso = dayIsoForScheduleWeekDay(wi, di);
@@ -8091,6 +8179,42 @@
     return false;
   }
 
+  /**
+   * True when local draft still has clock times for a cell the cloud patch marks day-off.
+   * Fingerprint equality used to skip apply after assignment was cleared, leaving denser
+   * devices permanently out of sync (Charles timed vs peer DAY-OFF).
+   */
+  function localDraftConflictsWithCloudDayOffs(patch, weekIndex) {
+    if (!patch) return false;
+    var wi =
+      weekIndex != null && !isNaN(Number(weekIndex))
+        ? Number(weekIndex)
+        : scheduleCalendarWeekIndex;
+    var weekStart = wi * 7;
+    var weekEnd = weekStart + 7;
+    var found = false;
+    Object.keys(patch).forEach(function (rid) {
+      if (found) return;
+      var cells = patch[rid] || {};
+      Object.keys(cells).forEach(function (shiftId) {
+        if (found) return;
+        var cell = cells[shiftId];
+        if (!cell || !cell.dayOff) return;
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+        var roleDef = ROLE_DEFS[p.roleIdx];
+        if (!roleDef) return;
+        var wk = WEEKDAY_KEYS[p.globalDayIdx % 7];
+        if (!wk) return;
+        if (draftTimeSlotFor(roleDef.role, wk, p.trIdx, wi, rid)) {
+          found = true;
+        }
+      });
+    });
+    return found;
+  }
+
   function applyScheduleCellsCacheToLocalStore(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -8113,8 +8237,14 @@
     }
     var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
     var fp = scheduleCellsProjectionFingerprint(patch);
+    var replaceWiHint =
+      opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+        ? Number(opts.replaceWeekIndex)
+        : scheduleCalendarWeekIndex;
     if (!opts.force && fp && fp === scheduleLastAppliedFingerprint) {
-      return false;
+      if (!localDraftConflictsWithCloudDayOffs(patch, replaceWiHint)) {
+        return false;
+      }
     }
     var timedWeeks = weekIndicesWithTimedCells(patch);
     var replaceWeeks = Object.create(null);
@@ -8318,21 +8448,35 @@
               }
             }
             /*
-             * Soft timed cells must not overwrite an intentional all-day-off Person
-             * (rowOwner + no local times). That snapped Eugene → Unassigned.
+             * Soft timed cells must not overwrite an intentional day-off:
+             * empty local draft after × (Mark) or Person rowOwner stub (Eugene).
+             * Still allow soft fill when local never had this day (null assignment).
              */
-            if (
-              cellHasTimed(cells[shiftId]) &&
-              prevLocal &&
-              !prevWasTimed
-            ) {
-              var prevNormSoft = normalizeScheduleAssignment(prevLocal);
+            if (cellHasTimed(cells[shiftId])) {
+              var roleDefSoft = ROLE_DEFS[p.roleIdx];
+              var wkSoft = WEEKDAY_KEYS[p.globalDayIdx % 7];
+              var localDraftTimedSoft =
+                roleDefSoft &&
+                wkSoft &&
+                draftTimeSlotFor(roleDefSoft.role, wkSoft, p.trIdx, wi, rid);
+              if (!localDraftTimedSoft && prevLocal && !prevWasTimed) {
+                return;
+              }
               if (
-                prevNormSoft &&
-                prevNormSoft.rowOwner &&
-                prevNormSoft.rowOwner !== 'Unassigned'
+                !localDraftTimedSoft &&
+                (scheduleDayOffPushGuardActive() || hasInteractiveScheduleEditsThisSession())
               ) {
                 return;
+              }
+              if (prevLocal && !prevWasTimed) {
+                var prevNormSoft = normalizeScheduleAssignment(prevLocal);
+                if (
+                  prevNormSoft &&
+                  prevNormSoft.rowOwner &&
+                  prevNormSoft.rowOwner !== 'Unassigned'
+                ) {
+                  return;
+                }
               }
             }
           } else if (!timedWeeks[wi] && !replaceWeeks[wi]) {
@@ -8364,12 +8508,25 @@
             if (ridTimedG < 4 && localRidTimedG >= 4) return;
             if (ridTimedG <= 0 && localRidTimedG > 0) return;
           }
-          /* Day-offs from soft upsert: replacing a timed local shift, OR Person identity. */
+          /* Day-offs from soft upsert: timed local shift, Person identity, OR draft still timed. */
           if (cell.dayOff && !replaceWeeks[wi]) {
             var softDayOffPerson =
               (cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
               (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned');
-            if (!(upsertTimedOnly && (prevWasTimed || softDayOffPerson))) return;
+            var roleDefDayOff = ROLE_DEFS[p.roleIdx];
+            var wkDayOff = WEEKDAY_KEYS[p.globalDayIdx % 7];
+            var localDraftStillTimed =
+              roleDefDayOff &&
+              wkDayOff &&
+              !!draftTimeSlotFor(roleDefDayOff.role, wkDayOff, p.trIdx, wi, rid);
+            if (
+              !(
+                upsertTimedOnly &&
+                (prevWasTimed || softDayOffPerson || localDraftStillTimed)
+              )
+            ) {
+              return;
+            }
           }
           /* Protect unsent local ops from peer paint. */
           if (pendingOutboxKeys && Object.keys(pendingOutboxKeys).length) {
@@ -8727,18 +8884,15 @@
             layers[role][p.trIdx] = row;
           }
           /*
-           * Soft: clear draft times when cloud day-off applies (same gates as assignment).
+           * Soft: clear draft times when cloud says day-off for this cell.
+           * Do NOT require assignment.timeLabel — the assignment loop may have already
+           * cleared it, which left denser devices with Charles draft times forever
+           * while peers correctly showed DAY-OFF after Refresh.
            */
           if (cell.dayOff || !cell.start || !cell.end) {
             if (upsertTimedOnly && cell.dayOff && row[di] && row[di][0] && row[di][1]) {
-              var prevDraftEnt = store[rid] && store[rid][shiftId];
-              var prevDraftTimed =
-                prevDraftEnt &&
-                prevDraftEnt.timeLabel &&
-                String(prevDraftEnt.timeLabel).trim() &&
-                String(prevDraftEnt.timeLabel).toUpperCase() !== 'DAY-OFF';
               var weekTimedNDraft = countTimedCellsInPatchWeek(patch, wi);
-              if (softDayOffGrow || (prevDraftTimed && weekTimedNDraft >= 4)) {
+              if (softDayOffGrow || weekTimedNDraft >= 4 || !!opts.cloudAuthorityReplace) {
                 row[di] = null;
                 changed = true;
               }
@@ -8749,6 +8903,7 @@
            * Soft upsert must not resurrect times onto a row the manager set as
            * all-day-off Person (rowOwner + no local times). That made assigning
            * Eugene on a day-off last row suddenly fill clock times from cloud.
+           * Also refuse filling an empty draft day after × day-off (Mark revive).
            */
           if (upsertTimedOnly) {
             var localDayOffProtect = store[rid] && store[rid][shiftId];
@@ -8762,6 +8917,15 @@
               !localDayOffNorm.timeLabel;
             var localDraftEmpty = !(row[di] && row[di][0] && row[di][1]);
             if (localIsDayOffPerson && localDraftEmpty) return;
+            if (
+              localDraftEmpty &&
+              localDayOffProtect != null &&
+              (!localDayOffNorm ||
+                !localDayOffNorm.timeLabel ||
+                String(localDayOffNorm.timeLabel).toUpperCase() === 'DAY-OFF')
+            ) {
+              return;
+            }
           }
           var nextCell = [String(cell.start), String(cell.end)];
           var prevCell = row[di];
@@ -8880,36 +9044,11 @@
   }
 
   /**
-   * If this manager has timed local weeks that cloud cells never received, push them.
-   * Peers were stuck on Unassigned/day-off for past weeks while blobs still had names.
+   * Intentionally disabled: cloud is king. Never auto-push local timed weeks into
+   * empty cloud — that fought Refresh SoT and diverged devices.
    */
   function seedMissingTimedWeeksToCloudCells() {
-    if (!gmCalloutSessionIsManager) return 0;
-    var v2 = gmScheduleV2();
-    if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return 0;
-    if (typeof v2.projectCellsToAssignmentPatch !== 'function') return 0;
-    var isoToGdi = Object.create(null);
-    for (var i = 0; i < WEEK_META.length; i += 1) {
-      var m = WEEK_META[i];
-      if (m && m.iso) isoToGdi[String(m.iso).slice(0, 10)] = i;
-    }
-    var roleToIdx = Object.create(null);
-    for (var ri = 0; ri < ROLE_DEFS.length; ri += 1) {
-      roleToIdx[ROLE_DEFS[ri].role] = ri;
-    }
-    var patch = v2.projectCellsToAssignmentPatch(isoToGdi, roleToIdx);
-    var cloudTimed = weekIndicesWithTimedCells(patch);
-    var seeded = 0;
-    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
-      if (cloudTimed[wi]) continue;
-      if (!localWeekHasTimedDraft(wi)) continue;
-      enqueueScheduleV2OpsFromLocalStores({ weekIndex: wi });
-      seeded += 1;
-    }
-    if (seeded) {
-      void flushScheduleV2Outbox();
-    }
-    return seeded;
+    return 0;
   }
 
   async function hydrateScheduleSyncV2FromCloud() {
@@ -9387,10 +9526,31 @@
   /** Brief soft guard after × day-off — does not block refresh; only aids echo refusal. */
   var scheduleDayOffPushGuardUntil = 0;
 
+  /**
+   * Cloud is king: only conscious interactive edits may enqueue set_times /
+   * set_day_off / set_worker. Auto-repair / soft poll / revive never write back.
+   * Armed by markScheduleInteractiveEdit and cleared after a short window or flush.
+   */
+  var scheduleConsciousCloudWriteUntil = 0;
+  var SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS = 15000;
+
+  function armScheduleConsciousCloudWrite(ms) {
+    var hold = Math.max(250, Number(ms) || SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
+    scheduleConsciousCloudWriteUntil = Math.max(
+      scheduleConsciousCloudWriteUntil || 0,
+      Date.now() + hold
+    );
+  }
+
+  function scheduleConsciousCloudWriteActive() {
+    return Date.now() < (scheduleConsciousCloudWriteUntil || 0);
+  }
+
   function markScheduleInteractiveEdit() {
     scheduleInteractiveEditAt = Date.now();
-    /* A real edit means this tab is SoT — stop sticky "Load cloud" from discarding day-offs. */
+    /* Conscious edit may push to cloud; sticky "Load cloud" must not discard day-offs. */
     if (schedulePreferCloudOnConflict) setPreferCloudOnConflict(false);
+    armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
     /*
      * Brief gate only until ops hit the outbox (fetchSlots → enqueue). After flush,
      * cloud is SoT again — long authority windows caused snap-back.
@@ -9416,6 +9576,11 @@
      * land in the outbox; not a multi-minute authority window.
      */
     if (scheduleLocalAuthorityActive()) return true;
+    /*
+     * Day-off × must not be soft-resurrected by a stale cells fetch (delete Mon, then
+     * delete Tue → Mon came back from an in-flight poll).
+     */
+    if (scheduleDayOffPushGuardActive()) return true;
     if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
       return true;
     }
@@ -10047,7 +10212,7 @@
       repairFlippedFohBohRolesForWeek(weekIndex, currentRestaurantId, {
         skipDirty: true,
         skipInteractiveMark: true,
-        writeCloud: true,
+        writeCloud: false,
       });
       dedupeSamePersonRoleRowsForWeek(weekIndex, currentRestaurantId);
     } catch (_rep) {
@@ -14218,6 +14383,17 @@
       var workers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
         return n && n !== 'Unassigned';
       });
+      if (!workers.length && shift.rowOwner && shift.rowOwner !== 'Unassigned') {
+        workers = [shift.rowOwner];
+      }
+      if (!workers.length) {
+        /* Fall back to Person-column owner for the row when cell workers are Unassigned. */
+        var rowPerson = scheduleRowPrimaryPerson(shift.role, shift.trIdx, visibleDays, null, {
+          allowOtherWeeks: false,
+          allowStickyOwner: true,
+        });
+        if (rowPerson && rowPerson !== 'Unassigned') workers = [rowPerson];
+      }
       if (!workers.length) return;
       var grossHours = scheduleShiftGrossHours(shift);
       if (grossHours <= 0) return;
@@ -18904,7 +19080,7 @@
         clearInventedWorkerFromWeekRole(w, 'Bartender', 'KARL SANTIAGO', currentRestaurantId, {
           skipDirty: true,
           skipInteractiveMark: true,
-          writeCloud: true,
+          writeCloud: false,
           onceKey: 'gm-scrub-karl-foh-w' + w + '-v1',
         });
       }
@@ -23029,6 +23205,7 @@
     enqueueScheduleV2OpsFromLocalStores({
       restaurantId: opts.restaurantId || null,
       weekIndex: opts.weekIndex != null ? opts.weekIndex : null,
+      forceFullWeekStamp: opts.forceFullWeekStamp !== false,
     });
     return Promise.resolve(flushScheduleV2Outbox()).then(function (firstFlush) {
       var cellFlush = firstFlush;
@@ -26429,7 +26606,11 @@
       weekNav: !!opts.weekNav,
       forceInitial: !!opts.forceInitial,
       confirmedEmpty: !!opts.confirmedEmpty,
-      deferLaborTotals: fast,
+      /*
+       * Never defer labor totals to an empty map — fast week paints left the right-hand
+       * Hours column stuck at 0 until a rare non-fast render.
+       */
+      deferLaborTotals: false,
     });
     if (fast) {
       updateManagerScheduleViewOnlyHint();
