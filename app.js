@@ -6384,7 +6384,16 @@
        */
       var cloudAuthority =
         !!opts.cloudAuthorityReplace || !!opts.noSoftFallback;
-      if (!cloudAuthority && !interactiveHold && typeof v2.projectCellsToAssignmentPatch === 'function') {
+      /*
+       * Stale local day-offs vs cloud times: escalate so a stuck shiflow tab converges
+       * (Eugene Mon+Sun). Never escalate cloud day-offs over local times mid-edit.
+       */
+      if (!cloudAuthority && typeof v2.projectCellsToAssignmentPatch === 'function') {
+        var allowStaleDayOffPull =
+          !scheduleProtectLocalTimedFromSoftDayOff() &&
+          !scheduleDayOffPushGuardActive() &&
+          !scheduleLocalAuthorityActive() &&
+          !schedulePersonRowProtectActive(currentRestaurantId, targetWi);
         try {
           var isoToGdiEsc = Object.create(null);
           for (var giEsc = 0; giEsc < WEEK_META.length; giEsc += 1) {
@@ -6396,10 +6405,16 @@
             roleToIdxEsc[ROLE_DEFS[riEsc].role] = riEsc;
           }
           var patchEsc = v2.projectCellsToAssignmentPatch(isoToGdiEsc, roleToIdxEsc);
-          if (localDraftConflictsWithCloudDayOffs(patchEsc, targetWi)) {
+          if (
+            !interactiveHold &&
+            localDraftConflictsWithCloudDayOffs(patchEsc, targetWi)
+          ) {
             cloudAuthority = true;
             wantTrusted = true;
-          } else if (localDayOffsConflictWithCloudTimes(patchEsc, targetWi)) {
+          } else if (
+            allowStaleDayOffPull &&
+            localDayOffsConflictWithCloudTimes(patchEsc, targetWi)
+          ) {
             cloudAuthority = true;
             wantTrusted = true;
           }
@@ -9683,6 +9698,9 @@
    * Soft poll / peer merge must not paint over in-flight local work:
    * normal edits, × day-off / shift delete, hard revert, template apply.
    * Manual Refresh and forceDayOffReplace peers still pass opts.force.
+   *
+   * Do NOT freeze forever on "edited this session" after settle — that left one
+   * shiflow browser stuck on Eugene day-offs while cloud + other devices were correct.
    */
   function scheduleSoftPollApplyFrozen() {
     if (teamStateForcePushActive) return true;
@@ -9693,11 +9711,7 @@
     if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
       return true;
     }
-    /*
-     * Settle after any interactive edit — flush ack used to clear authority and let
-     * soft day-off snap Eugene/Mark shifts back within seconds.
-     */
-    if (hasInteractiveScheduleEditsThisSession()) return true;
+    /* Settle window after timed/day-off edit — not a permanent session lock. */
     if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
     try {
       var pending = schedulePendingOutboxCellKeys();
@@ -9769,8 +9783,9 @@
   }
 
   /**
-   * True when this tab made schedule edits that are not yet acked by cell SoT
-   * (write-only) or team_state push (legacy blob mode).
+   * True when this tab made schedule edits that are not yet settled.
+   * After the settle window, stop holding — otherwise soft poll never pulls cloud
+   * onto a stale day-off shell (this computer's shiflow vs other devices).
    */
   function hasInteractiveScheduleEditsThisSession() {
     if (!scheduleInteractiveEditAt) return false;
@@ -9778,15 +9793,17 @@
     if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
       return true;
     }
-    /* Settle window: flush ack must not instantly open soft day-off snap-back. */
     if (Date.now() - scheduleInteractiveEditAt < SCHEDULE_TIMED_EDIT_SETTLE_MS) {
       return true;
     }
-    if (scheduleSyncV2WriteOnly()) {
-      return scheduleInteractiveEditAt > (scheduleLastCellFlushAt || 0);
+    /* Settle expired — only hold while cell ops are still queued. */
+    try {
+      var pending = schedulePendingOutboxCellKeys();
+      if (pending && Object.keys(pending).length) return true;
+    } catch (_pendHold) {
+      /* ignore */
     }
-    if (!teamStateLastLocalPushAt) return true;
-    return scheduleInteractiveEditAt > teamStateLastLocalPushAt;
+    return false;
   }
 
   /**
@@ -34147,7 +34164,7 @@
         if (fromBackup) return fromBackup;
         return null;
       })(),
-      3500,
+      12000,
       null
     );
   }
@@ -34813,7 +34830,7 @@
       try {
         var restored = await gmCalloutWithTimeout(
           gmCalloutRestoreAuthedShellFromSupabase(),
-          4000,
+          15000,
           false
         );
         if (restored && !gmCalloutIsTimeclockKiosk()) {
@@ -34831,18 +34848,55 @@
             void window.gmCalloutPromptRecoveryEmailIfNeeded();
           }
         } else if (!gmCalloutIsTimeclockKiosk()) {
-          document.documentElement.classList.remove(
-            'authed',
-            'manager-app',
-            'employee-app',
-            'timeclock-app'
-          );
-          gmCalloutSetLoginGateOpen(true);
-          if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-            window.gmCalloutEnsureLoginPanelVisible();
-          }
           if (hadStoredSessionHint || hadAuthBackup) {
+            /*
+             * Slow Wi‑Fi: restore timed out but we still have a prior session.
+             * Keep the provisional shell — never flash login (that blocked clicks
+             * while auto-login raced, then bounced schedule ↔ login).
+             */
+            try {
+              var roleHint = (sessionStorage.getItem('gm-callout-session') || '').trim();
+              var rootKeep = document.documentElement;
+              if (!rootKeep.classList.contains('authed')) {
+                rootKeep.classList.add('authed');
+                rootKeep.classList.remove('manager-app', 'employee-app', 'timeclock-app');
+                if (roleHint === 'employee') rootKeep.classList.add('employee-app');
+                else if (roleHint === 'timeclock') rootKeep.classList.add('timeclock-app');
+                else rootKeep.classList.add('manager-app');
+              }
+            } catch (_keepShell) {
+              /* ignore */
+            }
+            gmCalloutKeepAuthedShellPainted();
+            gmCalloutBootAuthedAppFromCache();
             gmCalloutStartSessionKeepAlive();
+            void (async function retrySlowBootRestore() {
+              var session = await gmCalloutAttemptSessionRecoverOnce();
+              if (!session || gmCalloutIsIntentionalSignOut()) return;
+              var ok = await gmCalloutRestoreAuthedShellFromSupabase();
+              if (!ok) return;
+              gmCalloutBootHydrateHandled = true;
+              gmCalloutKeepAuthedShellPainted();
+              gmCalloutStopSessionKeepAlive();
+              void gmCalloutScheduleRemoteHydrate({ deferSecondary: true })
+                .then(function () {
+                  gmCalloutRunPostRemoteHydrate();
+                })
+                .catch(function (retryHydr) {
+                  console.warn('gm-callout: slow-boot hydrate', retryHydr);
+                });
+            })();
+          } else {
+            document.documentElement.classList.remove(
+              'authed',
+              'manager-app',
+              'employee-app',
+              'timeclock-app'
+            );
+            gmCalloutSetLoginGateOpen(true);
+            if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+              window.gmCalloutEnsureLoginPanelVisible();
+            }
           }
         }
       } catch (hydrErr) {
@@ -35148,27 +35202,33 @@
               } catch (_hint) {
                 hadSessionHint = false;
               }
-              if (hadAuthed) {
-                /* Already in the app — try to recover without flashing login. */
-                await recoverTransientSignOut();
-                if (!document.documentElement.classList.contains('authed')) {
-                  gmCalloutSetLoginGateOpen(true);
-                  if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-                    window.gmCalloutEnsureLoginPanelVisible();
-                  }
+              function repaintProvisionalAuthedShell() {
+                try {
+                  var roleHint = (sessionStorage.getItem('gm-callout-session') || '').trim();
+                  if (!roleHint && !hadBackup) return;
+                  var root = document.documentElement;
+                  root.classList.add('authed');
+                  root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
+                  if (roleHint === 'employee') root.classList.add('employee-app');
+                  else if (roleHint === 'timeclock') root.classList.add('timeclock-app');
+                  else root.classList.add('manager-app');
+                  gmCalloutKeepAuthedShellPainted();
+                } catch (_repaint) {
+                  /* ignore */
                 }
-                return;
               }
-              if (hadBackup || hadSessionHint) {
-                /* Cold boot / no shell yet — attempt restore but keep login clickable. */
-                gmCalloutSetLoginGateOpen(true);
+              if (hadAuthed || hadBackup || hadSessionHint) {
+                /*
+                 * Never flash login during transient SIGNED_OUT (slow Wi‑Fi token
+                 * refresh). Keep / repaint shell and recover in the background.
+                 */
+                if (!hadAuthed) repaintProvisionalAuthedShell();
+                else gmCalloutKeepAuthedShellPainted();
                 await recoverTransientSignOut();
                 if (!document.documentElement.classList.contains('authed')) {
-                  gmCalloutSetLoginGateOpen(true);
-                  if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-                    window.gmCalloutEnsureLoginPanelVisible();
-                  }
+                  repaintProvisionalAuthedShell();
                 }
+                gmCalloutKeepAuthedShellPainted();
                 return;
               }
               /* Cold boot with no prior session — show login without tearing down chrome. */
