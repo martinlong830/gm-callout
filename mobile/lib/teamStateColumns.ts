@@ -214,10 +214,32 @@ export function mergeTeamStatePartial(
       /* Published flags can update; they do not discard assignment edits. */
       next.schedule_published = partial.schedule_published;
     }
+    if (
+      Array.isArray(prev.schedule_templates) &&
+      prev.schedule_templates.length > 0 &&
+      Array.isArray(partial.schedule_templates) &&
+      partial.schedule_templates.length === 0
+    ) {
+      next.schedule_templates = prev.schedule_templates;
+    }
     if (localDirty) next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
     /* Always adopt remote updated_at so freshness probes stay honest. */
     if (partial.updated_at != null) next.updated_at = partial.updated_at;
     return next;
+  }
+
+  /*
+   * Named templates are independent of the live schedule grid. Never let an empty
+   * remote array wipe a non-empty local library during soft team_state merges.
+   */
+  if (
+    Object.prototype.hasOwnProperty.call(partial, 'schedule_templates') &&
+    Array.isArray(partial.schedule_templates) &&
+    partial.schedule_templates.length === 0 &&
+    Array.isArray(prev.schedule_templates) &&
+    prev.schedule_templates.length > 0
+  ) {
+    next.schedule_templates = prev.schedule_templates;
   }
 
   if (

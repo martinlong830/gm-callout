@@ -6378,6 +6378,9 @@
           if (localDraftConflictsWithCloudDayOffs(patchEsc, targetWi)) {
             cloudAuthority = true;
             wantTrusted = true;
+          } else if (localDayOffsConflictWithCloudTimes(patchEsc, targetWi)) {
+            cloudAuthority = true;
+            wantTrusted = true;
           }
         } catch (_escConf) {
           /* ignore */
@@ -8215,6 +8218,68 @@
     return found;
   }
 
+  /**
+   * Inverse of localDraftConflictsWithCloudDayOffs: cloud has times but local draft
+   * (or day-off assignment stub) still shows DAY-OFF. Soft refuse used to keep Charles
+   * all day-off forever after a wipe even when cloud already had the restored week.
+   */
+  function localDayOffsConflictWithCloudTimes(patch, weekIndex) {
+    if (!patch) return false;
+    var wi =
+      weekIndex != null && !isNaN(Number(weekIndex))
+        ? Number(weekIndex)
+        : scheduleCalendarWeekIndex;
+    var weekStart = wi * 7;
+    var weekEnd = weekStart + 7;
+    var store = null;
+    try {
+      store = loadScheduleAssignmentsStore();
+    } catch (_st) {
+      store = null;
+    }
+    var found = false;
+    Object.keys(patch).forEach(function (rid) {
+      if (found) return;
+      var cells = patch[rid] || {};
+      Object.keys(cells).forEach(function (shiftId) {
+        if (found) return;
+        var cell = cells[shiftId];
+        if (!cell || !cell.start || !cell.end || cell.dayOff) return;
+        var p = parseShiftIdParts(shiftId);
+        if (!p) return;
+        if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+        var roleDef = ROLE_DEFS[p.roleIdx];
+        if (!roleDef) return;
+        var wk = WEEKDAY_KEYS[p.globalDayIdx % 7];
+        if (!wk) return;
+        if (draftTimeSlotFor(roleDef.role, wk, p.trIdx, wi, rid)) return;
+        var prev = store && store[rid] && store[rid][shiftId];
+        if (!prev) {
+          found = true;
+          return;
+        }
+        var norm = normalizeScheduleAssignment(prev);
+        if (
+          !norm ||
+          !norm.timeLabel ||
+          String(norm.timeLabel).toUpperCase() === 'DAY-OFF'
+        ) {
+          found = true;
+        }
+      });
+    });
+    return found;
+  }
+
+  /** Brief window only — not sticky day-off stubs from an old wipe. */
+  function scheduleProtectLocalDayOffFromSoftTimedApply() {
+    return (
+      scheduleDayOffPushGuardActive() ||
+      hasInteractiveScheduleEditsThisSession() ||
+      scheduleLocalAuthorityActive()
+    );
+  }
+
   function applyScheduleCellsCacheToLocalStore(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -8242,7 +8307,10 @@
         ? Number(opts.replaceWeekIndex)
         : scheduleCalendarWeekIndex;
     if (!opts.force && fp && fp === scheduleLastAppliedFingerprint) {
-      if (!localDraftConflictsWithCloudDayOffs(patch, replaceWiHint)) {
+      if (
+        !localDraftConflictsWithCloudDayOffs(patch, replaceWiHint) &&
+        !localDayOffsConflictWithCloudTimes(patch, replaceWiHint)
+      ) {
         return false;
       }
     }
@@ -8448,9 +8516,9 @@
               }
             }
             /*
-             * Soft timed cells must not overwrite an intentional day-off:
-             * empty local draft after × (Mark) or Person rowOwner stub (Eugene).
-             * Still allow soft fill when local never had this day (null assignment).
+             * Soft timed cells must not overwrite an intentional day-off *during*
+             * the brief × / edit window. Sticky day-off stubs from an old wipe must
+             * NOT block peer/cloud times forever (Charles Aug 31–Sep 6 stuck DAY-OFF).
              */
             if (cellHasTimed(cells[shiftId])) {
               var roleDefSoft = ROLE_DEFS[p.roleIdx];
@@ -8459,23 +8527,22 @@
                 roleDefSoft &&
                 wkSoft &&
                 draftTimeSlotFor(roleDefSoft.role, wkSoft, p.trIdx, wi, rid);
-              if (!localDraftTimedSoft && prevLocal && !prevWasTimed) {
-                return;
-              }
-              if (
-                !localDraftTimedSoft &&
-                (scheduleDayOffPushGuardActive() || hasInteractiveScheduleEditsThisSession())
-              ) {
-                return;
-              }
-              if (prevLocal && !prevWasTimed) {
-                var prevNormSoft = normalizeScheduleAssignment(prevLocal);
-                if (
-                  prevNormSoft &&
-                  prevNormSoft.rowOwner &&
-                  prevNormSoft.rowOwner !== 'Unassigned'
-                ) {
+              if (scheduleProtectLocalDayOffFromSoftTimedApply()) {
+                if (!localDraftTimedSoft && prevLocal && !prevWasTimed) {
                   return;
+                }
+                if (!localDraftTimedSoft) {
+                  return;
+                }
+                if (prevLocal && !prevWasTimed) {
+                  var prevNormSoft = normalizeScheduleAssignment(prevLocal);
+                  if (
+                    prevNormSoft &&
+                    prevNormSoft.rowOwner &&
+                    prevNormSoft.rowOwner !== 'Unassigned'
+                  ) {
+                    return;
+                  }
                 }
               }
             }
@@ -8900,12 +8967,11 @@
             return;
           }
           /*
-           * Soft upsert must not resurrect times onto a row the manager set as
-           * all-day-off Person (rowOwner + no local times). That made assigning
-           * Eugene on a day-off last row suddenly fill clock times from cloud.
-           * Also refuse filling an empty draft day after × day-off (Mark revive).
+           * Soft upsert must not resurrect times onto an intentional day-off *during*
+           * the brief × / edit window. Outside that window, cloud timed cells win so
+           * wiped day-off stubs (Charles) converge across devices.
            */
-          if (upsertTimedOnly) {
+          if (upsertTimedOnly && scheduleProtectLocalDayOffFromSoftTimedApply()) {
             var localDayOffProtect = store[rid] && store[rid][shiftId];
             var localDayOffNorm = localDayOffProtect
               ? normalizeScheduleAssignment(localDayOffProtect)
@@ -9426,6 +9492,11 @@
   var scheduleAuthoritativePaintReady = false;
   /** True while local schedule template edits are not yet confirmed on Supabase. */
   var scheduleTemplatesDirty = false;
+  /**
+   * Only set when the manager intentionally saves an empty template list (deleted all).
+   * Blocks accidental empty upserts from wiping cloud templates.
+   */
+  var scheduleTemplatesAllowEmptyPush = false;
   /** True while published-week map changed locally (manager Publish / Notify). */
   var schedulePublishedDirty = false;
   /** Monday ISO (YYYY-MM-DD) -> true for weeks visible to employees. */
@@ -10700,10 +10771,14 @@
     try {
       var tplRaw = localStorage.getItem(SCHEDULE_TEMPLATES_KEY) || '';
       var confTpl = getScheduleTemplatesConfirmedJson();
-      if (tplRaw && confTpl && confTpl !== tplRaw) {
+      if (tplRaw) {
         var tplArr = JSON.parse(tplRaw);
         if (Array.isArray(tplArr) && tplArr.length) {
-          scheduleTemplatesDirty = true;
+          /* Dirty even when confirmed is missing — otherwise hydrate can take empty cloud. */
+          if (!confTpl || confTpl !== tplRaw) {
+            scheduleTemplatesDirty = true;
+            scheduleTemplatesAllowEmptyPush = false;
+          }
         }
       }
     } catch (_recTpl) {
@@ -12228,6 +12303,35 @@
   }
 
   /**
+   * Named templates are independent of schedule_cells. Never let an empty/missing
+   * cloud array wipe a non-empty local library (Refresh / hydrate / Take cloud).
+   */
+  function scheduleTemplatesLocalList() {
+    try {
+      var raw = localStorage.getItem(SCHEDULE_TEMPLATES_KEY);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_tl) {
+      return [];
+    }
+  }
+
+  function remoteScheduleTemplatesWouldWipeLocal(remoteTpl) {
+    if (!Array.isArray(remoteTpl)) return false;
+    if (remoteTpl.length > 0) return false;
+    return scheduleTemplatesLocalList().length > 0;
+  }
+
+  function keepLocalScheduleTemplatesAndRepush() {
+    scheduleTemplatesDirty = true;
+    scheduleTemplatesAllowEmptyPush = false;
+    persistTeamStateDirtyFlags();
+    scheduleTeamStateDebouncedSync();
+    flushTeamStateSyncNow();
+  }
+
+  /**
    * True when remote draft_schedule must not replace local (unpushed edits only).
    */
   function draftScheduleRemoteMergeIsStale(remoteDr) {
@@ -12836,9 +12940,19 @@
       }
       if (scheduleTemplatesDirty) {
         var templates = loadScheduleTemplates();
-        payload.schedule_templates = Array.isArray(templates) ? templates : [];
-        pushedTemplatesJson = JSON.stringify(payload.schedule_templates);
-        pushedFields.push('schedule_templates');
+        var tplList = Array.isArray(templates) ? templates : [];
+        /*
+         * Never upsert schedule_templates: [] unless the manager intentionally cleared
+         * the library. A dirty flag + empty localStorage used to wipe peer templates.
+         */
+        if (!tplList.length && !scheduleTemplatesAllowEmptyPush) {
+          scheduleTemplatesDirty = false;
+          persistTeamStateDirtyFlags();
+        } else {
+          payload.schedule_templates = tplList;
+          pushedTemplatesJson = JSON.stringify(payload.schedule_templates);
+          pushedFields.push('schedule_templates');
+        }
       }
       if (schedulePublishedDirty) {
         payload.schedule_published = schedulePublishedPayload();
@@ -13037,6 +13151,7 @@
           var liveTpl = loadScheduleTemplates();
           scheduleTemplatesDirty =
             JSON.stringify(Array.isArray(liveTpl) ? liveTpl : []) !== pushedTemplatesJson;
+          if (!scheduleTemplatesDirty) scheduleTemplatesAllowEmptyPush = false;
         }
         if (pushedDraftJson != null) {
           var liveDraftJson = '';
@@ -13773,7 +13888,14 @@
 
     var tpl = row.schedule_templates;
     if (Array.isArray(tpl)) {
-      if (!teamStateTemplatesMergeLocked()) {
+      /*
+       * Cloud is king for schedule_cells — not for wiping the Templates library.
+       * Empty remote [] used to replace a full local list on Refresh/hydrate while
+       * cell SoT skipped assignment blobs, so the grid survived and templates vanished.
+       */
+      if (remoteScheduleTemplatesWouldWipeLocal(tpl)) {
+        if (isMgr) keepLocalScheduleTemplatesAndRepush();
+      } else if (!teamStateTemplatesMergeLocked()) {
         if (scheduleTemplatesRemoteMergeIsStale(tpl)) {
           if (isMgr) {
             scheduleTeamStateDebouncedSync();
@@ -13784,6 +13906,7 @@
             localStorage.setItem(SCHEDULE_TEMPLATES_KEY, JSON.stringify(tpl));
             setScheduleTemplatesConfirmedJson(JSON.stringify(tpl));
             scheduleTemplatesDirty = false;
+            scheduleTemplatesAllowEmptyPush = false;
             persistTeamStateDirtyFlags();
             if (scheduleTemplateModal && !scheduleTemplateModal.hidden) {
               populateScheduleTemplateSelect();
@@ -17615,12 +17738,17 @@
   }
 
   function saveScheduleTemplatesList(list) {
+    var next = Array.isArray(list) ? list : [];
     try {
-      localStorage.setItem(SCHEDULE_TEMPLATES_KEY, JSON.stringify(list));
+      localStorage.setItem(SCHEDULE_TEMPLATES_KEY, JSON.stringify(next));
     } catch (eTpl2) {
       /* ignore */
     }
-    if (GM_SUPABASE_DATA && window.gmSupabase) scheduleTemplatesDirty = true;
+    if (GM_SUPABASE_DATA && window.gmSupabase) {
+      scheduleTemplatesDirty = true;
+      scheduleTemplatesAllowEmptyPush = next.length === 0;
+      persistTeamStateDirtyFlags();
+    }
     scheduleTeamStateDebouncedSync();
   }
 
@@ -34100,7 +34228,13 @@
         forceAcceptRemoteScheduleOnce = true;
         scheduleAssignmentsDirty = false;
         draftScheduleDirty = false;
-        scheduleTemplatesDirty = false;
+        /*
+         * Do not clear template dirty / allow empty wipe: one-shot schedule resync
+         * must not discard a local Templates library when cloud still has [].
+         */
+        if (!scheduleTemplatesLocalList().length) {
+          scheduleTemplatesDirty = false;
+        }
         schedulePublishedDirty = false;
         scheduleReviewsDirty = false;
         companyHolidaysDirty = false;
