@@ -6339,6 +6339,8 @@
         replaceTrusted: wantTrusted,
         forceDayOffReplace: !!opts.forceDayOffReplace,
         allowEmptyReplace: !!opts.allowEmptyReplace,
+        cloudAuthorityReplace: !!opts.cloudAuthorityReplace,
+        noSoftFallback: !!opts.noSoftFallback || !!opts.cloudAuthorityReplace,
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
@@ -8029,6 +8031,17 @@
     }
     var localTimed = countLocalTimedDraftWeek(weekIndex);
     /*
+     * Manual Refresh / cloud SoT: denser local must not block a real cloud week.
+     * Still refuse broken projections (dense fetch → sparse patch) above.
+     */
+    if (opts.cloudAuthorityReplace) {
+      if (cloudTimed <= 0) {
+        if (Number.isFinite(fetchTimed) && fetchTimed > 0) return false;
+        return true;
+      }
+      return true;
+    }
+    /*
      * Trusted replace must be dense enough to be the shared week — a single timed
      * projection used to wipe peers to DAY-OFF / Unassigned while soft polls could
      * never rebuild the draft.
@@ -8129,17 +8142,48 @@
       }
     }
     /*
-     * Trusted replace refused (sparse cloud vs staffed local): fall back to soft
-     * timed upsert so Refresh/poll still merges names/times without wiping the week.
+     * Soft polls may fall back when trusted density fails. Manual Refresh passes
+     * cloudAuthorityReplace / noSoftFallback so denser local cannot soft-win and
+     * later stamp cloud (Eugene Mon+Sun vs every-day divergence).
      */
     if (
       opts.replaceTrusted &&
       !opts.forceDayOffReplace &&
+      !opts.cloudAuthorityReplace &&
+      !opts.noSoftFallback &&
       !Object.keys(replaceWeeks).length &&
       Object.keys(timedWeeks).length
     ) {
       upsertTimedOnly = true;
     }
+    if (
+      (opts.cloudAuthorityReplace || opts.noSoftFallback) &&
+      opts.replaceTrusted &&
+      !Object.keys(replaceWeeks).length
+    ) {
+      var forceWi =
+        opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+          ? Number(opts.replaceWeekIndex)
+          : scheduleCalendarWeekIndex;
+      var forceTimed = countTimedCellsInPatchWeek(patch, forceWi);
+      var forceFetch = Number(opts.fetchTimedCount);
+      var forceFetchDense = Number.isFinite(forceFetch) && forceFetch >= 4;
+      var forceBroken =
+        forceFetchDense && forceTimed < Math.max(4, Math.floor(forceFetch * 0.5));
+      if (!forceBroken && (timedWeeks[forceWi] || forceTimed > 0 || opts.forceDayOffReplace)) {
+        replaceWeeks[forceWi] = true;
+        upsertTimedOnly = false;
+      } else if (
+        !forceBroken &&
+        opts.allowEmptyReplace &&
+        Number.isFinite(forceFetch) &&
+        forceFetch <= 0
+      ) {
+        replaceWeeks[forceWi] = true;
+        upsertTimedOnly = false;
+      }
+    }
+    var cloudAuthorityWeek = !!(opts.cloudAuthorityReplace || opts.noSoftFallback);
     /*
      * If local week is staffed and cloud is too sparse to replace, skip wipe applies.
      * upsertTimedOnly still merges timed cells without blanking the rest.
@@ -8151,6 +8195,7 @@
       !replaceWeeks[Number(opts.replaceWeekIndex)] &&
       !opts.allowEmptyReplace &&
       !opts.forceDayOffReplace &&
+      !cloudAuthorityWeek &&
       countLocalTimedDraftWeek(Number(opts.replaceWeekIndex)) > 0
     ) {
       return false;
@@ -8162,6 +8207,10 @@
       !opts.allowEmptyReplace &&
       !opts.forceDayOffReplace
     ) {
+      return false;
+    }
+    /* Refresh SoT with broken projection: do nothing (never soft-stamp denser local). */
+    if (cloudAuthorityWeek && opts.replaceTrusted && !Object.keys(replaceWeeks).length) {
       return false;
     }
     var rids = Object.keys(patch);
@@ -8193,9 +8242,14 @@
             if (cellHasTimed(patchCells[shiftId])) ridTimed += 1;
           });
           var localRidTimed = countLocalTimedDraftWeek(wi, rid);
-          /* Sparse cloud for this store must not delete a staffed local week. */
-          if (ridTimed < 4 && localRidTimed >= 4) return;
-          if (ridTimed <= 0 && localRidTimed > 0) return;
+          /* Sparse cloud for this store must not delete a staffed local week — unless Refresh SoT. */
+          if (!cloudAuthorityWeek) {
+            if (ridTimed < 4 && localRidTimed >= 4) return;
+            if (ridTimed <= 0 && localRidTimed > 0) return;
+          } else if (ridTimed <= 0 && localRidTimed > 0 && Number(opts.fetchTimedCount) > 0) {
+            /* Broken projection for this rid — keep local rather than empty wipe. */
+            return;
+          }
           if (!store[rid]) store[rid] = {};
           var rs = store[rid];
           Object.keys(rs).forEach(function (shiftId) {
@@ -8296,7 +8350,7 @@
             return;
           }
           /* During trusted replace, skip sparse restaurants (same guard as draft). */
-          if (replaceWeeks[wi] && !upsertTimedOnly) {
+          if (replaceWeeks[wi] && !upsertTimedOnly && !cloudAuthorityWeek) {
             var weekStartG = wi * 7;
             var weekEndG = weekStartG + 7;
             var ridTimedG = 0;
@@ -8340,10 +8394,27 @@
           var entry = { workers: cell.workers || ['Unassigned'] };
           if (cell.rowOwner) entry.rowOwner = cell.rowOwner;
           if (cell.dayOff) {
-            /* day-off */
+            /* day-off — never invent times/breaks */
           } else if (cell.start && cell.end) {
-            entry.break = cell.break || formatBreakAnnotation('3:00PM', 'BREAK TIME');
+            /*
+             * Breaks: cloud null is explicit when breakExplicit; otherwise keep local.
+             * Never invent formatBreakAnnotation / hash NO BREAK on live apply.
+             */
+            if (cell.breakExplicit) {
+              entry.break = cell.break ? String(cell.break) : null;
+            } else if (cell.break) {
+              entry.break = String(cell.break);
+            } else if (prevLocal && prevLocal.break) {
+              entry.break = prevLocal.break;
+            }
             if (cell.breakPaid === true || cell.breakPaid === false) entry.breakPaid = cell.breakPaid;
+            else if (
+              !cell.breakExplicit &&
+              prevLocal &&
+              (prevLocal.breakPaid === true || prevLocal.breakPaid === false)
+            ) {
+              entry.breakPaid = prevLocal.breakPaid;
+            }
             entry.timeLabel = redPokeShiftTimeLabel(cell.start, cell.end);
             entry.hours = redPokeShiftHoursDecimal(cell.start, cell.end);
           }
@@ -8417,6 +8488,7 @@
             String((prev.workers && prev.workers[0]) || '') !==
               String((entry.workers && entry.workers[0]) || '') ||
             String(prev.timeLabel || '') !== String(entry.timeLabel || '') ||
+            String(prev.break || '') !== String(entry.break || '') ||
             !!prev.breakPaid !== !!entry.breakPaid
           ) {
             store[rid][shiftId] = entry;
@@ -8499,10 +8571,14 @@
             if (cellHasTimed(patchCells[shiftId])) ridTimed += 1;
           });
           var localRidTimed = countLocalTimedDraftWeek(wi, rid);
-          if (ridTimed < 4 && localRidTimed >= 4) {
-            return;
-          }
-          if (ridTimed <= 0 && localRidTimed > 0) {
+          if (!cloudAuthorityWeek) {
+            if (ridTimed < 4 && localRidTimed >= 4) {
+              return;
+            }
+            if (ridTimed <= 0 && localRidTimed > 0) {
+              return;
+            }
+          } else if (ridTimed <= 0 && localRidTimed > 0 && Number(opts.fetchTimedCount) > 0) {
             return;
           }
           var layers = ensureDraftWeek(wi, rid);
@@ -8613,7 +8689,14 @@
           if (!p) return;
           var wi = Math.floor(p.globalDayIdx / 7);
           if (replaceWeeks[wi]) return;
-          if (!timedWeeks[wi]) return;
+          var cell = cells[shiftId];
+          var softDayOffGrow =
+            upsertTimedOnly &&
+            cell &&
+            cell.dayOff &&
+            ((cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+              (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned'));
+          if (!timedWeeks[wi] && !softDayOffGrow) return;
           var di = p.globalDayIdx % 7;
           if (wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT || di < 0 || di > 6) return;
           var roleDef = ROLE_DEFS[p.roleIdx];
@@ -8627,17 +8710,14 @@
           /*
            * Never grow draft past cloud active slots — forked slot_keys / high
            * sort_order created phantom Unassigned FOH rows that differed per device.
+           * Day-off Person rows may extend one past lagging activeN.
            */
-          if (maxSlots > 0 && p.trIdx >= maxSlots) return;
+          if (maxSlots > 0 && p.trIdx >= maxSlots && !softDayOffGrow) return;
           var layers = ensureDraftWeek(wi, rid);
           if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
-          /*
-           * Soft upsert must not invent trailing Unassigned rows. Only fill times
-           * inside the existing draft length (Add slot / trusted replace grows).
-           */
-          if (upsertTimedOnly && p.trIdx >= layers[role].length) return;
+          if (upsertTimedOnly && p.trIdx >= layers[role].length && !softDayOffGrow) return;
           while (layers[role].length <= p.trIdx) {
-            if (maxSlots > 0 && layers[role].length >= maxSlots) break;
+            if (maxSlots > 0 && layers[role].length >= maxSlots && !softDayOffGrow) break;
             layers[role].push([null, null, null, null, null, null, null]);
           }
           if (p.trIdx >= layers[role].length) return;
@@ -8646,8 +8726,25 @@
             row = [null, null, null, null, null, null, null];
             layers[role][p.trIdx] = row;
           }
-          var cell = cells[shiftId];
-          if (cell.dayOff || !cell.start || !cell.end) return;
+          /*
+           * Soft: clear draft times when cloud day-off applies (same gates as assignment).
+           */
+          if (cell.dayOff || !cell.start || !cell.end) {
+            if (upsertTimedOnly && cell.dayOff && row[di] && row[di][0] && row[di][1]) {
+              var prevDraftEnt = store[rid] && store[rid][shiftId];
+              var prevDraftTimed =
+                prevDraftEnt &&
+                prevDraftEnt.timeLabel &&
+                String(prevDraftEnt.timeLabel).trim() &&
+                String(prevDraftEnt.timeLabel).toUpperCase() !== 'DAY-OFF';
+              var weekTimedNDraft = countTimedCellsInPatchWeek(patch, wi);
+              if (softDayOffGrow || (prevDraftTimed && weekTimedNDraft >= 4)) {
+                row[di] = null;
+                changed = true;
+              }
+            }
+            return;
+          }
           /*
            * Soft upsert must not resurrect times onto a row the manager set as
            * all-day-off Person (rowOwner + no local times). That made assigning
@@ -8697,41 +8794,31 @@
           clearCustomSlotOrderForWeek(Number(wiStr), rest.id);
         });
       });
-      /* Soft upsert can still leave trailing local rows — trim to active slots. */
-      if (upsertTimedOnly) {
-        Object.keys(timedWeeks).forEach(function (wiStr) {
-          if (reconcileLocalScheduleToActiveSlots({ weekIndex: Number(wiStr) })) {
-            changed = true;
-          }
-        });
-      }
-      /* Always trim the week we just touched — fingerprint no-ops used to skip this. */
-      var trimWi =
-        opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
-          ? Number(opts.replaceWeekIndex)
-          : scheduleCalendarWeekIndex;
-      if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
-        changed = true;
-      }
       /*
-       * Drop empty trailing Unassigned rows BEFORE paint. Apply used to coalesce-paint
-       * first; trim in the outer poll ran after — ghost FOH row flashed then vanished.
+       * Soft idle apply must not trim/reconcile — that chopped Eugene day-off rows
+       * and made last-week Person flicker. Only trusted / Refresh replace mutates structure.
        */
-      var trimWeeks = Object.create(null);
-      trimWeeks[trimWi] = true;
-      Object.keys(replaceWeeks).forEach(function (k) {
-        trimWeeks[k] = true;
-      });
-      Object.keys(timedWeeks).forEach(function (k) {
-        trimWeeks[k] = true;
-      });
-      Object.keys(trimWeeks).forEach(function (wiStr) {
-        var tw = Number(wiStr);
-        if (isNaN(tw)) return;
-        restaurantsList.forEach(function (rest) {
-          if (trimTrailingGhostScheduleSlots(tw, rest.id)) changed = true;
+      if (!upsertTimedOnly && Object.keys(replaceWeeks).length) {
+        var trimWi =
+          opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
+            ? Number(opts.replaceWeekIndex)
+            : scheduleCalendarWeekIndex;
+        if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
+          changed = true;
+        }
+        var trimWeeks = Object.create(null);
+        trimWeeks[trimWi] = true;
+        Object.keys(replaceWeeks).forEach(function (k) {
+          trimWeeks[k] = true;
         });
-      });
+        Object.keys(trimWeeks).forEach(function (wiStr) {
+          var tw = Number(wiStr);
+          if (isNaN(tw)) return;
+          restaurantsList.forEach(function (rest) {
+            if (trimTrailingGhostScheduleSlots(tw, rest.id)) changed = true;
+          });
+        });
+      }
     } finally {
       endTeamStateRemoteApply();
     }
@@ -9020,19 +9107,8 @@
               countLocalTimedDraftWeek(scheduleCalendarWeekIndex) || 1
             );
           }
-          /* Seed missing weeks to cloud without touching local UI. */
-          if (typeof requestIdleCallback === 'function') {
-            requestIdleCallback(
-              function () {
-                seedMissingTimedWeeksToCloudCells();
-              },
-              { timeout: 30000 }
-            );
-          } else {
-            setTimeout(function () {
-              seedMissingTimedWeeksToCloudCells();
-            }, 8000);
-          }
+          /* Never auto-seed local timed weeks into empty cloud — that fought Refresh SoT. */
+          void 0;
           if (draftScheduleDirty || scheduleAssignmentsDirty) {
             if (!hasInteractiveScheduleEditsThisSession()) {
               draftScheduleDirty = false;
@@ -11450,13 +11526,11 @@
     persistTeamStateDirtyFlags();
     flushTipPayrollPushToSupabase();
     await flushTeamStateSyncNow();
-    /* Push any pending cell ops before peers/we pull. */
-    await flushScheduleV2Outbox();
     /*
-     * Never force-accept on Refresh. After a successful push, interactive=false and a
-     * stale replica read would wipe the edits we just saved. Apply path still takes a
-     * strictly newer peer cloud when this tab has no live edits; self-echo refusal keeps
-     * our own push. Recovered dirty behind cloud is handled by shouldAutoTakeNewerCloud…
+     * Refresh = cloud schedule_cells win. Do NOT flush the outbox first — that let a
+     * denser divergent laptop stamp cloud, then every peer "refreshed into" it.
+     * Interactive local edits are discarded on Refresh (Save / assert remains the
+     * intentional local→cloud path).
      */
     /* Force a full fetch even when our cached updated_at matches (clock skew / missed field). */
     var prevCached = teamStateCachedUpdatedAt;
@@ -11473,18 +11547,18 @@
      * flushed ops) paint into assignments + draft times.
      */
     await hydrateScheduleSyncV2FromCloud();
-    /* Refresh: trusted replace when cloud is dense so every device converges.
-     * Revive runs inside the poll AFTER fetch so tombstones cannot wipe it mid-flight. */
+    /* Refresh: trusted cloud SoT replace — never soft-fallback or revive local deletes. */
     try {
       await pollVisibleScheduleCellsFromCloud({
         rebuild: true,
         force: true,
         forceSlots: true,
         replaceTrusted: true,
-        allowRevive: true,
+        allowRevive: false,
         replaceWeekIndex: scheduleCalendarWeekIndex,
-        /* Never force empty wipe — that cemented all-DAY-OFF when projection failed. */
         forceDayOffReplace: false,
+        cloudAuthorityReplace: true,
+        noSoftFallback: true,
       });
     } catch (_refPoll) {
       /* ignore */
@@ -11496,7 +11570,7 @@
       repairFlippedFohBohRolesForWeek(scheduleCalendarWeekIndex, currentRestaurantId, {
         skipDirty: true,
         skipInteractiveMark: true,
-        writeCloud: true,
+        writeCloud: false,
       });
       dedupeSamePersonRoleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId);
     } catch (_refTrim) {
@@ -14579,11 +14653,13 @@
     return opts[seed % opts.length];
   }
 
-  /** Single source of truth: assignment store (with template inherit) then hash placeholder. */
-  function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr) {
+  /** Single source of truth: assignment store (with template inherit). No hash invent on live. */
+  function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr, opts) {
+    opts = opts || {};
     var entry = lookupScheduleAssignment(stored, shiftId);
     if (entry && entry.break) return entry.break;
-    return redPokeBreakAnnotation(start, end, role, dayStr);
+    if (opts.allowPlaceholder) return redPokeBreakAnnotation(start, end, role, dayStr);
+    return '';
   }
 
   function formatBreakAnnotation(time, type) {
@@ -17491,6 +17567,7 @@
                   role,
                   WEEKDAY_KEYS[di] || 'Mon'
                 );
+          if (!nextBreak) return;
           var entry = normalizeScheduleAssignment(rs[shiftId] || { workers: ['Unassigned'] });
           if (entry.break !== nextBreak) {
             entry.break = nextBreak;
@@ -33565,6 +33642,9 @@
     if (window.__GM_ACCESS_CODE_SETUP_FLOW__) {
       return false;
     }
+    if (gmCalloutIsIntentionalSignOut()) {
+      return false;
+    }
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
       return false;
     }
@@ -33669,6 +33749,7 @@
   }
 
   async function gmCalloutEnsureSupabaseSession(sb) {
+    if (gmCalloutIsIntentionalSignOut()) return null;
     return gmCalloutWithTimeout(
       (async function () {
         var sessRes = await sb.auth.getSession();
@@ -34261,11 +34342,61 @@
   }
 
   var GM_AUTH_SESSION_BACKUP_KEY = 'gm-callout-auth-session-backup';
+  var GM_INTENTIONAL_SIGN_OUT_KEY = 'gm-callout-intentional-sign-out';
   var gmCalloutSessionKeepAliveTimer = null;
   var gmCalloutSignedOutRecovering = false;
   var gmCalloutProactiveRefreshTimer = null;
 
+  function gmCalloutIsIntentionalSignOut() {
+    if (window.__GM_INTENTIONAL_SIGN_OUT__) return true;
+    try {
+      if (sessionStorage.getItem(GM_INTENTIONAL_SIGN_OUT_KEY) === '1') return true;
+      if (localStorage.getItem(GM_INTENTIONAL_SIGN_OUT_KEY) === '1') return true;
+    } catch (_iso) {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function gmCalloutMarkIntentionalSignOut() {
+    window.__GM_INTENTIONAL_SIGN_OUT__ = true;
+    try {
+      sessionStorage.setItem(GM_INTENTIONAL_SIGN_OUT_KEY, '1');
+      localStorage.setItem(GM_INTENTIONAL_SIGN_OUT_KEY, '1');
+    } catch (_set) {
+      /* ignore */
+    }
+  }
+
+  function gmCalloutClearIntentionalSignOut() {
+    window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+    try {
+      sessionStorage.removeItem(GM_INTENTIONAL_SIGN_OUT_KEY);
+      localStorage.removeItem(GM_INTENTIONAL_SIGN_OUT_KEY);
+    } catch (_clr) {
+      /* ignore */
+    }
+  }
+
   (async function () {
+    if (gmCalloutIsIntentionalSignOut()) {
+      gmCalloutMarkIntentionalSignOut();
+      gmCalloutClearAuthSessionBackup();
+      gmCalloutStopSessionKeepAlive();
+      document.documentElement.classList.remove(
+        'authed',
+        'manager-app',
+        'employee-app',
+        'timeclock-app'
+      );
+      gmCalloutSetLoginGateOpen(true);
+      if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+        window.gmCalloutEnsureLoginPanelVisible();
+      } else if (typeof window.gmCalloutShowLandingPanel === 'function') {
+        window.gmCalloutShowLandingPanel();
+      }
+      return;
+    }
     var hadStoredSessionHint = false;
     try {
       hadStoredSessionHint = !!(sessionStorage.getItem('gm-callout-session') || '').trim();
@@ -34364,6 +34495,7 @@
   })();
 
   function gmCalloutBackupAuthSession(session) {
+    if (gmCalloutIsIntentionalSignOut()) return;
     if (!session || !session.access_token || !session.refresh_token) return;
     var payload = JSON.stringify({
       access_token: session.access_token,
@@ -34415,6 +34547,7 @@
   }
 
   async function gmCalloutTryRestoreAuthSessionBackup() {
+    if (gmCalloutIsIntentionalSignOut()) return null;
     var raw = gmCalloutReadAuthSessionBackupRaw();
     if (!raw || !window.gmSupabase || !window.gmSupabase.auth) return null;
     var bak = null;
@@ -34448,6 +34581,7 @@
   }
 
   async function gmCalloutAttemptSessionRecoverOnce() {
+    if (gmCalloutIsIntentionalSignOut()) return null;
     if (!window.gmSupabase || !window.gmSupabase.auth) return null;
     try {
       var sessRes = await window.gmSupabase.auth.getSession();
@@ -34486,7 +34620,7 @@
         gmCalloutStopSessionKeepAlive();
         return;
       }
-      if (window.__GM_INTENTIONAL_SIGN_OUT__) return;
+      if (window.__GM_INTENTIONAL_SIGN_OUT__ || gmCalloutIsIntentionalSignOut()) return;
       void (async function () {
         var session = await gmCalloutAttemptSessionRecoverOnce();
         if (!session) return;
@@ -34509,7 +34643,7 @@
     gmCalloutProactiveRefreshTimer = setTimeout(function () {
       gmCalloutProactiveRefreshTimer = null;
       if (!document.documentElement.classList.contains('authed')) return;
-      if (window.__GM_INTENTIONAL_SIGN_OUT__) return;
+      if (window.__GM_INTENTIONAL_SIGN_OUT__ || gmCalloutIsIntentionalSignOut()) return;
       void (async function () {
         try {
           if (!window.gmSupabase || !window.gmSupabase.auth) return;
@@ -34567,7 +34701,7 @@
              * sign-out must still tear down. Transient refresh blips must never paint
              * the grey login gate over a live session.
              */
-            var intentional = !!window.__GM_INTENTIONAL_SIGN_OUT__;
+            var intentional = gmCalloutIsIntentionalSignOut();
 
             async function recoverTransientSignOut() {
               if (gmCalloutSignedOutRecovering) return true;
@@ -34581,7 +34715,7 @@
                       setTimeout(resolve, 350 * attempt);
                     });
                   }
-                  if (window.__GM_INTENTIONAL_SIGN_OUT__) return false;
+                  if (gmCalloutIsIntentionalSignOut()) return false;
                   var session = await gmCalloutAttemptSessionRecoverOnce();
                   if (session) {
                     recovered = true;
@@ -34654,7 +34788,9 @@
               return;
             }
 
-            window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+            /* Keep persisted intentional flag until a real login (setSession). */
+            window.__GM_INTENTIONAL_SIGN_OUT__ = true;
+            gmCalloutMarkIntentionalSignOut();
             gmCalloutClearAuthSessionBackup();
             gmCalloutStopSessionKeepAlive();
             if (gmCalloutProactiveRefreshTimer) {
@@ -34691,6 +34827,39 @@
         return;
       }
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+        if (gmCalloutIsIntentionalSignOut()) {
+          /*
+           * User clicked Sign Out — never restore shell from a leftover token /
+           * backup setSession. Force local sign-out again.
+           */
+          setTimeout(function () {
+            gmCalloutClearAuthSessionBackup();
+            try {
+              if (window.gmSupabase && window.gmSupabase.auth) {
+                var p = window.gmSupabase.auth.signOut({ scope: 'local' });
+                if (p && typeof p.then === 'function') {
+                  p.then(
+                    function () {},
+                    function () {}
+                  );
+                }
+              }
+            } catch (_soRe) {
+              /* ignore */
+            }
+            document.documentElement.classList.remove(
+              'authed',
+              'manager-app',
+              'employee-app',
+              'timeclock-app'
+            );
+            gmCalloutSetLoginGateOpen(true);
+            if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+              window.gmCalloutEnsureLoginPanelVisible();
+            }
+          }, 0);
+          return;
+        }
         if (event === 'INITIAL_SESSION' && gmCalloutBootHydrateHandled) {
           return;
         }

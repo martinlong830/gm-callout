@@ -1,0 +1,29 @@
+---
+description: Never mutate live schedule cloud/local data unless the user explicitly asks
+alwaysApply: true
+---
+
+# Protect live schedule data
+
+Live restaurant schedules are production data. Sync/UI code bugs have wiped people (Charles, Eugene) and breaks before.
+
+## Do not touch schedule data unless explicitly asked
+
+Never do any of the following unless the user clearly asks to restore, seed, repair, or edit schedule contents:
+
+- Write/update/delete `schedule_cells`, `schedule_slots`, or team_state schedule blobs (Supabase, scripts, SQL, RPC)
+- Flush outbox ops, revive cells, assert/seed weeks, or run restore/seed scripts against a real company
+- “Fix” a blank person/row by inventing names, roster defaults, or copying another week into cloud
+- Use browser automation to edit the live Schedule grid as a data repair
+
+## Code edits are OK; data writes are not
+
+You may change `app.js` / `schedule-sync-v2.js` sync logic. Do **not** compensate by pushing corrected cells to cloud.
+
+If schedule data looks wrong, **diagnose and report** (who/what week/cloud vs local). Ask before any repair write.
+
+## Safe defaults
+
+- Prefer read-only queries when investigating
+- Prefer local/`npm` tests and fixtures over production Supabase mutations
+- If a fix requires a one-shot data repair, stop and get explicit approval first

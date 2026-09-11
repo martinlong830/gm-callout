@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-217" />
+  <link rel="stylesheet" href="styles.css?v=perf-219" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-217" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-219" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-217';
+    window.__GM_ASSET_V = 'perf-219';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -110,6 +110,21 @@
     };
     function gmLikelyHasStoredSession() {
       try {
+        if (
+          sessionStorage.getItem('gm-callout-intentional-sign-out') === '1' ||
+          localStorage.getItem('gm-callout-intentional-sign-out') === '1'
+        ) {
+          return false;
+        }
+      } catch (_iso) {
+        /* ignore */
+      }
+      try {
+        if (/[?&]signedout=/.test(String(location.search || ''))) return false;
+      } catch (_q) {
+        /* ignore */
+      }
+      try {
         if (sessionStorage.getItem('gm-callout-session')) return true;
       } catch (_ss) {
         /* ignore */
@@ -124,6 +139,69 @@
       }
       return false;
     }
+
+    /**
+     * Persist intentional sign-out across the hard reload. In-memory flags die on
+     * navigation, and session-backup restore used to auto-sign back in.
+     */
+    (function honorIntentionalSignOutOnBoot() {
+      var INTENT_KEY = 'gm-callout-intentional-sign-out';
+      var fromQuery = false;
+      try {
+        fromQuery = /[?&]signedout=/.test(String(location.search || ''));
+      } catch (_fq) {
+        fromQuery = false;
+      }
+      var flagged = false;
+      try {
+        flagged =
+          sessionStorage.getItem(INTENT_KEY) === '1' ||
+          localStorage.getItem(INTENT_KEY) === '1';
+      } catch (_fl) {
+        flagged = false;
+      }
+      if (!fromQuery && !flagged) return;
+      window.__GM_INTENTIONAL_SIGN_OUT__ = true;
+      try {
+        sessionStorage.setItem(INTENT_KEY, '1');
+        localStorage.setItem(INTENT_KEY, '1');
+      } catch (_set) {
+        /* ignore */
+      }
+      try {
+        sessionStorage.removeItem('gm-callout-session');
+        sessionStorage.removeItem('gm-callout-employee-display-name');
+        sessionStorage.removeItem('gm-callout-auth-session-backup');
+        localStorage.removeItem('gm-callout-auth-session-backup');
+      } catch (_clr) {
+        /* ignore */
+      }
+      try {
+        var toRemove = [];
+        for (var i = 0; i < localStorage.length; i += 1) {
+          var k = localStorage.key(i);
+          if (!k) continue;
+          if (
+            (k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) ||
+            k.indexOf('supabase.auth.') === 0
+          ) {
+            toRemove.push(k);
+          }
+        }
+        toRemove.forEach(function (key) {
+          localStorage.removeItem(key);
+        });
+      } catch (_sb) {
+        /* ignore */
+      }
+      try {
+        if (fromQuery && window.history && window.history.replaceState) {
+          window.history.replaceState({}, '', '/app');
+        }
+      } catch (_hist) {
+        /* ignore */
+      }
+    })();
   </script>
 </head>
 <body>
@@ -2517,7 +2595,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-217"></script>
+  <script src="locales/en.js?v=perf-219"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2529,7 +2607,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-217';
+      s.src = 'locales/es.js?v=perf-219';
       document.head.appendChild(s);
     })();
   </script>
@@ -3107,6 +3185,14 @@
         try {
           sessionStorage.setItem(SESSION_KEY, role);
         } catch (err) {
+          /* ignore */
+        }
+        /* Successful login cancels intentional sign-out hold. */
+        try {
+          window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+          sessionStorage.removeItem('gm-callout-intentional-sign-out');
+          localStorage.removeItem('gm-callout-intentional-sign-out');
+        } catch (_clrIso) {
           /* ignore */
         }
       }
@@ -3954,6 +4040,14 @@
               var appPrefetch = whenManagerAppReady();
               try {
                 await whenPortalAuthReady();
+                /* Clear intentional sign-out before auth so SIGNED_IN is not rejected. */
+                try {
+                  window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+                  sessionStorage.removeItem('gm-callout-intentional-sign-out');
+                  localStorage.removeItem('gm-callout-intentional-sign-out');
+                } catch (_clrIsoLogin) {
+                  /* ignore */
+                }
                 var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
                 if (!res.ok) {
                   if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
@@ -4247,6 +4341,12 @@
       function hardSignOutNow() {
         window.__GM_INTENTIONAL_SIGN_OUT__ = true;
         try {
+          sessionStorage.setItem('gm-callout-intentional-sign-out', '1');
+          localStorage.setItem('gm-callout-intentional-sign-out', '1');
+        } catch (_isoSet) {
+          /* ignore */
+        }
+        try {
           sessionStorage.removeItem('gm-callout-auth-session-backup');
         } catch (_bakClr) {
           /* ignore */
@@ -4256,6 +4356,21 @@
         } catch (_bakLsClr) {
           /* ignore */
         }
+        /* Drop portal role immediately so provisional shell cannot re-paint authed. */
+        try {
+          sessionStorage.removeItem(SESSION_KEY);
+          sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+        } catch (_ssEarly) {
+          /* ignore */
+        }
+        clearCompanySessionStorage();
+        clearSupabaseAuthStorageSync();
+        document.documentElement.classList.remove(
+          'authed',
+          'manager-app',
+          'employee-app',
+          'timeclock-app'
+        );
         (async function () {
           try {
             var flushTeam =
@@ -4280,9 +4395,12 @@
           } catch (_flushSo) {
             /* ignore — still sign out */
           }
+          /* Re-clear after flush — keep-alive / getSession used to re-write the backup. */
           try {
             sessionStorage.removeItem(SESSION_KEY);
             sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+            sessionStorage.removeItem('gm-callout-auth-session-backup');
+            localStorage.removeItem('gm-callout-auth-session-backup');
           } catch (_ss) {
             /* ignore */
           }
@@ -4448,17 +4566,17 @@
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
   <script defer src="employee-leave.js?v=perf-69"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-217"></script>
+  <script defer src="portal-auth-client.js?v=perf-219"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
-  <script defer src="availability-paint.js?v=perf-217"></script>
-  <script defer src="schedule-sync-v2.js?v=perf-217"></script>
+  <script defer src="availability-paint.js?v=perf-219"></script>
+  <script defer src="schedule-sync-v2.js?v=perf-219"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     /* Cells are SoT — do not apply/push schedule blobs (prevents cross-device rollbacks). */
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
   </script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-217"></script>
+  <script defer src="app.js?v=perf-219"></script>
   <script>
     /*
      * Role / feature modules after first paint:

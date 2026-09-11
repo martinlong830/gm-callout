@@ -998,6 +998,8 @@
           entry.workers = [entry.rowOwner];
         }
         if (cell.break_annotation) entry.break = String(cell.break_annotation);
+        else entry.break = null;
+        entry.breakExplicit = true;
         if (cell.break_paid === true || cell.break_paid === false) entry.breakPaid = !!cell.break_paid;
         entry.start = cell.start_hhmm;
         entry.end = cell.end_hhmm;
