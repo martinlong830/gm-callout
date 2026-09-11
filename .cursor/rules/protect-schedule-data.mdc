@@ -35,3 +35,4 @@ If schedule data looks wrong, **diagnose and report** (who/what week/cloud vs lo
 - Auto-repair, revive, Karl scrub, and seed-missing-weeks must not push to cloud
 - Admin and manager share the same cell poll / Refresh SoT path
 - Named `schedule_templates` are separate from cells: never replace a non-empty local library with remote `[]`
+- Never auto-delete / collapse schedule rows (no dedupe-drop, no trim during edit settle); only conscious row delete may deactivate slots

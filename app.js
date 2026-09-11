@@ -6440,8 +6440,14 @@
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
-      /* Mutating cleanup only on Refresh / trusted / hard assert — never on idle soft poll. */
-      if (mutatingRepair && !interactiveHold) {
+      /* Mutating cleanup only on Refresh / trusted / hard assert — never on idle soft poll.
+       * Also skip while manager/admin edits are settling — trim/reconcile must not
+       * auto-delete slots or roll back Person/time changes. */
+      if (
+        mutatingRepair &&
+        !interactiveHold &&
+        !scheduleAutoRowStructureBlocked(currentRestaurantId, targetWi)
+      ) {
         try {
           if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
             trimmed = true;
@@ -6506,9 +6512,7 @@
           } catch (_clr) {
             /* ignore */
           }
-          if (dedupeSamePersonRoleRowsForWeek(targetWi, currentRestaurantId)) {
-            trimmed = true;
-          }
+          /* dedupeSamePersonRoleRowsForWeek is a no-op — never auto-drop slots. */
         } catch (_trim2) {
           /* ignore */
         }
@@ -6797,6 +6801,17 @@
     if (!scheduleSyncV2Enabled() || !v2 || typeof v2.activeSlotCount !== 'function') {
       return false;
     }
+    /*
+     * Never chop draft rows while the manager is mid-edit — that deleted FOH lines
+     * and rolled back Person assigns. Peer delete-row still converges on Refresh
+     * after settle when activeSlotCount is lower.
+     */
+    if (
+      opts.weekIndex != null &&
+      scheduleAutoRowStructureBlocked(opts.restaurantId || currentRestaurantId, opts.weekIndex)
+    ) {
+      return false;
+    }
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var wiStart =
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : 0;
@@ -6978,6 +6993,8 @@
     if (!rid) return false;
     /* Hold while manager is adding/assigning a Person row — soft apply used to trim it. */
     if (schedulePersonRowProtectActive(rid, wi)) return false;
+    /* Never auto-drop slots during conscious edit settle (manager/admin). */
+    if (scheduleAutoRowStructureBlocked(rid, wi)) return false;
     var v2 = gmScheduleV2();
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var store = loadScheduleAssignmentsStore();
@@ -7946,78 +7963,39 @@
   }
 
   /** Collapse same-person duplicate rows within FOH or BOH for one week. */
+  /**
+   * Formerly collapsed duplicate timed rows with the same Person (kept first, dropped
+   * the rest). That deleted a real second FOH line when Eugene was on two active
+   * slots (Aug 24–30): manager reassigned one row, soft/Refresh dedupe still saw
+   * two Eugenes from cloud and removed a row minutes later.
+   * Same person on two slots is a data issue — never auto-drop rows.
+   */
   function dedupeSamePersonRoleRowsForWeek(weekIndex, restaurantId) {
-    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
-    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return false;
+    return false;
+  }
+
+  /**
+   * True while manager/admin edits must not be undone by auto trim / reconcile /
+   * ghost cleanup. Deactivate/delete of slots is conscious only (row × / delete).
+   */
+  function scheduleAutoRowStructureBlocked(restaurantId, weekIndex) {
     var rid = restaurantId || currentRestaurantId;
-    if (!rid) return false;
-    var store = loadScheduleAssignmentsStore();
-    if (!store[rid]) return false;
-    var rs = store[rid];
-    var weekStart = wi * 7;
-    var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
-    var changed = false;
-    ['Bartender', 'Kitchen'].forEach(function (role) {
-      var roleIdx = roleIdxForDraftRole(role);
-      if (roleIdx < 0 || !Array.isArray(layers[role])) return;
-      var seen = Object.create(null);
-      var keep = [];
-      for (var trIdx = 0; trIdx < layers[role].length; trIdx += 1) {
-        var rowHasTimed = false;
-        for (var diT = 0; diT < 7; diT += 1) {
-          var cellT = layers[role][trIdx] && layers[role][trIdx][diT];
-          if (cellT && cellT[0] && cellT[1]) {
-            rowHasTimed = true;
-            break;
-          }
-        }
-        var person = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays(), null, {
-          allowOtherWeeks: false,
-          allowStickyOwner: false,
-        });
-        var key = person && person !== 'Unassigned' ? normalizeWorkerKey(person) : '';
-        if (key && seen[key]) {
-          /*
-           * Collapse duplicate TIMED rows only. Never strip or drop an all-day-off
-           * Person row (Eugene on a newly added line) — soft poll dedupe used to
-           * clear rowOwner → Unassigned flicker.
-           */
-          if (!rowHasTimed) {
-            keep.push(layers[role][trIdx]);
-            continue;
-          }
-          for (var di = 0; di < 7; di += 1) {
-            delete rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx];
-          }
-          changed = true;
-          continue;
-        }
-        if (key) seen[key] = true;
-        keep.push(layers[role][trIdx]);
-        if (keep.length - 1 !== trIdx) {
-          /* Remap assignments down into compacted indices. */
-          var dest = keep.length - 1;
-          for (var d2 = 0; d2 < 7; d2 += 1) {
-            var oldId = 'shift-' + (weekStart + d2) + '-' + roleIdx + '-' + trIdx;
-            var newId = 'shift-' + (weekStart + d2) + '-' + roleIdx + '-' + dest;
-            if (oldId === newId) continue;
-            if (rs[oldId] != null) {
-              rs[newId] = rs[oldId];
-              delete rs[oldId];
-              changed = true;
-            }
-          }
-        }
-      }
-      if (keep.length !== layers[role].length) {
-        layers[role] = keep;
-        changed = true;
-      }
-    });
-    if (!changed) return false;
-    saveDraftScheduleRowsForWeek(wi, layers, rid);
-    saveScheduleAssignmentsStore(store, { skipDirty: true, skipInteractiveMark: true });
-    return true;
+    var wi =
+      weekIndex != null && !isNaN(Number(weekIndex))
+        ? Number(weekIndex)
+        : scheduleCalendarWeekIndex;
+    if (schedulePersonRowProtectActive(rid, wi)) return true;
+    if (scheduleLocalAuthorityActive()) return true;
+    if (scheduleDayOffPushGuardActive()) return true;
+    if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
+    if (hasInteractiveScheduleEditsThisSession()) return true;
+    try {
+      var pending = schedulePendingOutboxCellKeys();
+      if (pending && Object.keys(pending).length) return true;
+    } catch (_blk) {
+      /* ignore */
+    }
+    return false;
   }
 
   /**
@@ -8751,6 +8729,33 @@
               entry.workers = [prevName];
             }
           }
+          /*
+           * Soft poll must not roll back a conscious Person reassignment (e.g. second
+           * Eugene row → Jon) while the edit settle window is active.
+           */
+          if (upsertTimedOnly && prev && scheduleProtectLocalTimedFromSoftDayOff()) {
+            var localPerson =
+              (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
+              (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
+                ? prev.workers[0]
+                : '');
+            var cloudPerson =
+              (entry.rowOwner && entry.rowOwner !== 'Unassigned' && entry.rowOwner) ||
+              (entry.workers && entry.workers[0] && entry.workers[0] !== 'Unassigned'
+                ? entry.workers[0]
+                : '');
+            if (
+              localPerson &&
+              cloudPerson &&
+              !workerNamesMatch(localPerson, cloudPerson)
+            ) {
+              entry.rowOwner = localPerson;
+              entry.workers = [localPerson];
+            } else if (localPerson && !cloudPerson) {
+              entry.rowOwner = localPerson;
+              entry.workers = ['Unassigned'];
+            }
+          }
           if (
             !prev ||
             String(prev.rowOwner || '') !== String(entry.rowOwner || '') ||
@@ -9081,21 +9086,24 @@
           opts.replaceWeekIndex != null && !isNaN(Number(opts.replaceWeekIndex))
             ? Number(opts.replaceWeekIndex)
             : scheduleCalendarWeekIndex;
-        if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
-          changed = true;
-        }
-        var trimWeeks = Object.create(null);
-        trimWeeks[trimWi] = true;
-        Object.keys(replaceWeeks).forEach(function (k) {
-          trimWeeks[k] = true;
-        });
-        Object.keys(trimWeeks).forEach(function (wiStr) {
-          var tw = Number(wiStr);
-          if (isNaN(tw)) return;
-          restaurantsList.forEach(function (rest) {
-            if (trimTrailingGhostScheduleSlots(tw, rest.id)) changed = true;
+        if (!scheduleAutoRowStructureBlocked(null, trimWi)) {
+          if (reconcileLocalScheduleToActiveSlots({ weekIndex: trimWi })) {
+            changed = true;
+          }
+          var trimWeeks = Object.create(null);
+          trimWeeks[trimWi] = true;
+          Object.keys(replaceWeeks).forEach(function (k) {
+            trimWeeks[k] = true;
           });
-        });
+          Object.keys(trimWeeks).forEach(function (wiStr) {
+            var tw = Number(wiStr);
+            if (isNaN(tw)) return;
+            if (scheduleAutoRowStructureBlocked(null, tw)) return;
+            restaurantsList.forEach(function (rest) {
+              if (trimTrailingGhostScheduleSlots(tw, rest.id)) changed = true;
+            });
+          });
+        }
       }
     } finally {
       endTeamStateRemoteApply();
@@ -10374,13 +10382,15 @@
       }
       reconcileLocalScheduleToActiveSlots({ weekIndex: weekIndex });
       clearPhantomRowOwnersForEmptySlots(weekIndex, currentRestaurantId);
-      trimTrailingGhostScheduleSlots(weekIndex, currentRestaurantId);
+      if (!scheduleAutoRowStructureBlocked(currentRestaurantId, weekIndex)) {
+        trimTrailingGhostScheduleSlots(weekIndex, currentRestaurantId);
+      }
       repairFlippedFohBohRolesForWeek(weekIndex, currentRestaurantId, {
         skipDirty: true,
         skipInteractiveMark: true,
         writeCloud: false,
       });
-      dedupeSamePersonRoleRowsForWeek(weekIndex, currentRestaurantId);
+      /* dedupe is a no-op — never auto-drop slots. */
     } catch (_rep) {
       console.warn('gm-callout: trusted week replace before paint', _rep);
     }
@@ -11901,13 +11911,15 @@
     try {
       reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex });
       clearPhantomRowOwnersForEmptySlots(scheduleCalendarWeekIndex, currentRestaurantId);
-      trimTrailingGhostScheduleSlots(scheduleCalendarWeekIndex, currentRestaurantId);
+      if (!scheduleAutoRowStructureBlocked(currentRestaurantId, scheduleCalendarWeekIndex)) {
+        trimTrailingGhostScheduleSlots(scheduleCalendarWeekIndex, currentRestaurantId);
+      }
       repairFlippedFohBohRolesForWeek(scheduleCalendarWeekIndex, currentRestaurantId, {
         skipDirty: true,
         skipInteractiveMark: true,
         writeCloud: false,
       });
-      dedupeSamePersonRoleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId);
+      /* dedupe is a no-op — never auto-drop slots. */
     } catch (_refTrim) {
       /* ignore */
     }
