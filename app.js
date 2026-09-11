@@ -6145,16 +6145,25 @@
            * Never clear local authority while a Person-row protect is armed — add-slot
            * flush finishing after an Eugene assign used to open a race where soft poll
            * stomped the new stubs before cloud echoed them.
+           * Also keep a brief settle after timed edits so soft day-off cannot snap back
+           * before the cloud replica shows the new times.
            */
           if (
-            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)
+            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
+            !scheduleProtectLocalTimedFromSoftDayOff()
           ) {
             scheduleLocalAuthorityUntil = 0;
+          } else if (
+            scheduleInteractiveEditAt &&
+            Date.now() - scheduleInteractiveEditAt < SCHEDULE_TIMED_EDIT_SETTLE_MS
+          ) {
+            armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
           }
           void broadcastScheduleCellsChanged();
         } else if (res && res.ok && res.empty) {
           if (
-            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)
+            !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
+            !scheduleProtectLocalTimedFromSoftDayOff()
           ) {
             scheduleLocalAuthorityUntil = 0;
           }
@@ -6242,6 +6251,15 @@
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
     if (Date.now() < scheduleHardRevertGuardUntil) return false;
+    /*
+     * Soft idle/peer polls never overwrite local edits / deletes / hard revert /
+     * template apply. Refresh (force) and hard-peer forceDayOffReplace still run.
+     */
+    var softOnly =
+      !opts.force &&
+      !opts.cloudAuthorityReplace &&
+      !opts.forceDayOffReplace;
+    if (softOnly && scheduleSoftPollApplyFrozen()) return false;
     /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     var cid = gmCalloutCompanyId();
@@ -6283,6 +6301,9 @@
       var cellsRes = pair[1];
       if (slotsRes && slotsRes.ok === false) return false;
       if (cellsRes && cellsRes.ok === false) return false;
+      /* Re-check after await — user may have edited / deleted / applied template mid-fetch. */
+      if (softOnly && scheduleSoftPollApplyFrozen()) return false;
+      if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
       /*
        * Soft idle polls must only merge cell upserts. reconcile/trim/dedupe/restore
        * used to run every 5s and chop newly added Eugene rows / reshuffle the grid
@@ -6648,7 +6669,8 @@
         armScheduleLocalAuthority(6000);
         armScheduleDayOffPushGuard();
       } else {
-        scheduleLocalAuthorityUntil = 0;
+        /* Timed edit: keep authority through settle — clearing here snapped Eugene to DAY-OFF. */
+        armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
       }
       return res || { ok: true };
     });
@@ -6667,7 +6689,8 @@
     }
     var rid = restaurantId || currentRestaurantId;
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
-    armScheduleLocalAuthority(4000);
+    markScheduleInteractiveEdit();
+    armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
     armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
     var byRole = {};
     deletes.forEach(function (d) {
@@ -8575,7 +8598,8 @@
             if (ridTimedG < 4 && localRidTimedG >= 4) return;
             if (ridTimedG <= 0 && localRidTimedG > 0) return;
           }
-          /* Day-offs from soft upsert: timed local shift, Person identity, OR draft still timed. */
+          /* Day-offs from soft upsert: timed local shift, Person identity, OR draft still timed.
+           * Never during the post-edit settle window — that snapped Eugene Mon back to DAY-OFF. */
           if (cell.dayOff && !replaceWeeks[wi]) {
             var softDayOffPerson =
               (cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
@@ -8586,6 +8610,12 @@
               roleDefDayOff &&
               wkDayOff &&
               !!draftTimeSlotFor(roleDefDayOff.role, wkDayOff, p.trIdx, wi, rid);
+            if (
+              scheduleProtectLocalTimedFromSoftDayOff() &&
+              (prevWasTimed || localDraftStillTimed)
+            ) {
+              return;
+            }
             if (
               !(
                 upsertTimedOnly &&
@@ -8958,6 +8988,9 @@
            */
           if (cell.dayOff || !cell.start || !cell.end) {
             if (upsertTimedOnly && cell.dayOff && row[di] && row[di][0] && row[di][1]) {
+              if (scheduleProtectLocalTimedFromSoftDayOff()) {
+                return;
+              }
               var weekTimedNDraft = countTimedCellsInPatchWeek(patch, wi);
               if (softDayOffGrow || weekTimedNDraft >= 4 || !!opts.cloudAuthorityReplace) {
                 row[di] = null;
@@ -9548,6 +9581,26 @@
       Date.now() + (ms != null ? Number(ms) : 20000)
     );
   }
+
+  /**
+   * After a timed cell edit flushes, soft polls used to immediately re-apply a stale
+   * cloud day-off (Eugene Mon snap-back). Hold local timed cells briefly for replica lag.
+   */
+  var SCHEDULE_TIMED_EDIT_SETTLE_MS = 15000;
+
+  function scheduleProtectLocalTimedFromSoftDayOff() {
+    if (scheduleLocalAuthorityActive()) return true;
+    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
+    if (
+      scheduleInteractiveEditAt &&
+      Date.now() - scheduleInteractiveEditAt < SCHEDULE_TIMED_EDIT_SETTLE_MS
+    ) {
+      return true;
+    }
+    return false;
+  }
   /**
    * Gate Schedule matrix until the first visible-week slots+cells apply finishes.
    * Legacy comment said "always false" for speed — that painted DEFAULT / day-off
@@ -9622,40 +9675,47 @@
     /* Conscious edit may push to cloud; sticky "Load cloud" must not discard day-offs. */
     if (schedulePreferCloudOnConflict) setPreferCloudOnConflict(false);
     armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
+    /* Hold soft poll for the full settle window (edits, deletes, template, revert). */
+    armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+  }
+
+  /**
+   * Soft poll / peer merge must not paint over in-flight local work:
+   * normal edits, × day-off / shift delete, hard revert, template apply.
+   * Manual Refresh and forceDayOffReplace peers still pass opts.force.
+   */
+  function scheduleSoftPollApplyFrozen() {
+    if (teamStateForcePushActive) return true;
+    if (Date.now() < scheduleHardRevertGuardUntil) return true;
+    if (scheduleV2FlushPromise) return true;
+    if (scheduleLocalAuthorityActive()) return true;
+    if (scheduleDayOffPushGuardActive()) return true;
+    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
     /*
-     * Brief gate only until ops hit the outbox (fetchSlots → enqueue). After flush,
-     * cloud is SoT again — long authority windows caused snap-back.
+     * Settle after any interactive edit — flush ack used to clear authority and let
+     * soft day-off snap Eugene/Mark shifts back within seconds.
      */
-    armScheduleLocalAuthority(8000);
+    if (hasInteractiveScheduleEditsThisSession()) return true;
+    if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
+    try {
+      var pending = schedulePendingOutboxCellKeys();
+      if (pending && Object.keys(pending).length) return true;
+    } catch (_pend) {
+      /* ignore */
+    }
+    return false;
   }
 
   /**
    * True when remote ISO cells must not overwrite the local calendar.
    *
-   * HARD RULE (write-only): block only while a flush is in flight, force-push /
-   * hard-revert is active, or a brief slot-key authority window is armed.
-   * A non-empty outbox alone must NOT freeze peer apply — that left other
-   * devices stuck until this machine went idle. Pending ops are skipped
-   * per-cell in applyScheduleCellsCacheToLocalStore.
+   * Soft polls honor scheduleSoftPollApplyFrozen. Force Refresh / hard-peer replace
+   * pass opts.force and still apply. Pending ops are also skipped per-cell in apply.
    */
   function scheduleCellRemoteApplyBlocked() {
-    if (teamStateForcePushActive) return true;
-    if (Date.now() < scheduleHardRevertGuardUntil) return true;
-    if (scheduleV2FlushPromise) return true;
-    /*
-     * Brief gate while building ops (fetchSlots → enqueue). Cleared as soon as ops
-     * land in the outbox; not a multi-minute authority window.
-     */
-    if (scheduleLocalAuthorityActive()) return true;
-    /*
-     * Day-off × must not be soft-resurrected by a stale cells fetch (delete Mon, then
-     * delete Tue → Mon came back from an in-flight poll).
-     */
-    if (scheduleDayOffPushGuardActive()) return true;
-    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
-      return true;
-    }
-    return false;
+    return scheduleSoftPollApplyFrozen();
   }
 
   /** Absolute block — even Refresh/force must not stomp an in-progress Person-row add. */
@@ -9675,8 +9735,22 @@
       var op = box[i];
       if (!op || !op.payload) continue;
       var t = op.op_type;
-      if (t !== 'set_times' && t !== 'set_worker' && t !== 'set_day_off') continue;
+      if (
+        t !== 'set_times' &&
+        t !== 'set_worker' &&
+        t !== 'set_day_off' &&
+        t !== 'deactivate_slot' &&
+        t !== 'add_slot' &&
+        t !== 'clear_worker'
+      ) {
+        continue;
+      }
       var p = op.payload;
+      if (t === 'deactivate_slot' || t === 'add_slot') {
+        /* Structure ops: freeze soft apply for the whole settle; no per-cell key. */
+        keys['__structure__'] = true;
+        continue;
+      }
       if (!p.day_iso || !p.slot_key || !p.role) continue;
       keys[v2.cellKey(p.restaurant_id, p.day_iso, p.role, p.slot_key)] = true;
     }
@@ -9702,6 +9776,10 @@
     if (!scheduleInteractiveEditAt) return false;
     if (scheduleLocalAuthorityActive()) return true;
     if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
+    /* Settle window: flush ack must not instantly open soft day-off snap-back. */
+    if (Date.now() - scheduleInteractiveEditAt < SCHEDULE_TIMED_EDIT_SETTLE_MS) {
       return true;
     }
     if (scheduleSyncV2WriteOnly()) {
