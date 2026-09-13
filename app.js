@@ -2583,6 +2583,10 @@
     if (!review) return { ok: false, message: 'Review not found.' };
     var rid = review.restaurantId;
     var wi = weekIndexForReviewMonday(review.weekMondayIso);
+    /* Freeze soft poll before local writes so peers cannot resurrect pre-approval cells. */
+    markScheduleInteractiveEdit();
+    scheduleHardRevertGuardUntil = Date.now() + 120000;
+    armScheduleLocalAuthority(120000);
     var draft = cloneDraftSchedule(review.proposal.draft);
     saveDraftScheduleRowsForWeek(wi, draft, rid);
     var store = loadScheduleAssignmentsStore();
@@ -2593,6 +2597,7 @@
       wi
     );
     saveScheduleAssignmentsStore(store);
+    syncAssignmentTimesFromDraftForWeek(wi, rid);
     review.status = 'accepted';
     review.updatedAt = new Date().toISOString();
     review.lastActor = scheduleReviewActor();
@@ -2605,8 +2610,9 @@
       rebuildSchedule({ weekIndex: wi, preserveOtherWeeks: true });
       renderCalendar({ force: true });
       if (scheduleBody) renderSchedule();
+      notifyTimecardsScheduleChanged();
     });
-    return { ok: true };
+    return { ok: true, restaurantId: rid, weekIndex: wi };
   }
 
   function appendReviewCellHistory(review, cellKey, entry) {
@@ -3841,29 +3847,57 @@
         if (bulkBtn2) bulkBtn2.disabled = true;
         var metaEl = document.getElementById('scheduleReviewModalMeta');
         var hintEl = document.getElementById('scheduleReviewHint');
-        void pushScheduleReviewsToCloudNow()
-          .catch(function () {
-            /* ignore */
-          })
-          .then(function () {
-            var confirmedLabel = gmT('schedule.reviewConfirmed') || 'Confirmed';
-            var appliedMsg =
-              gmT('schedule.reviewApplied') || 'Proposal applied to the live schedule.';
-            accept.textContent = confirmedLabel;
-            if (metaEl) {
-              metaEl.textContent =
-                gmT('schedule.reviewConfirmedApplyMeta') ||
-                'Confirmed — applied to the live schedule.';
-            }
-            if (hintEl) hintEl.textContent = appliedMsg;
-            if (typeof showScheduleNotice === 'function') {
-              showScheduleNotice(confirmedLabel + ' — ' + appliedMsg, false);
-            }
-            updateScheduleReviewToolbarUi();
-            setTimeout(function () {
-              closeScheduleReviewModal();
-            }, 1400);
-          });
+        var applyRid = merged.restaurantId || live.restaurantId;
+        var applyWi =
+          merged.weekIndex != null
+            ? merged.weekIndex
+            : weekIndexForReviewMonday(live.weekMondayIso);
+        void (async function () {
+          try {
+            await pushScheduleReviewsToCloudNow();
+          } catch (_revPush) {
+            /* ignore — live week stamp still required */
+          }
+          var syncRes = { ok: false, cellsOk: false };
+          try {
+            syncRes = await assertAuthoritativeScheduleWeekToCloud({
+              restaurantId: applyRid,
+              weekIndex: applyWi,
+              alignSlots: true,
+            });
+          } catch (syncErr) {
+            console.warn('gm-callout: approval apply cloud sync', syncErr);
+            syncRes = { ok: false, cellsOk: false };
+          }
+          var confirmedLabel = gmT('schedule.reviewConfirmed') || 'Confirmed';
+          var appliedMsg =
+            gmT('schedule.reviewApplied') || 'Proposal applied to the live schedule.';
+          if (syncRes && syncRes.cellsOk) {
+            appliedMsg +=
+              ' ' +
+              (gmT('schedule.reviewAppliedCloud') ||
+                'Cloud updated — other devices will match.');
+          } else if (!syncRes || !syncRes.ok) {
+            appliedMsg +=
+              ' ' +
+              (gmT('schedule.reviewAppliedCloudIncomplete') ||
+                'Cloud sync incomplete — click Save to cloud, then Refresh on other computers.');
+          }
+          accept.textContent = confirmedLabel;
+          if (metaEl) {
+            metaEl.textContent =
+              gmT('schedule.reviewConfirmedApplyMeta') ||
+              'Confirmed — applied to the live schedule.';
+          }
+          if (hintEl) hintEl.textContent = appliedMsg;
+          if (typeof showScheduleNotice === 'function') {
+            showScheduleNotice(confirmedLabel + ' — ' + appliedMsg, !!(syncRes && syncRes.ok));
+          }
+          updateScheduleReviewToolbarUi();
+          setTimeout(function () {
+            closeScheduleReviewModal();
+          }, 1400);
+        })();
       });
     }
   }
@@ -4031,6 +4065,7 @@
       persistTeamStateDirtyFlags();
       await flushTeamStateSyncNow();
       try {
+        cancelPendingScheduleRevisionAutosave();
         void insertScheduleRevisionRow({
           source: 'publish',
           assignments: loadScheduleAssignmentsStore(),
@@ -6150,7 +6185,9 @@
            */
           if (
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
-            !scheduleProtectLocalTimedFromSoftDayOff()
+            !scheduleProtectLocalTimedFromSoftDayOff() &&
+            !scheduleDayOffPushGuardActive() &&
+            !scheduleProtectLocalDayOffFromSoftTimedApply()
           ) {
             scheduleLocalAuthorityUntil = 0;
           } else if (
@@ -6163,7 +6200,9 @@
         } else if (res && res.ok && res.empty) {
           if (
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
-            !scheduleProtectLocalTimedFromSoftDayOff()
+            !scheduleProtectLocalTimedFromSoftDayOff() &&
+            !scheduleDayOffPushGuardActive() &&
+            !scheduleProtectLocalDayOffFromSoftTimedApply()
           ) {
             scheduleLocalAuthorityUntil = 0;
           }
@@ -6391,6 +6430,7 @@
       if (!cloudAuthority && typeof v2.projectCellsToAssignmentPatch === 'function') {
         var allowStaleDayOffPull =
           !scheduleProtectLocalTimedFromSoftDayOff() &&
+          !scheduleProtectLocalDayOffFromSoftTimedApply() &&
           !scheduleDayOffPushGuardActive() &&
           !scheduleLocalAuthorityActive() &&
           !schedulePersonRowProtectActive(currentRestaurantId, targetWi);
@@ -6684,8 +6724,8 @@
       return flushScheduleV2Outbox();
     }).then(function (res) {
       if (isDayOff) {
-        /* Keep soft polls blocked briefly after day-off flush (replica lag). */
-        armScheduleLocalAuthority(6000);
+        /* Same settle as timed edits — short 6s window lost to soft-poll races. */
+        armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
         armScheduleDayOffPushGuard();
       } else {
         /* Timed edit: keep authority through settle — clearing here snapped Eugene to DAY-OFF. */
@@ -9656,6 +9696,10 @@
   /** Content hash of the last auto-save — skip checkpoints when unchanged (e.g. overnight). */
   var scheduleRevisionLastAutoSaveHash = null;
   var scheduleRevisionRetryTimer = null;
+  /** Prevent parallel revision inserts (double publish / overlapping flush). */
+  var scheduleRevisionInsertInFlight = false;
+  /** Manual Save point click guard. */
+  var scheduleSavePointBusy = false;
   var tipPayrollPushTimer = null;
   /** Snapshot of tip/VL/SL stores last applied from (or confirmed to) Supabase — push only overlays session edits. */
   var tipPayrollRemoteBaseline = { tipPool: {}, dishwasher: {}, weekExtras: {} };
@@ -9784,10 +9828,18 @@
   }
 
   function armScheduleDayOffPushGuard() {
-    /* Sticky force-push so tip/meta updated_at bumps cannot block the day-off upsert. */
+    /* Sticky force-push so tip/meta updated_at bumps cannot block the day-off upsert.
+     * Hold for the full timed-edit settle window so soft poll cannot resurrect times
+     * before cloud / peers echo the day-off. */
     teamStateForcePushIgnoreVersionSticky = true;
-    scheduleDayOffPushGuardUntil =
-      Date.now() + Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000;
+    scheduleDayOffPushGuardUntil = Math.max(
+      scheduleDayOffPushGuardUntil || 0,
+      Date.now() +
+        Math.max(
+          SCHEDULE_TIMED_EDIT_SETTLE_MS,
+          Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) + 2000
+        )
+    );
   }
 
   /**
@@ -12611,18 +12663,77 @@
     return !source || source === 'persist' || source === 'auto';
   }
 
+  function cancelPendingScheduleRevisionAutosave() {
+    if (scheduleRevisionInsertTimer) {
+      clearTimeout(scheduleRevisionInsertTimer);
+      scheduleRevisionInsertTimer = null;
+    }
+    if (scheduleRevisionRetryTimer) {
+      clearTimeout(scheduleRevisionRetryTimer);
+      scheduleRevisionRetryTimer = null;
+    }
+    scheduleRevisionPending = null;
+  }
+
+  /**
+   * Drop consecutive duplicate auto/persist rows (same content_hash) and same-second
+   * twin inserts so History does not show identical timestamps stacked.
+   */
+  function collapseScheduleHistoryRows(rows) {
+    var list = Array.isArray(rows) ? rows.slice() : [];
+    var out = [];
+    list.forEach(function (r) {
+      if (!r || !r.id) return;
+      var prev = out.length ? out[out.length - 1] : null;
+      if (prev && r.content_hash && prev.content_hash && prev.content_hash === r.content_hash) {
+        var prevAuto = isScheduleRevisionAutoSource(prev.source);
+        var curAuto = isScheduleRevisionAutoSource(r.source);
+        if (prevAuto && curAuto) return;
+        var prevSec = String(prev.created_at || '').slice(0, 19);
+        var curSec = String(r.created_at || '').slice(0, 19);
+        if (
+          prevSec &&
+          curSec &&
+          prevSec === curSec &&
+          String(prev.source || '') !== 'manual' &&
+          String(r.source || '') !== 'manual'
+        ) {
+          return;
+        }
+      }
+      out.push(r);
+    });
+    return out;
+  }
+
   function queueScheduleRevisionInsert(opts) {
     opts = opts || {};
-    var source = opts.source || 'persist';
-    if (isScheduleRevisionAutoSource(source)) {
-      var pendingHash = hashScheduleBundle(
-        opts.assignments != null ? opts.assignments : loadScheduleAssignmentsStore(),
-        opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+    var source = opts.source || 'auto';
+    /* Publish / hard-revert / manual insert themselves — never queue those as autosaves. */
+    if (!isScheduleRevisionAutoSource(source)) return;
+    source = 'auto';
+    opts = Object.assign({}, opts, { source: source });
+    var pendingHash = hashScheduleBundle(
+      opts.assignments != null ? opts.assignments : loadScheduleAssignmentsStore(),
+      opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+    );
+    /* No schedule changes since last auto-save — do not arm a 30‑minute timer. */
+    if (scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === pendingHash) {
+      return;
+    }
+    /* Still inside the 30‑minute auto-save gap — retry once the gap elapses. */
+    if (
+      scheduleRevisionLastAutoSaveAt &&
+      Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
+    ) {
+      scheduleRevisionPending = opts;
+      scheduleRevisionRetryAfterGap(
+        opts,
+        SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
+          (Date.now() - scheduleRevisionLastAutoSaveAt) +
+          250
       );
-      /* No schedule changes since last auto-save — do not arm a 30‑minute timer. */
-      if (scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === pendingHash) {
-        return;
-      }
+      return;
     }
     scheduleRevisionPending = opts;
     if (scheduleRevisionInsertTimer) clearTimeout(scheduleRevisionInsertTimer);
@@ -12630,22 +12741,22 @@
       clearTimeout(scheduleRevisionRetryTimer);
       scheduleRevisionRetryTimer = null;
     }
-    var quietMs = isScheduleRevisionAutoSource(source)
-      ? SCHEDULE_REVISION_AUTOSAVE_QUIET_MS
-      : 400;
+    /* Quiet period: only write after edits settle for 30 minutes. */
     scheduleRevisionInsertTimer = setTimeout(function () {
       scheduleRevisionInsertTimer = null;
       var pending = scheduleRevisionPending;
       scheduleRevisionPending = null;
       if (pending) void insertScheduleRevisionRow(pending);
-    }, quietMs);
+    }, SCHEDULE_REVISION_AUTOSAVE_QUIET_MS);
   }
 
   function scheduleRevisionRetryAfterGap(opts, waitMs) {
     if (scheduleRevisionRetryTimer) clearTimeout(scheduleRevisionRetryTimer);
     scheduleRevisionRetryTimer = setTimeout(function () {
       scheduleRevisionRetryTimer = null;
-      void insertScheduleRevisionRow(opts || {});
+      var next = opts || scheduleRevisionPending || {};
+      if (!isScheduleRevisionAutoSource(next.source)) return;
+      void insertScheduleRevisionRow(Object.assign({}, next, { source: 'auto' }));
     }, Math.max(1000, waitMs || SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS));
   }
 
@@ -12658,12 +12769,52 @@
     var draft =
       opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore);
     var contentHash = hashScheduleBundle(assignments, draft);
-    var source = opts.source || 'persist';
+    var source = opts.source || 'auto';
+    if (isScheduleRevisionAutoSource(source)) source = 'auto';
     var isAuto = isScheduleRevisionAutoSource(source);
     /* Auto-save only when the schedule changed since the last auto-save checkpoint. */
     if (isAuto && scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === contentHash) {
       return { ok: true, skipped: true };
     }
+    if (
+      isAuto &&
+      scheduleRevisionLastAutoSaveAt &&
+      Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
+    ) {
+      scheduleRevisionRetryAfterGap(
+        {
+          source: 'auto',
+          assignments: assignments,
+          draft: draft,
+          published: opts.published,
+          label: opts.label,
+        },
+        SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
+          (Date.now() - scheduleRevisionLastAutoSaveAt) +
+          250
+      );
+      return { ok: true, skipped: 'too_soon' };
+    }
+    if (scheduleRevisionInsertInFlight) {
+      if (isAuto) {
+        scheduleRevisionPending = {
+          source: 'auto',
+          assignments: assignments,
+          draft: draft,
+          published: opts.published,
+          label: opts.label,
+        };
+        return { ok: true, skipped: 'in_flight' };
+      }
+      /* Manual / publish / revert: wait briefly for the in-flight insert. */
+      var waitStart = Date.now();
+      while (scheduleRevisionInsertInFlight && Date.now() - waitStart < 8000) {
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 100);
+        });
+      }
+    }
+    scheduleRevisionInsertInFlight = true;
     try {
       if (opts.dedupe !== false) {
         var latest = await sb
@@ -12675,7 +12826,7 @@
           .maybeSingle();
         if (!latest.error && latest.data) {
           if (latest.data.content_hash === contentHash) {
-            if (isAuto) {
+            if (isAuto || isScheduleRevisionAutoSource(latest.data.source)) {
               scheduleRevisionLastAutoSaveHash = contentHash;
               if (latest.data.created_at) {
                 var matchedAt = new Date(latest.data.created_at).getTime();
@@ -12688,10 +12839,10 @@
             var latestAt = new Date(latest.data.created_at).getTime();
             var gapLeft =
               SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS - (Date.now() - latestAt);
-            if (!isNaN(latestAt) && gapLeft > 0) {
+            if (!isNaN(latestAt) && gapLeft > 0 && isScheduleRevisionAutoSource(latest.data.source)) {
               scheduleRevisionRetryAfterGap(
                 {
-                  source: source,
+                  source: 'auto',
                   assignments: assignments,
                   draft: draft,
                   published: opts.published,
@@ -12703,25 +12854,6 @@
             }
           }
         }
-      }
-      if (
-        isAuto &&
-        scheduleRevisionLastAutoSaveAt &&
-        Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
-      ) {
-        scheduleRevisionRetryAfterGap(
-          {
-            source: source,
-            assignments: assignments,
-            draft: draft,
-            published: opts.published,
-            label: opts.label,
-          },
-          SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
-            (Date.now() - scheduleRevisionLastAutoSaveAt) +
-            250
-        );
-        return { ok: true, skipped: 'too_soon' };
       }
       var uid = null;
       try {
@@ -12744,15 +12876,38 @@
         console.warn('gm-callout: schedule revision insert', ins.error);
         return { ok: false, error: ins.error.message };
       }
+      scheduleRevisionLastAutoSaveHash = contentHash;
       if (isAuto) {
         scheduleRevisionLastAutoSaveAt = Date.now();
-        scheduleRevisionLastAutoSaveHash = contentHash;
+      } else if (source === 'manual') {
+        /* Manual checkpoint counts toward the 30‑minute auto gap. */
+        scheduleRevisionLastAutoSaveAt = Date.now();
       }
       void pruneScheduleRevisions(teamStateId);
-      return { ok: true };
+      return { ok: true, contentHash: contentHash };
     } catch (e) {
       console.warn('gm-callout: schedule revision insert', e);
       return { ok: false };
+    } finally {
+      scheduleRevisionInsertInFlight = false;
+      if (scheduleRevisionPending && isScheduleRevisionAutoSource(scheduleRevisionPending.source)) {
+        var leftover = scheduleRevisionPending;
+        scheduleRevisionPending = null;
+        if (
+          !scheduleRevisionLastAutoSaveHash ||
+          scheduleRevisionLastAutoSaveHash !==
+            hashScheduleBundle(
+              leftover.assignments != null
+                ? leftover.assignments
+                : loadScheduleAssignmentsStore(),
+              leftover.draft != null
+                ? leftover.draft
+                : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
+            )
+        ) {
+          queueScheduleRevisionInsert(leftover);
+        }
+      }
     }
   }
 
@@ -13356,12 +13511,18 @@
               persistSchedulePushGuard();
             }
             clearScheduleSyncConflictState();
-            queueScheduleRevisionInsert({
-              source: pushedPublished ? 'publish' : 'persist',
-              assignments: guardAssign,
-              draft: guardDraft,
-              published: pushedPublished ? payload.schedule_published : schedulePublishedPayload(),
-            });
+            /*
+             * Autosave only — publish already inserts its own revision row.
+             * Queueing source "publish" here used to create duplicate same-second History entries.
+             */
+            if (!pushedPublished) {
+              queueScheduleRevisionInsert({
+                source: 'auto',
+                assignments: guardAssign,
+                draft: guardDraft,
+                published: schedulePublishedPayload(),
+              });
+            }
           }
         } else {
           persistSchedulePushGuard();
@@ -18238,7 +18399,8 @@
       /* Guard before any write so an in-flight cell poll cannot clobber this edit. */
       armScheduleLocalAuthority(4000);
       markScheduleInteractiveEdit();
-      pushScheduleUndoSnapshot();
+      /* Drag move/copy apply multiple cells under one undo snapshot. */
+      if (!opts.skipUndo) pushScheduleUndoSnapshot();
     }
     var rows = templateScratch
       ? cloneDraftSchedule(scheduleTemplateEditorState.draft)
@@ -18376,9 +18538,7 @@
         .then(function () {
           scheduleDayOffPushGuardUntil = Math.max(
             scheduleDayOffPushGuardUntil,
-            (teamStateLastLocalPushAt || Date.now()) +
-              Math.max(TEAM_STATE_SELF_ECHO_IGNORE_MS, TEAM_STATE_POLL_MS) +
-              2000
+            (teamStateLastLocalPushAt || Date.now()) + SCHEDULE_TIMED_EDIT_SETTLE_MS
           );
           if (
             !scheduleSyncV2WriteOnly() &&
@@ -18494,6 +18654,8 @@
   var SCHEDULE_UNDO_MAX = 40;
   var scheduleUndoStack = [];
   var scheduleUndoSuppressPush = false;
+  /** True while undo restore + cloud stamp is in flight. */
+  var scheduleUndoBusy = false;
 
   function cloneScheduleUndoSnapshot() {
     return {
@@ -18519,7 +18681,7 @@
   }
 
   function updateScheduleUndoButtons() {
-    var enabled = scheduleUndoStack.length > 0;
+    var enabled = scheduleUndoStack.length > 0 && !scheduleUndoBusy;
     ['scheduleUndoBtn', 'undoDraftScheduleBtn'].forEach(function (id) {
       var btn = document.getElementById(id);
       if (btn) btn.disabled = !enabled;
@@ -18544,7 +18706,11 @@
   function restoreScheduleUndoSnapshot(snap) {
     scheduleUndoSuppressPush = true;
     try {
+      /* Freeze soft poll before local restore — cell stamp follows in undoScheduleChange. */
       markScheduleInteractiveEdit();
+      scheduleHardRevertGuardUntil = Date.now() + 120000;
+      armScheduleLocalAuthority(120000);
+      armScheduleConsciousCloudWrite(120000);
       localStorage.setItem(SCHEDULE_ASSIGN_KEY, JSON.stringify(snap.assignments));
       bustScheduleAssignmentsMemCache();
       if (GM_SUPABASE_DATA && window.gmSupabase) scheduleAssignmentsDirty = true;
@@ -18586,8 +18752,9 @@
       rebuildSchedule();
       renderCalendar();
       if (scheduleBody) renderSchedule();
+      /* Blob dirty only — ISO cells are stamped by assertAuthoritative after undo. */
       scheduleTeamStateDebouncedSync();
-      flushTeamStateSyncNow();
+      persistTeamStateDirtyFlags();
     } finally {
       scheduleUndoSuppressPush = false;
     }
@@ -18597,8 +18764,10 @@
 
   function undoScheduleChange() {
     if (!managerCanEditCurrentRestaurant()) return;
-    if (!scheduleUndoStack.length) return;
+    if (!scheduleUndoStack.length || scheduleUndoBusy) return;
     var prev = scheduleUndoStack.pop();
+    scheduleUndoBusy = true;
+    updateScheduleUndoButtons();
     restoreScheduleUndoSnapshot(prev);
     if (typeof draftScheduleModal !== 'undefined' && draftScheduleModal && !draftScheduleModal.hidden) {
       draftModalScratch = cloneDraftSchedule(
@@ -18612,8 +18781,64 @@
       if (typeof renderDraftScheduleTable === 'function') renderDraftScheduleTable();
     }
     if (typeof showScheduleNotice === 'function') {
-      showScheduleNotice('Undid last schedule change.', false);
+      showScheduleNotice(
+        gmT('schedule.undoSyncing') ||
+          'Undid locally — saving to cloud so every device matches…',
+        false
+      );
     }
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    void Promise.resolve(
+      assertAuthoritativeScheduleWeekToCloud({
+        restaurantId: rid,
+        weekIndex: wi,
+        alignSlots: true,
+      })
+    )
+      .then(function (syncRes) {
+        if (!syncRes || (!syncRes.ok && !syncRes.cellsOk && !syncRes.pushOk)) {
+          if (typeof showScheduleNotice === 'function') {
+            showScheduleNotice(
+              gmT('schedule.undoCloudFailed') ||
+                'Undid on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
+              false
+            );
+          }
+          return;
+        }
+        if (!syncRes.cellsOk) {
+          if (typeof showScheduleNotice === 'function') {
+            showScheduleNotice(
+              gmT('schedule.undoCloudIncomplete') ||
+                'Undid here, but cloud cells may be incomplete — click Save to cloud, then Refresh on other computers.',
+              false
+            );
+          }
+          return;
+        }
+        if (typeof showScheduleNotice === 'function') {
+          showScheduleNotice(
+            gmT('schedule.undoDone') ||
+              'Undid last schedule change. Cloud updated — other devices will match.',
+            true
+          );
+        }
+      })
+      .catch(function (err) {
+        console.warn('gm-callout: undo cloud sync', err);
+        if (typeof showScheduleNotice === 'function') {
+          showScheduleNotice(
+            gmT('schedule.undoCloudFailed') ||
+              'Undid on this device, but cloud sync failed. Keep this tab open and try Save to cloud.',
+            false
+          );
+        }
+      })
+      .finally(function () {
+        scheduleUndoBusy = false;
+        updateScheduleUndoButtons();
+      });
   }
 
   /** Parse template weekPattern key (0-0-0, 84-0-0, shift-84-0-0) → Mon–Sun slot. */
@@ -18986,6 +19211,10 @@
       tpl.sourceWeekIndex != null ? tpl.sourceWeekIndex : SCHEDULE_TEMPLATE_WEEK_INDEX;
     pushScheduleUndoSnapshot();
     scheduleUndoSuppressPush = true;
+    markScheduleInteractiveEdit();
+    scheduleHardRevertGuardUntil = Date.now() + 120000;
+    armScheduleLocalAuthority(120000);
+    armScheduleConsciousCloudWrite(120000);
     var shiftsAdded = 0;
     var appliedSlots = 0;
     try {
@@ -19028,6 +19257,14 @@
     } finally {
       scheduleUndoSuppressPush = false;
     }
+    /* Same cloud stamp as Templates modal Apply — peers must converge on cells. */
+    void assertAuthoritativeScheduleWeekToCloud({
+      restaurantId: currentRestaurantId,
+      weekIndex: scheduleCalendarWeekIndex,
+      alignSlots: true,
+    }).catch(function (err) {
+      console.warn('gm-callout: template-by-id cloud sync', err);
+    });
     return { appliedSlots: appliedSlots, shiftsAdded: shiftsAdded };
   }
 
@@ -22711,6 +22948,11 @@
     }
     var rid = currentRestaurantId;
     var wi = scheduleCalendarWeekIndex;
+    /* Freeze soft poll before mutating live week (cloud stamp follows in Apply handler). */
+    markScheduleInteractiveEdit();
+    scheduleHardRevertGuardUntil = Date.now() + 120000;
+    armScheduleLocalAuthority(120000);
+    armScheduleConsciousCloudWrite(120000);
     applyMasterTemplateChoicesToEditorDraft();
     applyTemplateEditorAssignmentsToScratch();
     pushScheduleUndoSnapshot();
@@ -23482,6 +23724,8 @@
     scheduleHardRevertGuardUntil = Date.now() + 120000;
     armScheduleLocalAuthority(120000);
     markScheduleInteractiveEdit();
+    armScheduleConsciousCloudWrite(120000);
+    armScheduleDayOffPushGuard();
     teamStateForcePushIgnoreVersion = true;
     teamStateForcePushActive = true;
     teamStateForcePushIgnoreVersionSticky = true;
@@ -23560,9 +23804,12 @@
       cellsOk = false;
     } finally {
       teamStateForcePushActive = false;
-      scheduleHardRevertGuardUntil = Date.now() + (cellsOk ? 20000 : 60000);
-      armScheduleLocalAuthority(cellsOk ? 25000 : 60000);
+      /* Keep soft-poll freeze long enough for peers + replica to echo the stamped week. */
+      scheduleHardRevertGuardUntil = Date.now() + (cellsOk ? 45000 : 90000);
+      armScheduleLocalAuthority(cellsOk ? 45000 : 90000);
+      armScheduleConsciousCloudWrite(cellsOk ? 45000 : 90000);
       if (cellsOk) {
+        armScheduleDayOffPushGuard();
         /* Sticky ignore only while asserting — clear so peers can soft-converge later. */
         teamStateForcePushIgnoreVersionSticky = false;
         teamStateForcePushIgnoreVersion = false;
@@ -25440,6 +25687,7 @@
    * Move (or swap) start/end + break between two cells. Does not move worker names.
    * Empty/day-off target → write source times then clear source.
    * Timed target → swap times/break meta.
+   * Persists via persistSingleShiftSlotEdit so cloud ops + soft-poll settle apply.
    */
   function applyScheduleCellDragMove(source, target) {
     if (!source || !target) return;
@@ -25460,11 +25708,9 @@
     var srcRoleIdx = roleIdxForDraftRole(source.role);
     var tgtRoleIdx = roleIdxForDraftRole(target.role);
     if (srcRoleIdx < 0 || tgtRoleIdx < 0) return;
-    var srcGlobal = ALL_WEEK_DAYS.indexOf(source.dayStr);
     var tgtGlobal = ALL_WEEK_DAYS.indexOf(target.dayStr);
-    if (srcGlobal < 0 || tgtGlobal < 0) return;
-    var srcShiftId = 'shift-' + srcGlobal + '-' + srcRoleIdx + '-' + source.trIdx;
-    var tgtShiftId = 'shift-' + tgtGlobal + '-' + tgtRoleIdx + '-' + target.trIdx;
+    if (tgtGlobal < 0) return;
+    if (ALL_WEEK_DAYS.indexOf(source.dayStr) < 0) return;
     var wi = scheduleCalendarWeekIndex;
     var rid = currentRestaurantId;
     var peekDraft = getDraftScheduleRowsForWeek(wi, rid);
@@ -25480,8 +25726,7 @@
     var srcBreak =
       source.break ||
       redPokeBreakAnnotation(srcStart, srcEnd, source.role, source.dayStr);
-    var srcEntry =
-      peekRs[srcShiftId] != null ? normalizeScheduleAssignment(peekRs[srcShiftId]) : null;
+    var tgtShiftId = 'shift-' + tgtGlobal + '-' + tgtRoleIdx + '-' + target.trIdx;
     var tgtEntry =
       peekRs[tgtShiftId] != null ? normalizeScheduleAssignment(peekRs[tgtShiftId]) : null;
     var tgtBreak = targetTimed
@@ -25509,96 +25754,67 @@
       return;
     }
 
+    /* One undo for the whole move/swap; each cell goes through conscious cloud persist. */
     pushScheduleUndoSnapshot();
-    var draft = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
-    var store = loadScheduleAssignmentsStore();
-    if (!store[rid]) store[rid] = {};
-    var rs = store[rid];
-
-    function writeTimed(role, trIdx, dayInWeek, shiftId, start, end, breakText) {
-      ensureDraftRoleRow(draft, role, trIdx);
-      draft[role][trIdx][dayInWeek] = [start, end];
-      var entry =
-        rs[shiftId] != null
-          ? cloneScheduleAssignment(rs[shiftId])
-          : { workers: ['Unassigned'] };
-      if (!scheduleAssignmentHasStaffedWorkers(entry)) {
-        var rowPerson = scheduleRowPrimaryPerson(role, trIdx, getVisibleWeekDays());
-        entry.workers =
-          rowPerson && rowPerson !== 'Unassigned' ? [rowPerson] : ['Unassigned'];
-      } else {
-        entry.workers = canonicalizeScheduleWorkerList(entry.workers, rid);
-        entry.workers = clampScheduleWorkersToSingle(entry.workers);
-      }
-      entry.break = breakText;
-      entry.timeLabel = redPokeShiftTimeLabel(start, end);
-      entry.hours = redPokeShiftHoursDecimal(start, end);
-      rs[shiftId] = entry;
-    }
-
-    function clearTimed(role, trIdx, dayInWeek, shiftId) {
-      ensureDraftRoleRow(draft, role, trIdx);
-      draft[role][trIdx][dayInWeek] = null;
-      var offEntry =
-        rs[shiftId] != null
-          ? cloneScheduleAssignment(rs[shiftId])
-          : { workers: ['Unassigned'] };
-      offEntry.workers = ['Unassigned'];
-      delete offEntry.break;
-      delete offEntry.timeLabel;
-      delete offEntry.hours;
-      delete offEntry.breakPaid;
-      rs[shiftId] = offEntry;
-    }
-
+    markScheduleInteractiveEdit();
+    var persistOpts = { skipUndo: true, skipUiRefresh: true };
+    var ok = false;
     if (!targetTimed) {
-      writeTimed(
+      ok = persistSingleShiftSlotEdit(
         target.role,
         target.trIdx,
         tgtDayInWeek,
-        tgtShiftId,
         srcStart,
         srcEnd,
-        srcBreak
+        srcBreak,
+        false,
+        persistOpts
       );
-      clearTimed(source.role, source.trIdx, srcDayInWeek, srcShiftId);
+      if (ok) {
+        ok = persistSingleShiftSlotEdit(
+          source.role,
+          source.trIdx,
+          srcDayInWeek,
+          null,
+          null,
+          '',
+          true,
+          persistOpts
+        );
+      }
     } else {
-      writeTimed(
+      ok = persistSingleShiftSlotEdit(
         target.role,
         target.trIdx,
         tgtDayInWeek,
-        tgtShiftId,
         srcStart,
         srcEnd,
-        srcBreak
+        srcBreak,
+        false,
+        persistOpts
       );
-      writeTimed(
-        source.role,
-        source.trIdx,
-        srcDayInWeek,
-        srcShiftId,
-        tgtStart,
-        tgtEnd,
-        tgtBreak
-      );
+      if (ok) {
+        ok = persistSingleShiftSlotEdit(
+          source.role,
+          source.trIdx,
+          srcDayInWeek,
+          tgtStart,
+          tgtEnd,
+          tgtBreak,
+          false,
+          persistOpts
+        );
+      }
     }
-
-    saveDraftScheduleRowsForWeek(wi, draft, rid);
-    saveScheduleAssignmentsStore(store);
-    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    rebuildSchedule({
-      weekIndex: scheduleCalendarWeekIndex,
-      preserveOtherWeeks: true,
-    });
-    renderCalendar();
+    if (!ok) return;
+    renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
-    notifyTimecardsScheduleChanged();
   }
 
   /**
    * Copy start/end + break from source onto target cells (draft times + assignment break/time).
    * Does not copy worker names — row person picker owns staffing.
-   * Undo: snapshot before mutate (same as persistSingleShiftSlotEdit); team_state echo must not wipe stack.
+   * Uses persistSingleShiftSlotEdit so alt-drag survives soft poll and syncs to cloud.
    */
   function applyScheduleAltDragCopy(source, targets) {
     if (!source || !targets || !targets.length) return;
@@ -25657,40 +25873,28 @@
     if (!pending.length) return;
 
     pushScheduleUndoSnapshot();
-    var draft = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
-    var store = loadScheduleAssignmentsStore();
-    if (!store[rid]) store[rid] = {};
-    var rs = store[rid];
+    markScheduleInteractiveEdit();
+    var persistOpts = { skipUndo: true, skipUiRefresh: true };
+    var wrote = false;
     pending.forEach(function (t) {
-      ensureDraftRoleRow(draft, t.role, t.trIdx);
-      draft[t.role][t.trIdx][t.dayInWeek] = [start, end];
-      var entry =
-        rs[t.shiftId] != null
-          ? cloneScheduleAssignment(rs[t.shiftId])
-          : { workers: ['Unassigned'] };
-      if (!scheduleAssignmentHasStaffedWorkers(entry)) {
-        var rowPerson = scheduleRowPrimaryPerson(t.role, t.trIdx, getVisibleWeekDays());
-        entry.workers =
-          rowPerson && rowPerson !== 'Unassigned' ? [rowPerson] : ['Unassigned'];
-      } else {
-        entry.workers = canonicalizeScheduleWorkerList(entry.workers, rid);
-        entry.workers = clampScheduleWorkersToSingle(entry.workers);
+      if (
+        persistSingleShiftSlotEdit(
+          t.role,
+          t.trIdx,
+          t.dayInWeek,
+          start,
+          end,
+          breakText,
+          false,
+          persistOpts
+        )
+      ) {
+        wrote = true;
       }
-      entry.break = breakText;
-      entry.timeLabel = timeLabel;
-      entry.hours = hours;
-      rs[t.shiftId] = entry;
     });
-    saveDraftScheduleRowsForWeek(wi, draft, rid);
-    saveScheduleAssignmentsStore(store);
-    AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
-    rebuildSchedule({
-      weekIndex: scheduleCalendarWeekIndex,
-      preserveOtherWeeks: true,
-    });
-    renderCalendar();
+    if (!wrote) return;
+    renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
-    notifyTimecardsScheduleChanged();
   }
 
   function calendarSlotTargetFromEl(el) {
@@ -31454,7 +31658,8 @@
         if (!r || !r.id || seen[r.id]) return false;
         seen[r.id] = true;
         return true;
-      }).slice(0, SCHEDULE_REVISION_LIST_LIMIT);
+      });
+      rows = collapseScheduleHistoryRows(rows).slice(0, SCHEDULE_REVISION_LIST_LIMIT);
       if (!rows.length) {
         if (scheduleHistoryList) {
           scheduleHistoryList.innerHTML =
@@ -31633,6 +31838,7 @@
     var preAssign = loadScheduleAssignmentsStore();
     var preDraft = draftSchedulePayloadFromStore(draftScheduleByWeekStore);
     var prePublished = schedulePublishedPayload();
+    cancelPendingScheduleRevisionAutosave();
     void insertScheduleRevisionRow({
       source: 'pre_revert',
       assignments: preAssign,
@@ -31702,6 +31908,7 @@
         weekIndex: wi,
         alignSlots: true,
       });
+      cancelPendingScheduleRevisionAutosave();
       void insertScheduleRevisionRow({
         source: 'hard_revert',
         assignments: loadScheduleAssignmentsStore(),
@@ -31758,6 +31965,7 @@
   }
 
   async function saveScheduleManualSavePoint() {
+    if (scheduleSavePointBusy) return;
     if (!managerCanEditCurrentRestaurant()) {
       showScheduleNotice(
         gmT('schedule.savePointManagersOnly') || 'Only managers and admins can save a checkpoint.',
@@ -31783,6 +31991,14 @@
     );
     if (custom === null) return; /* cancelled */
     var label = String(custom || '').trim() || defaultLabel;
+    scheduleSavePointBusy = true;
+    var btn = document.getElementById('scheduleSavePointBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = gmT('schedule.savePointSaving') || 'Saving…';
+    }
+    /* Do not let a pending autosave land as a twin of this checkpoint. */
+    cancelPendingScheduleRevisionAutosave();
     /* Flush live edits first so the snapshot matches what you see. */
     try {
       await flushTeamStateSyncNow();
@@ -31790,17 +32006,30 @@
     } catch (_flushSp) {
       /* still snapshot local SoT */
     }
-    var res = await insertScheduleRevisionRow({
-      source: 'manual',
-      assignments: loadScheduleAssignmentsStore(),
-      draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
-      published: schedulePublishedPayload(),
-      label: label,
-      dedupe: false,
-    });
+    var res = { ok: false };
+    try {
+      res = await insertScheduleRevisionRow({
+        source: 'manual',
+        assignments: loadScheduleAssignmentsStore(),
+        draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
+        published: schedulePublishedPayload(),
+        label: label,
+        dedupe: false,
+      });
+    } catch (spErr) {
+      console.warn('gm-callout: save point', spErr);
+      res = { ok: false };
+    }
+    scheduleSavePointBusy = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = gmT('schedule.savePoint') || 'Save point';
+    }
     if (!res || !res.ok) {
       showScheduleNotice(
-        gmT('schedule.savePointFailed') || 'Could not save checkpoint. Try again.',
+        (res && res.error) ||
+          gmT('schedule.savePointFailed') ||
+          'Could not save checkpoint. Try again.',
         false
       );
       return;

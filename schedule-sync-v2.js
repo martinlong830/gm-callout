@@ -15,6 +15,52 @@
   var WRITE_ONLY_LS_KEY = 'gm-schedule-sync-v2-write-only';
   /** In-memory fallback when localStorage is missing (Node tests). */
   var memStore = Object.create(null);
+  /**
+   * Brief guard after optimistic set_times / set_day_off / set_worker.
+   * In-flight soft fetches use preferRemote and used to clobber day-offs with
+   * stale timed rows before the write echoed (× snap-back after a couple seconds).
+   */
+  var recentLocalCellGuards = Object.create(null);
+  var LOCAL_CELL_GUARD_MS = 20000;
+
+  function cellKey(restaurantId, dayIso, role, slotKey) {
+    return [restaurantId, dayIso, role, slotKey].join('\0');
+  }
+
+  function armLocalCellGuard(ck, intent) {
+    if (!ck) return;
+    recentLocalCellGuards[ck] = {
+      until: Date.now() + LOCAL_CELL_GUARD_MS,
+      dayOff: !!(intent && intent.dayOff),
+      start: intent && intent.start ? String(intent.start) : null,
+      end: intent && intent.end ? String(intent.end) : null,
+    };
+  }
+
+  function clearLocalCellGuard(ck) {
+    if (ck && recentLocalCellGuards[ck]) delete recentLocalCellGuards[ck];
+  }
+
+  function localCellGuardActive(ck) {
+    var g = ck && recentLocalCellGuards[ck];
+    if (!g) return false;
+    if (Date.now() >= g.until) {
+      delete recentLocalCellGuards[ck];
+      return false;
+    }
+    return true;
+  }
+
+  function remoteMatchesLocalCellGuard(row, guard) {
+    if (!row || !guard) return false;
+    var remoteDayOff = !(row.start_hhmm && row.end_hhmm);
+    if (guard.dayOff) return remoteDayOff;
+    if (remoteDayOff) return false;
+    return (
+      String(row.start_hhmm || '') === String(guard.start || '') &&
+      String(row.end_hhmm || '') === String(guard.end || '')
+    );
+  }
 
   function storageGet(key) {
     try {
@@ -117,10 +163,6 @@
       }
     }
     return id;
-  }
-
-  function cellKey(restaurantId, dayIso, role, slotKey) {
-    return [restaurantId, dayIso, role, slotKey].join('\0');
   }
 
   function slotMapKey(restaurantId, role, trIdx) {
@@ -524,6 +566,27 @@
     }
     ops.forEach(function (op) {
       box.push(op);
+      if (!op || !op.payload) return;
+      var p = op.payload;
+      if (!p.day_iso || !p.slot_key || !p.role) return;
+      var ck = cellKey(p.restaurant_id, p.day_iso, p.role, p.slot_key);
+      if (op.op_type === 'set_day_off') {
+        armLocalCellGuard(ck, { dayOff: true });
+      } else if (op.op_type === 'set_times') {
+        armLocalCellGuard(ck, {
+          dayOff: false,
+          start: p.start_hhmm || null,
+          end: p.end_hhmm || null,
+        });
+      } else if (op.op_type === 'set_worker') {
+        /* Keep times shape; worker-only edits still need fetch protection. */
+        var existing = getCellCache()[ck];
+        armLocalCellGuard(ck, {
+          dayOff: !(existing && existing.start_hhmm && existing.end_hhmm),
+          start: existing && existing.start_hhmm ? existing.start_hhmm : null,
+          end: existing && existing.end_hhmm ? existing.end_hhmm : null,
+        });
+      }
     });
     setOutbox(box);
     // Optimistic local apply
@@ -548,12 +611,45 @@
      */
     var preferRemote = !!opts.preferRemote;
     var cache = getCellCache();
+    var pendingKeys = Object.create(null);
+    try {
+      var box = getOutbox();
+      (box || []).forEach(function (op) {
+        if (!op || !op.payload) return;
+        var p = op.payload;
+        if (!p.day_iso || !p.slot_key || !p.role) return;
+        if (
+          op.op_type === 'set_times' ||
+          op.op_type === 'set_worker' ||
+          op.op_type === 'set_day_off'
+        ) {
+          pendingKeys[cellKey(p.restaurant_id, p.day_iso, p.role, p.slot_key)] = true;
+        }
+      });
+    } catch (_boxPend) {
+      /* ignore */
+    }
     rows.forEach(function (row) {
       if (!row) return;
       var ck = cellKey(row.restaurant_id, row.day_iso, row.role, row.slot_key);
       var local = cache[ck];
       var remoteRev = Number(row.rev) || 0;
       var remoteDeleted = !!row.deleted;
+      var guard = recentLocalCellGuards[ck];
+      if (guard && Date.now() >= guard.until) {
+        delete recentLocalCellGuards[ck];
+        guard = null;
+      }
+      /*
+       * Never let a stale in-flight fetch overwrite a just-written day-off / timed
+       * edit. Once remote matches the intended shape, drop the guard and accept.
+       */
+      if (pendingKeys[ck] || (guard && !remoteMatchesLocalCellGuard(row, guard))) {
+        return;
+      }
+      if (guard && remoteMatchesLocalCellGuard(row, guard)) {
+        clearLocalCellGuard(ck);
+      }
       if (!preferRemote) {
         /*
          * Keep optimistic / newer local cells. Equal rev must not snap edits back —
