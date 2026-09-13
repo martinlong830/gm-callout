@@ -37,8 +37,12 @@
     };
   }
 
-  function clearLocalCellGuard(ck) {
-    if (ck && recentLocalCellGuards[ck]) delete recentLocalCellGuards[ck];
+  function clearLocalCellGuards() {
+    recentLocalCellGuards = Object.create(null);
+  }
+
+  function clearOutbox() {
+    setOutbox([]);
   }
 
   function localCellGuardActive(ck) {
@@ -1154,6 +1158,8 @@
     listCellsForDay: listCellsForDay,
     getCellCache: getCellCache,
     getOutbox: getOutbox,
+    clearOutbox: clearOutbox,
+    clearLocalCellGuards: clearLocalCellGuards,
     getLastRev: getLastRev,
     setLastRev: setLastRev,
     trIdxForSlotKey: trIdxForSlotKey,

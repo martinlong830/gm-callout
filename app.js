@@ -6289,18 +6289,21 @@
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return false;
-    if (Date.now() < scheduleHardRevertGuardUntil) return false;
+    var forceCloudSoT =
+      !!opts.force || !!opts.cloudAuthorityReplace || !!opts.forceDayOffReplace;
+    /*
+     * Hard-revert / drag guard must not block Manual Refresh or peer hard replace —
+     * that left one laptop on a post-drag local week while peers showed cloud.
+     */
+    if (!forceCloudSoT && Date.now() < scheduleHardRevertGuardUntil) return false;
     /*
      * Soft idle/peer polls never overwrite local edits / deletes / hard revert /
      * template apply. Refresh (force) and hard-peer forceDayOffReplace still run.
      */
-    var softOnly =
-      !opts.force &&
-      !opts.cloudAuthorityReplace &&
-      !opts.forceDayOffReplace;
+    var softOnly = !forceCloudSoT;
     if (softOnly && scheduleSoftPollApplyFrozen()) return false;
     /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
-    if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
+    if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) return false;
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
     var targetWi =
@@ -6342,7 +6345,7 @@
       if (cellsRes && cellsRes.ok === false) return false;
       /* Re-check after await — user may have edited / deleted / applied template mid-fetch. */
       if (softOnly && scheduleSoftPollApplyFrozen()) return false;
-      if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
+      if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) return false;
       /*
        * Soft idle polls must only merge cell upserts. reconcile/trim/dedupe/restore
        * used to run every 5s and chop newly added Eugene rows / reshuffle the grid
@@ -8429,11 +8432,16 @@
     opts = opts || {};
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !scheduleSyncV2WriteOnly()) return false;
-    /* Hard-revert guard is absolute — force must not re-apply stale cloud mid-write. */
-    if (Date.now() < scheduleHardRevertGuardUntil) return false;
-    /* Person-row add/assign protect is absolute — in-flight force applies used to stomp. */
-    if (schedulePersonRowApplyHardBlocked()) return false;
-    if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
+    var forceCloudSoT =
+      !!opts.force || !!opts.cloudAuthorityReplace || !!opts.forceDayOffReplace;
+    /*
+     * Hard-revert / drag guard blocks soft applies only. Manual Refresh and peer
+     * forceDayOffReplace must always be allowed to paint cloud SoT.
+     */
+    if (!forceCloudSoT && Date.now() < scheduleHardRevertGuardUntil) return false;
+    /* Person-row protect still blocks mid-add even on Refresh (avoid wiping the new row). */
+    if (schedulePersonRowApplyHardBlocked() && !forceCloudSoT) return false;
+    if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) return false;
     if (typeof v2.projectCellsToAssignmentPatch !== 'function') return false;
     var pendingOutboxKeys = schedulePendingOutboxCellKeys();
     var isoToGdi = Object.create(null);
@@ -12009,14 +12017,34 @@
     if (!opts.silent) {
       showScheduleNotice(gmT('schedule.refreshing') || 'Refreshing schedule from cloud…', false);
     }
+    /*
+     * Refresh = cloud schedule_cells win. Drop local edit freezes and unsent cell ops
+     * so a failed drag/outbox cannot block the fetch or re-stamp divergence after paint.
+     */
+    scheduleHardRevertGuardUntil = 0;
+    scheduleLocalAuthorityUntil = 0;
+    scheduleConsciousCloudWriteUntil = 0;
+    scheduleDayOffPushGuardUntil = 0;
+    scheduleInteractiveEditAt = 0;
+    try {
+      var v2clr = gmScheduleV2();
+      if (v2clr && typeof v2clr.clearOutbox === 'function') v2clr.clearOutbox();
+      if (v2clr && typeof v2clr.clearLocalCellGuards === 'function') {
+        v2clr.clearLocalCellGuards();
+      }
+    } catch (_clrBox) {
+      /* ignore */
+    }
     persistTeamStateDirtyFlags();
     flushTipPayrollPushToSupabase();
+    /*
+     * Do NOT flush schedule cell outbox (already cleared). team_state tip/meta may still
+     * push; schedule blobs are stripped on write-only apply — cells remain SoT.
+     */
     await flushTeamStateSyncNow();
     /*
-     * Refresh = cloud schedule_cells win. Do NOT flush the outbox first — that let a
-     * denser divergent laptop stamp cloud, then every peer "refreshed into" it.
-     * Interactive local edits are discarded on Refresh (Save / assert remains the
-     * intentional local→cloud path).
+     * Refresh = cloud schedule_cells win. Interactive local cell edits are discarded
+     * (Save / assert remains the intentional local→cloud path).
      */
     /* Force a full fetch even when our cached updated_at matches (clock skew / missed field). */
     var prevCached = teamStateCachedUpdatedAt;
