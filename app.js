@@ -6209,14 +6209,16 @@
         }
         if (res && res.ok === false) {
           /*
-           * Cell RPC failed — retry soon; do not rely on team_state blobs for peers
-           * (write-only skips blob apply after hydrate).
+           * Cell RPC failed — retry cells soon. In write-only mode do NOT dirty
+           * schedule blobs (that re-pushed divergent local and fought cloud SoT).
            */
           armScheduleLocalAuthority(8000);
-          scheduleAssignmentsDirty = true;
-          draftScheduleDirty = true;
-          persistTeamStateDirtyFlags();
-          scheduleTeamStateWriteThroughSoon();
+          if (!scheduleSyncV2WriteOnly()) {
+            scheduleAssignmentsDirty = true;
+            draftScheduleDirty = true;
+            persistTeamStateDirtyFlags();
+            scheduleTeamStateWriteThroughSoon();
+          }
           setTimeout(function () {
             void flushScheduleV2Outbox();
           }, 2500);
@@ -6234,10 +6236,12 @@
       .catch(function (err) {
         console.warn('gm-callout: schedule v2 flush', err);
         armScheduleLocalAuthority(8000);
-        scheduleAssignmentsDirty = true;
-        draftScheduleDirty = true;
-        persistTeamStateDirtyFlags();
-        scheduleTeamStateWriteThroughSoon();
+        if (!scheduleSyncV2WriteOnly()) {
+          scheduleAssignmentsDirty = true;
+          draftScheduleDirty = true;
+          persistTeamStateDirtyFlags();
+          scheduleTeamStateWriteThroughSoon();
+        }
         setTimeout(function () {
           void flushScheduleV2Outbox();
         }, 2500);
@@ -6333,7 +6337,9 @@
       var slotsPromise = needSlots
         ? v2.fetchSlots(window.gmSupabase, cid)
         : Promise.resolve({ ok: true, skipped: true });
-      var cellsPromise = v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso);
+      var cellsPromise = v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso, {
+        forceTombstone: forceCloudSoT,
+      });
       var pair = await Promise.all([slotsPromise, cellsPromise]);
       if (gen !== scheduleCellsPollGeneration) return false;
       if (scheduleCalendarWeekIndex !== targetWi && !opts.allowStaleWeekApply) {
@@ -8573,7 +8579,7 @@
     beginTeamStateRemoteApply();
     var changed = false;
     try {
-      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+      if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) {
         return false;
       }
       var store = loadScheduleAssignmentsStore();
@@ -8907,10 +8913,10 @@
           }
         });
       });
-      if (schedulePersonRowApplyHardBlocked()) {
+      if (schedulePersonRowApplyHardBlocked() && !forceCloudSoT) {
         return false;
       }
-      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+      if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) {
         return false;
       }
       if (changed) {
@@ -9195,7 +9201,7 @@
           }
         });
       });
-      if (scheduleCellRemoteApplyBlocked() && !opts.force) {
+      if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) {
         return false;
       }
       if (changed) {
@@ -9310,7 +9316,9 @@
     return 0;
   }
 
-  async function hydrateScheduleSyncV2FromCloud() {
+  async function hydrateScheduleSyncV2FromCloud(opts) {
+    opts = opts || {};
+    var authority = !!opts.cloudAuthorityReplace;
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) {
       markScheduleAuthoritativePaintReady();
@@ -9367,7 +9375,9 @@
        */
       var pair = await Promise.all([
         v2.fetchSlots(window.gmSupabase, cid),
-        v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo),
+        v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo, {
+          forceTombstone: authority,
+        }),
       ]);
       if (pair[0] && pair[0].ok === false) {
         console.warn('gm-callout: schedule slots fetch failed', pair[0].error);
@@ -9423,16 +9433,19 @@
       }
       /*
        * Dense cloud + empty/shell local → trusted replace. Sparse cloud stays soft
-       * so we do not wipe a good local week to DAY-OFF.
+       * so we do not wipe a good local week to DAY-OFF — unless Refresh asked for
+       * cloud authority (then denser local must not soft-win).
        */
-      if (scheduleVisibleWeekNeedsTrustedCloudReplace(wi, timedForPaint)) {
+      if (authority || scheduleVisibleWeekNeedsTrustedCloudReplace(wi, timedForPaint)) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
           force: true,
           replaceTrusted: true,
           replaceWeekIndex: wi,
-          minCloudTimed: 4,
+          minCloudTimed: authority ? 0 : 4,
           fetchTimedCount: timedForPaint,
+          cloudAuthorityReplace: authority,
+          noSoftFallback: authority,
         });
       } else {
         applyScheduleCellsCacheToLocalStore({
@@ -9864,7 +9877,13 @@
     if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
     try {
       var pending = schedulePendingOutboxCellKeys();
-      if (pending && Object.keys(pending).length) return true;
+      if (pending) {
+        var pKeys = Object.keys(pending);
+        for (var pi = 0; pi < pKeys.length; pi += 1) {
+          /* Structure-only pending must not freeze the whole soft poll forever. */
+          if (pKeys[pi] !== '__structure__') return true;
+        }
+      }
     } catch (_pend) {
       /* ignore */
     }
@@ -12026,6 +12045,12 @@
     scheduleConsciousCloudWriteUntil = 0;
     scheduleDayOffPushGuardUntil = 0;
     scheduleInteractiveEditAt = 0;
+    schedulePersonRowProtectUntilByWeek = Object.create(null);
+    scheduleHardReplaceEpochByWeek = Object.create(null);
+    scheduleLastAppliedFingerprint = '';
+    /* Never push divergent local schedule blobs on Refresh — cells are SoT. */
+    scheduleAssignmentsDirty = false;
+    draftScheduleDirty = false;
     try {
       var v2clr = gmScheduleV2();
       if (v2clr && typeof v2clr.clearOutbox === 'function') v2clr.clearOutbox();
@@ -12038,8 +12063,8 @@
     persistTeamStateDirtyFlags();
     flushTipPayrollPushToSupabase();
     /*
-     * Do NOT flush schedule cell outbox (already cleared). team_state tip/meta may still
-     * push; schedule blobs are stripped on write-only apply — cells remain SoT.
+     * Do NOT flush schedule cell outbox (already cleared). Tip/meta may still push;
+     * schedule assignment/draft dirty flags are cleared so blobs are not re-stamped.
      */
     await flushTeamStateSyncNow();
     /*
@@ -12057,10 +12082,9 @@
     });
     /*
      * Write-only cells are SoT — team_state schedule blobs are stripped on apply.
-     * Always re-fetch ISO cells on Refresh so peer edits (and this device’s own
-     * flushed ops) paint into assignments + draft times.
+     * Always re-fetch ISO cells on Refresh so peer edits paint into assignments + draft.
      */
-    await hydrateScheduleSyncV2FromCloud();
+    await hydrateScheduleSyncV2FromCloud({ cloudAuthorityReplace: true });
     /* Refresh: trusted cloud SoT replace — never soft-fallback or revive local deletes. */
     try {
       await pollVisibleScheduleCellsFromCloud({

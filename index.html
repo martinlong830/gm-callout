@@ -6,7 +6,7 @@
   <title>Shiflow</title>
   <link rel="stylesheet" href="styles.css?v=perf-230" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-237" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-238" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -4579,14 +4579,14 @@
   <script defer src="portal-auth-client.js?v=perf-230"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
   <script defer src="availability-paint.js?v=perf-230"></script>
-  <script defer src="schedule-sync-v2.js?v=perf-237"></script>
+  <script defer src="schedule-sync-v2.js?v=perf-238"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     /* Cells are SoT — do not apply/push schedule blobs (prevents cross-device rollbacks). */
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
   </script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-237"></script>
+  <script defer src="app.js?v=perf-238"></script>
   <script>
     /*
      * Role / feature modules after first paint:

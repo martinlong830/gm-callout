@@ -652,7 +652,7 @@
         return;
       }
       if (guard && remoteMatchesLocalCellGuard(row, guard)) {
-        clearLocalCellGuard(ck);
+        delete recentLocalCellGuards[ck];
       }
       if (!preferRemote) {
         /*
@@ -711,8 +711,11 @@
    * Apply a cells fetch for [fromIso, toIso]. Merge returned rows, then tombstone
    * cached cells in that range for active slots that were not returned (peer delete).
    * NEVER tombstone on an empty fetch — that wiped every cell and painted all day-offs.
+   * opts.forceTombstone: Refresh / cloud SoT — denser local cache must not keep deleted cells.
    */
-  function replaceCellsInRange(rows, fromIso, toIso) {
+  function replaceCellsInRange(rows, fromIso, toIso, opts) {
+    opts = opts || {};
+    var forceTombstone = !!opts.forceTombstone;
     var list = Array.isArray(rows) ? rows : [];
     var seen = Object.create(null);
     list.forEach(function (row) {
@@ -786,7 +789,13 @@
         var rid = String(c.restaurant_id || '');
         var remoteN = remoteTimedByRid[rid] || 0;
         var localN = localTimedByRid[rid] || 0;
-        if (c.start_hhmm && c.end_hhmm && localN >= 4 && remoteN < Math.max(4, Math.floor(localN * 0.5))) {
+        if (
+          !forceTombstone &&
+          c.start_hhmm &&
+          c.end_hhmm &&
+          localN >= 4 &&
+          remoteN < Math.max(4, Math.floor(localN * 0.5))
+        ) {
           return;
         }
         var spk = [c.restaurant_id, c.role, c.slot_key].join('\0');
@@ -941,8 +950,9 @@
     return { ok: true, data: data, conflicts: (data && data.conflicts) || [] };
   }
 
-  async function fetchCellsRange(sb, companyId, fromIso, toIso) {
+  async function fetchCellsRange(sb, companyId, fromIso, toIso, opts) {
     if (!sb) return { ok: false };
+    opts = opts || {};
     var q = sb
       .from('schedule_cells')
       .select(
@@ -954,7 +964,9 @@
     if (companyId) q = q.eq('company_id', companyId);
     var res = await q;
     if (res.error) return { ok: false, error: res.error };
-    replaceCellsInRange(res.data || [], fromIso, toIso);
+    replaceCellsInRange(res.data || [], fromIso, toIso, {
+      forceTombstone: !!opts.forceTombstone,
+    });
     return { ok: true, rows: res.data || [] };
   }
 
