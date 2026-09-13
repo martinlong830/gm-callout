@@ -6736,6 +6736,95 @@
   }
 
   /**
+   * Batch multi-cell edits (drag move/swap/copy) into one slot sync + outbox flush.
+   * Parallel per-cell enqueueV2SlotEdit raced: peers often got only the day-off half
+   * of a move (or neither), so Refresh on other devices never showed the moved shift.
+   * edits: [{ role, trIdx, dayInWeek, start, end, breakText, isDayOff, workerName }]
+   */
+  function enqueueAndFlushV2SlotEdits(edits) {
+    var v2 = gmScheduleV2();
+    if (!scheduleSyncV2Enabled() || !v2 || !edits || !edits.length) {
+      return Promise.resolve({ ok: false, skipped: true });
+    }
+    var rid = currentRestaurantId;
+    var wi = scheduleCalendarWeekIndex;
+    markScheduleInteractiveEdit();
+    scheduleHardRevertGuardUntil = Math.max(
+      scheduleHardRevertGuardUntil || 0,
+      Date.now() + 60000
+    );
+    armScheduleLocalAuthority(60000);
+    armScheduleConsciousCloudWrite(60000);
+    armScheduleDayOffPushGuard();
+    var hardEpoch = markScheduleHardReplaceEpoch(rid, wi, 60000);
+    var hadDayOff = false;
+    return syncScheduleSlotsFromCloudThen(function () {
+      var ops = [];
+      edits.forEach(function (ed) {
+        if (!ed || !ed.role || ed.trIdx == null || ed.dayInWeek == null) return;
+        var dayIso = dayIsoForScheduleWeekDay(wi, ed.dayInWeek);
+        if (!dayIso) return;
+        var slotKey =
+          (v2.resolveSlotKey && v2.resolveSlotKey(rid, ed.role, ed.trIdx)) ||
+          v2.ensureSlotKey(rid, ed.role, ed.trIdx);
+        ops.push(v2.opAddSlot(rid, ed.role, slotKey, ed.trIdx, null));
+        if (ed.isDayOff) {
+          hadDayOff = true;
+          ops.push(
+            v2.opSetDayOff(rid, dayIso, ed.role, slotKey, ed.workerName || null)
+          );
+        } else {
+          ops.push(
+            v2.opSetTimes(
+              rid,
+              dayIso,
+              ed.role,
+              slotKey,
+              ed.start,
+              ed.end,
+              ed.breakText || null,
+              null
+            )
+          );
+          if (ed.workerName && ed.workerName !== 'Unassigned') {
+            ops.push(
+              v2.opSetWorker(rid, dayIso, ed.role, slotKey, ed.workerName, null)
+            );
+          }
+        }
+      });
+      if (ops.length) enqueueScheduleV2Ops(ops);
+    })
+      .then(function () {
+        return drainScheduleV2OutboxBounded(12);
+      })
+      .then(function (res) {
+        armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+        if (hadDayOff) armScheduleDayOffPushGuard();
+        var ok = !!(res && res.ok !== false);
+        if (ok) {
+          scheduleLastCellFlushAt = Date.now();
+          /*
+           * Peers must hard-replace: soft upsert alone often skipped the cleared source
+           * cell after a move, so the other computer never showed the relocated shift.
+           */
+          void broadcastScheduleCellsChanged({
+            forceDayOffReplace: true,
+            weekIndex: wi,
+            restaurantId: rid,
+            hardEpoch: hardEpoch,
+          });
+        }
+        return res || { ok: ok };
+      })
+      .catch(function (err) {
+        console.warn('gm-callout: multi-cell schedule flush', err);
+        armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+        return { ok: false, error: err };
+      });
+  }
+
+  /**
    * Soft-delete ISO slots on the server when a draft row is removed, so cell poll
    * cannot recreate the row (slot 6 bounce).
    * deletes: [{ role, originalTrIdx }, ...] — process high→low per role.
@@ -18515,20 +18604,22 @@
     saveScheduleAssignmentsStore(store, isDayOff ? { flushNow: true } : undefined);
     /* Schedule sync v2: durable op outbox (ISO cells) — cells are SoT (no blob dual-write). */
     var v2FlushPromise = Promise.resolve({ ok: true });
-    try {
-      var v2Worker =
-        isDayOff
-          ? (rs[shiftId] && rs[shiftId].rowOwner) || null
-          : scheduleAssignmentPrimaryWorker(rs[shiftId]);
-      v2FlushPromise = Promise.resolve(
-        enqueueV2SlotEdit(role, trIdx, dayInWeekN, s, e, breakText, !!isDayOff, v2Worker)
-      );
-    } catch (_v2edit) {
-      console.warn('gm-callout: schedule v2 edit op', _v2edit);
+    if (!opts.skipV2Enqueue) {
+      try {
+        var v2Worker =
+          isDayOff
+            ? (rs[shiftId] && rs[shiftId].rowOwner) || null
+            : scheduleAssignmentPrimaryWorker(rs[shiftId]);
+        v2FlushPromise = Promise.resolve(
+          enqueueV2SlotEdit(role, trIdx, dayInWeekN, s, e, breakText, !!isDayOff, v2Worker)
+        );
+      } catch (_v2edit) {
+        console.warn('gm-callout: schedule v2 edit op', _v2edit);
+      }
     }
     AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
     pruneScheduleAssignmentsInvalidSlots();
-    if (isDayOff) {
+    if (!opts.skipV2Enqueue && isDayOff) {
       armScheduleDayOffPushGuard();
       void v2FlushPromise
         .then(function () {
@@ -18559,13 +18650,15 @@
             false
           );
         });
-    } else {
+    } else if (!opts.skipV2Enqueue) {
       void v2FlushPromise.catch(function (_editFlush) {
         console.warn('gm-callout: shift edit cloud flush', _editFlush);
       });
       if (!scheduleSyncV2WriteOnly()) {
         scheduleTeamStateDebouncedSync();
       }
+    } else if (!scheduleSyncV2WriteOnly()) {
+      scheduleTeamStateDebouncedSync();
     }
     /* Week-scoped only — full rebuildEmployeeDerivedData() was multi-second on large rosters. */
     rebuildSchedule({
@@ -25687,7 +25780,7 @@
    * Move (or swap) start/end + break between two cells. Does not move worker names.
    * Empty/day-off target → write source times then clear source.
    * Timed target → swap times/break meta.
-   * Persists via persistSingleShiftSlotEdit so cloud ops + soft-poll settle apply.
+   * Local persist first (no per-cell cloud race), then one batched cell flush + peer replace.
    */
   function applyScheduleCellDragMove(source, target) {
     if (!source || !target) return;
@@ -25754,10 +25847,15 @@
       return;
     }
 
-    /* One undo for the whole move/swap; each cell goes through conscious cloud persist. */
     pushScheduleUndoSnapshot();
     markScheduleInteractiveEdit();
-    var persistOpts = { skipUndo: true, skipUiRefresh: true };
+    scheduleHardRevertGuardUntil = Math.max(
+      scheduleHardRevertGuardUntil || 0,
+      Date.now() + 60000
+    );
+    armScheduleLocalAuthority(60000);
+    var persistOpts = { skipUndo: true, skipUiRefresh: true, skipV2Enqueue: true };
+    var cloudEdits = [];
     var ok = false;
     if (!targetTimed) {
       ok = persistSingleShiftSlotEdit(
@@ -25782,6 +25880,28 @@
           persistOpts
         );
       }
+      if (ok) {
+        cloudEdits.push({
+          role: target.role,
+          trIdx: target.trIdx,
+          dayInWeek: tgtDayInWeek,
+          start: srcStart,
+          end: srcEnd,
+          breakText: srcBreak,
+          isDayOff: false,
+          workerName: scheduleRowPrimaryPerson(target.role, target.trIdx, getVisibleWeekDays()),
+        });
+        cloudEdits.push({
+          role: source.role,
+          trIdx: source.trIdx,
+          dayInWeek: srcDayInWeek,
+          start: null,
+          end: null,
+          breakText: '',
+          isDayOff: true,
+          workerName: null,
+        });
+      }
     } else {
       ok = persistSingleShiftSlotEdit(
         target.role,
@@ -25805,16 +25925,47 @@
           persistOpts
         );
       }
+      if (ok) {
+        cloudEdits.push({
+          role: target.role,
+          trIdx: target.trIdx,
+          dayInWeek: tgtDayInWeek,
+          start: srcStart,
+          end: srcEnd,
+          breakText: srcBreak,
+          isDayOff: false,
+          workerName: scheduleRowPrimaryPerson(target.role, target.trIdx, getVisibleWeekDays()),
+        });
+        cloudEdits.push({
+          role: source.role,
+          trIdx: source.trIdx,
+          dayInWeek: srcDayInWeek,
+          start: tgtStart,
+          end: tgtEnd,
+          breakText: tgtBreak,
+          isDayOff: false,
+          workerName: scheduleRowPrimaryPerson(source.role, source.trIdx, getVisibleWeekDays()),
+        });
+      }
     }
     if (!ok) return;
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
+    void enqueueAndFlushV2SlotEdits(cloudEdits).then(function (syncRes) {
+      if (syncRes && syncRes.ok === false && !syncRes.skipped) {
+        showScheduleNotice(
+          gmT('schedule.pushCloudFailed') ||
+            'Move saved here, but cloud sync failed. Keep this tab open and try Save to cloud.',
+          false
+        );
+      }
+    });
   }
 
   /**
    * Copy start/end + break from source onto target cells (draft times + assignment break/time).
    * Does not copy worker names — row person picker owns staffing.
-   * Uses persistSingleShiftSlotEdit so alt-drag survives soft poll and syncs to cloud.
+   * Batched cloud flush so peers receive the copy in one hard replace.
    */
   function applyScheduleAltDragCopy(source, targets) {
     if (!source || !targets || !targets.length) return;
@@ -25830,7 +25981,6 @@
     var timeLabel = redPokeShiftTimeLabel(start, end);
     var hours = redPokeShiftHoursDecimal(start, end);
 
-    /* Peek current SoT — only push/save when at least one cell would change. */
     var peekDraft = getDraftScheduleRowsForWeek(wi, rid);
     var peekStore = loadScheduleAssignmentsStore();
     var peekRs = peekStore[rid] || {};
@@ -25874,7 +26024,13 @@
 
     pushScheduleUndoSnapshot();
     markScheduleInteractiveEdit();
-    var persistOpts = { skipUndo: true, skipUiRefresh: true };
+    scheduleHardRevertGuardUntil = Math.max(
+      scheduleHardRevertGuardUntil || 0,
+      Date.now() + 60000
+    );
+    armScheduleLocalAuthority(60000);
+    var persistOpts = { skipUndo: true, skipUiRefresh: true, skipV2Enqueue: true };
+    var cloudEdits = [];
     var wrote = false;
     pending.forEach(function (t) {
       if (
@@ -25890,11 +26046,30 @@
         )
       ) {
         wrote = true;
+        cloudEdits.push({
+          role: t.role,
+          trIdx: t.trIdx,
+          dayInWeek: t.dayInWeek,
+          start: start,
+          end: end,
+          breakText: breakText,
+          isDayOff: false,
+          workerName: scheduleRowPrimaryPerson(t.role, t.trIdx, getVisibleWeekDays()),
+        });
       }
     });
     if (!wrote) return;
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
+    void enqueueAndFlushV2SlotEdits(cloudEdits).then(function (syncRes) {
+      if (syncRes && syncRes.ok === false && !syncRes.skipped) {
+        showScheduleNotice(
+          gmT('schedule.pushCloudFailed') ||
+            'Copy saved here, but cloud sync failed. Keep this tab open and try Save to cloud.',
+          false
+        );
+      }
+    });
   }
 
   function calendarSlotTargetFromEl(el) {
