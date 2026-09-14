@@ -10359,17 +10359,27 @@
     var startIso = bounds.start.toISOString();
     var endIso = bounds.end.toISOString();
 
+    /*
+     * Bound open-punch scan to ~2 weeks before the pay week. An unbounded
+     * `.is(clock_out_at, null)` was scanning the whole table under RLS and left
+     * Timecards stuck on "Loading…" for a long time on cold open.
+     */
+    var openFromDate = new Date(bounds.start.getTime());
+    openFromDate.setDate(openFromDate.getDate() - 14);
+    var openFromIso = openFromDate.toISOString();
+
     async function queryWeekEntries(selectFields) {
       var mainP = sb
-      .from('time_clock_entries')
+        .from('time_clock_entries')
         .select(selectFields)
         .gte('clock_in_at', startIso)
         .lte('clock_in_at', endIso)
-      .order('clock_in_at', { ascending: true });
+        .order('clock_in_at', { ascending: true });
       var openP = sb
         .from('time_clock_entries')
         .select(selectFields)
         .is('clock_out_at', null)
+        .gte('clock_in_at', openFromIso)
         .lt('clock_in_at', endIso);
       var pair = await Promise.all([mainP, openP]);
       return { mainRes: pair[0], openRes: pair[1] };
@@ -10548,30 +10558,41 @@
       return;
     }
     var paintOpts = { deferGrandTotals: true };
-    if (hadCache) {
+    /*
+     * Always paint schedule-backed roster immediately. Waiting on punches first
+     * left a blank "Loading timecards…" screen for 10–20s+ on cold open.
+     */
+    if (!hadCache) {
+      activeWeekEntriesCacheKey = null;
+      weekEntries = [];
+      invalidateWeekEntriesIndex();
+    }
+    try {
       buildRosterCacheFromCurrentWeek();
       paintRosterIncrementalOrFull(wrap, paintOpts);
-      var scheduleFetch = function () {
-        // Always hit Supabase SoT after the cached paint so another manager's edits converge.
-        invalidateWeekEntriesCache(bounds);
-        loadWeekEntries().then(function (loadRes) {
-          refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
-        });
-      };
-      if (typeof global.requestAnimationFrame === 'function') {
-        global.requestAnimationFrame(scheduleFetch);
-      } else {
-        setTimeout(scheduleFetch, 0);
-      }
-      return;
+    } catch (_paintEarly) {
+      showRosterLoadingKeepToolbar(wrap);
     }
-    activeWeekEntriesCacheKey = null;
-    weekEntries = [];
-    invalidateWeekEntriesIndex();
-    showRosterLoadingKeepToolbar(wrap);
-    loadWeekEntries().then(function (loadRes) {
-      refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
-    });
+    var scheduleFetch = function () {
+      // Always hit Supabase SoT after the first paint so another manager's edits converge.
+      if (hadCache) invalidateWeekEntriesCache(bounds);
+      loadWeekEntries()
+        .then(function (loadRes) {
+          refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
+        })
+        .catch(function (err) {
+          refreshRosterAfterWeekFetch(
+            { ok: false, reason: (err && err.message) || 'load_failed' },
+            wrap,
+            selectedKey
+          );
+        });
+    };
+    if (typeof global.requestAnimationFrame === 'function') {
+      global.requestAnimationFrame(scheduleFetch);
+    } else {
+      setTimeout(scheduleFetch, 0);
+    }
   }
 
   function aggregateEmployeeWeek(emp, locationFilter) {
