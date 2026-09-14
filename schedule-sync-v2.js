@@ -237,7 +237,7 @@
     cellCachePersistTimer = setTimeout(function () {
       cellCachePersistTimer = null;
       writeJson(CELL_CACHE_KEY, cellCacheMem || {});
-    }, 300);
+    }, 3000);
   }
 
   function persistSlotCacheSoon() {
@@ -245,7 +245,7 @@
     slotCachePersistTimer = setTimeout(function () {
       slotCachePersistTimer = null;
       writeJson(SLOT_CACHE_KEY, slotCacheMem || {});
-    }, 300);
+    }, 3000);
   }
 
   function getCellCache() {

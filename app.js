@@ -6029,16 +6029,17 @@
   var TEAM_STATE_PUSH_DEBOUNCE_MS = 400;
   var TEAM_STATE_REMOTE_REFRESH_DEBOUNCE_MS = 200;
   /** Poll cloud so other devices' edits appear even if Realtime broadcast is missed. */
-  var TEAM_STATE_POLL_MS = 4000;
-  /** Poll peer cell edits (~5s). Realtime handles most updates; this is backup only. */
-  var SCHEDULE_CELLS_POLL_MS = 5000;
-  /** Refetch slot rows less often than cells (slots rarely change). */
-  var SCHEDULE_SLOTS_POLL_EVERY_N = 6;
+  var TEAM_STATE_POLL_MS = 15000;
+  /** Soft cell poll backup (Realtime handles most). Longer = less idle jank. */
+  var SCHEDULE_CELLS_POLL_MS = 12000;
+  /** Refetch slot rows rarely once the map is warm (slots change infrequently). */
+  var SCHEDULE_SLOTS_POLL_EVERY_N = 24;
   var scheduleSlotsPollTick = 0;
   var scheduleLastAppliedFingerprint = '';
   var scheduleCellsBackgroundHydratePromise = null;
   var teamStatePollTimer = null;
   var scheduleCellsPollTimer = null;
+  var scheduleCellsPeerPollTimer = null;
   var scheduleV2FlushPromise = null;
   var scheduleCellsPollInFlight = false;
   /** Coalesced write-through so staffing edits reach cloud within ~200ms of the last click. */
@@ -6308,6 +6309,8 @@
     if (softOnly && scheduleSoftPollApplyFrozen()) return false;
     /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
     if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) return false;
+    /* Soft polls: skip if one already in flight (interval + Realtime pile-up). */
+    if (softOnly && scheduleCellsPollInFlight) return false;
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
     var targetWi =
@@ -6444,8 +6447,10 @@
           !scheduleLocalAuthorityActive() &&
           !schedulePersonRowProtectActive(currentRestaurantId, targetWi);
         try {
+          /* Visible week only — full calendar projection on every soft poll was costly. */
           var isoToGdiEsc = Object.create(null);
-          for (var giEsc = 0; giEsc < WEEK_META.length; giEsc += 1) {
+          for (var diEsc = 0; diEsc < 7; diEsc += 1) {
+            var giEsc = targetWi * 7 + diEsc;
             var mEsc = WEEK_META[giEsc];
             if (mEsc && mEsc.iso) isoToGdiEsc[String(mEsc.iso).slice(0, 10)] = giEsc;
           }
@@ -6602,10 +6607,11 @@
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
-          forcePaint: true,
+          /* Soft: fingerprint skip; hard Refresh/peer still force. */
+          forcePaint: forceCloudSoT,
           fast: true,
-          forceInitial: true,
-          forceCloudPending: true,
+          forceInitial: forceCloudSoT,
+          forceCloudPending: forceCloudSoT,
           /* Only allow empty message when cloud confirmed zero timed cells. */
           allowEmptyPaint: cloudTimedVisible <= 0,
           confirmedEmpty: cloudTimedVisible <= 0,
@@ -6641,10 +6647,15 @@
       scheduleWeekNavPollTimer = null;
       if (scheduleCalendarWeekIndex !== w) return;
       if (!(scheduleSyncV2WriteOnly() && GM_SUPABASE_DATA && window.gmSupabase)) return;
+      var v2nav = gmScheduleV2();
+      var slotWarm =
+        v2nav &&
+        typeof v2nav.getSlotCache === 'function' &&
+        Object.keys(v2nav.getSlotCache() || {}).length > 0;
       void pollVisibleScheduleCellsFromCloud({
-        rebuild: true,
+        rebuild: false,
         force: false,
-        forceSlots: true,
+        forceSlots: !slotWarm,
         replaceWeekIndex: w,
         upsertTimedOnly: true,
       }).catch(function () {
@@ -6657,6 +6668,10 @@
     if (scheduleCellsPollTimer) {
       clearInterval(scheduleCellsPollTimer);
       scheduleCellsPollTimer = null;
+    }
+    if (scheduleCellsPeerPollTimer) {
+      clearTimeout(scheduleCellsPeerPollTimer);
+      scheduleCellsPeerPollTimer = null;
     }
   }
 
@@ -6680,7 +6695,7 @@
       if (currentScreen !== 1) return;
       if (!scheduleSyncV2WriteOnly()) return;
       void pollVisibleScheduleCellsFromCloud({
-        rebuild: true,
+        rebuild: false,
         force: false,
         upsertTimedOnly: true,
       });
@@ -11523,6 +11538,12 @@
   var TEAM_STATE_MANAGER_COLUMNS =
     TEAM_STATE_SCHEDULE_COLUMNS +
     ',messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,timecard_tip_takehome_pct';
+  /*
+   * Idle poll after cells hydrate: skip multi-MB schedule blobs (cells are SoT).
+   * Refresh / forceFetch / conflict still use full manager columns.
+   */
+  var TEAM_STATE_IDLE_META_COLUMNS =
+    'schedule_templates,schedule_published,company_holidays,schedule_reviews,messaging_templates,current_restaurant_id,callout_history,timeclock_settings,timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,timecard_tip_takehome_pct,updated_at';
   /* Employees need draft_schedule (slot times/rows) + schedule_assignments so upcoming
      shifts and the read-only master calendar match the manager SoT.
      schedule_published gates which weeks employees can see. */
@@ -11713,7 +11734,19 @@
         return { ok: true, skipped: 'unchanged' };
       }
     }
-    var cols = teamStateColumnsForRemoteFetch(fields);
+    var cols;
+    if (
+      opts.skipScheduleBlobs &&
+      scheduleSyncV2WriteOnly() &&
+      scheduleCellsHydratedOk &&
+      gmCalloutSessionIsManager &&
+      !fields
+    ) {
+      /* Idle: skip multi-MB schedule_assignments / draft_schedule — cells are SoT. */
+      cols = stripMissingTeamStateColumns(TEAM_STATE_IDLE_META_COLUMNS);
+    } else {
+      cols = teamStateColumnsForRemoteFetch(fields);
+    }
     var res = await selectTeamStateRow(sb, cols);
     if (res.error) {
       console.warn('gm-callout: team_state refresh', res.error);
@@ -11915,7 +11948,11 @@
       ) {
         return;
       }
-      queueTeamStateRemoteRefresh(null, { forceFetch: true });
+      /* Probe updated_at first; skip schedule blobs when cells already hydrated. */
+      queueTeamStateRemoteRefresh(null, {
+        forceFetch: false,
+        skipScheduleBlobs: true,
+      });
     }, TEAM_STATE_POLL_MS);
   }
 
@@ -11971,8 +12008,8 @@
           );
         }
         /* Soft upsert by default; hard-revert / template peers full-replace including day-offs. */
-        void pollVisibleScheduleCellsFromCloud({
-          rebuild: true,
+        var peerPollOpts = {
+          rebuild: hardPeer,
           force: hardPeer,
           forceSlots: hardPeer,
           replaceTrusted: hardPeer,
@@ -11980,8 +12017,17 @@
           replaceWeekIndex: hardPeer ? peerWi : undefined,
           allowStaleWeekApply: hardPeer,
           upsertTimedOnly: !hardPeer,
-          /* Soft peer ping: still pull — outbox no longer freezes the whole apply. */
-        });
+        };
+        if (hardPeer) {
+          void pollVisibleScheduleCellsFromCloud(peerPollOpts);
+        } else {
+          /* Debounce soft Realtime bursts so overlapping polls don't stack. */
+          if (scheduleCellsPeerPollTimer) clearTimeout(scheduleCellsPeerPollTimer);
+          scheduleCellsPeerPollTimer = setTimeout(function () {
+            scheduleCellsPeerPollTimer = null;
+            void pollVisibleScheduleCellsFromCloud(peerPollOpts);
+          }, 280);
+        }
       })
       .on(
         'postgres_changes',
