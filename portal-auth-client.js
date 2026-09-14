@@ -100,6 +100,9 @@
     if (res.status === 404) {
       return "Company signup is not available on this server. Restart npm start or redeploy the latest app.";
     }
+    if (res.status === 504 || res.status === 522 || res.status === 524) {
+      return "Cloud sign-in timed out. Wait a moment and try again.";
+    }
     if (res.status >= 500) {
       return fallback || "Server error (" + res.status + "). Try again in a moment.";
     }
@@ -121,7 +124,14 @@
     } catch (_eText) {
       text = "";
     }
-    const snippet = String(text || "")
+    const raw = String(text || "");
+    if (/Error code 522|cloudflare|origin web server timed out/i.test(raw)) {
+      return {
+        message:
+          "Cloud database timed out (522). Wait a minute and try signing in again — this is not your password.",
+      };
+    }
+    const snippet = raw
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -131,17 +141,40 @@
 
   async function portalFetch(path, body) {
     let res;
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var abortTimer = null;
+    if (controller) {
+      abortTimer = setTimeout(function () {
+        try {
+          controller.abort();
+        } catch (_ab) {
+          /* ignore */
+        }
+      }, 20000);
+    }
     try {
       res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller ? controller.signal : undefined,
       });
     } catch (netErr) {
+      var aborted =
+        (netErr && netErr.name === "AbortError") ||
+        /aborted|abort/i.test(String((netErr && netErr.message) || ""));
       return {
         ok: false,
-        message: mapPortalMessage((netErr && netErr.message) || "Network error. Check your connection and try again.", "common.networkError"),
+        message: mapPortalMessage(
+          aborted
+            ? "Sign-in timed out. Wait a moment and try again."
+            : (netErr && netErr.message) ||
+                "Network error. Check your connection and try again.",
+          "common.networkError"
+        ),
       };
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
     }
     const data = await readPortalResponse(res);
     if (!res.ok || !data.ok) {

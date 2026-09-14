@@ -5890,6 +5890,39 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   word-break: break-word;
 }
 
+.employee-card-primary-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.employee-card-primary-chip {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.employee-card-primary-chip:hover,
+.employee-card-primary-chip:focus-visible {
+  border-color: var(--primary);
+  color: var(--primary);
+  outline: none;
+}
+
+.employee-card-primary-chip.is-active {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  color: var(--primary);
+}
+
 .employee-card-leave {
   margin-top: 8px;
   padding-top: 8px;
@@ -7416,6 +7449,19 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   align-items: flex-start;
   gap: 6px;
   margin: 0;
+}
+
+.timecards-roster-toolbar .timecards-week-nav,
+.timecards-employee-toolbar .timecards-week-nav {
+  flex-wrap: wrap;
+}
+
+.timecards-roster-toolbar .timecards-week-nav .schedule-week-nav-btn.btn,
+.timecards-employee-toolbar .timecards-week-nav .schedule-week-nav-btn.btn,
+.timecards-roster-toolbar .timecards-week-nav .schedule-week-nav-today.btn,
+.timecards-employee-toolbar .timecards-week-nav .schedule-week-nav-today.btn {
+  min-height: var(--timecards-toolbar-control-height);
+  height: var(--timecards-toolbar-control-height);
 }
 
 .timecards-roster-toolbar .timecards-week-picker-label,

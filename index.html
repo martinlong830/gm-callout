@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-230" />
+  <link rel="stylesheet" href="styles.css?v=perf-251" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-241" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-251" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-241';
+    window.__GM_ASSET_V = 'perf-251';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -2627,6 +2627,12 @@
       var loginEl = document.getElementById('login-screen');
       if (!loginEl) return;
       if (isOpen) {
+        if (
+          document.documentElement.classList.contains('authed') ||
+          window.__GM_PORTAL_LOGIN_IN_FLIGHT__
+        ) {
+          return;
+        }
         loginEl.hidden = false;
         loginEl.removeAttribute('aria-hidden');
         /* Never use inert — it leaves a painted gate that ignores all clicks. */
@@ -3231,84 +3237,96 @@
       }
 
       async function finishPortalLogin(role, displayName, companyPayload) {
-        var appReady = whenManagerAppReady();
-        if (companyPayload) storeCompanySession(companyPayload);
-        if (role === 'manager' || role === 'admin') {
-          try {
-            sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
-          } catch (_e0) {
-            /* ignore */
-          }
-          setSession(role);
-          applyAuthedShell(role);
-          await appReady;
-          if (typeof window.gmCalloutManagerBootstrap === 'function') {
-            window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
-          }
-          void appReady
-            .then(function () {
-              var hydrate =
-                typeof window.gmCalloutScheduleRemoteHydrate === 'function'
-                  ? window.gmCalloutScheduleRemoteHydrate
-                  : window.gmCalloutSupabaseHydrateFromRemote;
-              if (typeof hydrate !== 'function') return null;
-              return hydrate({ deferSecondary: true });
-            })
-            .then(function () {
-              if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
-                window.gmCalloutRunPostRemoteHydrate();
-              }
-            })
-            .catch(function (_hydr) {
-              /* ignore */
-            });
-          void promptRecoveryEmailIfNeeded();
-          return;
-        }
-        if (role === 'employee') {
-          try {
-            sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName || '');
-          } catch (_e1) {
-            /* ignore */
-          }
-          setSession('employee');
-          applyAuthedShell('employee');
-          await appReady;
-          if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
+        window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
+        try {
+          if (companyPayload) storeCompanySession(companyPayload);
+          if (role === 'manager' || role === 'admin') {
             try {
-              await window.gmCalloutEnsureEmployeeApp();
-            } catch (_ea) {
+              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+            } catch (_e0) {
               /* ignore */
             }
+            setSession(role);
+            applyAuthedShell(role);
+            /* Shell first — do not hold Sign in on app.js download / cloud hydrate. */
+            void whenManagerAppReady()
+              .then(function () {
+                if (typeof window.gmCalloutManagerBootstrap === 'function') {
+                  window.gmCalloutManagerBootstrap({ navigateToSchedule: true });
+                }
+                var hydrate =
+                  typeof window.gmCalloutScheduleRemoteHydrate === 'function'
+                    ? window.gmCalloutScheduleRemoteHydrate
+                    : window.gmCalloutSupabaseHydrateFromRemote;
+                if (typeof hydrate !== 'function') return null;
+                return hydrate({ deferSecondary: true });
+              })
+              .then(function () {
+                if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
+                  window.gmCalloutRunPostRemoteHydrate();
+                }
+              })
+              .catch(function (_hydr) {
+                /* ignore */
+              });
+            void promptRecoveryEmailIfNeeded();
+            return;
           }
-          if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
-            window.gmCalloutEmployeeBootstrap();
-          }
-          void appReady
-            .then(function () {
-              var hydrate =
-                typeof window.gmCalloutScheduleRemoteHydrate === 'function'
-                  ? window.gmCalloutScheduleRemoteHydrate
-                  : window.gmCalloutSupabaseHydrateFromRemote;
-              if (typeof hydrate !== 'function') return null;
-              return hydrate({ deferSecondary: true });
-            })
-            .then(function () {
-              if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
-                window.gmCalloutRunPostRemoteHydrate();
-              }
-            })
-            .catch(function (_hydr2) {
+          if (role === 'employee') {
+            try {
+              sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName || '');
+            } catch (_e1) {
               /* ignore */
-            });
-          void promptRecoveryEmailIfNeeded();
-          return;
-        }
-        if (role === 'timeclock' && typeof window.gmCalloutApplySupabaseRole === 'function') {
-          window.gmCalloutApplySupabaseRole(role, displayName);
-        }
-        if (role === 'manager' || role === 'admin' || role === 'employee') {
-          await promptRecoveryEmailIfNeeded();
+            }
+            setSession('employee');
+            applyAuthedShell('employee');
+            void whenManagerAppReady()
+              .then(function () {
+                if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
+                  return window.gmCalloutEnsureEmployeeApp();
+                }
+                return null;
+              })
+              .then(function () {
+                if (typeof window.gmCalloutEmployeeBootstrap === 'function') {
+                  window.gmCalloutEmployeeBootstrap();
+                }
+                var hydrate =
+                  typeof window.gmCalloutScheduleRemoteHydrate === 'function'
+                    ? window.gmCalloutScheduleRemoteHydrate
+                    : window.gmCalloutSupabaseHydrateFromRemote;
+                if (typeof hydrate !== 'function') return null;
+                return hydrate({ deferSecondary: true });
+              })
+              .then(function () {
+                if (typeof window.gmCalloutRunPostRemoteHydrate === 'function') {
+                  window.gmCalloutRunPostRemoteHydrate();
+                }
+              })
+              .catch(function (_hydr2) {
+                /* ignore */
+              });
+            void promptRecoveryEmailIfNeeded();
+            return;
+          }
+          if (role === 'timeclock') {
+            setSession('timeclock');
+            applyAuthedShell('timeclock');
+            if (typeof window.gmCalloutApplySupabaseRole === 'function') {
+              window.gmCalloutApplySupabaseRole(role, displayName);
+            }
+            void whenManagerAppReady()
+              .then(function () {
+                if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+                  window.gmCalloutTimeclockBootstrap();
+                }
+              })
+              .catch(function (_tc) {
+                /* ignore */
+              });
+          }
+        } finally {
+          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
         }
       }
 
@@ -4047,7 +4065,8 @@
           if (window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled()) {
             (async function () {
               setLoginSubmitBusy(true);
-              var appPrefetch = whenManagerAppReady();
+              armLoginAppPrefetch();
+              window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
               try {
                 await whenPortalAuthReady();
                 /* Clear intentional sign-out before auth so SIGNED_IN is not rejected. */
@@ -4060,18 +4079,23 @@
                 }
                 var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
                 if (!res.ok) {
+                  window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
                   if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
                   showLoginError(res.message || 'Sign in failed.');
                   return;
                 }
-                await appPrefetch;
-                await finishPortalLogin(res.role, res.displayName, {
+                /* Tokens are set — leave "Signing in…" immediately; shell loads in background. */
+                setLoginSubmitBusy(false);
+                finishPortalLogin(res.role, res.displayName, {
                   companyId: res.companyId,
                   companyName: res.companyName,
                   accessCode: res.accessCode,
                   teamStateId: res.teamStateId,
                   restaurantsConfig: res.restaurantsConfig,
                 });
+              } catch (_loginFail) {
+                window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+                throw _loginFail;
               } finally {
                 setLoginSubmitBusy(false);
               }
@@ -4576,17 +4600,17 @@
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
   <script defer src="employee-leave.js?v=perf-69"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-230"></script>
+  <script defer src="portal-auth-client.js?v=perf-251"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
   <script defer src="availability-paint.js?v=perf-230"></script>
-  <script defer src="schedule-sync-v2.js?v=perf-241"></script>
+  <script defer src="schedule-sync-v2.js?v=perf-251"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     /* Cells are SoT — do not apply/push schedule blobs (prevents cross-device rollbacks). */
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
   </script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-241"></script>
+  <script defer src="app.js?v=perf-251"></script>
   <script>
     /*
      * Role / feature modules after first paint:

@@ -6188,7 +6188,8 @@
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
             !scheduleProtectLocalTimedFromSoftDayOff() &&
             !scheduleDayOffPushGuardActive() &&
-            !scheduleProtectLocalDayOffFromSoftTimedApply()
+            !scheduleProtectLocalDayOffFromSoftTimedApply() &&
+            !(Date.now() < scheduleHardRevertGuardUntil)
           ) {
             scheduleLocalAuthorityUntil = 0;
           } else if (
@@ -6196,6 +6197,10 @@
             Date.now() - scheduleInteractiveEditAt < SCHEDULE_TIMED_EDIT_SETTLE_MS
           ) {
             armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+          } else if (Date.now() < scheduleHardRevertGuardUntil) {
+            armScheduleLocalAuthority(
+              Math.max(8000, scheduleHardRevertGuardUntil - Date.now())
+            );
           }
           void broadcastScheduleCellsChanged();
         } else if (res && res.ok && res.empty) {
@@ -6203,7 +6208,8 @@
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
             !scheduleProtectLocalTimedFromSoftDayOff() &&
             !scheduleDayOffPushGuardActive() &&
-            !scheduleProtectLocalDayOffFromSoftTimedApply()
+            !scheduleProtectLocalDayOffFromSoftTimedApply() &&
+            !(Date.now() < scheduleHardRevertGuardUntil)
           ) {
             scheduleLocalAuthorityUntil = 0;
           }
@@ -6266,7 +6272,8 @@
     return scheduleV2FlushPromise;
   }
 
-  function syncScheduleSlotsFromCloudThen(fn) {
+  function syncScheduleSlotsFromCloudThen(fn, opts) {
+    opts = opts || {};
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !GM_SUPABASE_DATA || !window.gmSupabase) {
       if (typeof fn === 'function') fn();
@@ -6276,6 +6283,27 @@
     if (!cid || typeof v2.fetchSlots !== 'function') {
       if (typeof fn === 'function') fn();
       return Promise.resolve();
+    }
+    /*
+     * Skip a full slots round-trip when the map is already warm — conscious edits
+     * used to await fetchSlots on every Save / drag cell and added ~100–400ms.
+     */
+    if (!opts.forceFetch) {
+      try {
+        var warmSlots = v2.getSlotCache && v2.getSlotCache();
+        var warmMap = v2.getSlotMap && v2.getSlotMap();
+        if (
+          warmSlots &&
+          Object.keys(warmSlots).length &&
+          warmMap &&
+          Object.keys(warmMap).length
+        ) {
+          if (typeof fn === 'function') fn();
+          return Promise.resolve();
+        }
+      } catch (_warm) {
+        /* fall through to fetch */
+      }
     }
     return Promise.resolve(v2.fetchSlots(window.gmSupabase, cid))
       .catch(function () {
@@ -6288,6 +6316,54 @@
 
   var scheduleCellsPollGeneration = 0;
   var scheduleWeekNavPollTimer = null;
+  /** Peer hard-replace deferred until local soft-freeze (drag/edit settle) ends. */
+  var scheduleDeferredHardPeerPollOpts = null;
+  var scheduleDeferredHardPeerPollTimer = null;
+  var scheduleDeferredHardPeerPollStartedAt = 0;
+
+  function flushDeferredHardPeerPollIfReady() {
+    if (!scheduleDeferredHardPeerPollOpts) return;
+    if (scheduleSoftPollApplyFrozen()) {
+      if (
+        scheduleDeferredHardPeerPollStartedAt &&
+        Date.now() - scheduleDeferredHardPeerPollStartedAt > 90000
+      ) {
+        /* Give up waiting — apply hard peer SoT so devices cannot diverge forever. */
+        var staleOpts = scheduleDeferredHardPeerPollOpts;
+        scheduleDeferredHardPeerPollOpts = null;
+        scheduleDeferredHardPeerPollStartedAt = 0;
+        if (scheduleDeferredHardPeerPollTimer) {
+          clearTimeout(scheduleDeferredHardPeerPollTimer);
+          scheduleDeferredHardPeerPollTimer = null;
+        }
+        void pollVisibleScheduleCellsFromCloud(staleOpts);
+      }
+      return;
+    }
+    var opts = scheduleDeferredHardPeerPollOpts;
+    scheduleDeferredHardPeerPollOpts = null;
+    scheduleDeferredHardPeerPollStartedAt = 0;
+    if (scheduleDeferredHardPeerPollTimer) {
+      clearTimeout(scheduleDeferredHardPeerPollTimer);
+      scheduleDeferredHardPeerPollTimer = null;
+    }
+    void pollVisibleScheduleCellsFromCloud(opts);
+  }
+
+  function deferHardPeerPollUntilLocalSettle(opts) {
+    scheduleDeferredHardPeerPollOpts = opts;
+    if (!scheduleDeferredHardPeerPollStartedAt) {
+      scheduleDeferredHardPeerPollStartedAt = Date.now();
+    }
+    if (scheduleDeferredHardPeerPollTimer) return;
+    (function tick() {
+      scheduleDeferredHardPeerPollTimer = setTimeout(function () {
+        scheduleDeferredHardPeerPollTimer = null;
+        flushDeferredHardPeerPollIfReady();
+        if (scheduleDeferredHardPeerPollOpts) tick();
+      }, 400);
+    })();
+  }
 
   async function pollVisibleScheduleCellsFromCloud(opts) {
     opts = opts || {};
@@ -6341,7 +6417,14 @@
         ? v2.fetchSlots(window.gmSupabase, cid)
         : Promise.resolve({ ok: true, skipped: true });
       var cellsPromise = v2.fetchCellsRange(window.gmSupabase, cid, fromIso, toIso, {
-        forceTombstone: forceCloudSoT,
+        /*
+         * Soft peer apply must not soft-win via density tombstone refuse (denser local
+         * keeping deleted cloud cells). Refresh / hard paths always force tombstones.
+         * While local edits are soft-frozen, keep density refuse so in-flight local
+         * density is not wiped from the cell cache mid-settle.
+         */
+        forceTombstone:
+          forceCloudSoT || (softOnly && !scheduleSoftPollApplyFrozen()),
       });
       var pair = await Promise.all([slotsPromise, cellsPromise]);
       if (gen !== scheduleCellsPollGeneration) return false;
@@ -7529,7 +7612,9 @@
         persistTeamStateDirtyFlags();
         scheduleTeamStateWriteThroughSoon();
       } else {
-        scheduleLocalAuthorityUntil = 0;
+        /* Timed Person assign — keep settle authority; clearing it let soft poll stomp. */
+        armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+        armSchedulePersonRowProtect(currentRestaurantId, scheduleCalendarWeekIndex, 30000);
       }
       enqueueV2RowWorker._lastDayOff = false;
       return res || { ok: true };
@@ -11411,6 +11496,8 @@
 
   var tipPayrollPushInFlight = false;
   var tipPayrollPushQueued = false;
+  /** Ignore remote tip/VL echoes briefly after a successful push (stale SELECT can wipe 0/0). */
+  var tipPayrollLastPushOkAt = 0;
 
   function scheduleTipPayrollDebouncedSync() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
@@ -11493,6 +11580,7 @@
           weekExtras: merged.weekExtras,
         };
         tipPayrollBaselineReady = true;
+        tipPayrollLastPushOkAt = Date.now();
         void broadcastTeamStateChanged([
           'timecard_week_tip_pool',
           'timecard_dishwasher_tips',
@@ -11790,6 +11878,13 @@
     if (!row || typeof row !== 'object') return false;
     /* Never clobber in-flight local tip/VL/SL encodes with a concurrent remote snapshot. */
     if (tipPayrollMergeLocked()) return false;
+    /*
+     * Right after a successful push, baseline === local. A stale team_state row (missing
+     * the just-written VL/SL=0 keys) would look "unchanged" and wipe them on merge.
+     */
+    if (tipPayrollLastPushOkAt && Date.now() - tipPayrollLastPushOkAt < 5000) {
+      return false;
+    }
     var hasTipPool = Object.prototype.hasOwnProperty.call(row, 'timecard_week_tip_pool');
     var hasDishwasher = Object.prototype.hasOwnProperty.call(row, 'timecard_dishwasher_tips');
     var hasWeekExtras = Object.prototype.hasOwnProperty.call(row, 'timecard_week_extras');
@@ -11808,38 +11903,42 @@
         ? row.timecard_week_extras
         : null;
 
-    // First hydrate: take remote when present; lock baseline so pre-hydrate localStorage is not
-    // treated as session edits. Later applies preserve in-session tip/VL day keys via deep merge.
+    // First hydrate: merge remote over baseline empty, but keep any local week-extras /
+    // tip keys already written this session (e.g. schedule VL/SL=0) so they are not wiped.
     if (!tipPayrollBaselineReady) {
+      var localTip0 = loadTimecardWeekTipPoolStore();
+      var localDw0 = loadTimecardDishwasherTipsStore();
+      var localExtras0 = loadTimecardWeekExtrasStore();
+      tipPayrollRemoteBaseline = { tipPool: {}, dishwasher: {}, weekExtras: {} };
+      var mergedFirst = mergeTipPayrollStoresForPush(
+        localTip0,
+        localDw0,
+        remoteTip || {},
+        remoteDw || {},
+        localExtras0,
+        remoteExtras || {}
+      );
       var changedFirst = false;
-      if (remoteTip && Object.keys(remoteTip).length > 0) {
-        try {
-          localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(remoteTip));
+      try {
+        if (remoteTip || Object.keys(localTip0).length) {
+          localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(mergedFirst.tipPool));
           changedFirst = true;
-        } catch (_tp0) {
-          /* ignore */
         }
-      }
-      if (remoteDw && Object.keys(remoteDw).length > 0) {
-        try {
-          localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(remoteDw));
+        if (remoteDw || Object.keys(localDw0).length) {
+          localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(mergedFirst.dishwasher));
           changedFirst = true;
-        } catch (_dt0) {
-          /* ignore */
         }
-      }
-      if (remoteExtras && Object.keys(remoteExtras).length > 0) {
-        try {
-          localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(remoteExtras));
+        if (remoteExtras || Object.keys(localExtras0).length) {
+          localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(mergedFirst.weekExtras));
           changedFirst = true;
-        } catch (_we0) {
-          /* ignore */
         }
+      } catch (_firstSet) {
+        /* ignore */
       }
       tipPayrollRemoteBaseline = {
-        tipPool: remoteTip || loadTimecardWeekTipPoolStore(),
-        dishwasher: remoteDw || loadTimecardDishwasherTipsStore(),
-        weekExtras: remoteExtras || loadTimecardWeekExtrasStore(),
+        tipPool: remoteTip || {},
+        dishwasher: remoteDw || {},
+        weekExtras: remoteExtras || {},
       };
       tipPayrollBaselineReady = true;
       if (
@@ -12019,7 +12118,16 @@
           upsertTimedOnly: !hardPeer,
         };
         if (hardPeer) {
-          void pollVisibleScheduleCellsFromCloud(peerPollOpts);
+          /*
+           * Do not hard-replace over an in-progress local edit / drag settle.
+           * Queue until soft-freeze lifts so conscious edits are not rolled back;
+           * Refresh and assert still force cloud SoT immediately.
+           */
+          if (scheduleSoftPollApplyFrozen()) {
+            deferHardPeerPollUntilLocalSettle(peerPollOpts);
+          } else {
+            void pollVisibleScheduleCellsFromCloud(peerPollOpts);
+          }
         } else {
           /* Debounce soft Realtime bursts so overlapping polls don't stack. */
           if (scheduleCellsPeerPollTimer) clearTimeout(scheduleCellsPeerPollTimer);
@@ -16559,6 +16667,11 @@
       if (opts.singleEmployee) return syncSingleEmployeeToSupabase(opts.singleEmployee);
       return syncEmployeesToSupabase();
     }
+    /* Schedule VL/SL saves must not upsert the whole roster (main-thread stall). */
+    if (opts.singleEmployee) {
+      void syncSingleEmployeeToSupabase(opts.singleEmployee);
+      return Promise.resolve({ ok: true });
+    }
     syncEmployeesToSupabaseAfterSave();
     return Promise.resolve({ ok: true });
   }
@@ -16629,6 +16742,78 @@
   }
 
   /** Write VL/SL into leaveBalance + timecard week-extras (payroll / grand totals). */
+  function timecardWeekExtrasKeyForDayIso(dayIso) {
+    var monIso = weekStartMondayIsoFromDayIso(dayIso);
+    if (!monIso) return '';
+    var mon = parseIsoDateLocal(monIso);
+    if (!mon) return '';
+    var sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
+    var sunIso = isoDateFromLocalDate(sun);
+    if (!sunIso) return '';
+    return monIso + '_' + sunIso;
+  }
+
+  function readTimecardDayLeaveExtrasLocal(empId, dayIso) {
+    if (!empId || !dayIso) return null;
+    var weekKey = timecardWeekExtrasKeyForDayIso(dayIso);
+    if (!weekKey) return null;
+    var leaveKey = String(empId) + '@' + String(dayIso).slice(0, 10);
+    try {
+      var all = loadTimecardWeekExtrasStore();
+      var slice = all[weekKey];
+      if (!slice || typeof slice !== 'object') return null;
+      var row = slice[leaveKey];
+      if (!row || typeof row !== 'object' || row.manual === false) return null;
+      return {
+        vl: Math.max(0, parseFloat(row.vl) || 0),
+        sl: Math.max(0, parseFloat(row.sl) || 0),
+        manual: true,
+      };
+    } catch (_r) {
+      return null;
+    }
+  }
+
+  function writeTimecardDayLeaveExtrasLocal(empId, dayIso, vl, sl) {
+    if (!empId || !dayIso) return false;
+    var weekKey = timecardWeekExtrasKeyForDayIso(dayIso);
+    if (!weekKey) return false;
+    var leaveKey = String(empId) + '@' + String(dayIso).slice(0, 10);
+    var v = Math.max(0, parseFloat(vl) || 0);
+    var s = Math.max(0, parseFloat(sl) || 0);
+    try {
+      /*
+       * Lock baseline before first write so a later remote hydrate merges instead of
+       * replacing (zeros and clears must survive across devices).
+       */
+      if (!tipPayrollBaselineReady) {
+        tipPayrollRemoteBaseline = {
+          tipPool: loadTimecardWeekTipPoolStore(),
+          dishwasher: loadTimecardDishwasherTipsStore(),
+          weekExtras: loadTimecardWeekExtrasStore(),
+        };
+        tipPayrollBaselineReady = true;
+      }
+      var all = loadTimecardWeekExtrasStore();
+      var slice = all[weekKey];
+      if (!slice || typeof slice !== 'object') slice = {};
+      /* Always keep an explicit manual row — including 0/0 — so approved leave cannot resurrect. */
+      slice[leaveKey] = { vl: v, sl: s, manual: true };
+      delete slice[String(empId)];
+      all[weekKey] = slice;
+      localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(all));
+      if (
+        window.gmCalloutTimecards &&
+        typeof window.gmCalloutTimecards.invalidateWeekExtrasSliceCache === 'function'
+      ) {
+        window.gmCalloutTimecards.invalidateWeekExtrasSliceCache();
+      }
+      return true;
+    } catch (_we) {
+      return false;
+    }
+  }
+
   function persistShiftDayLeaveHours(emp, dayIso, vl, sl) {
     if (!emp || !dayIso) return;
     var L = gmLeave();
@@ -16637,31 +16822,55 @@
     if (L && typeof L.upsertLeaveBalanceEntry === 'function') {
       L.upsertLeaveBalanceEntry(emp, 'vacation', dayIso, v);
       L.upsertLeaveBalanceEntry(emp, 'sick', dayIso, s);
-      saveEmployees();
+      /* Single-employee cloud upsert — never the full Team table on a shift Save. */
+      saveEmployees({ singleEmployee: emp });
     }
-    void ensureTimecardsManagerLoaded()
-      .then(function () {
-        var tc = window.gmCalloutTimecards;
-        if (!tc || typeof tc.setEmployeeDayLeave !== 'function') return;
-        var monIso = weekStartMondayIsoFromDayIso(dayIso);
-        var bounds = null;
-        if (monIso && typeof tc.payWeekBoundsFromMonday === 'function') {
-          var mon = parseIsoDateLocal(monIso);
-          if (mon) bounds = tc.payWeekBoundsFromMonday(mon);
+    /*
+     * Lock tip/VL baseline before write so a concurrent remote hydrate merges instead of
+     * replacing (explicit 0/0 clears must survive).
+     */
+    if (!tipPayrollBaselineReady) {
+      tipPayrollRemoteBaseline = {
+        tipPool: loadTimecardWeekTipPoolStore(),
+        dishwasher: loadTimecardDishwasherTipsStore(),
+        weekExtras: loadTimecardWeekExtrasStore(),
+      };
+      tipPayrollBaselineReady = true;
+    }
+    /*
+     * Prefer Timecards setter when loaded (same SoT + cache bust). Always key by the
+     * dayIso pay week — never the Timecards week picker. Fall back to local write.
+     */
+    if (
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.setEmployeeDayLeave === 'function'
+    ) {
+      try {
+        window.gmCalloutTimecards.setEmployeeDayLeave(emp.id, dayIso, v, s);
+      } catch (_tcSet) {
+        writeTimecardDayLeaveExtrasLocal(emp.id, dayIso, v, s);
+      }
+    } else {
+      writeTimecardDayLeaveExtrasLocal(emp.id, dayIso, v, s);
+    }
+    if (window.gmCalloutTimecards) {
+      try {
+        if (typeof window.gmCalloutTimecards.markRosterCacheRowsDirty === 'function') {
+          window.gmCalloutTimecards.markRosterCacheRowsDirty();
         }
-        tc.setEmployeeDayLeave(emp.id, dayIso, v, s, bounds || undefined);
-        if (typeof tc.markRosterCacheRowsDirty === 'function') tc.markRosterCacheRowsDirty();
-        if (typeof tc.scheduleTimecardPayrollDebouncedSync === 'function') {
-          tc.scheduleTimecardPayrollDebouncedSync();
-        } else if (typeof window.gmCalloutFlushTipPayrollSyncNow === 'function') {
-          void window.gmCalloutFlushTipPayrollSyncNow();
-        }
-      })
-      .catch(function () {});
+      } catch (_mark) {
+        /* ignore */
+      }
+    }
+    /* Push week-extras to team_state promptly so peers / Timecards see VL/SL. */
+    flushTipPayrollPushToSupabase();
   }
 
   function readEffectiveLeaveForShiftDay(emp, dayIso) {
     if (!emp || !dayIso) return { vl: 0, sl: 0 };
+    /* Manual week-extras win (including explicit 0) — same rule as Timecards. */
+    var manual = readTimecardDayLeaveExtrasLocal(emp.id, dayIso);
+    if (manual) return { vl: manual.vl, sl: manual.sl };
     var tc = window.gmCalloutTimecards;
     if (tc && typeof tc.getEffectiveDayLeave === 'function') {
       return tc.getEffectiveDayLeave(emp, dayIso);
@@ -16672,6 +16881,31 @@
       return { vl: week.vl || 0, sl: week.sl || 0 };
     }
     return { vl: 0, sl: 0 };
+  }
+
+  /**
+   * Copy or move VL/SL with cell drag. Leave is per person+day (week-extras + leaveBalance).
+   */
+  function transferShiftDayLeaveForCellDrag(source, target, mode) {
+    if (!source || !target) return;
+    var srcDi = WEEKDAY_KEYS.indexOf(weekdayKeyFromScheduleDay(source.dayStr));
+    var tgtDi = WEEKDAY_KEYS.indexOf(weekdayKeyFromScheduleDay(target.dayStr));
+    if (srcDi < 0 || tgtDi < 0) return;
+    var srcIso = isoForShiftEditDay(srcDi);
+    var tgtIso = isoForShiftEditDay(tgtDi);
+    if (!srcIso || !tgtIso) return;
+    var srcPerson = assignedPersonForShiftSlot(source.role, source.trIdx, srcDi);
+    var tgtPerson = assignedPersonForShiftSlot(target.role, target.trIdx, tgtDi);
+    var srcEmp = findEmployeeByDisplayName(srcPerson);
+    var tgtEmp = findEmployeeByDisplayName(tgtPerson);
+    if (!srcEmp || !tgtEmp) return;
+    var leave = readEffectiveLeaveForShiftDay(srcEmp, srcIso);
+    var hadManual = !!readTimecardDayLeaveExtrasLocal(srcEmp.id, srcIso);
+    if (!hadManual && leave.vl <= 0 && leave.sl <= 0) return;
+    persistShiftDayLeaveHours(tgtEmp, tgtIso, leave.vl, leave.sl);
+    if (mode === 'move' && (srcEmp.id !== tgtEmp.id || srcIso !== tgtIso)) {
+      persistShiftDayLeaveHours(srcEmp, srcIso, 0, 0);
+    }
   }
 
   var empLeaveViewVacPeriodKey = null;
@@ -20588,6 +20822,67 @@
     return r ? r.name : u;
   }
 
+  function setEmployeePrimaryStore(empId, restaurantId, opts) {
+    opts = opts || {};
+    var rid = normalizePrimaryLocationId(restaurantId);
+    if (!empId || (rid !== 'rp-8' && rid !== 'rp-9')) return false;
+    var emp = employees.find(function (e) {
+      return e && String(e.id) === String(empId);
+    });
+    if (!emp) return false;
+    var prevHome = employeeHomeOrPrimaryRestaurantId(emp);
+    if (prevHome === rid && emp.usualRestaurant === 'both') {
+      return false;
+    }
+    emp.usualRestaurant = 'both';
+    if (!emp.meta || typeof emp.meta !== 'object') emp.meta = {};
+    emp.meta.primaryLocationId = rid;
+    emp.meta.primaryRestaurantId = rid;
+    saveEmployees({ singleEmployee: emp });
+    if (opts.skipListRender) return true;
+    if (currentScreen === 5) renderEmployeeList();
+    else if (currentScreen === 6 && editingEmployeeId && String(editingEmployeeId) === String(empId)) {
+      syncEmployeePrimaryLocationField(rid);
+      if (empUsualRestaurant) empUsualRestaurant.value = 'both';
+    }
+    return true;
+  }
+
+  function renderEmployeePrimaryStoreToggleHtml(emp) {
+    if (!emp || !gmCalloutSessionIsManager) return '';
+    var primary = employeeHomeOrPrimaryRestaurantId(emp) || '';
+    var parts = [
+      '<span class="employee-card-primary-toggle" role="group" aria-label="' +
+        escapeHtml(gmT('team.primaryLocation') || 'Primary location') +
+        '">',
+    ];
+    restaurantsList.forEach(function (r) {
+      if (r.id !== 'rp-8' && r.id !== 'rp-9') return;
+      var active = primary === r.id;
+      parts.push(
+        '<button type="button" class="employee-card-primary-chip' +
+          (active ? ' is-active' : '') +
+          '" data-set-primary="' +
+          escapeHtml(r.id) +
+          '" data-employee-id="' +
+          escapeHtml(emp.id) +
+          '" aria-pressed="' +
+          (active ? 'true' : 'false') +
+          '" title="' +
+          escapeHtml(
+            (gmT('team.primaryLocation') || 'Primary location') +
+              ': ' +
+              (r.shortLabel || r.name)
+          ) +
+          '">' +
+          escapeHtml(r.shortLabel || r.name) +
+          '</button>'
+      );
+    });
+    parts.push('</span>');
+    return parts.join('');
+  }
+
   function employeeMatchesSlotStaffFilter(emp) {
     if (!emp || slotStaffFilter === 'all') return true;
     var u = emp.usualRestaurant || 'both';
@@ -21199,26 +21494,25 @@
   function renderEmployeeRestaurantFilterChips() {
     var wrap = document.getElementById('employeeRestaurantFilters');
     if (!wrap) return;
-    var scope = currentManagerStoreScope();
-    if (scope === 'rp-8' || scope === 'rp-9') {
-      employeeRestaurantFilter = scope;
-      var scopedRest = restaurantsList.find(function (r) {
-        return r.id === scope;
-      });
-      wrap.innerHTML =
-        '<button type="button" class="filter-chip active" data-restaurant-filter="' +
-        escapeHtml(scope) +
-        '">' +
-        escapeHtml((scopedRest && (scopedRest.shortLabel || scopedRest.name)) || scope) +
-        '</button>';
-      return;
+    /*
+     * Store managers see the full roster (All + each store). Scope still limits
+     * Schedule edit rights — Team visibility is company-wide for now.
+     */
+    if (employeeRestaurantFilter !== 'all' && employeeRestaurantFilter !== 'rp-8' && employeeRestaurantFilter !== 'rp-9') {
+      employeeRestaurantFilter = 'all';
     }
     var parts = [
-      '<button type="button" class="filter-chip active" data-restaurant-filter="all">All</button>',
+      '<button type="button" class="filter-chip' +
+        (employeeRestaurantFilter === 'all' ? ' active' : '') +
+        '" data-restaurant-filter="all">' +
+        escapeHtml(gmT('common.all') || 'All') +
+        '</button>',
     ];
     restaurantsList.forEach(function (r) {
       parts.push(
-        '<button type="button" class="filter-chip" data-restaurant-filter="' +
+        '<button type="button" class="filter-chip' +
+          (employeeRestaurantFilter === r.id ? ' active' : '') +
+          '" data-restaurant-filter="' +
           escapeHtml(r.id) +
           '">' +
           escapeHtml(r.shortLabel || r.name) +
@@ -26047,6 +26341,7 @@
       }
     }
     if (!ok) return;
+    transferShiftDayLeaveForCellDrag(source, target, 'move');
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
     void enqueueAndFlushV2SlotEdits(cloudEdits).then(function (syncRes) {
@@ -26083,6 +26378,7 @@
     var peekStore = loadScheduleAssignmentsStore();
     var peekRs = peekStore[rid] || {};
     var pending = [];
+    var leaveTargets = [];
     targets.forEach(function (t) {
       if (!t || !t.role || t.trIdx == null || !t.dayStr) return;
       if (
@@ -26094,6 +26390,12 @@
       }
       var dayInWeek = WEEKDAY_KEYS.indexOf(weekdayKeyFromScheduleDay(t.dayStr));
       if (dayInWeek < 0) return;
+      leaveTargets.push({
+        role: t.role,
+        trIdx: t.trIdx,
+        dayStr: t.dayStr,
+        dayInWeek: dayInWeek,
+      });
       var roleIdx = roleIdxForDraftRole(t.role);
       if (roleIdx < 0) return;
       var globalDayIdx = ALL_WEEK_DAYS.indexOf(t.dayStr);
@@ -26118,56 +26420,66 @@
         shiftId: shiftId,
       });
     });
-    if (!pending.length) return;
+    if (!pending.length && !leaveTargets.length) return;
 
-    pushScheduleUndoSnapshot();
-    markScheduleInteractiveEdit();
-    scheduleHardRevertGuardUntil = Math.max(
-      scheduleHardRevertGuardUntil || 0,
-      Date.now() + 60000
-    );
-    armScheduleLocalAuthority(60000);
-    var persistOpts = { skipUndo: true, skipUiRefresh: true, skipV2Enqueue: true };
-    var cloudEdits = [];
-    var wrote = false;
-    pending.forEach(function (t) {
-      if (
-        persistSingleShiftSlotEdit(
-          t.role,
-          t.trIdx,
-          t.dayInWeek,
-          start,
-          end,
-          breakText,
-          false,
-          persistOpts
-        )
-      ) {
-        wrote = true;
-        cloudEdits.push({
-          role: t.role,
-          trIdx: t.trIdx,
-          dayInWeek: t.dayInWeek,
-          start: start,
-          end: end,
-          breakText: breakText,
-          isDayOff: false,
-          workerName: scheduleRowPrimaryPerson(t.role, t.trIdx, getVisibleWeekDays()),
+    if (pending.length) {
+      pushScheduleUndoSnapshot();
+      markScheduleInteractiveEdit();
+      scheduleHardRevertGuardUntil = Math.max(
+        scheduleHardRevertGuardUntil || 0,
+        Date.now() + 60000
+      );
+      armScheduleLocalAuthority(60000);
+      var persistOpts = { skipUndo: true, skipUiRefresh: true, skipV2Enqueue: true };
+      var cloudEdits = [];
+      var wrote = false;
+      pending.forEach(function (t) {
+        if (
+          persistSingleShiftSlotEdit(
+            t.role,
+            t.trIdx,
+            t.dayInWeek,
+            start,
+            end,
+            breakText,
+            false,
+            persistOpts
+          )
+        ) {
+          wrote = true;
+          cloudEdits.push({
+            role: t.role,
+            trIdx: t.trIdx,
+            dayInWeek: t.dayInWeek,
+            start: start,
+            end: end,
+            breakText: breakText,
+            isDayOff: false,
+            workerName: scheduleRowPrimaryPerson(t.role, t.trIdx, getVisibleWeekDays()),
+          });
+        }
+      });
+      if (wrote) {
+        void enqueueAndFlushV2SlotEdits(cloudEdits).then(function (syncRes) {
+          if (syncRes && syncRes.ok === false && !syncRes.skipped) {
+            showScheduleNotice(
+              gmT('schedule.pushCloudFailed') ||
+                'Copy saved here, but cloud sync failed. Keep this tab open and try Save to cloud.',
+              false
+            );
+          }
         });
       }
+    }
+    leaveTargets.forEach(function (t) {
+      transferShiftDayLeaveForCellDrag(
+        source,
+        { role: t.role, trIdx: t.trIdx, dayStr: t.dayStr },
+        'copy'
+      );
     });
-    if (!wrote) return;
     renderCalendar({ force: true });
     if (scheduleBody) renderSchedule();
-    void enqueueAndFlushV2SlotEdits(cloudEdits).then(function (syncRes) {
-      if (syncRes && syncRes.ok === false && !syncRes.skipped) {
-        showScheduleNotice(
-          gmT('schedule.pushCloudFailed') ||
-            'Copy saved here, but cloud sync failed. Keep this tab open and try Save to cloud.',
-          false
-        );
-      }
-    });
   }
 
   function calendarSlotTargetFromEl(el) {
@@ -28207,8 +28519,7 @@
   }
 
   function employeeMatchesEmployeeFilters(emp) {
-    var scope = currentManagerStoreScope();
-    if (scope && !employeeVisibleInManagerStoreScope(emp, scope)) return false;
+    /* Team roster is company-wide for managers/admins — store scope does not hide people. */
     if (employeeRoleFilter !== 'all' && emp.staffType !== employeeRoleFilter) return false;
     if (employeeRestaurantFilter !== 'all') {
       if (!employeeVisibleInManagerStoreScope(emp, employeeRestaurantFilter)) return false;
@@ -29548,7 +29859,9 @@
           escapeHtml(gmT('team.primaryLocation') || 'Primary location') +
           '</span>' +
           '<span class="employee-card-value">' +
-          locLine +
+          (gmCalloutSessionIsManager
+            ? renderEmployeePrimaryStoreToggleHtml(emp)
+            : locLine) +
           '</span></li>' +
           '<li class="employee-card-meta-row">' +
           '<span class="employee-card-label">' +
@@ -29635,7 +29948,20 @@
     employeeListEl.innerHTML = parts.join('');
     refreshEmployeePhotosOnScreen(5);
     employeeListEl.querySelectorAll('.employee-card[data-employee-id]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
+      btn.addEventListener('click', function (ev) {
+        var chip =
+          ev.target && ev.target.closest
+            ? ev.target.closest('[data-set-primary][data-employee-id]')
+            : null;
+        if (chip) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          setEmployeePrimaryStore(
+            chip.getAttribute('data-employee-id'),
+            chip.getAttribute('data-set-primary')
+          );
+          return;
+        }
         openEmployeeForm(this.getAttribute('data-employee-id'));
       });
     });
@@ -30726,15 +31052,10 @@
     var emp = findEmployeeByDisplayName(person);
     function applyLeave(leave) {
       leave = leave || { vl: 0, sl: 0 };
-      if (shiftDetailVl) shiftDetailVl.value = String(leave.vl || 0);
-      if (shiftDetailSl) shiftDetailSl.value = String(leave.sl || 0);
+      if (shiftDetailVl) shiftDetailVl.value = String(Number(leave.vl) || 0);
+      if (shiftDetailSl) shiftDetailSl.value = String(Number(leave.sl) || 0);
     }
     applyLeave(readEffectiveLeaveForShiftDay(emp, dayIso));
-    if (emp && dayIso && !window.gmCalloutTimecards) {
-      void ensureTimecardsManagerLoaded().then(function () {
-        applyLeave(readEffectiveLeaveForShiftDay(emp, dayIso));
-      });
-    }
     if (shiftDetailLeaveHint) {
       if (!person) {
         shiftDetailLeaveHint.textContent =
@@ -31146,6 +31467,9 @@
       if (templateShiftEditorMountState) closeTemplateShiftEditPanel({ keepTargets: true });
       currentShift = null;
       shiftDetailSlotTarget = null;
+      /* Drop leftover drag click-swallow so the next tile opens on the first click. */
+      scheduleCellDragSuppressClick = false;
+      if (scheduleCellDragState) endScheduleCellDrag(false);
       showScreen(1);
       /* Paint the saved draft immediately; do not wait on a second Save. */
       refreshScheduleCalendarAfterEdit({ force: true });
@@ -34396,6 +34720,16 @@
     var loginEl = document.getElementById('login-screen');
     if (!loginEl) return;
     if (isOpen) {
+      /*
+       * Never re-open the grey gate over a live / in-flight portal login.
+       * Boot hydrate used to race finishPortalLogin and flash schedule → login → schedule.
+       */
+      if (
+        document.documentElement.classList.contains('authed') ||
+        window.__GM_PORTAL_LOGIN_IN_FLIGHT__
+      ) {
+        return;
+      }
       loginEl.hidden = false;
       loginEl.removeAttribute('aria-hidden');
       loginEl.removeAttribute('inert');
@@ -35154,15 +35488,25 @@
     } else if (opts.navigateToSchedule) {
       showScreen(1);
     }
-    /* Prefetch timecards only after idle — keep first schedule paint snappy (~427KB). */
+    /* Prefetch timecards + punch cache early so clock greens paint on first open. */
     function prefetchTimecardsWhenIdle() {
-      void ensureTimecardsManagerLoaded().catch(function () {});
+      void ensureTimecardsManagerLoaded()
+        .then(function () {
+          if (
+            window.gmCalloutTimecards &&
+            typeof window.gmCalloutTimecards.prefetchWeekEntries === 'function'
+          ) {
+            return window.gmCalloutTimecards.prefetchWeekEntries();
+          }
+          return null;
+        })
+        .catch(function () {});
     }
     function armTimecardsPrefetch() {
       if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(prefetchTimecardsWhenIdle, { timeout: 45000 });
+        requestIdleCallback(prefetchTimecardsWhenIdle, { timeout: 8000 });
       } else {
-        setTimeout(prefetchTimecardsWhenIdle, 20000);
+        setTimeout(prefetchTimecardsWhenIdle, 2500);
       }
     }
     armTimecardsPrefetch();
@@ -35172,7 +35516,7 @@
       timecardsNav.addEventListener(
         'pointerenter',
         function () {
-          void ensureTimecardsManagerLoaded().catch(function () {});
+          prefetchTimecardsWhenIdle();
         },
         { once: true, passive: true }
       );
@@ -35363,7 +35707,24 @@
             void window.gmCalloutPromptRecoveryEmailIfNeeded();
           }
         } else if (!gmCalloutIsTimeclockKiosk()) {
-          if (hadStoredSessionHint || hadAuthBackup) {
+          /*
+           * Restore returned false — but the user may have signed in while this
+           * await was in flight. Re-read hints now; never tear down a live shell.
+           */
+          var signedInDuringBoot = false;
+          try {
+            signedInDuringBoot =
+              document.documentElement.classList.contains('authed') ||
+              !!(sessionStorage.getItem('gm-callout-session') || '').trim() ||
+              !!(
+                sessionStorage.getItem(GM_AUTH_SESSION_BACKUP_KEY) ||
+                localStorage.getItem(GM_AUTH_SESSION_BACKUP_KEY)
+              ) ||
+              !!window.__GM_PORTAL_LOGIN_IN_FLIGHT__;
+          } catch (_duringBoot) {
+            signedInDuringBoot = document.documentElement.classList.contains('authed');
+          }
+          if (hadStoredSessionHint || hadAuthBackup || signedInDuringBoot) {
             /*
              * Slow Wi‑Fi: restore timed out but we still have a prior session.
              * Keep the provisional shell — never flash login (that blocked clicks
@@ -35384,43 +35745,72 @@
             }
             gmCalloutKeepAuthedShellPainted();
             gmCalloutBootAuthedAppFromCache();
-            gmCalloutStartSessionKeepAlive();
-            void (async function retrySlowBootRestore() {
-              var session = await gmCalloutAttemptSessionRecoverOnce();
-              if (!session || gmCalloutIsIntentionalSignOut()) return;
-              var ok = await gmCalloutRestoreAuthedShellFromSupabase();
-              if (!ok) return;
-              gmCalloutBootHydrateHandled = true;
-              gmCalloutKeepAuthedShellPainted();
-              gmCalloutStopSessionKeepAlive();
-              void gmCalloutScheduleRemoteHydrate({ deferSecondary: true })
-                .then(function () {
-                  gmCalloutRunPostRemoteHydrate();
-                })
-                .catch(function (retryHydr) {
-                  console.warn('gm-callout: slow-boot hydrate', retryHydr);
-                });
-            })();
+            if (!window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+              gmCalloutStartSessionKeepAlive();
+              void (async function retrySlowBootRestore() {
+                var session = await gmCalloutAttemptSessionRecoverOnce();
+                if (!session || gmCalloutIsIntentionalSignOut()) return;
+                var ok = await gmCalloutRestoreAuthedShellFromSupabase();
+                if (!ok) return;
+                gmCalloutBootHydrateHandled = true;
+                gmCalloutKeepAuthedShellPainted();
+                gmCalloutStopSessionKeepAlive();
+                void gmCalloutScheduleRemoteHydrate({ deferSecondary: true })
+                  .then(function () {
+                    gmCalloutRunPostRemoteHydrate();
+                  })
+                  .catch(function (retryHydr) {
+                    console.warn('gm-callout: slow-boot hydrate', retryHydr);
+                  });
+              })();
+            }
           } else {
-            document.documentElement.classList.remove(
-              'authed',
-              'manager-app',
-              'employee-app',
-              'timeclock-app'
-            );
-            gmCalloutSetLoginGateOpen(true);
-            if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-              window.gmCalloutEnsureLoginPanelVisible();
+            if (
+              document.documentElement.classList.contains('authed') ||
+              window.__GM_PORTAL_LOGIN_IN_FLIGHT__
+            ) {
+              gmCalloutKeepAuthedShellPainted();
+            } else {
+              document.documentElement.classList.remove(
+                'authed',
+                'manager-app',
+                'employee-app',
+                'timeclock-app'
+              );
+              gmCalloutSetLoginGateOpen(true);
+              if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+                window.gmCalloutEnsureLoginPanelVisible();
+              }
             }
           }
         }
       } catch (hydrErr) {
         console.warn('gm-callout: hydrate', hydrErr);
         if (!gmCalloutIsTimeclockKiosk()) {
-          if (hadStoredSessionHint || hadAuthBackup) {
+          var keepAfterErr = false;
+          try {
+            keepAfterErr =
+              document.documentElement.classList.contains('authed') ||
+              !!(sessionStorage.getItem('gm-callout-session') || '').trim() ||
+              !!(
+                sessionStorage.getItem(GM_AUTH_SESSION_BACKUP_KEY) ||
+                localStorage.getItem(GM_AUTH_SESSION_BACKUP_KEY)
+              ) ||
+              !!window.__GM_PORTAL_LOGIN_IN_FLIGHT__;
+          } catch (_keepErr) {
+            keepAfterErr = document.documentElement.classList.contains('authed');
+          }
+          if (hadStoredSessionHint || hadAuthBackup || keepAfterErr) {
             /* Keep provisional shell; retry quietly — do not flash login on a blip. */
             gmCalloutKeepAuthedShellPainted();
-            gmCalloutStartSessionKeepAlive();
+            if (!window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+              gmCalloutStartSessionKeepAlive();
+            }
+          } else if (
+            document.documentElement.classList.contains('authed') ||
+            window.__GM_PORTAL_LOGIN_IN_FLIGHT__
+          ) {
+            gmCalloutKeepAuthedShellPainted();
           } else {
             document.documentElement.classList.remove(
               'authed',

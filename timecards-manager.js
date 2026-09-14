@@ -65,6 +65,11 @@
   /** Remote punch refresh deferred until save / open form is safe. */
   var timeClockRemoteRefreshDeferred = false;
   var exportLibsLoadPromise = null;
+  /** Persist punches so Timecards can paint clock status / history before network returns. */
+  var TIMECARD_WEEK_ENTRIES_DISK_KEY = 'gm-timecard-week-entries-cache-v1';
+  var WEEK_ENTRIES_DISK_MAX_WEEKS = 12;
+  var WEEK_ENTRIES_DISK_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+  var weekEntriesDiskPersistTimer = null;
 
   var ROSTER_SORT_COLS = [
     'name',
@@ -560,13 +565,10 @@
         var wrap = document.getElementById('timecardsRosterWrap');
         if (wrap && wrap.querySelector('table.timecards-table--roster')) {
           wrap.classList.add('timecards-roster--switching');
-        } else {
-          showRosterLoadingKeepToolbar(wrap);
         }
-        deferUiWork(function () {
-          repaintRoster();
-          if (wrap) wrap.classList.remove('timecards-roster--switching');
-        });
+        /* Paint immediately — punches stay in memory; no loading flash. */
+        repaintRoster();
+        if (wrap) wrap.classList.remove('timecards-roster--switching');
       });
     });
   }
@@ -1109,6 +1111,18 @@
 
   function payWeekBounds() {
     return payWeekBoundsFromMonday(getSelectedPayWeekMondayDate());
+  }
+
+  /** Pay week that contains a calendar day — not the Timecards week picker. */
+  function payWeekBoundsForDayIso(iso) {
+    var day = String(iso || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return payWeekBounds();
+    var dt = new Date(day + 'T12:00:00');
+    if (Number.isNaN(dt.getTime())) return payWeekBounds();
+    var dow = dt.getDay();
+    var monOffset = dow === 0 ? -6 : 1 - dow;
+    var mon = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + monOffset);
+    return payWeekBoundsFromMonday(mon);
   }
 
   function buildPayWeekDayMeta(bounds) {
@@ -2594,7 +2608,7 @@
    * (so day rows do not double-count); empty week-level stubs do not hide approved leave.
    */
   function getEffectiveDayLeave(emp, iso, bounds) {
-    bounds = bounds || payWeekBounds();
+    bounds = bounds || payWeekBoundsForDayIso(iso);
     if (!emp || !iso) return { vl: 0, sl: 0 };
     var slice = getWeekExtrasSlice(bounds);
     var manual = getEmployeeDayLeave(emp, iso, bounds);
@@ -2609,7 +2623,7 @@
   }
 
   function getSuggestedDayLeaveForDay(emp, iso, bounds) {
-    bounds = bounds || payWeekBounds();
+    bounds = bounds || payWeekBoundsForDayIso(iso);
     if (!emp || !iso) return { vl: 0, sl: 0 };
     var slice = getWeekExtrasSlice(bounds);
     var key = dayLeaveStorageKey(emp.id, iso);
@@ -2686,7 +2700,7 @@
   }
 
   function getEmployeeDayLeave(emp, iso, bounds) {
-    bounds = bounds || payWeekBounds();
+    bounds = bounds || payWeekBoundsForDayIso(iso);
     if (!emp || !iso) return { vl: 0, sl: 0 };
     var slice = getWeekExtrasSlice(bounds);
     var row = slice[dayLeaveStorageKey(emp.id, iso)];
@@ -2698,7 +2712,7 @@
   }
 
   function setEmployeeDayLeave(empId, iso, vl, sl, bounds) {
-    bounds = bounds || payWeekBounds();
+    bounds = bounds || payWeekBoundsForDayIso(iso);
     if (!empId || !iso) return;
     var slice = loadWeekExtrasMap(bounds);
     var key = dayLeaveStorageKey(empId, iso);
@@ -2712,7 +2726,7 @@
 
   /** Remove per-day leave override (used when deleting a shift day entirely). */
   function clearEmployeeDayLeave(empId, iso, bounds) {
-    bounds = bounds || payWeekBounds();
+    bounds = bounds || payWeekBoundsForDayIso(iso);
     if (!empId || !iso) return;
     var slice = loadWeekExtrasMap(bounds);
     delete slice[dayLeaveStorageKey(empId, iso)];
@@ -2991,6 +3005,25 @@
     var entries = weekEntriesCacheByKey[cacheKey];
     if (!entries) return 0;
     return recordedPaidMinutesFromEntriesList(emp, entries);
+  }
+
+  /** Prefetch prior + next pay week punches so week thumbing paints instantly. */
+  function ensureAdjacentWeekEntriesCached(currentBounds) {
+    if (!d().gmSupabaseReadyNow()) return;
+    var bounds = currentBounds || payWeekBounds();
+    void ensurePriorWeekEntriesCached(bounds);
+    var nextMon = new Date(
+      bounds.start.getFullYear(),
+      bounds.start.getMonth(),
+      bounds.start.getDate() + 7
+    );
+    var nextBounds = payWeekBoundsFromMonday(nextMon);
+    var nextKey = weekExtrasStorageKey(nextBounds);
+    if (weekEntriesCacheByKey[nextKey]) return;
+    var fetchSeq = weekEntriesFetchSeq;
+    void fetchWeekEntriesFromSupabase(nextBounds, nextKey, fetchSeq).catch(function () {
+      return { ok: false };
+    });
   }
 
   /**
@@ -4458,78 +4491,169 @@
   }
 
   function renderPayWeekSelectorHtml() {
-    var options = buildPayWeekOptions();
-    var selectedIso = isoFromDate(getSelectedPayWeekMondayDate());
-    var opts = options
-      .map(function (o) {
-        return (
-          '<option value="' +
-          d().escapeHtml(o.startIso) +
-          '"' +
-          (o.startIso === selectedIso ? ' selected' : '') +
-          '>' +
-          d().escapeHtml(o.label) +
-          '</option>'
-        );
-      })
-      .join('');
     return (
-      '<label class="timecards-week-picker">' +
-      '<span class="timecards-week-picker-label">Pay week</span>' +
-      '<select id="timecardsPayWeekSelect" class="timecards-week-select" aria-label="Select pay week">' +
-      opts +
-      '</select></label>'
+      '<div class="timecards-week-picker">' +
+      '<span class="timecards-week-picker-label employee-filter-label" id="timecardsPayWeekLabel">' +
+      d().escapeHtml(tcT('common.week') || 'Week') +
+      '</span>' +
+      '<div class="schedule-week-nav timecards-week-nav" id="timecardsPayWeekNav" role="group" aria-labelledby="timecardsPayWeekLabel">' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-btn" id="timecardsPayWeekPrev" data-timecards-week-step="-1" aria-label="' +
+      d().escapeHtml(tcT('schedule.prevWeekAria') || 'Previous week') +
+      '">‹</button>' +
+      '<span class="schedule-week-nav-label" id="timecardsPayWeekRange">—</span>' +
+      '<span class="schedule-week-nav-badge" id="timecardsPayWeekBadge" hidden>' +
+      d().escapeHtml(tcT('common.thisWeek') || 'This week') +
+      '</span>' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-btn" id="timecardsPayWeekNext" data-timecards-week-step="1" aria-label="' +
+      d().escapeHtml(tcT('schedule.nextWeekAria') || 'Next week') +
+      '">›</button>' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-today" id="timecardsPayWeekToday" hidden>' +
+      d().escapeHtml(tcT('common.thisWeek') || 'This week') +
+      '</button>' +
+      '</div></div>'
     );
   }
 
   /** Week picker for the person-specific shifts screen (keeps employee open on change). */
   function renderEmployeePayWeekSelectorHtml() {
-    var options = buildPayWeekOptions();
-    var selectedIso = isoFromDate(getSelectedPayWeekMondayDate());
-    var opts = options
-      .map(function (o) {
-        return (
-          '<option value="' +
-          d().escapeHtml(o.startIso) +
-          '"' +
-          (o.startIso === selectedIso ? ' selected' : '') +
-          '>' +
-          d().escapeHtml(o.label) +
-          '</option>'
-        );
-      })
-      .join('');
     return (
-      '<label class="timecards-week-picker">' +
-      '<span class="timecards-week-picker-label">Pay week</span>' +
-      '<select id="timecardsEmployeePayWeekSelect" class="timecards-week-select" aria-label="Select pay week for this employee">' +
-      opts +
-      '</select></label>'
+      '<div class="timecards-week-picker">' +
+      '<span class="timecards-week-picker-label employee-filter-label" id="timecardsEmployeePayWeekLabel">' +
+      d().escapeHtml(tcT('common.week') || 'Week') +
+      '</span>' +
+      '<div class="schedule-week-nav timecards-week-nav" id="timecardsEmployeePayWeekNav" role="group" aria-labelledby="timecardsEmployeePayWeekLabel">' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-btn" id="timecardsEmployeePayWeekPrev" data-timecards-week-step="-1" data-timecards-week-scope="employee" aria-label="' +
+      d().escapeHtml(tcT('schedule.prevWeekAria') || 'Previous week') +
+      '">‹</button>' +
+      '<span class="schedule-week-nav-label" id="timecardsEmployeePayWeekRange">—</span>' +
+      '<span class="schedule-week-nav-badge" id="timecardsEmployeePayWeekBadge" hidden>' +
+      d().escapeHtml(tcT('common.thisWeek') || 'This week') +
+      '</span>' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-btn" id="timecardsEmployeePayWeekNext" data-timecards-week-step="1" data-timecards-week-scope="employee" aria-label="' +
+      d().escapeHtml(tcT('schedule.nextWeekAria') || 'Next week') +
+      '">›</button>' +
+      '<button type="button" class="btn btn-secondary schedule-week-nav-today" id="timecardsEmployeePayWeekToday" data-timecards-week-scope="employee" hidden>' +
+      d().escapeHtml(tcT('common.thisWeek') || 'This week') +
+      '</button>' +
+      '</div></div>'
     );
   }
 
   function syncPayWeekSelectorUi() {
     var options = buildPayWeekOptions();
     var selectedIso = isoFromDate(getSelectedPayWeekMondayDate());
-    var html = options
-      .map(function (o) {
-        return (
-          '<option value="' +
-          d().escapeHtml(o.startIso) +
-          '"' +
-          (o.startIso === selectedIso ? ' selected' : '') +
-          '>' +
-          d().escapeHtml(o.label) +
-          '</option>'
-        );
-      })
-      .join('');
-    ['timecardsPayWeekSelect', 'timecardsEmployeePayWeekSelect'].forEach(function (id) {
-      var sel = document.getElementById(id);
-    if (!sel) return;
-      sel.innerHTML = html;
-      sel.value = selectedIso;
-    });
+    var thisIso = currentPayWeekMondayIso();
+    var selected = null;
+    var selectedIdx = -1;
+    var i;
+    for (i = 0; i < options.length; i += 1) {
+      if (options[i].startIso === selectedIso) {
+        selected = options[i];
+        selectedIdx = i;
+        break;
+      }
+    }
+    if (!selected && options.length) {
+      selected = options[options.length - 1];
+      selectedIdx = options.length - 1;
+      selectedIso = selected.startIso;
+    }
+    var rangeLabel = selected
+      ? formatPayWeekLabel(payWeekBoundsFromMonday(new Date(selected.startIso + 'T12:00:00')))
+      : '—';
+    var isCurrent = selectedIso === thisIso;
+    var canPrev = selectedIdx > 0;
+    var canNext = selectedIdx >= 0 && selectedIdx < options.length - 1;
+
+    function syncOne(prefix) {
+      var rangeEl = document.getElementById(prefix + 'Range');
+      var badgeEl = document.getElementById(prefix + 'Badge');
+      var prevEl = document.getElementById(prefix + 'Prev');
+      var nextEl = document.getElementById(prefix + 'Next');
+      var todayEl = document.getElementById(prefix + 'Today');
+      if (rangeEl) rangeEl.textContent = rangeLabel;
+      if (badgeEl) badgeEl.hidden = !isCurrent;
+      if (prevEl) {
+        prevEl.disabled = !canPrev;
+        prevEl.setAttribute('aria-disabled', canPrev ? 'false' : 'true');
+      }
+      if (nextEl) {
+        nextEl.disabled = !canNext;
+        nextEl.setAttribute('aria-disabled', canNext ? 'false' : 'true');
+      }
+      if (todayEl) todayEl.hidden = isCurrent;
+    }
+    syncOne('timecardsPayWeek');
+    syncOne('timecardsEmployeePayWeek');
+  }
+
+  function applyPayWeekSelection(iso, opts) {
+    opts = opts || {};
+    if (!iso) return;
+    var thisIso = currentPayWeekMondayIso();
+    var nextSelected = iso === thisIso ? null : iso;
+    if (
+      (nextSelected || null) === (selectedPayWeekStartIso || null) &&
+      !opts.force
+    ) {
+      syncPayWeekSelectorUi();
+      return;
+    }
+    selectedPayWeekStartIso = nextSelected;
+    saveSelectedPayWeekStartIso(selectedPayWeekStartIso);
+    invalidatePayWeekScheduleCache();
+    /*
+     * Stale-while-revalidate: keep prior punches for this week so clock status /
+     * history paint instantly. Soft-refresh below.
+     */
+    if (opts.keepEmployee && timecardState.employeeId) {
+      var empId = timecardState.employeeId;
+      var emp = d().employees.find(function (e) {
+        return e.id === empId;
+      });
+      if (emp) {
+        hydrateWeekEntriesFromCache(payWeekBounds());
+        renderEmployeeShifts(emp);
+        loadWeekEntries({ force: true }).then(function (loadRes) {
+          if (!loadRes || !loadRes.ok) return;
+          if (timecardState.employeeId !== empId) return;
+          var still = d().employees.find(function (e) {
+            return e.id === empId;
+          });
+          if (still) renderEmployeeShifts(still);
+        });
+      }
+      syncPayWeekSelectorUi();
+      return;
+    }
+    timecardState.employeeId = null;
+    timecardState.shiftId = null;
+    timecardState.shiftRow = null;
+    timecardState.entryId = null;
+    var wrap = document.getElementById('timecardsRosterWrap');
+    if (wrap && wrap.querySelector('table.timecards-table--roster')) {
+      wrap.classList.add('timecards-roster--switching');
+    }
+    renderRoster();
+    if (wrap) wrap.classList.remove('timecards-roster--switching');
+  }
+
+  function stepPayWeek(delta, keepEmployee) {
+    var options = buildPayWeekOptions();
+    if (!options.length) return;
+    var selectedIso = isoFromDate(getSelectedPayWeekMondayDate());
+    var idx = -1;
+    var i;
+    for (i = 0; i < options.length; i += 1) {
+      if (options[i].startIso === selectedIso) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) idx = options.length - 1;
+    var nextIdx = idx + Number(delta || 0);
+    if (nextIdx < 0 || nextIdx >= options.length) return;
+    applyPayWeekSelection(options[nextIdx].startIso, { keepEmployee: !!keepEmployee });
   }
 
   /** Yield so the browser can paint click/select feedback before heavy sync work. */
@@ -4566,55 +4690,29 @@
   function bindPayWeekSelectorOnce() {
     if (payWeekSelectorBound) return;
     payWeekSelectorBound = true;
-    document.addEventListener('change', function (ev) {
-      var sel = ev.target;
-      if (!sel) return;
-      var isRosterWeek = sel.id === 'timecardsPayWeekSelect';
-      var isEmployeeWeek = sel.id === 'timecardsEmployeePayWeekSelect';
-      if (!isRosterWeek && !isEmployeeWeek) return;
-      var iso = sel.value;
-      if (!iso) return;
-      var thisIso = currentPayWeekMondayIso();
-      selectedPayWeekStartIso = iso === thisIso ? null : iso;
-      saveSelectedPayWeekStartIso(selectedPayWeekStartIso);
-      invalidatePayWeekScheduleCache();
-      // Drop cached punches for the newly selected week so both computers hit Supabase SoT.
-      invalidateWeekEntriesCache(payWeekBounds());
-      if (isEmployeeWeek && timecardState.employeeId) {
-        var empId = timecardState.employeeId;
-        var emp = d().employees.find(function (e) {
-          return e.id === empId;
-        });
-        if (emp) {
-          renderEmployeeShifts(emp);
-          loadWeekEntries().then(function (loadRes) {
-            if (!loadRes || !loadRes.ok) return;
-            if (timecardState.employeeId !== empId) return;
-            var still = d().employees.find(function (e) {
-              return e.id === empId;
-            });
-            if (still) renderEmployeeShifts(still);
-          });
-        }
-        syncPayWeekSelectorUi();
+    document.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var stepBtn = t.closest('[data-timecards-week-step]');
+      if (stepBtn) {
+        ev.preventDefault();
+        if (stepBtn.disabled) return;
+        var step = parseInt(stepBtn.getAttribute('data-timecards-week-step'), 10);
+        if (!step) return;
+        var keepEmp =
+          stepBtn.getAttribute('data-timecards-week-scope') === 'employee' ||
+          !!(stepBtn.id && String(stepBtn.id).indexOf('timecardsEmployeePayWeek') === 0);
+        stepPayWeek(step, keepEmp);
         return;
       }
-      timecardState.employeeId = null;
-      timecardState.shiftId = null;
-      timecardState.shiftRow = null;
-      timecardState.entryId = null;
-      var wrap = document.getElementById('timecardsRosterWrap');
-      var hasCachedEntries = !!weekEntriesCacheByKey[weekExtrasStorageKey(payWeekBounds())];
-      /* Instant feedback: loading hint only when punches are not cached yet. */
-      if (!hasCachedEntries) {
-        showRosterLoadingKeepToolbar(wrap);
-      } else if (wrap) {
-        wrap.classList.add('timecards-roster--switching');
+      var todayBtn = t.closest('#timecardsPayWeekToday, #timecardsEmployeePayWeekToday');
+      if (todayBtn) {
+        ev.preventDefault();
+        var keepToday =
+          todayBtn.id === 'timecardsEmployeePayWeekToday' ||
+          todayBtn.getAttribute('data-timecards-week-scope') === 'employee';
+        applyPayWeekSelection(currentPayWeekMondayIso(), { keepEmployee: keepToday });
       }
-      deferUiWork(function () {
-      renderRoster();
-        if (wrap) wrap.classList.remove('timecards-roster--switching');
-      });
     });
   }
 
@@ -10350,6 +10448,116 @@
     if (existing) existing.remove();
   }
 
+  function weekEntriesDiskScope() {
+    try {
+      return (
+        String(sessionStorage.getItem('gm-callout-company-id') || '') +
+        '|' +
+        String(sessionStorage.getItem('gm-callout-team-state-id') || 'main')
+      );
+    } catch (_s) {
+      return 'local';
+    }
+  }
+
+  function readWeekEntriesDiskRaw() {
+    try {
+      var raw =
+        sessionStorage.getItem(TIMECARD_WEEK_ENTRIES_DISK_KEY) ||
+        localStorage.getItem(TIMECARD_WEEK_ENTRIES_DISK_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_r) {
+      return null;
+    }
+  }
+
+  function writeWeekEntriesDiskRaw(payload) {
+    var json = '';
+    try {
+      json = JSON.stringify(payload);
+    } catch (_j) {
+      return;
+    }
+    try {
+      sessionStorage.setItem(TIMECARD_WEEK_ENTRIES_DISK_KEY, json);
+    } catch (_ss) {
+      /* ignore */
+    }
+    try {
+      localStorage.setItem(TIMECARD_WEEK_ENTRIES_DISK_KEY, json);
+    } catch (_ls) {
+      try {
+        /* Quota: drop oldest weeks and retry once. */
+        var weeks = payload && payload.weeks ? payload.weeks : {};
+        var keys = Object.keys(weeks).sort(function (a, b) {
+          return (weeks[a].at || 0) - (weeks[b].at || 0);
+        });
+        while (keys.length > 4) {
+          delete weeks[keys.shift()];
+        }
+        json = JSON.stringify(payload);
+        localStorage.setItem(TIMECARD_WEEK_ENTRIES_DISK_KEY, json);
+      } catch (_ls2) {
+        /* ignore */
+      }
+    }
+  }
+
+  function hydrateWeekEntriesCacheFromDisk() {
+    var store = readWeekEntriesDiskRaw();
+    if (!store || store.scope !== weekEntriesDiskScope()) return;
+    var weeks = store.weeks;
+    if (!weeks || typeof weeks !== 'object') return;
+    var now = Date.now();
+    Object.keys(weeks).forEach(function (key) {
+      var row = weeks[key];
+      if (!row || !Array.isArray(row.entries)) return;
+      if (row.at && now - row.at > WEEK_ENTRIES_DISK_MAX_AGE_MS) return;
+      if (weekEntriesCacheByKey[key]) return;
+      weekEntriesCacheByKey[key] = row.entries.slice();
+      if (row.schema) weekEntriesSchemaCacheByKey[key] = row.schema;
+    });
+  }
+
+  function schedulePersistWeekEntriesDisk() {
+    if (weekEntriesDiskPersistTimer) clearTimeout(weekEntriesDiskPersistTimer);
+    weekEntriesDiskPersistTimer = setTimeout(function () {
+      weekEntriesDiskPersistTimer = null;
+      persistWeekEntriesDiskNow();
+    }, 200);
+  }
+
+  function persistWeekEntriesDiskNow() {
+    var scope = weekEntriesDiskScope();
+    var prev = readWeekEntriesDiskRaw();
+    var weeks =
+      prev && prev.scope === scope && prev.weeks && typeof prev.weeks === 'object'
+        ? Object.assign({}, prev.weeks)
+        : {};
+    var now = Date.now();
+    Object.keys(weekEntriesCacheByKey).forEach(function (key) {
+      weeks[key] = {
+        entries: weekEntriesCacheByKey[key] || [],
+        schema: weekEntriesSchemaCacheByKey[key] || null,
+        at: now,
+      };
+    });
+    Object.keys(weeks).forEach(function (key) {
+      if (weeks[key] && weeks[key].at && now - weeks[key].at > WEEK_ENTRIES_DISK_MAX_AGE_MS) {
+        delete weeks[key];
+      }
+    });
+    var keys = Object.keys(weeks).sort(function (a, b) {
+      return (weeks[b].at || 0) - (weeks[a].at || 0);
+    });
+    while (keys.length > WEEK_ENTRIES_DISK_MAX_WEEKS) {
+      delete weeks[keys.pop()];
+    }
+    writeWeekEntriesDiskRaw({ scope: scope, weeks: weeks });
+  }
+
   function selectedPayWeekEntriesCacheKey() {
     return weekExtrasStorageKey(payWeekBounds());
   }
@@ -10362,6 +10570,7 @@
     if (fetchSeq != null && fetchSeq !== weekEntriesFetchSeq) return;
     weekEntriesCacheByKey[cacheKey] = entries.slice();
     if (schemaCache) weekEntriesSchemaCacheByKey[cacheKey] = schemaCache;
+    schedulePersistWeekEntriesDisk();
     if (!isSelectedPayWeekEntriesCacheKey(cacheKey)) return;
     activeWeekEntriesCacheKey = cacheKey;
     weekEntries = weekEntriesCacheByKey[cacheKey];
@@ -10370,10 +10579,50 @@
     scheduleCrossRestaurantPunchProcessing();
   }
 
+  /** Patch in-memory week punches after a successful manager save (skip full-week refetch). */
+  function upsertLocalWeekEntry(entry) {
+    if (!entry || !entry.id) return;
+    var id = String(entry.id);
+    var found = false;
+    var next = (weekEntries || []).map(function (e) {
+      if (e && String(e.id) === id) {
+        found = true;
+        return Object.assign({}, e, entry);
+      }
+      return e;
+    });
+    if (!found) next = next.concat([entry]);
+    weekEntries = next;
+    var cacheKey = activeWeekEntriesCacheKey || weekExtrasStorageKey(payWeekBounds());
+    weekEntriesCacheByKey[cacheKey] = weekEntries.slice();
+    activeWeekEntriesCacheKey = cacheKey;
+    rebuildWeekEntriesIndex();
+    schedulePersistWeekEntriesDisk();
+  }
+
+  function entryFromManagerSave(rpcData, row) {
+    var id = rpcData && rpcData.id ? String(rpcData.id) : '';
+    if (!id || !row) return null;
+    return {
+      id: id,
+      employee_id: row.employee_id,
+      clock_in_at: row.clock_in_at,
+      clock_out_at: row.clock_out_at,
+      break_minutes: row.break_minutes,
+      break_start_at: row.break_start_at || null,
+      break_end_at: row.break_end_at || null,
+      break_paid: row.break_paid,
+      schedule_shift_id: row.schedule_shift_id || null,
+      edit_history: row.edit_history || [],
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   /**
-   * @param {{ force?: boolean }} [opts]
+   * @param {{ force?: boolean, skipPrior?: boolean, skipOpen?: boolean }} [opts]
    * force:true starts a new network fetch even if one is in flight (post-save),
    * so we never adopt a snapshot that began before the write landed.
+   * skipOpen / skipPrior: faster post-save reconcile (week range only).
    */
   async function loadWeekEntries(opts) {
     if (!d().gmSupabaseReadyNow()) return { ok: false, reason: 'no_client' };
@@ -10386,9 +10635,9 @@
     }
     var fetchSeq = ++weekEntriesFetchSeq;
     loadWeekEntriesInFlightKey = cacheKey;
-    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq)
+    loadWeekEntriesInFlight = fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq, opts)
       .then(function (result) {
-        ensurePriorWeekEntriesCached(bounds);
+        if (!opts.skipPrior) ensureAdjacentWeekEntriesCached(bounds);
         return result;
       })
       .finally(function () {
@@ -10400,7 +10649,8 @@
     return loadWeekEntriesInFlight;
   }
 
-  async function fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq) {
+  async function fetchWeekEntriesFromSupabase(bounds, cacheKey, fetchSeq, opts) {
+    opts = opts || {};
     var sb = global.gmSupabase;
     var session = await ensureSupabaseSession(sb);
     if (!session) return { ok: false, reason: 'no_session' };
@@ -10425,6 +10675,10 @@
         .gte('clock_in_at', startIso)
         .lte('clock_in_at', endIso)
         .order('clock_in_at', { ascending: true });
+      if (opts.skipOpen) {
+        var mainOnly = await mainP;
+        return { mainRes: mainOnly, openRes: { data: [], error: null } };
+      }
       var openP = sb
         .from('time_clock_entries')
         .select(selectFields)
@@ -10480,6 +10734,9 @@
   function hydrateWeekEntriesFromCache(bounds) {
     bounds = bounds || payWeekBounds();
     var cacheKey = weekExtrasStorageKey(bounds);
+    if (!weekEntriesCacheByKey[cacheKey]) {
+      hydrateWeekEntriesCacheFromDisk();
+    }
     if (!weekEntriesCacheByKey[cacheKey]) return false;
     activeWeekEntriesCacheKey = cacheKey;
     weekEntries = weekEntriesCacheByKey[cacheKey];
@@ -10610,6 +10867,7 @@
     }
     var bounds = payWeekBounds();
     var selectedKey = weekExtrasStorageKey(bounds);
+    hydrateWeekEntriesCacheFromDisk();
     var hadCache = hydrateWeekEntriesFromCache(bounds);
     var emps = d().employees.slice();
     if (!emps.length) {
@@ -10619,8 +10877,9 @@
     }
     var paintOpts = { deferGrandTotals: true };
     /*
-     * Always paint schedule-backed roster immediately. Waiting on punches first
-     * left a blank "Loading timecards…" screen for 10–20s+ on cold open.
+     * Always paint schedule-backed roster immediately (with disk/memory punches when
+     * available). Soft-refresh from Supabase without wiping the cache first so clock
+     * greens and history do not wait on the network.
      */
     if (!hadCache) {
       activeWeekEntriesCacheKey = null;
@@ -10634,9 +10893,7 @@
       showRosterLoadingKeepToolbar(wrap);
     }
     var scheduleFetch = function () {
-      // Always hit Supabase SoT after the first paint so another manager's edits converge.
-      if (hadCache) invalidateWeekEntriesCache(bounds);
-      loadWeekEntries()
+      loadWeekEntries({ force: true })
         .then(function (loadRes) {
           refreshRosterAfterWeekFetch(loadRes, wrap, selectedKey);
         })
@@ -10742,13 +10999,11 @@
     timecardState.shiftRow = null;
     timecardState.entryId = null;
     d().setTimecardTitle(11, d().employeeDisplayName(emp));
+    hydrateWeekEntriesFromCache(payWeekBounds());
     renderEmployeeShifts(emp);
     d().showScreen(11);
-    // Always refetch punches from Supabase so another computer's edits are not masked by
-    // an in-memory weekEntries cache from an earlier visit this session.
-    var bounds = payWeekBounds();
-    invalidateWeekEntriesCache(bounds);
-    loadWeekEntries().then(function (loadRes) {
+    // Soft-refresh from Supabase — keep cached punches painted until the fetch returns.
+    loadWeekEntries({ force: true }).then(function (loadRes) {
       if (!loadRes || !loadRes.ok) return;
       if (timecardState.employeeId !== empId) return;
       var still = d().employees.find(function (e) {
@@ -11871,7 +12126,7 @@
   }
 
   async function finishClearedShiftDaySave(sb, emp, shiftRow, dayLeave, dishwasherTip) {
-    await loadWeekEntries({ force: true });
+    /* Use in-memory punches — a full-week refetch here made deletes feel 30s+ slow. */
     var dayEntryIds = entriesForShiftDayCleanup(emp.id, shiftRow, emp)
       .map(function (e) {
         return e.id;
@@ -11910,14 +12165,10 @@
     timecardState.shiftId = null;
     timecardState.shiftRow = null;
     timecardState.punchesCleared = false;
-    var reloadRes = await loadWeekEntries({ force: true });
-    if (!reloadRes.ok) {
-      setSaveStatus('Punch removed (list may need refresh).', false);
-    } else {
-      setSaveStatus('Punch removed.', false);
-    }
+    setSaveStatus('Punch removed.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
+    void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     return true;
   }
 
@@ -11942,12 +12193,11 @@
     if (saveBtn) saveBtn.disabled = true;
     timeClockSaveInFlight = true;
     try {
-    await loadWeekEntries({ force: true });
+    /* Do not full-reload the week before save — that alone could take 10–20s. */
     var editingId = timecardState.entryId;
     var idEl = document.getElementById('tcEditingEntryId');
     if (idEl && idEl.value) editingId = idEl.value;
     var priorEntry = editingId ? entryById(editingId) : null;
-    var employeeUuid = (priorEntry && priorEntry.employee_id) || emp.id;
     if (timecardState.punchesCleared) {
       await finishClearedShiftDaySave(sb, emp, shiftRow, { vl: 0, sl: 0 }, 0);
       return;
@@ -11999,10 +12249,10 @@
       }
       setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
       persistShiftDayTipsFromForm(emp, shiftRow);
-      await loadWeekEntries({ force: true });
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
       returnToEmployeeShifts(emp);
+      void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
       return;
     }
     if (!inIso) {
@@ -12156,10 +12406,13 @@
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
     persistShiftDayTipsFromForm(emp, shiftRow);
-    await loadWeekEntries({ force: true });
+    var localEntry = entryFromManagerSave(rpcRes.data, row);
+    if (localEntry) upsertLocalWeekEntry(localEntry);
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
+    /* Background SoT reconcile — do not block the Save button on a full-week refetch. */
+    void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     } catch (ex) {
       var errMsg = (ex && ex.message) || 'Save failed.';
       alert(errMsg);
@@ -12352,7 +12605,6 @@
       timeClockRemoteRefreshDeferred = true;
       return false;
     }
-    invalidateWeekEntriesCache(payWeekBounds());
     var res = await loadWeekEntries({ force: true });
     if (!res.ok || res.skipped === 'stale') return false;
     if (timeClockRemoteApplyBlocked()) {
@@ -12391,12 +12643,17 @@
     deps = dependencies;
     selectedPayWeekStartIso = loadSelectedPayWeekStartIso();
     ensureSelectedPayWeekValid();
+    hydrateWeekEntriesCacheFromDisk();
     bindTimecardsBackButtons();
     bindTimecardsDownloadModal();
     wireTimeclockSettings();
     bindPayWeekSelectorOnce();
     bindSohRateControlOnce();
     bindTipTakehomeControlOnce();
+    /* Warm current + adjacent weeks so first Timecards open already has punches. */
+    if (d().gmSupabaseReadyNow && d().gmSupabaseReadyNow()) {
+      void loadWeekEntries({ force: false });
+    }
   }
 
   function onTipTakehomePctChanged(map) {
@@ -12443,6 +12700,10 @@
     onEmployeeDeleted: onEmployeeDeleted,
     handleBack: handleBack,
     reloadWeek: loadWeekEntries,
+    prefetchWeekEntries: function () {
+      hydrateWeekEntriesCacheFromDisk();
+      return loadWeekEntries({ force: false });
+    },
     invalidateScheduleCache: invalidatePayWeekScheduleCache,
     invalidateFullReportSheetsCache: invalidateFullReportSheetsCache,
     onScheduleChanged: onScheduleChanged,
@@ -12455,6 +12716,7 @@
     setEmployeeBorrowedRestaurant: setEmployeeBorrowedRestaurant,
     employeeEligibleForWeekBorrow: employeeEligibleForWeekBorrow,
     payWeekBoundsFromMonday: payWeekBoundsFromMonday,
+    payWeekBoundsForDayIso: payWeekBoundsForDayIso,
     downloadScheduleWeekOnly: downloadScheduleWeekOnly,
     prefetchExportLibs: function (opts) {
       return ensureExportLibsLoaded(opts || { xlsxOnly: true });
@@ -12505,6 +12767,7 @@
       getEffectiveDayLeave: getEffectiveDayLeave,
       getEmployeeWeekExtras: getEmployeeWeekExtras,
       setEmployeeDayLeave: setEmployeeDayLeave,
+      invalidateWeekExtrasSliceCache: invalidateWeekExtrasSliceCache,
       ptoBalanceForEmployee: ptoBalanceForEmployee,
       computePayrollRowMetrics: computePayrollRowMetrics,
       computeMissingHoursPay: computeMissingHoursPay,

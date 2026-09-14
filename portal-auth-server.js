@@ -108,13 +108,35 @@ async function ensureSignedInEmployeeLinked(adminClient, profile) {
   if (displayNorm && displayNorm !== loginNorm) candidates.push(displayNorm);
   if (!candidates.length) return;
 
-  let query = adminClient
-    .from("employees")
-    .select("id, auth_user_id, display_name, first_name, last_name, company_id")
-    .is("auth_user_id", null);
-  if (profile.company_id) query = query.eq("company_id", profile.company_id);
-  const { data: rows, error } = await query.limit(500);
-  if (error || !rows || !rows.length) return;
+  /*
+   * Prefer a name-scoped lookup. Scanning 500 unlinked rows on every first login
+   * was a common cause of multi-second sign-in for Mark Ong / managers.
+   */
+  const displayHint = String(profile.display_name || profile.login_name || "").trim();
+  let rows = null;
+  if (displayHint) {
+    let named = adminClient
+      .from("employees")
+      .select("id, auth_user_id, display_name, first_name, last_name, company_id")
+      .is("auth_user_id", null)
+      .ilike("display_name", displayHint)
+      .limit(20);
+    if (profile.company_id) named = named.eq("company_id", profile.company_id);
+    const namedRes = await named;
+    if (!namedRes.error && namedRes.data && namedRes.data.length) {
+      rows = namedRes.data;
+    }
+  }
+  if (!rows) {
+    let query = adminClient
+      .from("employees")
+      .select("id, auth_user_id, display_name, first_name, last_name, company_id")
+      .is("auth_user_id", null);
+    if (profile.company_id) query = query.eq("company_id", profile.company_id);
+    const { data, error } = await query.limit(200);
+    if (error || !data || !data.length) return;
+    rows = data;
+  }
 
   const match = rows.find((emp) => {
     const n = employeeDisplayNorm(emp);
@@ -1138,21 +1160,23 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return { error: "Account is missing sign-in data. Ask a manager to reset your account." };
       }
     }
-    const { data: userData, error: userErr } = await admin.auth.admin.getUserById(profile.id);
-    if (userErr || !userData.user) {
-      return { error: "Could not verify account." };
-    }
-    if (!userData.user.email_confirmed_at) {
-      return {
-        error:
-          "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
-      };
-    }
+    /*
+     * Skip Auth Admin getUserById on the hot path when we already have the email.
+     * That extra round-trip made Martin Long / Mark Ong sign-in feel stuck whenever
+     * Auth was slow. Email-not-confirmed is detected from signInWithPassword.
+     */
     const { data, error } = await admin.auth.signInWithPassword({
       email: authEmail,
       password,
     });
     if (error || !data.session) {
+      const errMsg = String((error && error.message) || "");
+      if (/email not confirmed|not confirmed/i.test(errMsg)) {
+        return {
+          error:
+            "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+        };
+      }
       return { error: "Name or password is incorrect." };
     }
     const backfillName =
@@ -1160,7 +1184,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       profile.login_name ||
       profile.display_name ||
       authEmail.split("@")[0];
-    await backfillProfileLoginFields(profile, authEmail, backfillName);
+    /* Do not block tokens on login_name backfill. */
+    void backfillProfileLoginFields(profile, authEmail, backfillName);
     const ready = await ensureCompanyReadyOnLogin(admin, profile);
     return {
       session: data.session,
@@ -1516,11 +1541,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (!sess || sess.error) {
         return res.status(401).json({ ok: false, message: (sess && sess.error) || "Name or password is incorrect." });
       }
-      try {
-        await ensureSignedInEmployeeLinked(admin, sess.profile);
-      } catch (linkErr) {
+      /* Roster link is best-effort — never hold tokens for a 500-row employee scan. */
+      void ensureSignedInEmployeeLinked(admin, sess.profile).catch(function (linkErr) {
         console.warn("portal signin link employee", linkErr);
-      }
+      });
       const companyPayload = companyClientPayload(sess.company, sess.profile);
       return res.json({
         ok: true,

@@ -21,7 +21,7 @@
    * stale timed rows before the write echoed (× snap-back after a couple seconds).
    */
   var recentLocalCellGuards = Object.create(null);
-  var LOCAL_CELL_GUARD_MS = 20000;
+  var LOCAL_CELL_GUARD_MS = 25000;
 
   function cellKey(restaurantId, dayIso, role, slotKey) {
     return [restaurantId, dayIso, role, slotKey].join('\0');
