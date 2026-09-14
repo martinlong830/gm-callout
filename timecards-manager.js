@@ -10284,7 +10284,7 @@
 
   function formatTimecardsLoadError(reason) {
     if (reason === 'no_session') {
-      return 'Your sign-in expired. Tap Sign Out (top right), then sign in again as Martin Long or Ongi Management.';
+      return 'Could not refresh punches — sign-in needs to be renewed. Use Sign Out (top right), then sign in again. Schedule hours below may still be correct.';
     }
     if (reason === 'no_client') {
       return 'Timecards are not available — cloud sign-in is not set up on this site.';
@@ -10293,11 +10293,61 @@
   }
 
   async function ensureSupabaseSession(sb) {
-    var sess = await sb.auth.getSession();
-    if (sess.data && sess.data.session) return sess.data.session;
-    var refreshed = await sb.auth.refreshSession();
-    if (refreshed.data && refreshed.data.session) return refreshed.data.session;
+    if (!sb || !sb.auth) return null;
+    /* Prefer app helper — restores from session backup when getSession is empty. */
+    if (typeof global.gmCalloutEnsureSupabaseSession === 'function') {
+      try {
+        var viaApp = await global.gmCalloutEnsureSupabaseSession(sb);
+        if (viaApp) return viaApp;
+      } catch (_viaApp) {
+        /* fall through */
+      }
+    }
+    try {
+      var sess = await sb.auth.getSession();
+      if (sess.data && sess.data.session) return sess.data.session;
+    } catch (_gs) {
+      /* continue */
+    }
+    try {
+      var refreshed = await sb.auth.refreshSession();
+      if (refreshed.data && refreshed.data.session) return refreshed.data.session;
+    } catch (_rf) {
+      /* continue */
+    }
+    if (typeof global.gmCalloutAttemptSessionRecoverOnce === 'function') {
+      try {
+        var recovered = await global.gmCalloutAttemptSessionRecoverOnce();
+        if (recovered) return recovered;
+      } catch (_rec) {
+        /* ignore */
+      }
+    }
     return null;
+  }
+
+  function showRosterPunchLoadBanner(wrap, message) {
+    if (!wrap) return;
+    var existing = wrap.querySelector('.timecards-punch-load-banner');
+    if (existing) existing.remove();
+    var p = document.createElement('p');
+    p.className = 'calendar-hint timecards-punch-load-banner';
+    p.setAttribute('role', 'status');
+    p.textContent = message || 'Could not refresh punches.';
+    var toolbar = wrap.querySelector('.timecards-roster-toolbar');
+    if (toolbar && toolbar.nextSibling) {
+      wrap.insertBefore(p, toolbar.nextSibling);
+    } else if (toolbar) {
+      wrap.appendChild(p);
+    } else {
+      wrap.insertBefore(p, wrap.firstChild);
+    }
+  }
+
+  function clearRosterPunchLoadBanner(wrap) {
+    if (!wrap) return;
+    var existing = wrap.querySelector('.timecards-punch-load-banner');
+    if (existing) existing.remove();
   }
 
   function selectedPayWeekEntriesCacheKey() {
@@ -10501,6 +10551,15 @@
   function refreshRosterAfterWeekFetch(loadRes, wrap, expectedKey) {
     if (expectedKey && expectedKey !== selectedPayWeekEntriesCacheKey()) return;
     if (!loadRes.ok) {
+      /*
+       * Keep schedule-backed roster if we already painted it. Replacing the whole
+       * page with "sign-in expired" made Timecards look broken on devices with a
+       * brief auth blip while the shell was still authed.
+       */
+      if (wrap && wrap.querySelector('table.timecards-table--roster')) {
+        showRosterPunchLoadBanner(wrap, formatTimecardsLoadError(loadRes.reason));
+        return;
+      }
       if (!weekEntries.length && wrap) {
         var toolbar = wrap.querySelector('.timecards-roster-toolbar');
         if (toolbar) {
@@ -10516,6 +10575,7 @@
       }
       return;
     }
+    clearRosterPunchLoadBanner(wrap);
     buildRosterCacheFromCurrentWeek();
     if (!wrap) return;
     paintRosterIncrementalOrFull(wrap, { deferGrandTotals: true });

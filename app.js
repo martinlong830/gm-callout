@@ -34682,6 +34682,7 @@
       null
     );
   }
+  window.gmCalloutEnsureSupabaseSession = gmCalloutEnsureSupabaseSession;
 
   var gmCalloutHydrateCoalescePromise = null;
   var gmCalloutBootHydrateHandled = false;
@@ -35566,6 +35567,7 @@
     }
     return null;
   }
+  window.gmCalloutAttemptSessionRecoverOnce = gmCalloutAttemptSessionRecoverOnce;
 
   function gmCalloutStopSessionKeepAlive() {
     if (gmCalloutSessionKeepAliveTimer) {
