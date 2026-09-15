@@ -238,13 +238,17 @@
   };
 
   function redPokeAuthHint(loginName, companyId) {
-    var cid = String(companyId || "").trim();
-    if (cid && cid !== RED_POKE_COMPANY_ID) return null;
     var norm = String(loginName || "")
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
-    return RED_POKE_AUTH_HINTS[norm] || null;
+    var hint = RED_POKE_AUTH_HINTS[norm];
+    if (!hint) return null;
+    /*
+     * Always honor known Red Poke manager hints even if companyId is missing/stale —
+     * a wrong stored company id previously skipped the fast path and hung on Render.
+     */
+    return hint;
   }
 
   /** Browser → Supabase Auth token endpoint (skips Render + supabase-js lock). */
@@ -258,7 +262,7 @@
     if (!base || !key || !email) {
       return { ok: false, message: "Supabase client is not ready." };
     }
-    var ms = typeof timeoutMs === "number" ? timeoutMs : 15000;
+    var ms = typeof timeoutMs === "number" ? timeoutMs : 10000;
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     var abortTimer = null;
     if (controller) {
@@ -301,11 +305,26 @@
       if (!data.access_token || !data.refresh_token) {
         return { ok: false, message: "Name or password is incorrect." };
       }
+      /*
+       * Apply session with a short cap. setSession used to hang 10s on iPhone after
+       * tokens already arrived — stash manually and continue so Sign in can finish.
+       */
       var applied = await applyPortalSession({
         access_token: data.access_token,
         refresh_token: data.refresh_token,
       });
-      if (!applied.ok) return applied;
+      if (!applied.ok) {
+        try {
+          stashSupabaseSessionLocally(data);
+        } catch (_stash) {
+          /* ignore */
+        }
+        /* Still treat as signed in if we have tokens — shell can restore from stash. */
+        if (data.access_token && data.refresh_token) {
+          return { ok: true, session: data, sessionApplyDeferred: true };
+        }
+        return applied;
+      }
       return { ok: true, session: data };
     } catch (netErr) {
       var aborted =
@@ -323,8 +342,55 @@
     }
   }
 
+  function stashSupabaseSessionLocally(tokenData) {
+    if (!tokenData || !tokenData.access_token) return;
+    var base =
+      typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
+    var ref = "";
+    try {
+      ref = new URL(base).hostname.split(".")[0] || "";
+    } catch (_u) {
+      ref = "";
+    }
+    if (!ref) return;
+    var expiresAt =
+      tokenData.expires_at != null
+        ? Number(tokenData.expires_at)
+        : Math.floor(Date.now() / 1000) + Number(tokenData.expires_in || 3600);
+    var payload = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at: expiresAt,
+      expires_in: Number(tokenData.expires_in || 3600),
+      token_type: tokenData.token_type || "bearer",
+      user: tokenData.user || null,
+    };
+    try {
+      localStorage.setItem("sb-" + ref + "-auth-token", JSON.stringify(payload));
+    } catch (_ls) {
+      /* ignore */
+    }
+    try {
+      sessionStorage.setItem(
+        "gm-callout-auth-session-backup",
+        JSON.stringify({
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          expires_at: expiresAt,
+          saved_at: Date.now(),
+        })
+      );
+    } catch (_ss) {
+      /* ignore */
+    }
+  }
+
   async function applyPortalSession(tokens) {
     if (!window.gmSupabase || !tokens || !tokens.access_token) {
+      if (tokens && tokens.access_token && tokens.refresh_token) {
+        stashSupabaseSessionLocally(tokens);
+        return { ok: true, deferred: true };
+      }
       return { ok: false, message: "Supabase client is not ready." };
     }
     var applied = await withClientTimeout(
@@ -332,14 +398,17 @@
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
       }),
-      10000,
+      3000,
       "Session start timed out. Wait a moment and try again."
     );
     if (applied && applied.ok === false && applied.message) {
-      return applied;
+      stashSupabaseSessionLocally(tokens);
+      /* Tokens are valid — do not fail Sign in because setSession stalled. */
+      return { ok: true, deferred: true };
     }
     if (applied && applied.error) {
-      return { ok: false, message: applied.error.message || "Could not start session." };
+      stashSupabaseSessionLocally(tokens);
+      return { ok: true, deferred: true };
     }
     return { ok: true };
   }
@@ -559,7 +628,10 @@
     mapPortalMessage: mapPortalMessage,
 
     enabled: function () {
-      return !!(window.gmSupabaseEnabled && window.gmSupabase);
+      return !!(
+        (window.gmSupabaseEnabled && window.gmSupabase) ||
+        (window.__GM_SUPABASE_URL__ && window.__GM_SUPABASE_ANON_KEY__ && window.gmPortalAuth)
+      );
     },
 
     establishConfirmSessionForAccessCodeSetup: establishConfirmSessionForAccessCodeSetup,
@@ -732,34 +804,11 @@
 
       async function clientPasswordGrant(email) {
         /* Prefer raw GoTrue — avoids supabase-js auth lock stalls on iPhone Chrome. */
-        var direct = await goTruePasswordGrant(email, pw, 15000);
-        if (direct.ok) return direct;
-        if (direct.timedOut) return direct;
+        var direct = await goTruePasswordGrant(email, pw, 10000);
+        if (direct.ok || direct.timedOut) return direct;
         if (direct.message && !/incorrect/i.test(direct.message)) return direct;
-        if (!window.gmSupabase || !window.gmSupabase.auth || !email) {
-          return direct;
-        }
-        var result = await withClientTimeout(
-          window.gmSupabase.auth.signInWithPassword({ email: email, password: pw }),
-          12000,
-          "Sign-in timed out. Wait a moment and try again."
-        );
-        if (result && result.ok === false && result.message) return result;
-        if (result && result.error) {
-          var errMsg = String(result.error.message || "");
-          if (/email not confirmed|not confirmed/i.test(errMsg)) {
-            return {
-              ok: false,
-              message:
-                "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
-            };
-          }
-          return { ok: false, message: "Name or password is incorrect." };
-        }
-        if (!result || !result.data || !result.data.session) {
-          return { ok: false, message: "Name or password is incorrect." };
-        }
-        return { ok: true, session: result.data.session };
+        /* Wrong password / email — do not stack another 12s supabase-js attempt. */
+        return direct;
       }
 
       async function resolveAuthEmail() {
@@ -772,7 +821,7 @@
             try {
               var awaited = await withClientTimeout(
                 mem.promise,
-                4000,
+                2500,
                 "Sign-in timed out. Wait a moment and try again."
               );
               if (awaited && awaited.ok && awaited.data && awaited.data.authEmail) return awaited;
@@ -785,7 +834,7 @@
         return portalFetch(
           "/api/portal/resolve-auth",
           { loginName: name, companyId: cid || undefined },
-          { timeoutMs: 5000 }
+          { timeoutMs: 4000 }
         );
       }
 
@@ -796,17 +845,18 @@
         return packOk(role, displayName, companyFields);
       }
 
-      /* Warm only — never await Render. */
-      window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
-
       /*
        * iPhone Chrome hot path: hint/cache → Supabase Auth directly.
-       * Production Render /resolve-auth has been hanging 20s+; do not wait on it first.
+       * Never await Render warmup on this path (hung API ate mobile connections).
        */
       var hint = redPokeAuthHint(name, cid);
       var emailCandidates = [];
       function pushEmail(email, role, displayName, companyFields) {
         if (!email) return;
+        var em = String(email).trim().toLowerCase();
+        for (var p = 0; p < emailCandidates.length; p += 1) {
+          if (emailCandidates[p].email.toLowerCase() === em) return;
+        }
         emailCandidates.push({
           email: String(email).trim(),
           role: role || "employee",
@@ -824,7 +874,12 @@
       }
       var cached = readCachedAuth();
       if (cached && cached.email) {
-        pushEmail(cached.email, cached.role, cached.displayName, { companyId: cid });
+        pushEmail(cached.email, cached.role, cached.displayName, {
+          companyId: cid || (hint ? RED_POKE_COMPANY_ID : ""),
+          companyName: hint ? "Red Poke" : "",
+          accessCode: hint ? "redpoke" : "",
+          teamStateId: hint ? "main" : "",
+        });
       }
 
       for (var i = 0; i < emailCandidates.length; i += 1) {
@@ -832,21 +887,23 @@
         var grant = await clientPasswordGrant(cand.email);
         if (grant.ok) {
           cacheAuthEmail(cand.email, cand.role, cand.displayName);
-          /* Refresh role from server in background when Render is healthy. */
-          void resolveAuthEmail().then(function (fresh) {
-            if (fresh && fresh.ok && fresh.data && fresh.data.authEmail) {
-              cacheAuthEmail(
-                fresh.data.authEmail,
-                fresh.data.role,
-                fresh.data.displayName
-              );
-            }
-          });
           return finishOk(cand.role, cand.displayName, cand.companyFields);
         }
         if (grant.timedOut) return grant;
         if (grant.message && !/incorrect/i.test(grant.message)) return grant;
       }
+
+      /* Hinted Red Poke managers: never fall through to Render (that was the iPhone hang). */
+      if (hint) {
+        return {
+          ok: false,
+          message: emailCandidates.length
+            ? "Name or password is incorrect."
+            : "Could not sign in. Check your password and try again.",
+        };
+      }
+
+      window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
 
       var resolved = await resolveAuthEmail();
       if (resolved.ok && resolved.data && resolved.data.authEmail) {
@@ -873,7 +930,7 @@
         return resolved;
       }
 
-      /* Last resort Render sign-in — short timeout so we do not stack 20s+20s. */
+      /* Last resort Render sign-in — short timeout so we do not stack waits. */
       const payload = { loginName: name, password: pw };
       if (cid) payload.companyId = cid;
       const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 8000 });

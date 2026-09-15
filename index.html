@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-276" />
+  <link rel="stylesheet" href="styles.css?v=perf-277" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-276';
+    window.__GM_ASSET_V = 'perf-277';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -2877,7 +2877,9 @@
       }
 
       function whenPortalAuthReady() {
-        if (window.gmPortalAuth && window.gmSupabase) return Promise.resolve();
+        if (window.gmPortalAuth && (window.gmSupabase || (window.__GM_SUPABASE_URL__ && window.__GM_SUPABASE_ANON_KEY__))) {
+          return Promise.resolve();
+        }
         return new Promise(function (resolve) {
           var settled = false;
           function done() {
@@ -2888,11 +2890,15 @@
           window.addEventListener('gm-callout-portal-auth-ready', done, { once: true });
           var tries = 0;
           (function poll() {
-            if (window.gmPortalAuth && window.gmSupabase) {
+            if (
+              window.gmPortalAuth &&
+              (window.gmSupabase || (window.__GM_SUPABASE_URL__ && window.__GM_SUPABASE_ANON_KEY__))
+            ) {
               done();
               return;
             }
-            if (++tries > 400) {
+            /* ~2.5s max — do not hold Sign in for 10s waiting on scripts. */
+            if (++tries > 100) {
               done();
               return;
             }
@@ -4074,11 +4080,18 @@
       }
 
       async function tryLegacyEmployeeLogin(rawLogin, password) {
-        await whenManagerAppReady();
-        var portal =
-          typeof window.gmCalloutPortalEmployeeLogin === 'function'
-            ? window.gmCalloutPortalEmployeeLogin(rawLogin, password)
-            : { ok: false };
+        /* Never download app.js just to show a sign-in error — that hung iPhone Chrome. */
+        if (typeof window.gmCalloutPortalEmployeeLogin !== 'function') {
+          return false;
+        }
+        var portal = window.gmCalloutPortalEmployeeLogin(rawLogin, password);
+        if (portal && typeof portal.then === 'function') {
+          try {
+            portal = await portal;
+          } catch (_p) {
+            return false;
+          }
+        }
         if (portal && portal.ok && portal.displayName) {
           try {
             sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, portal.displayName);
@@ -4168,7 +4181,13 @@
                 var res = await window.gmPortalAuth.signIn(loginTrim, password, readStoredCompanyId());
                 if (!res.ok) {
                   window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
-                  if (await tryLegacyEmployeeLogin(rawLogin, password)) return;
+                  /* Skip legacy fallback on timeout / manager names — it used to await app.js. */
+                  var skipLegacy =
+                    !!(res && res.timedOut) ||
+                    loginNorm === 'martin long' ||
+                    loginNorm === 'ongi management' ||
+                    loginNorm === 'mark ong';
+                  if (!skipLegacy && (await tryLegacyEmployeeLogin(rawLogin, password))) return;
                   showLoginError(res.message || 'Sign in failed.');
                   return;
                 }
@@ -4686,7 +4705,7 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="portal-auth-client.js?v=perf-276"></script>
+  <script defer src="portal-auth-client.js?v=perf-277"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
@@ -4701,8 +4720,8 @@
         'employee-leave.js?v=perf-69',
         'break-policy.js?v=perf-2',
         'availability-paint.js?v=perf-230',
-        'schedule-sync-v2.js?v=perf-276',
-        'app.js?v=perf-276',
+        'schedule-sync-v2.js?v=perf-277',
+        'app.js?v=perf-277',
       ].forEach(function (src) {
         var s = document.createElement('script');
         s.defer = true;
