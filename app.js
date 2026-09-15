@@ -6592,9 +6592,6 @@
           if (clearPhantomRowOwnersForEmptySlots(targetWi, currentRestaurantId)) {
             trimmed = true;
           }
-          if (trimTrailingGhostScheduleSlots(targetWi, currentRestaurantId)) {
-            trimmed = true;
-          }
           try {
             if (
               restoreWeekPeopleOntoTimedDraftRows(targetWi, currentRestaurantId, {
@@ -6604,6 +6601,10 @@
                 allowRosterDefaults: false,
               })
             ) {
+              trimmed = true;
+            }
+            /* Trim after restore so rematerialize cannot leave taller empty shells. */
+            if (trimTrailingGhostScheduleSlots(targetWi, currentRestaurantId)) {
               trimmed = true;
             }
             /* One-shot local scrub only — never push Karl wipe to cloud. */
@@ -7350,18 +7351,12 @@
      */
     var allowRosterDefaults = opts.allowRosterDefaults === true;
 
-    /* Grow draft to active slot count when local timed rows were trimmed away. */
-    if (v2 && typeof v2.activeSlotCount === 'function') {
-      roles.forEach(function (role) {
-        var want = Number(v2.activeSlotCount(rid, role)) || 0;
-        if (want <= 1) return;
-        if (!Array.isArray(layers[role])) layers[role] = [];
-        while (layers[role].length < want) {
-          layers[role].push([null, null, null, null, null, null, null]);
-          changed = true;
-        }
-      });
-    }
+    /*
+     * Do NOT grow drafts to global activeSlotCount. Adding a Person on this week
+     * raises company-wide slot count; padding past weeks left sticky Unassigned
+     * shells under the last named person (e.g. Eugene on Sept 7–13). Soft poll /
+     * Refresh size from this week's cells; only conscious + adds rows.
+     */
 
     roles.forEach(function (role) {
       var roleIdx = roleIdxForDraftRole(role);
@@ -19981,6 +19976,12 @@
         writeCloud: false,
         allowRosterDefaults: false,
       });
+      /*
+       * Past weeks inherit the current week's taller blank draft on first open.
+       * Drop trailing Unassigned shells with no timed cloud cells so a Person
+       * added this week does not appear as a ghost under last week.
+       */
+      trimTrailingGhostScheduleSlots(w, currentRestaurantId);
       if (w < SCHEDULE_TEMPLATE_WEEK_INDEX) {
         clearInventedWorkerFromWeekRole(w, 'Bartender', 'KARL SANTIAGO', currentRestaurantId, {
           skipDirty: true,
