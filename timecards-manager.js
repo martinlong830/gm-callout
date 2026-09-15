@@ -2722,6 +2722,25 @@
     slice[key] = { vl: v, sl: s, manual: true };
     delete slice[empId];
     saveWeekExtrasMap(bounds, slice);
+    if (typeof d().markTimecardLeavePendingAck === 'function') {
+      d().markTimecardLeavePendingAck(empId, iso);
+    }
+    /*
+     * Dual-write leaveBalance so VL/SL survives tip-payroll JSON races and shows on
+     * Team / schedule when week-extras briefly diverge. Skip when schedule Save already
+     * wrote leaveBalance in the same turn (avoid nested single-employee upserts).
+     */
+    if (
+      typeof d().persistEmployeeLeaveBalanceDay === 'function' &&
+      !window.__gmLeaveBalanceWriteFromSchedule
+    ) {
+      var emp =
+        d().employees &&
+        d().employees.find(function (e) {
+          return e && e.id === empId;
+        });
+      if (emp) d().persistEmployeeLeaveBalanceDay(emp, iso, v, s);
+    }
   }
 
   /** Remove per-day leave override (used when deleting a shift day entirely). */
@@ -12161,6 +12180,9 @@
       );
     }
     removeAddedOffScheduleDay(emp.id, shiftRow.iso);
+    if (typeof d().flushTimecardPayrollSync === 'function') {
+      d().flushTimecardPayrollSync();
+    }
     timecardState.entryId = null;
     timecardState.shiftId = null;
     timecardState.shiftRow = null;
@@ -12249,6 +12271,9 @@
       }
       setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
       persistShiftDayTipsFromForm(emp, shiftRow);
+      if (typeof d().flushTimecardPayrollSync === 'function') {
+        d().flushTimecardPayrollSync();
+      }
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
       returnToEmployeeShifts(emp);
@@ -12406,6 +12431,9 @@
     }
     setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
     persistShiftDayTipsFromForm(emp, shiftRow);
+    if (typeof d().flushTimecardPayrollSync === 'function') {
+      d().flushTimecardPayrollSync();
+    }
     var localEntry = entryFromManagerSave(rpcRes.data, row);
     if (localEntry) upsertLocalWeekEntry(localEntry);
     setSaveStatus('Saved.', false);

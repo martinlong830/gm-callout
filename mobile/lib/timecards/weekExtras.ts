@@ -3,7 +3,7 @@ import type { EmployeeRow } from '../employees';
 import type { StaffRequestUi } from '../staffRequests';
 import { isSupabaseConfigured, supabase } from '../supabase';
 import { isoFromDate, payWeekBoundsFromMonday, weekBoundsStorageKey } from './payWeek';
-import { queueTipPayrollPushToSupabase } from './tipPayrollSync';
+import { markTipPayrollPendingWeekExtra, queueTipPayrollPushToSupabase } from './tipPayrollSync';
 import type { PayWeekBounds } from './types';
 import type { WeekExtras } from './types';
 
@@ -274,6 +274,7 @@ export async function setEmployeeDayLeave(
   slice[key] = { vl: v, sl: s, manual: true };
   delete slice[empId];
   await saveWeekExtrasMap(bounds, slice);
+  markTipPayrollPendingWeekExtra(weekBoundsStorageKey(bounds), key);
 }
 
 export async function clearEmployeeDayLeave(
