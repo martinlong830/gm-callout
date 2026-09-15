@@ -2890,29 +2890,25 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   /*
-   * Narrow Schedule: vertical scroll on the screen (chrome can leave). Matrix
-   * pans sideways in .schedule-matrix-h-scroll only — week/actions/restaurant
-   * live outside that wrap so they stay put horizontally.
+   * Narrow Schedule: one scrollport on #screen-schedule (vertical + horizontal).
+   * Person/day thead + FOH/BOH stick here. Week/actions chrome is sticky-left so
+   * it does not slide away when panning the matrix sideways.
    */
   html.authed.manager-app #screen-schedule.active {
-    overflow-x: hidden !important;
-    overflow-y: auto;
+    overflow: auto;
     overscroll-behavior: contain;
     display: block;
   }
 
   html.authed.manager-app #screen-schedule .calendar-table-wrap {
     display: block;
-    overflow-x: auto;
-    overflow-y: clip;
-    max-width: 100%;
-    width: 100%;
+    overflow: visible;
+    max-width: none;
+    width: auto;
     min-width: 0;
     height: auto;
     min-height: 0;
     flex: none;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
   }
 
   html.authed.manager-app #screen-schedule #calendarGrid {
@@ -2988,26 +2984,25 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .schedule-page-chrome {
   box-sizing: border-box;
+  /*
+   * Sticky-left inside #screen-schedule: pans away vertically with the page, but
+   * stays put when scrolling the matrix sideways. Width is synced to the screen
+   * clientWidth in JS so the pin matches the visible viewport, not the table.
+   */
+  position: sticky;
+  left: 0;
+  z-index: 9;
   width: 100%;
   max-width: 100%;
-  /* Vertical pans only — sideways gestures belong on the matrix wrap below. */
-  touch-action: pan-y;
+  background: var(--bg);
 }
 
-/*
- * Only the matrix pans horizontally. Chrome is a sibling above this wrap so it
- * cannot slide away left/right. overflow-y: clip keeps sticky Person/day thead
- * tied to the screen’s vertical scroll (not a nested 2-axis scrollport).
- */
+/* Matrix shares the screen scrollport — required for sticky Person/day + FOH/BOH. */
 #screen-schedule .calendar-table-wrap.schedule-matrix-h-scroll {
-  overflow-x: auto;
-  overflow-y: clip;
-  max-width: 100%;
-  width: 100%;
+  overflow: visible;
+  max-width: none;
+  width: auto;
   min-width: 0;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-  touch-action: pan-x pan-y;
 }
 
 #calendarGrid {
@@ -4843,7 +4838,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   /*
    * Viewport-locked .main needs an inner scrollport for every screen.
-   * Schedule: vertical on the screen; horizontal only on .schedule-matrix-h-scroll.
+   * Schedule: one scrollport so Person/day + FOH/BOH sticky headers work; chrome
+   * uses sticky-left so sideways pan does not drag week/actions away.
    */
   html.authed.manager-app .main > .screen.active {
     flex: 1;
@@ -4857,15 +4853,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     flex: 1;
     display: block;
     min-height: 0;
-    overflow-x: hidden !important;
-    overflow-y: auto;
+    overflow: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
   }
 
   #screen-schedule .calendar-table-wrap {
     display: block;
-    width: 100%;
+    width: auto;
     min-width: 0;
     height: auto;
     min-height: 0;
@@ -4876,10 +4871,15 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     border-right: none;
     padding: 12px 0 0;
     box-sizing: border-box;
-    overflow-x: auto;
-    overflow-y: clip;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
+    overflow: visible;
+  }
+
+  #screen-schedule #calendarGrid {
+    flex: none;
+    min-height: 0;
+    height: auto;
+    max-width: none;
+    overflow: visible;
   }
 
   #screen-schedule #calendarGrid {

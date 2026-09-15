@@ -27925,6 +27925,11 @@
       /* Tuck 1px under thead so scrolled content cannot show through a hairline seam. */
       var offset = Math.max(0, Math.round(maxH) - 1);
       rootEl.style.setProperty('--calendar-thead-h', offset + 'px');
+      if (typeof syncScheduleChromeStickyWidth === 'function') {
+        syncScheduleChromeStickyWidth();
+      } else if (typeof window.gmCalloutSyncScheduleChromeStickyWidth === 'function') {
+        window.gmCalloutSyncScheduleChromeStickyWidth();
+      }
     };
     apply();
     /* Skip second layout pass on coarse pointers (tablets) — one measure is enough. */
@@ -32572,37 +32577,41 @@
   }
 
   /**
-   * Keep week/actions/restaurant chrome fixed while the matrix pans sideways.
-   * Some browsers still apply trackpad deltaX to #screen-schedule even with
-   * overflow-x:hidden — zero that and forward the pan to .schedule-matrix-h-scroll.
+   * Pin week/actions/restaurant to the visible Schedule viewport while the matrix
+   * pans sideways (sticky left). Keep #screen-schedule as the only scrollport so
+   * Person/Monday thead and FOH/BOH section bars stay sticky vertically.
    */
-  var scheduleMatrixHScrollBound = false;
-  function bindScheduleMatrixHorizontalScrollOnce() {
-    if (scheduleMatrixHScrollBound) return;
+  var scheduleChromeStickyBound = false;
+  function syncScheduleChromeStickyWidth() {
     var screen = document.getElementById('screen-schedule');
-    var wrap = document.querySelector('#screen-schedule .schedule-matrix-h-scroll');
-    if (!screen || !wrap) return;
-    scheduleMatrixHScrollBound = true;
-    screen.addEventListener(
-      'scroll',
-      function () {
-        if (screen.scrollLeft) screen.scrollLeft = 0;
-      },
-      { passive: true }
-    );
-    screen.addEventListener(
-      'wheel',
-      function (ev) {
-        if (!ev || Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
-        if (Math.abs(ev.deltaX) < 1) return;
-        wrap.scrollLeft += ev.deltaX;
-        if (screen.scrollLeft) screen.scrollLeft = 0;
-        ev.preventDefault();
-      },
-      { passive: false }
-    );
+    var chrome = document.querySelector('#screen-schedule .schedule-page-chrome');
+    if (!screen || !chrome) return;
+    var w = Math.max(0, Math.floor(screen.clientWidth || 0));
+    if (!w) return;
+    chrome.style.width = w + 'px';
+    chrome.style.maxWidth = w + 'px';
+  }
+  function bindScheduleMatrixHorizontalScrollOnce() {
+    if (scheduleChromeStickyBound) return;
+    var screen = document.getElementById('screen-schedule');
+    if (!screen || !document.querySelector('#screen-schedule .schedule-page-chrome')) return;
+    scheduleChromeStickyBound = true;
+    syncScheduleChromeStickyWidth();
+    screen.addEventListener('scroll', syncScheduleChromeStickyWidth, { passive: true });
+    window.addEventListener('resize', syncScheduleChromeStickyWidth);
+    if (typeof ResizeObserver === 'function') {
+      try {
+        var ro = new ResizeObserver(function () {
+          syncScheduleChromeStickyWidth();
+        });
+        ro.observe(screen);
+      } catch (_ro) {
+        /* ignore */
+      }
+    }
   }
   bindScheduleMatrixHorizontalScrollOnce();
+  window.gmCalloutSyncScheduleChromeStickyWidth = syncScheduleChromeStickyWidth;
   var scheduleHistoryBtn = document.getElementById('scheduleHistoryBtn');
   var scheduleHistoryModal = document.getElementById('scheduleHistoryModal');
   var scheduleHistoryList = document.getElementById('scheduleHistoryList');
