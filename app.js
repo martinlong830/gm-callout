@@ -16864,6 +16864,14 @@
     }
     /* Push week-extras to team_state promptly so peers / Timecards see VL/SL. */
     flushTipPayrollPushToSupabase();
+    /* Refresh schedule flags so VL/SL badges appear without a full page reload. */
+    if (currentScreen === 1 && typeof renderCalendar === 'function') {
+      try {
+        renderCalendar({ force: true });
+      } catch (_rcLeave) {
+        /* ignore */
+      }
+    }
   }
 
   function readEffectiveLeaveForShiftDay(emp, dayIso) {
@@ -26559,6 +26567,63 @@
     );
   }
 
+  function formatLeaveHoursShort(n) {
+    var x = Math.max(0, Math.round((parseFloat(n) || 0) * 100) / 100);
+    if (Math.abs(x - Math.round(x)) < 0.005) return String(Math.round(x));
+    return String(x);
+  }
+
+  /** Compact VL/SL flag for a schedule cell (same strip style as 8th Ave borrow). */
+  function calendarLeaveFlagForPersonDay(personName, dayStr) {
+    if (!personName || personName === 'Unassigned' || !dayStr) return null;
+    var emp = findEmployeeByDisplayName(personName);
+    if (!emp) return null;
+    var dayIso = '';
+    var di = WEEKDAY_KEYS.indexOf(weekdayKeyFromScheduleDay(dayStr));
+    if (di >= 0) dayIso = isoForShiftEditDay(di);
+    if (!dayIso) {
+      var meta = WEEK_META.find(function (m) {
+        return m && (m.label === dayStr || m.dayStr === dayStr);
+      });
+      if (meta && meta.iso) dayIso = String(meta.iso).slice(0, 10);
+    }
+    if (!dayIso) return null;
+    var leave = readEffectiveLeaveForShiftDay(emp, dayIso);
+    var vl = leave && leave.vl > 0 ? leave.vl : 0;
+    var sl = leave && leave.sl > 0 ? leave.sl : 0;
+    if (vl <= 0 && sl <= 0) return null;
+    var parts = [];
+    if (vl > 0) parts.push('VL ' + formatLeaveHoursShort(vl) + 'h');
+    if (sl > 0) parts.push('SL ' + formatLeaveHoursShort(sl) + 'h');
+    return {
+      text: parts.join(' · '),
+      title:
+        (vl > 0 ? 'Vacation leave ' + formatLeaveHoursShort(vl) + 'h' : '') +
+        (vl > 0 && sl > 0 ? ', ' : '') +
+        (sl > 0 ? 'Sick leave ' + formatLeaveHoursShort(sl) + 'h' : '') +
+        ' — ' +
+        personName +
+        ' on ' +
+        dayIso,
+    };
+  }
+
+  function calendarLeaveFlagHtml(personName, dayStr) {
+    var flag = calendarLeaveFlagForPersonDay(personName, dayStr);
+    if (!flag) return '';
+    return (
+      '<div class="calendar-slot-leave-flag" title="' +
+      escapeHtml(flag.title) +
+      '">' +
+      escapeHtml(flag.text) +
+      '</div>'
+    );
+  }
+
+  function calendarCellFlagsHtml(personName, dayStr, otherStoreLabel) {
+    return calendarLeaveFlagHtml(personName, dayStr) + calendarOtherStoreBadgeHtml(otherStoreLabel);
+  }
+
   function renderCalendarInto(targetEl, opts) {
     opts = opts || {};
     var readOnly = !!opts.readOnly;
@@ -26901,7 +26966,7 @@
 
             if (!shift) {
               var otherLblOff = otherStoreLabelFromMap(otherStoreDayLabels, rowPerson, dayStr);
-              var otherBadgeOff = calendarOtherStoreBadgeHtml(otherLblOff);
+              var flagsOff = calendarCellFlagsHtml(rowPerson, dayStr, otherLblOff);
               var dayOffLbl = displayDayOffLabel();
               var wkOff = weekdayKeyFromScheduleDay(dayStr);
               var trOff = draftTimeSlotFor(
@@ -26957,7 +27022,7 @@
                   ) +
                   '</div>' +
                   '</div>' +
-                  otherBadgeOff +
+                  flagsOff +
                   '</div></td>'
                 );
               }
@@ -26984,7 +27049,7 @@
                 '<div class="calendar-slot-empty-label">' +
                 escapeHtml(displayDayOffLabel()) +
                 '</div>' +
-                otherBadgeOff +
+                flagsOff +
                 '</div></td>'
               );
             }
@@ -26997,10 +27062,11 @@
             var staffedWorkers = (shift.workers || [shift.worker].filter(Boolean)).filter(function (n) {
               return n && n !== 'Unassigned';
             });
+            var leavePerson = staffedWorkers[0] || rowPerson;
             var otherLblShift =
-              otherStoreLabelFromMap(otherStoreDayLabels, staffedWorkers[0] || rowPerson, dayStr) ||
+              otherStoreLabelFromMap(otherStoreDayLabels, leavePerson, dayStr) ||
               otherStoreLabelFromMap(otherStoreDayLabels, rowPerson, dayStr);
-            var otherBadgeShift = calendarOtherStoreBadgeHtml(otherLblShift);
+            var flagsShift = calendarCellFlagsHtml(leavePerson, dayStr, otherLblShift);
             const slotLabel =
               'Shift: ' +
               rd.groupLabel +
@@ -27048,7 +27114,7 @@
               escapeHtml(rpHrs) +
               '</div>' +
               '</div>' +
-              otherBadgeShift +
+              flagsShift +
               '</div>' +
               '</td>'
             );

@@ -4699,7 +4699,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 }
 
 /* Pin Ave flags to the same bottom strip on every day cell in the row. */
-.calendar-slot-other-store {
+.calendar-slot-other-store,
+.calendar-slot-leave-flag {
   position: absolute;
   left: 10px;
   right: 10px;
@@ -4711,15 +4712,34 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 700;
   letter-spacing: 0.02em;
   text-align: center;
-  color: #9a3412;
-  background: color-mix(in srgb, #fdba74 35%, var(--surface));
-  border: 1px solid color-mix(in srgb, #f97316 40%, transparent);
   line-height: 1.25;
   max-width: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   box-sizing: border-box;
+}
+
+.calendar-slot-other-store {
+  color: #9a3412;
+  background: color-mix(in srgb, #fdba74 35%, var(--surface));
+  border: 1px solid color-mix(in srgb, #f97316 40%, transparent);
+}
+
+.calendar-slot-leave-flag {
+  color: #1e40af;
+  background: color-mix(in srgb, #93c5fd 38%, var(--surface));
+  border: 1px solid color-mix(in srgb, #3b82f6 42%, transparent);
+}
+
+/* Stack leave above borrow when both are present. */
+.calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store) {
+  padding-bottom: 2.55rem;
+}
+
+.calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store)
+  .calendar-slot-leave-flag {
+  bottom: 1.55rem;
 }
 
 .calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) {
@@ -4732,7 +4752,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   margin-top: 0;
 }
 
-.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-other-store {
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-other-store,
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-leave-flag {
   left: 10px;
   right: 10px;
 }
@@ -6760,10 +6781,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     padding-bottom: 1.3rem;
   }
 
-  .calendar-slot-other-store {
+  .calendar-slot-other-store,
+  .calendar-slot-leave-flag {
     left: 8px;
     right: 8px;
     bottom: 4px;
+  }
+
+  .calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store)
+    .calendar-slot-leave-flag {
+    bottom: 1.4rem;
   }
 
   .calendar-slot-pills {
