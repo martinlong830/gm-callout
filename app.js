@@ -32570,6 +32570,39 @@
       void manualRefreshScheduleFromCloud({ forceRender: true });
     });
   }
+
+  /**
+   * Keep week/actions/restaurant chrome fixed while the matrix pans sideways.
+   * Some browsers still apply trackpad deltaX to #screen-schedule even with
+   * overflow-x:hidden — zero that and forward the pan to .schedule-matrix-h-scroll.
+   */
+  var scheduleMatrixHScrollBound = false;
+  function bindScheduleMatrixHorizontalScrollOnce() {
+    if (scheduleMatrixHScrollBound) return;
+    var screen = document.getElementById('screen-schedule');
+    var wrap = document.querySelector('#screen-schedule .schedule-matrix-h-scroll');
+    if (!screen || !wrap) return;
+    scheduleMatrixHScrollBound = true;
+    screen.addEventListener(
+      'scroll',
+      function () {
+        if (screen.scrollLeft) screen.scrollLeft = 0;
+      },
+      { passive: true }
+    );
+    screen.addEventListener(
+      'wheel',
+      function (ev) {
+        if (!ev || Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
+        if (Math.abs(ev.deltaX) < 1) return;
+        wrap.scrollLeft += ev.deltaX;
+        if (screen.scrollLeft) screen.scrollLeft = 0;
+        ev.preventDefault();
+      },
+      { passive: false }
+    );
+  }
+  bindScheduleMatrixHorizontalScrollOnce();
   var scheduleHistoryBtn = document.getElementById('scheduleHistoryBtn');
   var scheduleHistoryModal = document.getElementById('scheduleHistoryModal');
   var scheduleHistoryList = document.getElementById('scheduleHistoryList');
@@ -35816,6 +35849,9 @@
     syncAdminManagerHomeNav();
     bindScheduleReviewUiOnce();
     updateScheduleReviewToolbarUi();
+    if (typeof bindScheduleMatrixHorizontalScrollOnce === 'function') {
+      bindScheduleMatrixHorizontalScrollOnce();
+    }
     /* Keep the week the user had selected across refresh. */
     try {
       var restoredWi = restoreSelectedScheduleWeekIndex();
