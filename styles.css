@@ -2890,14 +2890,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   /*
-   * Narrow Schedule: #screen-schedule is the only scrollport so week/actions/
-   * restaurant chrome scrolls away. Person/day thead sticks under .app-top.
-   * Nested overflow on #calendarGrid would steal the scroll and freeze toolbar.
+   * Narrow Schedule: vertical scroll on #screen-schedule (week/actions/restaurant
+   * leave). Horizontal scroll also on the screen, but chrome pins with sticky left
+   * so scrolling right does not drag toolbar/restaurant off-screen.
    */
   html.authed.manager-app #screen-schedule.active {
     overflow: auto;
     overscroll-behavior: contain;
     display: block;
+    container-type: inline-size;
+    container-name: schedule-screen;
   }
 
   html.authed.manager-app #screen-schedule .calendar-table-wrap {
@@ -2979,11 +2981,47 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-radius: 0;
 }
 
-/* Schedule matrix: no nested vertical scrollport — parent screen scrolls so
-   week/actions/restaurant chrome can leave while thead sticks. */
+/* Schedule matrix grows with day columns; parent screen scrolls both axes.
+   Chrome above the thead uses sticky left (see below) so horizontal pan keeps it. */
 #calendarGrid {
-  max-width: 100%;
+  max-width: none;
   overflow: visible;
+}
+
+/*
+ * Pin week / actions / restaurant / legend to the left while the matrix pans
+ * horizontally. Not sticky-top — vertical scroll still lets this chrome leave.
+ */
+#screen-schedule .schedule-toolbar-compact,
+#screen-schedule .restaurant-switcher,
+#screen-schedule .calendar-legend,
+#screen-schedule .emp-schedule-readonly-hint,
+#screen-schedule .schedule-drag-hint,
+#screen-schedule .schedule-notice {
+  position: sticky;
+  left: 0;
+  z-index: 8;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  background: var(--bg);
+}
+
+@supports (width: 1cqw) {
+  #screen-schedule.active {
+    container-type: inline-size;
+    container-name: schedule-screen;
+  }
+
+  #screen-schedule .schedule-toolbar-compact,
+  #screen-schedule .restaurant-switcher,
+  #screen-schedule .calendar-legend,
+  #screen-schedule .emp-schedule-readonly-hint,
+  #screen-schedule .schedule-drag-hint,
+  #screen-schedule .schedule-notice {
+    width: 100cqw;
+    max-width: 100cqw;
+  }
 }
 
 /* Legacy layout wrapper (no longer used for side day-totals rail). */
@@ -4814,8 +4852,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   /*
    * Viewport-locked .main needs an inner scrollport for every screen.
-   * Schedule: screen scrolls (week/actions/restaurant leave); do NOT nest
-   * overflow on #calendarGrid or the toolbar stays frozen above the matrix.
+   * Schedule: one scrollport on the screen (vertical chrome can leave; horizontal
+   * pan keeps week/actions/restaurant via sticky left on those blocks).
    */
   html.authed.manager-app .main > .screen.active {
     flex: 1;
@@ -4832,6 +4870,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     overflow: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+    container-type: inline-size;
+    container-name: schedule-screen;
   }
 
   #screen-schedule .calendar-table-wrap {
@@ -4849,7 +4889,6 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     overflow: visible;
   }
 
-  /* Visible overflow — horizontal width scrolls on #screen-schedule with vertical. */
   #screen-schedule #calendarGrid {
     flex: none;
     min-height: 0;
