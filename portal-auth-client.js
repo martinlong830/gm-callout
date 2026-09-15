@@ -459,24 +459,164 @@
 
     establishConfirmSessionForAccessCodeSetup: establishConfirmSessionForAccessCodeSetup,
 
+    warmup: function () {
+      try {
+        if (typeof fetch === "function") {
+          void fetch("/api/portal/warmup", { method: "POST", keepalive: true }).catch(function () {
+            /* ignore */
+          });
+        }
+      } catch (_w) {
+        /* ignore */
+      }
+    },
+
     signIn: async function (loginName, password, companyId) {
-      const payload = { loginName, password };
-      if (companyId) payload.companyId = companyId;
-      /* Sign-in allows longer than other portal POSTs — Auth can be cold/slow. */
-      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 35000 });
+      var name = String(loginName || "").trim();
+      var pw = String(password || "");
+      var cid = companyId ? String(companyId).trim() : "";
+      if (!name || !pw) {
+        return { ok: false, message: mapPortalMessage("Name and password are required.") };
+      }
+
+      function packOk(role, displayName, companyFields) {
+        companyFields = companyFields || {};
+        return {
+          ok: true,
+          role: role,
+          displayName: displayName,
+          companyId: companyFields.companyId || cid || "",
+          companyName: companyFields.companyName || "",
+          accessCode: companyFields.accessCode || "",
+          teamStateId: companyFields.teamStateId || "",
+          restaurantsConfig: companyFields.restaurantsConfig || [],
+        };
+      }
+
+      function cacheAuthEmail(email, role, displayName) {
+        if (!email || !cid) return;
+        try {
+          var key =
+            "gm-portal-auth-email-v1:" +
+            cid +
+            ":" +
+            String(name)
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, " ");
+          localStorage.setItem(
+            key,
+            JSON.stringify({
+              email: email,
+              role: role || "",
+              displayName: displayName || "",
+              ts: Date.now(),
+            })
+          );
+        } catch (_c) {
+          /* ignore */
+        }
+      }
+
+      function readCachedAuth() {
+        if (!cid) return null;
+        try {
+          var key =
+            "gm-portal-auth-email-v1:" +
+            cid +
+            ":" +
+            String(name)
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, " ");
+          var raw = localStorage.getItem(key);
+          if (!raw) return null;
+          var parsed = JSON.parse(raw);
+          if (!parsed || !parsed.email) return null;
+          return parsed;
+        } catch (_r) {
+          return null;
+        }
+      }
+
+      async function clientPasswordGrant(email) {
+        if (!window.gmSupabase || !window.gmSupabase.auth || !email) {
+          return { ok: false, message: "Supabase client is not ready." };
+        }
+        var result = await withClientTimeout(
+          window.gmSupabase.auth.signInWithPassword({ email: email, password: pw }),
+          15000,
+          "Sign-in timed out. Wait a moment and try again."
+        );
+        if (result && result.ok === false && result.message) return result;
+        if (result && result.error) {
+          var errMsg = String(result.error.message || "");
+          if (/email not confirmed|not confirmed/i.test(errMsg)) {
+            return {
+              ok: false,
+              message:
+                "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+            };
+          }
+          return { ok: false, message: "Name or password is incorrect." };
+        }
+        if (!result || !result.data || !result.data.session) {
+          return { ok: false, message: "Name or password is incorrect." };
+        }
+        return { ok: true, session: result.data.session };
+      }
+
+      /*
+       * Fast path: browser → Supabase Auth directly (skips Render→Auth hop that
+       * timed out for Mark Ong). Resolve email via tiny server lookup, or cache.
+       */
+      if (window.gmSupabase && window.gmSupabase.auth) {
+        var cached = readCachedAuth();
+        if (cached && cached.email) {
+          var cachedGrant = await clientPasswordGrant(cached.email);
+          if (cachedGrant.ok) {
+            window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
+            return packOk(cached.role || "employee", cached.displayName || name, {
+              companyId: cid,
+            });
+          }
+        }
+
+        var resolved = await portalFetch(
+          "/api/portal/resolve-auth",
+          { loginName: name, companyId: cid || undefined },
+          { timeoutMs: 12000 }
+        );
+        if (resolved.ok && resolved.data && resolved.data.authEmail) {
+          var grant = await clientPasswordGrant(resolved.data.authEmail);
+          if (grant.ok) {
+            cacheAuthEmail(
+              resolved.data.authEmail,
+              resolved.data.role,
+              resolved.data.displayName
+            );
+            window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
+            return packOk(resolved.data.role, resolved.data.displayName, resolved.data);
+          }
+          if (grant.message && !/incorrect/i.test(grant.message)) return grant;
+          return { ok: false, message: grant.message || "Name or password is incorrect." };
+        }
+        /* Fall through to legacy /signin if resolve unsupported on old deploy. */
+        if (resolved.status && resolved.status !== 404) {
+          return resolved;
+        }
+      }
+
+      const payload = { loginName: name, password: pw };
+      if (cid) payload.companyId = cid;
+      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 25000 });
       if (!r.ok) return r;
+      if (r.data.authEmail) {
+        cacheAuthEmail(r.data.authEmail, r.data.role, r.data.displayName);
+      }
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;
-      return {
-        ok: true,
-        role: r.data.role,
-        displayName: r.data.displayName,
-        companyId: r.data.companyId || "",
-        companyName: r.data.companyName || "",
-        accessCode: r.data.accessCode || "",
-        teamStateId: r.data.teamStateId || "",
-        restaurantsConfig: r.data.restaurantsConfig || [],
-      };
+      return packOk(r.data.role, r.data.displayName, r.data);
     },
 
     verifyAccessCode: async function (accessCode) {

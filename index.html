@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-269" />
+  <link rel="stylesheet" href="styles.css?v=perf-270" />
   <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-269" as="script" />
+  <link rel="prefetch" href="app.js?v=perf-270" as="script" />
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-269';
+    window.__GM_ASSET_V = 'perf-270';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -3766,6 +3766,9 @@
               verifiedCompanyName = res.companyName || '';
               showLoginPanel();
               storeCompanySession(res);
+              if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
+                window.gmPortalAuth.warmup();
+              }
               if (loginEmail) loginEmail.focus();
             })();
             return;
@@ -4060,6 +4063,9 @@
         function armLoginAppPrefetch() {
           if (typeof window.gmPrefetchManagerAppBundle === 'function') {
             window.gmPrefetchManagerAppBundle();
+          }
+          if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
+            window.gmPortalAuth.warmup();
           }
         }
         loginEmail.addEventListener('focus', armLoginAppPrefetch, { once: true, passive: true });
@@ -4612,17 +4618,17 @@
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
   <script defer src="employee-leave.js?v=perf-69"></script>
   <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-269"></script>
+  <script defer src="portal-auth-client.js?v=perf-270"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
   <script defer src="availability-paint.js?v=perf-230"></script>
-  <script defer src="schedule-sync-v2.js?v=perf-269"></script>
+  <script defer src="schedule-sync-v2.js?v=perf-270"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     /* Cells are SoT — do not apply/push schedule blobs (prevents cross-device rollbacks). */
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
   </script>
   <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-269"></script>
+  <script defer src="app.js?v=perf-270"></script>
   <script>
     /*
      * Role / feature modules after first paint:

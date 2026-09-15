@@ -510,6 +510,50 @@ async function seedCompanyTeamState(admin, company) {
   return { ok: true, seeded: true };
 }
 
+function redPokeCompanyStub() {
+  return {
+    id: RED_POKE_COMPANY_ID,
+    name: "Red Poke",
+    access_code: PORTAL_ACCESS_CODE,
+    team_state_id: "main",
+    restaurants_config: [
+      { id: "rp-9", name: "9th Ave", shortLabel: "9th", defaultUnassignedSchedule: true },
+      { id: "rp-8", name: "8th Ave", shortLabel: "8th", defaultUnassignedSchedule: true },
+    ],
+    confirmed_at: "2020-01-01T00:00:00.000Z",
+    access_code_set_at: "2020-01-01T00:00:00.000Z",
+    owner_user_id: null,
+  };
+}
+
+/**
+ * Sign-in must not wait on companies/team_state reads. Red Poke is static; other
+ * tenants should already have company fields from the access-code step on the client.
+ */
+function companyPayloadForFastSignIn(companyId, profile, loadedCompany) {
+  if (loadedCompany) return companyClientPayload(loadedCompany, profile);
+  if (
+    companyId === RED_POKE_COMPANY_ID ||
+    (profile && profile.company_id === RED_POKE_COMPANY_ID)
+  ) {
+    return companyClientPayload(redPokeCompanyStub(), profile);
+  }
+  if (profile && profile.company_id) {
+    return {
+      companyId: profile.company_id,
+      companyName: "",
+      accessCode: "",
+      teamStateId: profile.company_id,
+      restaurantsConfig: [],
+      confirmed: true,
+      needsAccessCodeSetup: false,
+      isCompanyCreator: false,
+      ownerUserId: null,
+    };
+  }
+  return null;
+}
+
 function companyClientPayload(company, profile) {
   if (!company) return null;
   const isCreator = !!(
@@ -1033,6 +1077,36 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (!norm) return { error: "Enter your name." };
 
     if (companyId) {
+      /* Red Poke: run company-scoped + legacy-null lookups in parallel (was serial). */
+      if (companyId === RED_POKE_COMPANY_ID) {
+        const [scopedRes, legacyRes] = await Promise.all([
+          admin
+            .from("profiles")
+            .select(profileSelect)
+            .eq("login_name_norm", norm)
+            .eq("company_id", companyId)
+            .limit(5),
+          admin
+            .from("profiles")
+            .select(profileSelect)
+            .eq("login_name_norm", norm)
+            .is("company_id", null)
+            .limit(5),
+        ]);
+        if (scopedRes.error) return { error: scopedRes.error.message };
+        if (scopedRes.data && scopedRes.data.length) {
+          return pickProfileRows(
+            scopedRes.data,
+            "Multiple accounts match that name for this company. Ask an owner to clean up duplicate profiles."
+          );
+        }
+        if (legacyRes.error) return { error: legacyRes.error.message };
+        return pickProfileRows(
+          legacyRes.data,
+          "Multiple legacy accounts match that name. Ask an owner to clean up duplicate profiles."
+        );
+      }
+
       const { data: scoped, error: scopedErr } = await admin
         .from("profiles")
         .select(profileSelect)
@@ -1044,22 +1118,6 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return pickProfileRows(
           scoped,
           "Multiple accounts match that name for this company. Ask an owner to clean up duplicate profiles."
-        );
-      }
-
-      // Legacy Red Poke / pre-tenant rows: company_id is null.
-      // Do not fall back to other companies' profiles (that triggers PGRST116 on duplicates).
-      if (companyId === RED_POKE_COMPANY_ID) {
-        const { data: legacyRows, error: legErr } = await admin
-          .from("profiles")
-          .select(profileSelect)
-          .eq("login_name_norm", norm)
-          .is("company_id", null)
-          .limit(5);
-        if (legErr) return { error: legErr.message };
-        return pickProfileRows(
-          legacyRows,
-          "Multiple legacy accounts match that name. Ask an owner to clean up duplicate profiles."
         );
       }
 
@@ -1159,8 +1217,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (profile.internal_auth_email) return profile.internal_auth_email;
     /*
      * Auth Admin getUserById can hang for many seconds when Auth is degraded.
-     * Cap it so Mark Ong / legacy profiles fail fast instead of hitting the
-     * client 20s abort with no tokens.
+     * Only used from resolve-auth (not the password grant path). Cap hard.
      */
     let timer = null;
     try {
@@ -1169,7 +1226,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         new Promise(function (resolve) {
           timer = setTimeout(function () {
             resolve({ data: null, error: { message: "auth_email_timeout" } });
-          }, 4000);
+          }, 2500);
         }),
       ]);
       if (timer) clearTimeout(timer);
@@ -1183,32 +1240,22 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   }
 
+  /**
+   * Password grant only — no company/team_state/getUserById on this path.
+   * Missing internal_auth_email fails immediately (resolve-auth heals it once).
+   */
   async function sessionForProfile(profile, password, loginNameForBackfill) {
-    let authEmail = profile.internal_auth_email;
+    const authEmail = String(profile.internal_auth_email || "").trim();
     if (!authEmail) {
-      authEmail = await authEmailForProfile(profile);
-      if (!authEmail) {
-        return {
-          error:
-            "Account is missing sign-in data or Auth is slow. Wait a moment and try again, or ask a manager to reset your account.",
-        };
-      }
+      return {
+        error:
+          "Account is missing sign-in data. Ask a manager to reset your account, then try again.",
+      };
     }
-    /*
-     * Skip Auth Admin getUserById on the hot path when we already have the email.
-     * That extra round-trip made Martin Long / Mark Ong sign-in feel stuck whenever
-     * Auth was slow. Email-not-confirmed is detected from signInWithPassword.
-     * Company load runs in parallel with Auth so Red Poke managers are not serial.
-     */
-    const signInPromise = admin.auth.signInWithPassword({
+    const { data, error } = await admin.auth.signInWithPassword({
       email: authEmail,
       password,
     });
-    const companyPromise = ensureCompanyReadyOnLogin(admin, profile).catch(function (err) {
-      console.warn("portal company ready on login", err);
-      return { company: null };
-    });
-    const [{ data, error }, ready] = await Promise.all([signInPromise, companyPromise]);
     if (error || !data.session) {
       const errMsg = String((error && error.message) || "");
       if (/email not confirmed|not confirmed/i.test(errMsg)) {
@@ -1224,14 +1271,17 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       profile.login_name ||
       profile.display_name ||
       authEmail.split("@")[0];
-    /* Do not block tokens on login_name backfill. */
     void backfillProfileLoginFields(profile, authEmail, backfillName);
+    void ensureCompanyReadyOnLogin(admin, profile).catch(function (err) {
+      console.warn("portal company ready on login", err);
+    });
     return {
       session: data.session,
       role: profile.role,
       displayName: profile.display_name || profile.login_name || backfillName,
-      company: ready && ready.company,
+      company: null,
       profile,
+      authEmail,
     };
   }
 
@@ -1271,6 +1321,116 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     } catch (err) {
       console.warn("portal verify-access-code", err);
       return res.status(500).json({ ok: false, message: "Could not verify access code." });
+    }
+  });
+
+  /** Cheap ping so Render + Supabase stay warm before Mark Ong hits Sign in. */
+  router.get("/warmup", async (_req, res) => {
+    try {
+      void admin.from("profiles").select("id").limit(1).then(
+        function () {
+          /* ignore */
+        },
+        function () {
+          /* ignore */
+        }
+      );
+    } catch (_w) {
+      /* ignore */
+    }
+    return res.json({ ok: true, t: Date.now() });
+  });
+
+  router.post("/warmup", async (_req, res) => {
+    try {
+      void admin.from("profiles").select("id").limit(1).then(
+        function () {
+          /* ignore */
+        },
+        function () {
+          /* ignore */
+        }
+      );
+    } catch (_w2) {
+      /* ignore */
+    }
+    return res.json({ ok: true, t: Date.now() });
+  });
+
+  /**
+   * Fast sign-in prep: profile lookup only (no password grant through Render).
+   * Browser then calls supabase.auth.signInWithPassword directly — much faster
+   * than Browser → Render → Supabase Auth.
+   */
+  router.post("/resolve-auth", async (req, res) => {
+    try {
+      const loginName = req.body && req.body.loginName;
+      let companyId = req.body && req.body.companyId ? String(req.body.companyId).trim() : "";
+      const accessCode =
+        req.body && req.body.accessCode ? String(req.body.accessCode).trim().toLowerCase() : "";
+      if (!loginName) {
+        return res.status(400).json({ ok: false, message: "Name is required." });
+      }
+      if (!companyId && accessCode === PORTAL_ACCESS_CODE) {
+        companyId = RED_POKE_COMPANY_ID;
+      }
+      if (!companyId && accessCode) {
+        const co = await findCompanyByAccessCode(admin, accessCode);
+        if (co.company) companyId = co.company.id;
+      }
+      if (!companyId) {
+        return res.status(400).json({
+          ok: false,
+          message: "Enter your company access code first, then sign in.",
+        });
+      }
+
+      const found = await findProfileByLoginName(loginName, companyId);
+      if (found.error) {
+        return res.status(401).json({ ok: false, message: found.error });
+      }
+      if (found.notFound || !found.profile) {
+        return res.status(401).json({ ok: false, message: "Name or password is incorrect." });
+      }
+      const profile = found.profile;
+      let authEmail = String(profile.internal_auth_email || "").trim();
+      if (!authEmail) {
+        authEmail = String((await authEmailForProfile(profile)) || "").trim();
+        if (authEmail) {
+          void backfillProfileLoginFields(
+            profile,
+            authEmail,
+            profile.login_name || profile.display_name || loginName
+          );
+          profile.internal_auth_email = authEmail;
+        }
+      }
+      if (!authEmail) {
+        return res.status(401).json({
+          ok: false,
+          message:
+            "Account is missing sign-in data. Ask a manager to reset your account, then try again.",
+        });
+      }
+
+      void ensureSignedInEmployeeLinked(admin, profile).catch(function (linkErr) {
+        console.warn("portal resolve-auth link employee", linkErr);
+      });
+      void backfillLegacyCompanyId(profile, companyId).catch(function (bfErr) {
+        console.warn("portal resolve-auth backfill company_id", bfErr);
+      });
+
+      const companyPayload = companyPayloadForFastSignIn(companyId, profile, null);
+      return res.json({
+        ok: true,
+        authEmail,
+        role: profile.role,
+        displayName: profile.display_name || profile.login_name || String(loginName).trim(),
+        ...(companyPayload || {}),
+      });
+    } catch (err) {
+      console.warn("portal resolve-auth", err);
+      return res.status(500).json({ ok: false, message: "Sign in failed." });
     }
   });
 
@@ -1587,13 +1747,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       void ensureSignedInEmployeeLinked(admin, sess.profile).catch(function (linkErr) {
         console.warn("portal signin link employee", linkErr);
       });
-      const companyPayload = companyClientPayload(sess.company, sess.profile);
+      const companyPayload = companyPayloadForFastSignIn(companyId, sess.profile, sess.company);
       return res.json({
         ok: true,
         role: sess.role,
         displayName: sess.displayName,
         access_token: sess.session.access_token,
         refresh_token: sess.session.refresh_token,
+        authEmail: sess.authEmail || (sess.profile && sess.profile.internal_auth_email) || "",
         ...(companyPayload || {}),
       });
     } catch (err) {

@@ -164,12 +164,71 @@ export async function portalSignIn(
     }
   | { ok: false; message: string }
 > {
+  const name = loginName.trim();
   const body: Record<string, unknown> = {
-    loginName: loginName.trim(),
+    loginName: name,
     password,
   };
   if (companyId) body.companyId = companyId;
   if (accessCode) body.accessCode = String(accessCode).trim();
+
+  /* Fast path: resolve email on server, password grant from the device → Supabase. */
+  if (supabase && (companyId || accessCode)) {
+    const resolved = await portalPost<{
+      authEmail?: string;
+      role?: string;
+      displayName?: string;
+      companyId?: string;
+      companyName?: string;
+      teamStateId?: string;
+      accessCode?: string;
+      restaurantsConfig?: unknown[];
+    }>(
+      '/api/portal/resolve-auth',
+      {
+        loginName: name,
+        companyId: companyId || undefined,
+        accessCode: accessCode || undefined,
+      },
+      { timeoutMs: 12000 }
+    );
+    if (resolved.ok && resolved.authEmail) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: String(resolved.authEmail),
+          password,
+        });
+        if (!error && data.session) {
+          return {
+            ok: true,
+            role: resolved.role,
+            displayName: resolved.displayName,
+            companyId: resolved.companyId,
+            companyName: resolved.companyName,
+            teamStateId: resolved.teamStateId,
+            accessCode: resolved.accessCode,
+            restaurantsConfig: resolved.restaurantsConfig,
+          };
+        }
+        if (error) {
+          const errMsg = String(error.message || '');
+          if (/email not confirmed|not confirmed/i.test(errMsg)) {
+            return {
+              ok: false,
+              message:
+                'Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.',
+            };
+          }
+          return { ok: false, message: 'Name or password is incorrect.' };
+        }
+      } catch {
+        /* fall through to legacy /signin */
+      }
+    } else if (resolved.ok === false && resolved.status && resolved.status !== 404) {
+      return { ok: false, message: friendlyPortalErrorMessage(resolved.message) };
+    }
+  }
+
   const r = await portalPost<{
     access_token: string;
     refresh_token?: string;
@@ -180,7 +239,7 @@ export async function portalSignIn(
     teamStateId?: string;
     accessCode?: string;
     restaurantsConfig?: unknown[];
-  }>('/api/portal/signin', body, { timeoutMs: 35000 });
+  }>('/api/portal/signin', body, { timeoutMs: 25000 });
   if (!r.ok) return { ok: false, message: friendlyPortalErrorMessage(r.message) };
   const applied = await applyPortalSession({
     access_token: r.access_token,
