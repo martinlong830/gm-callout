@@ -251,8 +251,56 @@
     return hint;
   }
 
+  function maskAuthEmail(email) {
+    var e = String(email || "").trim();
+    var at = e.indexOf("@");
+    if (at < 1) return e ? "set" : "none";
+    var user = e.slice(0, at);
+    var dom = e.slice(at + 1);
+    return (user.length <= 3 ? user : user.slice(0, 3) + "***") + "@" + dom;
+  }
+
+  function authDiagParts(extra) {
+    extra = extra || {};
+    var parts = [
+      "AUTH-DIAG",
+      "v=" + String((typeof window !== "undefined" && window.__GM_ASSET_V) || "?"),
+      "online=" + (typeof navigator !== "undefined" && navigator.onLine === false ? "0" : "1"),
+      "sb=" + (window.gmSupabase && window.gmSupabase.auth ? "1" : "0"),
+      "cfg=" +
+        (window.__GM_SUPABASE_URL__ && window.__GM_SUPABASE_ANON_KEY__ ? "1" : "0"),
+    ];
+    Object.keys(extra).forEach(function (k) {
+      if (extra[k] == null || extra[k] === "") return;
+      parts.push(k + "=" + String(extra[k]));
+    });
+    try {
+      var ua = String((navigator && navigator.userAgent) || "");
+      if (/iPhone|iPad/i.test(ua)) parts.push("ios=1");
+      if (/CriOS/i.test(ua)) parts.push("crios=1");
+      else if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) parts.push("safari=1");
+    } catch (_ua) {
+      /* ignore */
+    }
+    return parts.join(" | ");
+  }
+
+  function packAuthFail(message, code, extra) {
+    extra = extra || {};
+    extra.code = code || extra.code || "FAIL";
+    var diag = authDiagParts(extra);
+    return {
+      ok: false,
+      timedOut: !!(extra.timedOut || /timeout/i.test(code || "")),
+      code: code,
+      diag: diag,
+      message: String(message || "Sign in failed.") + "\n\n" + diag,
+    };
+  }
+
   /** Browser → Supabase Auth token endpoint (skips Render + supabase-js lock). */
   async function goTruePasswordGrant(email, password, timeoutMs) {
+    var t0 = Date.now();
     var base =
       typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
     var key =
@@ -260,7 +308,10 @@
         ? window.__GM_SUPABASE_ANON_KEY__.trim()
         : "";
     if (!base || !key || !email) {
-      return { ok: false, message: "Supabase client is not ready." };
+      return packAuthFail("Supabase client is not ready.", "GT_NO_CFG", {
+        ms: Date.now() - t0,
+        email: maskAuthEmail(email),
+      });
     }
     var ms = typeof timeoutMs === "number" ? timeoutMs : 10000;
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -291,19 +342,29 @@
       } catch (_j) {
         data = {};
       }
+      var elapsed = Date.now() - t0;
       if (!res.ok) {
         var errMsg = String((data && (data.error_description || data.msg || data.error)) || "");
         if (/email not confirmed|not confirmed/i.test(errMsg)) {
-          return {
-            ok: false,
-            message:
-              "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
-          };
+          return packAuthFail(
+            "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+            "GT_UNCONFIRMED",
+            { ms: elapsed, http: res.status, email: maskAuthEmail(email) }
+          );
         }
-        return { ok: false, message: "Name or password is incorrect." };
+        return packAuthFail("Name or password is incorrect.", "GT_BAD_CREDS", {
+          ms: elapsed,
+          http: res.status,
+          email: maskAuthEmail(email),
+          err: errMsg ? String(errMsg).slice(0, 40) : "",
+        });
       }
       if (!data.access_token || !data.refresh_token) {
-        return { ok: false, message: "Name or password is incorrect." };
+        return packAuthFail("Name or password is incorrect.", "GT_NO_TOKENS", {
+          ms: elapsed,
+          http: res.status,
+          email: maskAuthEmail(email),
+        });
       }
       /*
        * Apply session with a short cap. setSession used to hang 10s on iPhone after
@@ -319,24 +380,31 @@
         } catch (_stash) {
           /* ignore */
         }
-        /* Still treat as signed in if we have tokens — shell can restore from stash. */
         if (data.access_token && data.refresh_token) {
-          return { ok: true, session: data, sessionApplyDeferred: true };
+          return { ok: true, session: data, sessionApplyDeferred: true, code: "GT_OK_STASH" };
         }
-        return applied;
+        return packAuthFail(applied.message || "Could not start session.", "GT_SESSION", {
+          ms: Date.now() - t0,
+          email: maskAuthEmail(email),
+        });
       }
-      return { ok: true, session: data };
+      return { ok: true, session: data, code: "GT_OK", ms: Date.now() - t0 };
     } catch (netErr) {
       var aborted =
         (netErr && netErr.name === "AbortError") ||
         /aborted|abort/i.test(String((netErr && netErr.message) || ""));
-      return {
-        ok: false,
-        timedOut: !!aborted,
-        message: aborted
-          ? "Sign-in timed out. Wait a moment and try again."
+      return packAuthFail(
+        aborted
+          ? "Sign-in timed out talking to Auth. Wait a moment and try again."
           : (netErr && netErr.message) || "Network error. Check your connection and try again.",
-      };
+        aborted ? "GT_TIMEOUT" : "GT_NET",
+        {
+          timedOut: !!aborted,
+          ms: Date.now() - t0,
+          email: maskAuthEmail(email),
+          err: String((netErr && netErr.message) || "").slice(0, 60),
+        }
+      );
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
     }
@@ -845,6 +913,19 @@
         return packOk(role, displayName, companyFields);
       }
 
+      var signStartedAt = Date.now();
+      function failWith(message, code, extra) {
+        extra = extra || {};
+        extra.path = extra.path || (hint ? "hint" : "resolve");
+        extra.hint = hint ? "1" : "0";
+        extra.cand = String(emailCandidates.length);
+        extra.name = nameNorm.slice(0, 24);
+        extra.cid = cid ? "1" : "0";
+        extra.totalMs = String(Date.now() - signStartedAt);
+        if (extra.timedOut == null && /timeout/i.test(code || "")) extra.timedOut = true;
+        return packAuthFail(message, code, extra);
+      }
+
       /*
        * iPhone Chrome hot path: hint/cache → Supabase Auth directly.
        * Never await Render warmup on this path (hung API ate mobile connections).
@@ -889,18 +970,42 @@
           cacheAuthEmail(cand.email, cand.role, cand.displayName);
           return finishOk(cand.role, cand.displayName, cand.companyFields);
         }
-        if (grant.timedOut) return grant;
-        if (grant.message && !/incorrect/i.test(grant.message)) return grant;
+        if (grant.timedOut || (grant.code && /TIMEOUT/i.test(grant.code))) {
+          return failWith(
+            grant.message || "Sign-in timed out talking to Auth.",
+            grant.code || "GT_TIMEOUT",
+            {
+              timedOut: true,
+              email: maskAuthEmail(cand.email),
+              from: grant.diag || "",
+            }
+          );
+        }
+        if (grant.message && !/incorrect/i.test(grant.message)) {
+          return failWith(grant.message, grant.code || "GT_FAIL", {
+            email: maskAuthEmail(cand.email),
+            from: grant.diag || "",
+          });
+        }
+        /* Keep last incorrect for hinted path final message. */
+        if (hint && i === emailCandidates.length - 1) {
+          return failWith(
+            grant.message || "Name or password is incorrect.",
+            grant.code || "GT_BAD_CREDS",
+            { email: maskAuthEmail(cand.email), from: grant.diag || "" }
+          );
+        }
       }
 
       /* Hinted Red Poke managers: never fall through to Render (that was the iPhone hang). */
       if (hint) {
-        return {
-          ok: false,
-          message: emailCandidates.length
+        return failWith(
+          emailCandidates.length
             ? "Name or password is incorrect."
             : "Could not sign in. Check your password and try again.",
-        };
+          emailCandidates.length ? "HINT_BAD_CREDS" : "HINT_NO_EMAIL",
+          {}
+        );
       }
 
       window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
@@ -916,30 +1021,47 @@
         if (grant2.ok) {
           return finishOk(resolved.data.role, resolved.data.displayName, resolved.data);
         }
-        if (grant2.message && !/incorrect/i.test(grant2.message)) return grant2;
-        return { ok: false, message: grant2.message || "Name or password is incorrect." };
+        return failWith(
+          grant2.message || "Name or password is incorrect.",
+          grant2.code || "RESOLVE_GT_FAIL",
+          {
+            timedOut: !!grant2.timedOut,
+            email: maskAuthEmail(resolved.data.authEmail),
+            from: grant2.diag || "",
+          }
+        );
       }
       if (resolved.timedOut || (resolved.message && /timed out/i.test(resolved.message))) {
-        return {
-          ok: false,
-          timedOut: true,
-          message: "Sign-in timed out. Wait a moment and try again.",
-        };
+        return failWith(
+          "Sign-in timed out resolving your account.",
+          "RESOLVE_TIMEOUT",
+          { timedOut: true, status: resolved.status || "" }
+        );
       }
       if (resolved.status && resolved.status !== 404) {
-        return resolved;
+        return failWith(
+          resolved.message || "Sign in failed.",
+          "RESOLVE_HTTP",
+          { status: resolved.status }
+        );
       }
 
-      /* Last resort Render sign-in — short timeout so we do not stack waits. */
       const payload = { loginName: name, password: pw };
       if (cid) payload.companyId = cid;
       const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 8000 });
-      if (!r.ok) return r;
+      if (!r.ok) {
+        return failWith(r.message || "Sign in failed.", r.timedOut ? "API_TIMEOUT" : "API_FAIL", {
+          timedOut: !!r.timedOut,
+          status: r.status || "",
+        });
+      }
       if (r.data.authEmail) {
         cacheAuthEmail(r.data.authEmail, r.data.role, r.data.displayName);
       }
       const applied = await applyPortalSession(r.data);
-      if (!applied.ok) return applied;
+      if (!applied.ok) {
+        return failWith(applied.message || "Could not start session.", "API_SESSION", {});
+      }
       return finishOk(r.data.role, r.data.displayName, r.data);
     },
 

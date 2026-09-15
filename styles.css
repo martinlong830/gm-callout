@@ -407,6 +407,13 @@ html:not(.authed) .login-screen:not([hidden]) .landing-secondary-btn {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  max-height: 9rem;
+  overflow: auto;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .login-error.is-success {

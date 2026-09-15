@@ -4168,6 +4168,7 @@
               setLoginSubmitBusy(true);
               armLoginAppPrefetch();
               window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
+              var loginT0 = Date.now();
               try {
                 await whenPortalAuthReady();
                 /* Clear intentional sign-out before auth so SIGNED_IN is not rejected. */
@@ -4188,7 +4189,21 @@
                     loginNorm === 'ongi management' ||
                     loginNorm === 'mark ong';
                   if (!skipLegacy && (await tryLegacyEmployeeLogin(rawLogin, password))) return;
-                  showLoginError(res.message || 'Sign in failed.');
+                  var errMsg = res.message || 'Sign in failed.';
+                  if (res.diag && errMsg.indexOf('AUTH-DIAG') < 0) {
+                    errMsg = errMsg + '\n\n' + res.diag;
+                  }
+                  if (errMsg.indexOf('AUTH-DIAG') < 0) {
+                    errMsg =
+                      errMsg +
+                      '\n\nAUTH-DIAG | v=' +
+                      String(window.__GM_ASSET_V || '?') +
+                      ' | uiMs=' +
+                      String(Date.now() - loginT0) +
+                      ' | code=' +
+                      String((res && res.code) || 'UI_FAIL');
+                  }
+                  showLoginError(errMsg);
                   return;
                 }
                 /* Tokens are set — leave "Signing in…" immediately; shell loads in background. */
@@ -4200,9 +4215,16 @@
                   teamStateId: res.teamStateId,
                   restaurantsConfig: res.restaurantsConfig,
                 });
-              } catch (_loginFail) {
+              } catch (loginFail) {
                 window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
-                throw _loginFail;
+                showLoginError(
+                  'Sign in crashed.\n\nAUTH-DIAG | v=' +
+                    String(window.__GM_ASSET_V || '?') +
+                    ' | code=UI_EXC | uiMs=' +
+                    String(Date.now() - loginT0) +
+                    ' | err=' +
+                    String((loginFail && loginFail.message) || loginFail || 'unknown').slice(0, 80)
+                );
               } finally {
                 setLoginSubmitBusy(false);
               }
@@ -4210,10 +4232,15 @@
             return;
           }
 
+          showLoginError(
+            'Auth is not ready yet.\n\nAUTH-DIAG | v=' +
+              String(window.__GM_ASSET_V || '?') +
+              ' | code=NO_PORTAL | sb=' +
+              (window.gmSupabase ? '1' : '0') +
+              ' | portal=' +
+              (window.gmPortalAuth ? '1' : '0')
+          );
           if (loginNorm === 'martin long' || loginNorm === 'ongi management') {
-            showLoginError(
-              'Manager sign-in needs Supabase on this server. In Render → Environment, add SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, redeploy, then run node scripts/reset-portal-accounts.js against that project.'
-            );
             return;
           }
 
