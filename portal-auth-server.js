@@ -1383,6 +1383,105 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   });
 
   /**
+   * Same-origin password grant for iPhone Chrome (direct browser→Supabase Auth times out).
+   * Body: { email, password } or { loginName, password } for known Red Poke hints.
+   * Returns tokens only — no profile/company work.
+   */
+  router.post("/token-grant", async (req, res) => {
+    const t0 = Date.now();
+    try {
+      if (!keyDiag.ok) {
+        return res.status(503).json({ ok: false, message: keyDiag.message, code: "TG_NO_KEYS" });
+      }
+      let email = String((req.body && req.body.email) || "")
+        .trim()
+        .toLowerCase();
+      const password = String((req.body && req.body.password) || "");
+      const loginName = String((req.body && req.body.loginName) || "").trim();
+      if (!password) {
+        return res.status(400).json({ ok: false, message: "Password is required.", code: "TG_NO_PW" });
+      }
+      if (!email && loginName) {
+        const norm = normalizeLoginName(loginName);
+        /* Keep in sync with portal-auth-client RED_POKE_AUTH_HINTS. */
+        if (norm === "martin long") {
+          email = "gm.19a08d7d8f7849498b34a67d5d5ea22a@example.org";
+        }
+      }
+      if (!email) {
+        return res.status(400).json({ ok: false, message: "Email is required.", code: "TG_NO_EMAIL" });
+      }
+
+      let timer = null;
+      const raced = await Promise.race([
+        admin.auth.signInWithPassword({ email, password }),
+        new Promise(function (resolve) {
+          timer = setTimeout(function () {
+            resolve({ data: null, error: { message: "auth_timeout" } });
+          }, 8000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+
+      if (raced && raced.error) {
+        const errMsg = String(raced.error.message || "");
+        if (/auth_timeout/i.test(errMsg)) {
+          return res.status(504).json({
+            ok: false,
+            timedOut: true,
+            message: "Sign-in timed out talking to Auth (server).",
+            code: "TG_TIMEOUT",
+            ms: Date.now() - t0,
+          });
+        }
+        if (/email not confirmed|not confirmed/i.test(errMsg)) {
+          return res.status(401).json({
+            ok: false,
+            message:
+              "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+            code: "TG_UNCONFIRMED",
+            ms: Date.now() - t0,
+          });
+        }
+        return res.status(401).json({
+          ok: false,
+          message: "Name or password is incorrect.",
+          code: "TG_BAD_CREDS",
+          ms: Date.now() - t0,
+        });
+      }
+      const session = raced && raced.data && raced.data.session;
+      if (!session || !session.access_token || !session.refresh_token) {
+        return res.status(401).json({
+          ok: false,
+          message: "Name or password is incorrect.",
+          code: "TG_NO_SESSION",
+          ms: Date.now() - t0,
+        });
+      }
+      return res.json({
+        ok: true,
+        code: "TG_OK",
+        ms: Date.now() - t0,
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        expires_in: session.expires_in,
+        expires_at: session.expires_at,
+        token_type: session.token_type || "bearer",
+        user: session.user || null,
+      });
+    } catch (err) {
+      console.warn("portal token-grant", err);
+      return res.status(500).json({
+        ok: false,
+        message: "Sign in failed.",
+        code: "TG_EXC",
+        ms: Date.now() - t0,
+      });
+    }
+  });
+
+  /**
    * Fast sign-in prep: profile lookup only (no password grant through Render).
    * Browser then calls supabase.auth.signInWithPassword directly — much faster
    * than Browser → Render → Supabase Auth. Used for every account, not just Mark Ong.

@@ -186,6 +186,9 @@
         message: mapPortalMessage(portalErrorMessage(res, data, null)),
         needsSignIn: !!(data && data.needsSignIn),
         status: res.status,
+        code: (data && data.code) || undefined,
+        timedOut: !!(data && data.timedOut) || res.status === 504,
+        ms: data && data.ms,
       };
     }
     return { ok: true, data: data };
@@ -870,12 +873,62 @@
         }
       }
 
+      async function proxyTokenGrant(email) {
+        var t0 = Date.now();
+        var r = await portalFetch(
+          "/api/portal/token-grant",
+          { email: email, password: pw, loginName: name },
+          { timeoutMs: 12000 }
+        );
+        if (!r.ok) {
+          return packAuthFail(r.message || "Sign in failed.", r.code || (r.timedOut ? "TG_TIMEOUT" : "TG_FAIL"), {
+            timedOut: !!r.timedOut,
+            ms: Date.now() - t0,
+            email: maskAuthEmail(email),
+            status: r.status || "",
+            via: "proxy",
+          });
+        }
+        var data = r.data || {};
+        if (!data.access_token || !data.refresh_token) {
+          return packAuthFail("Name or password is incorrect.", "TG_NO_TOKENS", {
+            ms: Date.now() - t0,
+            email: maskAuthEmail(email),
+            via: "proxy",
+          });
+        }
+        var applied = await applyPortalSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+        });
+        if (!applied.ok) {
+          stashSupabaseSessionLocally(data);
+          return { ok: true, session: data, sessionApplyDeferred: true, code: "TG_OK_STASH", via: "proxy" };
+        }
+        return { ok: true, session: data, code: data.code || "TG_OK", ms: data.ms || Date.now() - t0, via: "proxy" };
+      }
+
+      function preferSameOriginAuth() {
+        try {
+          return /iPhone|iPad|iPod|CriOS/i.test(String(navigator.userAgent || ""));
+        } catch (_ua) {
+          return false;
+        }
+      }
+
       async function clientPasswordGrant(email) {
-        /* Prefer raw GoTrue — avoids supabase-js auth lock stalls on iPhone Chrome. */
-        var direct = await goTruePasswordGrant(email, pw, 10000);
-        if (direct.ok || direct.timedOut) return direct;
-        if (direct.message && !/incorrect/i.test(direct.message)) return direct;
-        /* Wrong password / email — do not stack another 12s supabase-js attempt. */
+        /*
+         * iPhone Chrome: browser→Supabase Auth hangs (~10s). Use same-origin proxy first.
+         * Desktop: try direct GoTrue, fall back to proxy on timeout.
+         */
+        if (preferSameOriginAuth()) {
+          return proxyTokenGrant(email);
+        }
+        var direct = await goTruePasswordGrant(email, pw, 6000);
+        if (direct.ok) return direct;
+        if (direct.timedOut || (direct.code && /TIMEOUT/i.test(direct.code))) {
+          return proxyTokenGrant(email);
+        }
         return direct;
       }
 
