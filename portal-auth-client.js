@@ -546,27 +546,46 @@
 
       function cacheAuthEmail(email, role, displayName) {
         if (!email) return;
+        var payload = JSON.stringify({
+          email: email,
+          role: role || "",
+          displayName: displayName || "",
+          ts: Date.now(),
+        });
         try {
-          localStorage.setItem(
-            cacheKey(),
-            JSON.stringify({
-              email: email,
-              role: role || "",
-              displayName: displayName || "",
-              ts: Date.now(),
-            })
-          );
+          localStorage.setItem(cacheKey(), payload);
         } catch (_c) {
+          /* ignore */
+        }
+        try {
+          sessionStorage.setItem(cacheKey(), payload);
+        } catch (_c2) {
           /* ignore */
         }
       }
 
       function readCachedAuth() {
+        var raw = null;
         try {
-          var raw = localStorage.getItem(cacheKey());
-          if (!raw) return null;
+          raw = sessionStorage.getItem(cacheKey());
+        } catch (_ss) {
+          raw = null;
+        }
+        if (!raw) {
+          try {
+            raw = localStorage.getItem(cacheKey());
+          } catch (_ls) {
+            raw = null;
+          }
+        }
+        if (!raw) return null;
+        try {
           var parsed = JSON.parse(raw);
           if (!parsed || !parsed.email) return null;
+          /* Keep email cache for 30 days — iPhone Chrome often drops warm memory. */
+          if (parsed.ts && Date.now() - Number(parsed.ts) > 30 * 24 * 60 * 60 * 1000) {
+            return null;
+          }
           return parsed;
         } catch (_r) {
           return null;
@@ -622,10 +641,8 @@
         );
       }
 
-      /* Overlap app.js download with Auth — shell still waits for correct role. */
-      if (typeof window.gmEnsureManagerAppLoaded === "function") {
-        void window.gmEnsureManagerAppLoaded();
-      }
+      /* Do NOT start app.js download here — it competed with Auth on iPhone Chrome.
+       * finishPortalLogin / whenManagerAppReady loads the app after tokens land. */
       window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
 
       /*
@@ -647,6 +664,9 @@
                 );
               }
             });
+            if (typeof window.gmEnsureManagerAppLoaded === "function") {
+              void window.gmEnsureManagerAppLoaded();
+            }
             return packOk(cached.role || "employee", cached.displayName || name, {
               companyId: cid,
             });
@@ -655,13 +675,16 @@
 
         var resolved = await resolveAuthEmail();
         if (resolved.ok && resolved.data && resolved.data.authEmail) {
+          cacheAuthEmail(
+            resolved.data.authEmail,
+            resolved.data.role,
+            resolved.data.displayName
+          );
           var grant = await clientPasswordGrant(resolved.data.authEmail);
           if (grant.ok) {
-            cacheAuthEmail(
-              resolved.data.authEmail,
-              resolved.data.role,
-              resolved.data.displayName
-            );
+            if (typeof window.gmEnsureManagerAppLoaded === "function") {
+              void window.gmEnsureManagerAppLoaded();
+            }
             return packOk(resolved.data.role, resolved.data.displayName, resolved.data);
           }
           if (grant.message && !/incorrect/i.test(grant.message)) return grant;
@@ -681,6 +704,9 @@
       }
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;
+      if (typeof window.gmEnsureManagerAppLoaded === "function") {
+        void window.gmEnsureManagerAppLoaded();
+      }
       return packOk(r.data.role, r.data.displayName, r.data);
     },
 

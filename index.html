@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-274" />
-  <!-- Prefetch (not preload) so CSS wins the network race for first paint. -->
-  <link rel="prefetch" href="app.js?v=perf-274" as="script" />
+  <link rel="stylesheet" href="styles.css?v=perf-275" />
+  <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
+       starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
   <script>
     /* Login SPA lives at /app. If this shell is ever served at /, send users to the marketing home. */
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-274';
+    window.__GM_ASSET_V = 'perf-275';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -71,38 +71,46 @@
         return Promise.resolve();
       }
       if (window.__gmManagerAppLoadPromise) return window.__gmManagerAppLoadPromise;
-      window.__gmManagerAppLoadPromise = new Promise(function (resolve) {
-        var settled = false;
-        function done() {
-          if (settled) return;
-          settled = true;
-          resolve();
-        }
-        window.addEventListener('gm-callout-app-ready', done, { once: true });
-        var tries = 0;
-        (function poll() {
-          if (typeof window.gmCalloutManagerBootstrap === 'function') {
-            done();
-            return;
-          }
-          if (++tries > 400) {
-            done();
-            return;
-          }
-          setTimeout(poll, 25);
-        })();
-      }).then(function () {
-        if (typeof window.gmCalloutManagerBootstrap === 'function') {
-          return;
-        }
-        /* Fallback only if the deferred app.js tag failed to provide the app. */
-        return window.gmLoadScripts([
+      window.__GM_SCHEDULE_SYNC_V2 = true;
+      window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
+      window.__gmManagerAppLoadPromise = window
+        .gmLoadScripts([
           'employee-leave.js',
           'break-policy.js',
           'availability-paint.js',
+          'schedule-sync-v2.js',
           'app.js',
-        ]);
-      });
+        ])
+        .catch(function () {
+          /* still resolve so login shell can proceed */
+        })
+        .then(function () {
+          return new Promise(function (resolve) {
+            var settled = false;
+            function done() {
+              if (settled) return;
+              settled = true;
+              resolve();
+            }
+            if (typeof window.gmCalloutManagerBootstrap === 'function') {
+              done();
+              return;
+            }
+            window.addEventListener('gm-callout-app-ready', done, { once: true });
+            var tries = 0;
+            (function poll() {
+              if (typeof window.gmCalloutManagerBootstrap === 'function') {
+                done();
+                return;
+              }
+              if (++tries > 400) {
+                done();
+                return;
+              }
+              setTimeout(poll, 25);
+            })();
+          });
+        });
       return window.__gmManagerAppLoadPromise;
     };
     window.gmPrefetchManagerAppBundle = function () {
@@ -149,7 +157,29 @@
       }
       return false;
     }
-
+    window.__GM_BOOT_HAS_SESSION__ = gmLikelyHasStoredSession();
+    /* Warm Render + Supabase before anyone taps Sign in (iPhone Chrome cold start). */
+    if (!window.__GM_BOOT_HAS_SESSION__) {
+      try {
+        if (typeof fetch === 'function') {
+          void fetch('/api/portal/warmup', { method: 'POST', keepalive: true }).catch(function () {});
+        }
+      } catch (_wu) {
+        /* ignore */
+      }
+    } else {
+      try {
+        var appPrefetch = document.createElement('link');
+        appPrefetch.rel = 'prefetch';
+        appPrefetch.href = 'app.js?v=' + encodeURIComponent(window.__GM_ASSET_V || '1');
+        appPrefetch.as = 'script';
+        document.head.appendChild(appPrefetch);
+      } catch (_ap) {
+        /* ignore */
+      }
+    }
+  </script>
+  <script>
     /**
      * Persist intentional sign-out across the hard reload. In-memory flags die on
      * navigation, and session-backup restore used to auto-sign back in.
@@ -2691,8 +2721,8 @@
     /* Minimal landing handlers so Log in / Create company work even if the
        larger auth IIFE is still parsing or failed partway through. */
     window.gmCalloutLandingLogIn = function () {
-      if (typeof window.gmPrefetchManagerAppBundle === 'function') {
-        window.gmPrefetchManagerAppBundle();
+      if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
+        window.gmPortalAuth.warmup();
       }
       if (typeof window.gmCalloutShowAccessCodePanel === 'function') {
         window.gmCalloutShowAccessCodePanel();
@@ -3250,6 +3280,10 @@
 
       async function finishPortalLogin(role, displayName, companyPayload) {
         window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
+        /* Start app download as soon as tokens exist — never before Auth. */
+        if (typeof window.gmEnsureManagerAppLoaded === 'function') {
+          void window.gmEnsureManagerAppLoaded();
+        }
         try {
           if (companyPayload) storeCompanySession(companyPayload);
           if (role === 'manager' || role === 'admin') {
@@ -3737,6 +3771,17 @@
           accessCode: 'redpoke',
           companyName: 'Red Poke',
         });
+        /* Wake Render + Auth path now — do not start 1.4MB app.js yet (iPhone Chrome). */
+        if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
+          window.gmPortalAuth.warmup();
+        }
+        if (loginEmail) {
+          try {
+            loginEmail.focus();
+          } catch (_f) {
+            /* ignore */
+          }
+        }
       }
 
       if (accessCodeForm && accessCodeInput) {
@@ -3768,9 +3813,6 @@
               storeCompanySession(res);
               if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
                 window.gmPortalAuth.warmup();
-              }
-              if (typeof window.gmPrefetchManagerAppBundle === 'function') {
-                window.gmPrefetchManagerAppBundle();
               }
               if (loginEmail) loginEmail.focus();
             })();
@@ -4064,9 +4106,7 @@
           else if (loginSubmitDefaultLabel) loginSubmitBtn.textContent = loginSubmitDefaultLabel;
         }
         function armLoginAppPrefetch() {
-          if (typeof window.gmPrefetchManagerAppBundle === 'function') {
-            window.gmPrefetchManagerAppBundle();
-          }
+          /* Warm Auth only here. Defer 1.4MB app.js until after password grant succeeds. */
           if (window.gmPortalAuth && typeof window.gmPortalAuth.warmup === 'function') {
             window.gmPortalAuth.warmup();
           }
@@ -4646,19 +4686,35 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="employee-leave.js?v=perf-69"></script>
-  <script defer src="break-policy.js?v=perf-2"></script>
-  <script defer src="portal-auth-client.js?v=perf-274"></script>
+  <script defer src="portal-auth-client.js?v=perf-275"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
-  <script defer src="availability-paint.js?v=perf-230"></script>
-  <script defer src="schedule-sync-v2.js?v=perf-274"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
-    /* Cells are SoT — do not apply/push schedule blobs (prevents cross-device rollbacks). */
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
+    /*
+     * Logged-out: do NOT pull 1.4MB app.js (+ leave/sync helpers) until after auth.
+     * iPhone Chrome was stuck on Sign in while that download competed with Auth.
+     * Refresh with a stored session still boots the full app immediately.
+     */
+    if (window.__GM_BOOT_HAS_SESSION__) {
+      [
+        'employee-leave.js?v=perf-69',
+        'break-policy.js?v=perf-2',
+        'availability-paint.js?v=perf-230',
+        'schedule-sync-v2.js?v=perf-275',
+        'app.js?v=perf-275',
+      ].forEach(function (src) {
+        var s = document.createElement('script');
+        s.defer = true;
+        s.src = src;
+        s.dataset.gmSrc = String(src).split('?')[0];
+        s.onload = function () {
+          s.setAttribute('data-gm-loaded', '1');
+        };
+        document.body.appendChild(s);
+      });
+    }
   </script>
-  <!-- Always load app.js on the critical path so refresh can restore the Supabase session. -->
-  <script defer src="app.js?v=perf-274"></script>
   <script>
     /*
      * Role / feature modules after first paint:
