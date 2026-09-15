@@ -139,7 +139,9 @@
     return snippet ? { message: snippet } : {};
   }
 
-  async function portalFetch(path, body) {
+  async function portalFetch(path, body, opts) {
+    opts = opts || {};
+    var timeoutMs = typeof opts.timeoutMs === "number" ? opts.timeoutMs : 20000;
     let res;
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     var abortTimer = null;
@@ -150,7 +152,7 @@
         } catch (_ab) {
           /* ignore */
         }
-      }, 20000);
+      }, timeoutMs);
     }
     try {
       res = await fetch(path, {
@@ -188,16 +190,51 @@
     return { ok: true, data: data };
   }
 
+  function withClientTimeout(promise, ms, fallbackMessage) {
+    var settled = false;
+    return new Promise(function (resolve) {
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, message: fallbackMessage || "Timed out. Try again." });
+      }, ms);
+      Promise.resolve(promise).then(
+        function (value) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        function (err) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve({
+            ok: false,
+            message: (err && err.message) || fallbackMessage || "Request failed.",
+          });
+        }
+      );
+    });
+  }
+
   async function applyPortalSession(tokens) {
     if (!window.gmSupabase || !tokens || !tokens.access_token) {
       return { ok: false, message: "Supabase client is not ready." };
     }
-    const { error } = await window.gmSupabase.auth.setSession({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-    });
-    if (error) {
-      return { ok: false, message: error.message || "Could not start session." };
+    var applied = await withClientTimeout(
+      window.gmSupabase.auth.setSession({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+      }),
+      10000,
+      "Session start timed out. Wait a moment and try again."
+    );
+    if (applied && applied.ok === false && applied.message) {
+      return applied;
+    }
+    if (applied && applied.error) {
+      return { ok: false, message: applied.error.message || "Could not start session." };
     }
     return { ok: true };
   }
@@ -425,7 +462,8 @@
     signIn: async function (loginName, password, companyId) {
       const payload = { loginName, password };
       if (companyId) payload.companyId = companyId;
-      const r = await portalFetch("/api/portal/signin", payload);
+      /* Sign-in allows longer than other portal POSTs — Auth can be cold/slow. */
+      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 35000 });
       if (!r.ok) return r;
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;

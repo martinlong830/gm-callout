@@ -49,7 +49,8 @@ export async function clearLocalAuthSession(): Promise<void> {
 
 async function portalPost<T extends Record<string, unknown>>(
   path: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  opts?: { timeoutMs?: number }
 ): Promise<PortalOk<T> | PortalErr> {
   const base = portalApiBase();
   if (!base) {
@@ -61,7 +62,8 @@ async function portalPost<T extends Record<string, unknown>>(
   }
   let data: Record<string, unknown> = {};
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeoutMs = typeof opts?.timeoutMs === 'number' ? opts.timeoutMs : 25000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${base}${path}`, {
       method: 'POST',
@@ -178,7 +180,7 @@ export async function portalSignIn(
     teamStateId?: string;
     accessCode?: string;
     restaurantsConfig?: unknown[];
-  }>('/api/portal/signin', body);
+  }>('/api/portal/signin', body, { timeoutMs: 35000 });
   if (!r.ok) return { ok: false, message: friendlyPortalErrorMessage(r.message) };
   const applied = await applyPortalSession({
     access_token: r.access_token,

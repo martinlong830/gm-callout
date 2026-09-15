@@ -557,18 +557,28 @@ async function ensureCompanyReadyOnLogin(admin, profile) {
     isManagerLikeRole(profile.role) &&
     companyHasUsableAccessCode(company)
   ) {
-    await admin
+    /* Fire-and-forget — never hold sign-in tokens on company confirm writes. */
+    void admin
       .from("companies")
       .update({
         confirmed_at: new Date().toISOString(),
         owner_user_id: company.owner_user_id || profile.id,
       })
-      .eq("id", company.id);
+      .eq("id", company.id)
+      .then(function () {
+        /* ignore */
+      })
+      .catch(function (err) {
+        console.warn("portal confirm company on login", err);
+      });
     company.confirmed_at = new Date().toISOString();
     if (!company.owner_user_id) company.owner_user_id = profile.id;
   }
   if (isManagerLikeRole(profile.role) && companyHasUsableAccessCode(company)) {
-    await seedCompanyTeamState(admin, company);
+    /* Seed is a no-op when team_state exists; still do not block the login response. */
+    void seedCompanyTeamState(admin, company).catch(function (err) {
+      console.warn("portal seed team_state on login", err);
+    });
   }
   return { company };
 }
@@ -1147,9 +1157,30 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
   async function authEmailForProfile(profile) {
     if (profile.internal_auth_email) return profile.internal_auth_email;
-    const { data: userData, error } = await admin.auth.admin.getUserById(profile.id);
-    if (error || !userData.user || !userData.user.email) return null;
-    return userData.user.email;
+    /*
+     * Auth Admin getUserById can hang for many seconds when Auth is degraded.
+     * Cap it so Mark Ong / legacy profiles fail fast instead of hitting the
+     * client 20s abort with no tokens.
+     */
+    let timer = null;
+    try {
+      const raced = await Promise.race([
+        admin.auth.admin.getUserById(profile.id),
+        new Promise(function (resolve) {
+          timer = setTimeout(function () {
+            resolve({ data: null, error: { message: "auth_email_timeout" } });
+          }, 4000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (raced.error || !raced.data || !raced.data.user || !raced.data.user.email) {
+        return null;
+      }
+      return raced.data.user.email;
+    } catch (_e) {
+      if (timer) clearTimeout(timer);
+      return null;
+    }
   }
 
   async function sessionForProfile(profile, password, loginNameForBackfill) {
@@ -1157,18 +1188,27 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (!authEmail) {
       authEmail = await authEmailForProfile(profile);
       if (!authEmail) {
-        return { error: "Account is missing sign-in data. Ask a manager to reset your account." };
+        return {
+          error:
+            "Account is missing sign-in data or Auth is slow. Wait a moment and try again, or ask a manager to reset your account.",
+        };
       }
     }
     /*
      * Skip Auth Admin getUserById on the hot path when we already have the email.
      * That extra round-trip made Martin Long / Mark Ong sign-in feel stuck whenever
      * Auth was slow. Email-not-confirmed is detected from signInWithPassword.
+     * Company load runs in parallel with Auth so Red Poke managers are not serial.
      */
-    const { data, error } = await admin.auth.signInWithPassword({
+    const signInPromise = admin.auth.signInWithPassword({
       email: authEmail,
       password,
     });
+    const companyPromise = ensureCompanyReadyOnLogin(admin, profile).catch(function (err) {
+      console.warn("portal company ready on login", err);
+      return { company: null };
+    });
+    const [{ data, error }, ready] = await Promise.all([signInPromise, companyPromise]);
     if (error || !data.session) {
       const errMsg = String((error && error.message) || "");
       if (/email not confirmed|not confirmed/i.test(errMsg)) {
@@ -1186,12 +1226,11 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       authEmail.split("@")[0];
     /* Do not block tokens on login_name backfill. */
     void backfillProfileLoginFields(profile, authEmail, backfillName);
-    const ready = await ensureCompanyReadyOnLogin(admin, profile);
     return {
       session: data.session,
       role: profile.role,
       displayName: profile.display_name || profile.login_name || backfillName,
-      company: ready.company,
+      company: ready && ready.company,
       profile,
     };
   }
@@ -1533,7 +1572,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       if (found.profile) {
         sess = await sessionForProfile(found.profile, String(password), loginName);
         if (sess && !sess.error && companyId) {
-          sess.profile = await backfillLegacyCompanyId(sess.profile, companyId);
+          /* Do not hold tokens on legacy company_id backfill. */
+          void backfillLegacyCompanyId(sess.profile, companyId).catch(function (bfErr) {
+            console.warn("portal signin backfill company_id", bfErr);
+          });
         }
       } else if (found.notFound) {
         sess = await signInLegacyAccount(loginName, password);
