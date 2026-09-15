@@ -2890,19 +2890,30 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   /*
-   * Narrow Schedule: #screen-schedule is the scrollport (week/actions/restaurant
-   * scroll away). Drop nested overflow on #calendarGrid so Person/day thead can
-   * stick under .app-top; wide matrix still scrolls horizontally on the screen.
-   * Desktop (≥1024) keeps toolbar frozen + scrolling #calendarGrid only.
+   * Narrow Schedule: #screen-schedule is the only scrollport so week/actions/
+   * restaurant chrome scrolls away. Person/day thead sticks under .app-top.
+   * Nested overflow on #calendarGrid would steal the scroll and freeze toolbar.
    */
   html.authed.manager-app #screen-schedule.active {
     overflow: auto;
     overscroll-behavior: contain;
+    display: block;
+  }
+
+  html.authed.manager-app #screen-schedule .calendar-table-wrap {
+    display: block;
+    overflow: visible;
+    height: auto;
+    min-height: 0;
+    flex: none;
   }
 
   html.authed.manager-app #screen-schedule #calendarGrid {
     overflow: visible;
     max-width: none;
+    flex: none;
+    min-height: 0;
+    height: auto;
   }
 }
 
@@ -2968,12 +2979,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   border-radius: 0;
 }
 
-/* Wide schedule matrix scrolls inside the card (phones). */
+/* Schedule matrix: no nested vertical scrollport — parent screen scrolls so
+   week/actions/restaurant chrome can leave while thead sticks. */
 #calendarGrid {
   max-width: 100%;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 
 /* Legacy layout wrapper (no longer used for side day-totals rail). */
@@ -4804,7 +4814,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   /*
    * Viewport-locked .main needs an inner scrollport for every screen.
-   * Schedule overrides to overflow:hidden so only #calendarGrid scrolls.
+   * Schedule: screen scrolls (week/actions/restaurant leave); do NOT nest
+   * overflow on #calendarGrid or the toolbar stays frozen above the matrix.
    */
   html.authed.manager-app .main > .screen.active {
     flex: 1;
@@ -4816,18 +4827,18 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
   #screen-schedule.active {
     flex: 1;
-    display: flex;
-    flex-direction: column;
+    display: block;
     min-height: 0;
-    overflow: hidden;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   #screen-schedule .calendar-table-wrap {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
+    display: block;
     width: 100%;
+    height: auto;
+    min-height: 0;
     margin-left: 0;
     margin-right: 0;
     border-radius: 0;
@@ -4835,17 +4846,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     border-right: none;
     padding: 12px 0 0;
     box-sizing: border-box;
-    overflow: hidden;
+    overflow: visible;
   }
 
-  /* min-height:0 is required — a floor like 72vh let the grid grow with the
-     table so overflow:auto never created a vertical scrollport. */
+  /* Visible overflow — horizontal width scrolls on #screen-schedule with vertical. */
   #screen-schedule #calendarGrid {
-    flex: 1 1 auto;
+    flex: none;
     min-height: 0;
-    overflow: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
+    height: auto;
+    max-width: none;
+    overflow: visible;
   }
 
   .calendar-matrix thead th:not(.time-col):not(.calendar-row-person-col),
