@@ -12274,6 +12274,13 @@
       ) {
         window.gmCalloutTimecards.applyRemoteTipPayroll();
       }
+      if (changedFirst && typeof renderCalendar === 'function') {
+        try {
+          if (currentScreen === 1) renderCalendar({ force: true });
+        } catch (_rcTip0) {
+          /* ignore */
+        }
+      }
       return changedFirst;
     }
 
