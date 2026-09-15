@@ -6084,8 +6084,8 @@
   var TEAM_STATE_POLL_MS = 15000;
   /** Soft cell poll backup (Realtime handles most). Longer = less idle jank. */
   var SCHEDULE_CELLS_POLL_MS = 12000;
-  /** Refetch slot rows periodically once warm (peer deletes need a slots refresh). */
-  var SCHEDULE_SLOTS_POLL_EVERY_N = 8;
+  /** Refetch slot rows periodically once warm (peer deletes + ghost-row trim need slots). */
+  var SCHEDULE_SLOTS_POLL_EVERY_N = 3;
   var scheduleSlotsPollTick = 0;
   var scheduleLastAppliedFingerprint = '';
   var scheduleCellsBackgroundHydratePromise = null;
@@ -6674,6 +6674,30 @@
             trimmed = true;
           }
         } catch (_trimSoft) {
+          /* ignore */
+        }
+      }
+      /*
+       * Soft poll: drop trailing empty Unassigned shells that cloud does not have.
+       * Computers used to keep 1–2 ghost rows under Jon until Manual Refresh; phone
+       * had already converged. Skipped while edit-settle / person-protect are active.
+       */
+      if (softOnly && !interactiveHold && !structureBlocked) {
+        try {
+          if (trimTrailingGhostScheduleSlots(targetWi, currentRestaurantId)) {
+            trimmed = true;
+          }
+          /*
+           * If slot cache already knows a shorter active count, shrink even when this
+           * tick skipped fetchSlots — otherwise draft length drifts until Refresh.
+           */
+          if (
+            !schedulePersonRowProtectActive(currentRestaurantId, targetWi) &&
+            reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })
+          ) {
+            trimmed = true;
+          }
+        } catch (_ghostSoft) {
           /* ignore */
         }
       }
@@ -11503,11 +11527,30 @@
   /**
    * Within one pay-week map (delivery tips / VL-SL extras), overlay only keys this browser
    * changed vs baseline. Replacing the whole week object wiped sibling day tips.
+   *
+   * Leave keys (`empId@YYYY-MM-DD`): ONLY overlay when pending-ack is set (conscious
+   * VL/SL edit). Stale local 0/0 must never wipe denser cloud leave on push/soft-merge.
    */
-  function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice) {
+  function isTipPayrollLeaveDayKey(k) {
+    return typeof k === 'string' && /^.+@\d{4}-\d{2}-\d{2}$/.test(k);
+  }
+
+  function tipPayrollLeaveHoursTotal(row) {
+    if (!row || typeof row !== 'object') return 0;
+    return Math.max(0, parseFloat(row.vl) || 0) + Math.max(0, parseFloat(row.sl) || 0);
+  }
+
+  function isTipPayrollLeaveZeroRow(row) {
+    if (!row || typeof row !== 'object') return true;
+    if (row.manual === false) return true;
+    return tipPayrollLeaveHoursTotal(row) <= 0;
+  }
+
+  function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice, pendingDayMap) {
     localSlice = localSlice && typeof localSlice === 'object' ? localSlice : {};
     remoteSlice = remoteSlice && typeof remoteSlice === 'object' ? remoteSlice : {};
     baselineSlice = baselineSlice && typeof baselineSlice === 'object' ? baselineSlice : {};
+    pendingDayMap = pendingDayMap && typeof pendingDayMap === 'object' ? pendingDayMap : null;
     var merged = Object.assign({}, remoteSlice);
     var keys = Object.create(null);
     Object.keys(localSlice).forEach(function (k) {
@@ -11523,6 +11566,14 @@
       var baseVal = baseHas ? baselineSlice[k] : undefined;
       if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
         return;
+      }
+      /*
+       * VL/SL day keys: cloud / peer hours win unless this tab consciously edited
+       * (pending-ack). Auto-marking stale 0/0 as pending used to mass-wipe leave.
+       */
+      if (isTipPayrollLeaveDayKey(k)) {
+        var leavePending = !!(pendingDayMap && pendingDayMap[k]);
+        if (!leavePending) return;
       }
       if (!localHas) delete merged[k];
       else merged[k] = localVal;
@@ -11566,14 +11617,23 @@
       var slice = localDw[key];
       if (!slice || typeof slice !== 'object') return;
       if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
-      mergedDw[key] = mergeTipPayrollWeekSliceForPush(slice, remoteDw[key], baseDw[key]);
+      mergedDw[key] = mergeTipPayrollWeekSliceForPush(slice, remoteDw[key], baseDw[key], null);
     });
     var mergedExtras = Object.assign({}, remoteExtras);
     Object.keys(localExtras).forEach(function (key) {
       var slice = localExtras[key];
       if (!slice || typeof slice !== 'object') return;
       if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseExtras[key])) return;
-      mergedExtras[key] = mergeTipPayrollWeekSliceForPush(slice, remoteExtras[key], baseExtras[key]);
+      var pendingWeek =
+        tipPayrollPendingAckExtras[key] && typeof tipPayrollPendingAckExtras[key] === 'object'
+          ? tipPayrollPendingAckExtras[key]
+          : null;
+      mergedExtras[key] = mergeTipPayrollWeekSliceForPush(
+        slice,
+        remoteExtras[key],
+        baseExtras[key],
+        pendingWeek
+      );
     });
     return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
   }
@@ -11724,6 +11784,12 @@
           : {};
       Object.keys(localWeek).forEach(function (dayKey) {
         if (tipPayrollSliceJson(localWeek[dayKey]) === tipPayrollSliceJson(baseWeek[dayKey])) return;
+        /*
+         * Never auto-pending VL/SL keys. Conscious schedule/Timecards writes already call
+         * markTipPayrollPendingWeekExtra. Auto-pending stale 0/0 vs denser baseline made
+         * push restore wipe peer SL/VL across the whole pay week.
+         */
+        if (isTipPayrollLeaveDayKey(dayKey)) return;
         markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
       });
     });
@@ -11734,6 +11800,7 @@
         localStore[weekKey] && typeof localStore[weekKey] === 'object' ? localStore[weekKey] : null;
       Object.keys(baseWeek).forEach(function (dayKey) {
         if (localWeek && Object.prototype.hasOwnProperty.call(localWeek, dayKey)) return;
+        if (isTipPayrollLeaveDayKey(dayKey)) return;
         markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
       });
     });

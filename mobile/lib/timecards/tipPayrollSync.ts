@@ -41,14 +41,22 @@ function tipPayrollSliceJson(slice: unknown): string {
   }
 }
 
+function isTipPayrollLeaveDayKey(k: string): boolean {
+  return typeof k === 'string' && /^.+@\d{4}-\d{2}-\d{2}$/.test(k);
+}
+
 /**
  * Within one pay-week map (delivery tips / VL-SL extras), overlay only keys this device
  * changed vs baseline. Replacing the whole week object wiped sibling day tips.
+ *
+ * Leave keys (`empId@YYYY-MM-DD`): ONLY overlay when pending-ack is set (conscious
+ * VL/SL edit). Stale local 0/0 must never wipe denser cloud leave on push/soft-merge.
  */
 function mergeTipPayrollWeekSliceForPush(
   localSlice: Record<string, unknown>,
   remoteSlice: Record<string, unknown>,
-  baselineSlice: Record<string, unknown>
+  baselineSlice: Record<string, unknown>,
+  pendingDayMap?: Record<string, true> | null
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...remoteSlice };
   const keys = new Set([...Object.keys(localSlice), ...Object.keys(baselineSlice)]);
@@ -59,6 +67,10 @@ function mergeTipPayrollWeekSliceForPush(
     const baseVal = baseHas ? baselineSlice[k] : undefined;
     if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
       continue;
+    }
+    if (isTipPayrollLeaveDayKey(k)) {
+      const leavePending = !!(pendingDayMap && pendingDayMap[k]);
+      if (!leavePending) continue;
     }
     if (!localHas) delete merged[k];
     else merged[k] = localVal;
@@ -100,7 +112,8 @@ function mergeTipPayrollStoresForPush(
     mergedDw[key] = mergeTipPayrollWeekSliceForPush(
       slice,
       isRecord(remoteDw[key]) ? (remoteDw[key] as Record<string, unknown>) : {},
-      isRecord(baseDw[key]) ? (baseDw[key] as Record<string, unknown>) : {}
+      isRecord(baseDw[key]) ? (baseDw[key] as Record<string, unknown>) : {},
+      null
     );
   });
   const mergedExtras = { ...remoteExtras };
@@ -108,10 +121,12 @@ function mergeTipPayrollStoresForPush(
     const slice = localExtras[key];
     if (!isRecord(slice)) return;
     if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseExtras[key])) return;
+    const pendingWeek = tipPayrollPendingAckExtras[key];
     mergedExtras[key] = mergeTipPayrollWeekSliceForPush(
       slice,
       isRecord(remoteExtras[key]) ? (remoteExtras[key] as Record<string, unknown>) : {},
-      isRecord(baseExtras[key]) ? (baseExtras[key] as Record<string, unknown>) : {}
+      isRecord(baseExtras[key]) ? (baseExtras[key] as Record<string, unknown>) : {},
+      pendingWeek || null
     );
   });
   return { tipPool: mergedTip, dishwasher: mergedDw, weekExtras: mergedExtras };
@@ -204,6 +219,8 @@ function markPendingAckDiffsFromBaseline(
     const baseWeek = isRecord(baselineStore[weekKey]) ? baselineStore[weekKey] : {};
     Object.keys(localWeek).forEach((dayKey) => {
       if (tipPayrollSliceJson(localWeek[dayKey]) === tipPayrollSliceJson(baseWeek[dayKey])) return;
+      /* Never auto-pending VL/SL — conscious writes already mark pending. */
+      if (isTipPayrollLeaveDayKey(dayKey)) return;
       markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
     });
   });
