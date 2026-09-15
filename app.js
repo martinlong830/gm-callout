@@ -6484,16 +6484,29 @@
         currentRestaurantId,
         targetWi
       );
-      /* Cloud slot trim only — never revive/scrub on soft poll. */
+      /* Cloud slot trim only — never revive/scrub on soft poll.
+       * Force / forceSlots polls may shrink to cloud activeSlotCount even while
+       * delete settle authority is held (person-protect still blocks). */
       var allowCloudSlotTrim =
-        !interactiveHold &&
+        !schedulePersonRowProtectActive(currentRestaurantId, targetWi) &&
         !structureBlocked &&
         slotsFresh &&
         (mutatingRepair || softOnly || !!opts.forceSlots);
+      if (
+        !allowCloudSlotTrim &&
+        slotsFresh &&
+        !schedulePersonRowProtectActive(currentRestaurantId, targetWi) &&
+        (forceCloudSoT || !!opts.forceSlots)
+      ) {
+        allowCloudSlotTrim = true;
+      }
       var trimmed = false;
       if (allowCloudSlotTrim) {
         try {
-          trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi });
+          trimmed = !!reconcileLocalScheduleToActiveSlots({
+            weekIndex: targetWi,
+            ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+          });
         } catch (_trim) {
           trimmed = false;
         }
@@ -6518,7 +6531,11 @@
         slotsRes = slotsForced || { ok: true };
         if (allowCloudSlotTrim || (mutatingRepair && !interactiveHold && !structureBlocked)) {
           try {
-            trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi }) || trimmed;
+            trimmed =
+              !!reconcileLocalScheduleToActiveSlots({
+                weekIndex: targetWi,
+                ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+              }) || trimmed;
           } catch (_trim0) {
             /* ignore */
           }
@@ -6617,7 +6634,12 @@
        * Heavier revive/scrub/restore stays Refresh-only. Skip while edits settle. */
       if (allowCloudSlotTrim) {
         try {
-          if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
+          if (
+            reconcileLocalScheduleToActiveSlots({
+              weekIndex: targetWi,
+              ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+            })
+          ) {
             trimmed = true;
           }
         } catch (_trimSoft) {
@@ -7062,7 +7084,11 @@
       });
     }
     return drainOutbox().then(function (res) {
-      scheduleLocalAuthorityUntil = 0;
+      /*
+       * Keep settle authority after delete flush. Clearing it to 0 used to let soft
+       * poll / lagged fetchSlots re-inflate the deleted row on this device.
+       */
+      armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
       void broadcastScheduleCellsChanged({
         forceSlots: true,
         weekIndex: wi,
@@ -7089,12 +7115,20 @@
      * Never chop draft rows while the manager is mid-edit — that deleted FOH lines
      * and rolled back Person assigns. Peer delete-row still converges on Refresh
      * after settle when activeSlotCount is lower.
+     * Exception: force/post-delete cloud shrink may run during delete settle
+     * (ignoreEditSettleForCloudShrink) — person-protect still blocks in-flight adds.
      */
-    if (
-      opts.weekIndex != null &&
-      scheduleAutoRowStructureBlocked(opts.restaurantId || currentRestaurantId, opts.weekIndex)
-    ) {
-      return false;
+    var ridGate = opts.restaurantId || currentRestaurantId;
+    if (opts.weekIndex != null) {
+      if (schedulePersonRowProtectActive(ridGate, opts.weekIndex)) {
+        return false;
+      }
+      if (
+        !opts.ignoreEditSettleForCloudShrink &&
+        scheduleAutoRowStructureBlocked(ridGate, opts.weekIndex)
+      ) {
+        return false;
+      }
     }
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var wiStart =
@@ -9234,14 +9268,15 @@
           /*
            * Never grow draft past cloud active slots — forked slot_keys / high
            * sort_order created phantom Unassigned FOH rows that differed per device.
-           * Day-off Person rows may extend one past lagging activeN.
+           * softDayOffGrow must not bypass this cap (that resurrected deleted rows).
+           * In-flight Person adds are gated by person-protect / add_slot → activeN.
            */
-          if (maxSlots > 0 && p.trIdx >= maxSlots && !softDayOffGrow) return;
+          if (maxSlots > 0 && p.trIdx >= maxSlots) return;
           var layers = ensureDraftWeek(wi, rid);
           if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
           if (upsertTimedOnly && p.trIdx >= layers[role].length && !softDayOffGrow) return;
           while (layers[role].length <= p.trIdx) {
-            if (maxSlots > 0 && layers[role].length >= maxSlots && !softDayOffGrow) break;
+            if (maxSlots > 0 && layers[role].length >= maxSlots) break;
             layers[role].push([null, null, null, null, null, null, null]);
           }
           if (p.trIdx >= layers[role].length) return;
@@ -12425,6 +12460,9 @@
       if (v2clr && typeof v2clr.clearOutbox === 'function') v2clr.clearOutbox();
       if (v2clr && typeof v2clr.clearLocalCellGuards === 'function') {
         v2clr.clearLocalCellGuards();
+      }
+      if (v2clr && typeof v2clr.clearLocalDeactivatedSlots === 'function') {
+        v2clr.clearLocalDeactivatedSlots();
       }
     } catch (_clrBox) {
       /* ignore */
@@ -19009,13 +19047,17 @@
             false
           );
         } else {
-          /* Re-fetch slots on this device so activeSlotCount matches peers. */
+          /* Re-fetch slots on this device so activeSlotCount matches peers.
+           * Cloud SoT replace — never soft-upsert denser leftovers past active slots. */
           void pollVisibleScheduleCellsFromCloud({
             rebuild: true,
             force: true,
             forceSlots: true,
+            replaceTrusted: true,
             replaceWeekIndex: wi,
-            upsertTimedOnly: true,
+            cloudAuthorityReplace: true,
+            noSoftFallback: true,
+            upsertTimedOnly: false,
           });
         }
         return res;
@@ -21114,8 +21156,12 @@
     restaurantsList.forEach(function (r) {
       if (r.id !== 'rp-8' && r.id !== 'rp-9') return;
       var active = primary === r.id;
+      /*
+       * Use <span role="button"> — never nested <button> inside the card. Nested
+       * buttons made browsers close the card early and spill Employment/PIN outside.
+       */
       parts.push(
-        '<button type="button" class="employee-card-primary-chip' +
+        '<span role="button" tabindex="0" class="employee-card-primary-chip' +
           (active ? ' is-active' : '') +
           '" data-set-primary="' +
           escapeHtml(r.id) +
@@ -21131,7 +21177,7 @@
           ) +
           '">' +
           escapeHtml(r.shortLabel || r.name) +
-          '</button>'
+          '</span>'
       );
     });
     parts.push('</span>');
@@ -25055,7 +25101,10 @@
 
   function syncAdminManagerHomeNav() {
     var homeNav = document.querySelector('.top-nav .nav-item[data-goto="14"]');
-    if (homeNav) homeNav.hidden = !!gmCalloutSessionIsAdmin;
+    /* Home is manager-only (own shifts). Keep hidden for admin — never flash then remove. */
+    if (homeNav) {
+      homeNav.hidden = !(gmCalloutSessionIsManager && !gmCalloutSessionIsAdmin);
+    }
     if (gmCalloutSessionIsAdmin && currentScreen === 14) {
       showScreen(1);
     }
@@ -30162,12 +30211,12 @@
           pinLine = 'Not assigned';
         }
         var metaRows =
-          '<li class="employee-card-meta-row">' +
+          '<div class="employee-card-meta-row">' +
           '<span class="employee-card-label">Phone</span>' +
           '<span class="employee-card-value">' +
           phoneLine +
-          '</span></li>' +
-          '<li class="employee-card-meta-row">' +
+          '</span></div>' +
+          '<div class="employee-card-meta-row">' +
           '<span class="employee-card-label">' +
           escapeHtml(gmT('team.primaryLocation') || 'Primary location') +
           '</span>' +
@@ -30175,21 +30224,21 @@
           (gmCalloutSessionIsManager
             ? renderEmployeePrimaryStoreToggleHtml(emp)
             : locLine) +
-          '</span></li>' +
-          '<li class="employee-card-meta-row">' +
+          '</span></div>' +
+          '<div class="employee-card-meta-row">' +
           '<span class="employee-card-label">' +
           escapeHtml(gmT('team.employmentStatus') || 'Employment status') +
           '</span>' +
           '<span class="employee-card-value">' +
           escapeHtml(employmentStatusLine) +
-          '</span></li>';
+          '</span></div>';
         if (pinLine) {
           metaRows +=
-            '<li class="employee-card-meta-row">' +
+            '<div class="employee-card-meta-row">' +
             '<span class="employee-card-label">PIN</span>' +
             '<span class="employee-card-value employee-card-value--pin">' +
             pinLine +
-            '</span></li>';
+            '</span></div>';
         }
         if (gmCalloutSessionIsAdmin) {
           var accountLabel = '';
@@ -30204,31 +30253,35 @@
           }
           if (accountLabel) {
             metaRows +=
-              '<li class="employee-card-meta-row">' +
+              '<div class="employee-card-meta-row">' +
               '<span class="employee-card-label">' +
               escapeHtml(gmT('team.accountType') || 'App account') +
               '</span>' +
               '<span class="employee-card-value">' +
               escapeHtml(accountLabel) +
-              '</span></li>';
+              '</span></div>';
           }
         }
+        /*
+         * Card is a <div> with div children only — never <button> wrapping chips,
+         * and never <ul> inside <span> (browsers hoist those and spill meta out).
+         */
         parts.push(
           '<li>' +
-          '<button type="button" class="employee-card" data-employee-id="' +
+          '<div class="employee-card" role="button" tabindex="0" data-employee-id="' +
           escapeHtml(emp.id) +
           '">' +
-          '<span class="employee-card-main">' +
+          '<div class="employee-card-main">' +
           renderEmployeePhotoHtml(emp, 'employee-photo') +
-          '<span class="employee-card-body">' +
-          '<span class="employee-card-name">' +
+          '<div class="employee-card-body">' +
+          '<div class="employee-card-name">' +
           escapeHtml(employeeDisplayName(emp)) +
-          '</span>' +
-          '<ul class="employee-card-meta">' +
+          '</div>' +
+          '<div class="employee-card-meta">' +
           metaRows +
-          '</ul>' +
-          '</span></span>' +
-          '</button></li>'
+          '</div>' +
+          '</div></div>' +
+          '</div></li>'
         );
       });
       parts.push('</ul></section>');
@@ -30260,8 +30313,16 @@
     }
     employeeListEl.innerHTML = parts.join('');
     refreshEmployeePhotosOnScreen(5);
-    employeeListEl.querySelectorAll('.employee-card[data-employee-id]').forEach(function (btn) {
-      btn.addEventListener('click', function (ev) {
+    employeeListEl.querySelectorAll('.employee-card[data-employee-id]').forEach(function (card) {
+      function applyPrimaryFromChip(chip) {
+        if (!chip) return false;
+        setEmployeePrimaryStore(
+          chip.getAttribute('data-employee-id'),
+          chip.getAttribute('data-set-primary')
+        );
+        return true;
+      }
+      function openFromCard(ev) {
         var chip =
           ev.target && ev.target.closest
             ? ev.target.closest('[data-set-primary][data-employee-id]')
@@ -30269,13 +30330,27 @@
         if (chip) {
           ev.preventDefault();
           ev.stopPropagation();
-          setEmployeePrimaryStore(
-            chip.getAttribute('data-employee-id'),
-            chip.getAttribute('data-set-primary')
-          );
+          applyPrimaryFromChip(chip);
           return;
         }
-        openEmployeeForm(this.getAttribute('data-employee-id'));
+        openEmployeeForm(card.getAttribute('data-employee-id'));
+      }
+      card.addEventListener('click', openFromCard);
+      card.addEventListener('keydown', function (ev) {
+        var chip =
+          ev.target && ev.target.closest
+            ? ev.target.closest('[data-set-primary][data-employee-id]')
+            : null;
+        if (chip && (ev.key === 'Enter' || ev.key === ' ')) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          applyPrimaryFromChip(chip);
+          return;
+        }
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        if (chip) return;
+        ev.preventDefault();
+        openFromCard(ev);
       });
     });
   }

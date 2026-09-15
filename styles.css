@@ -161,8 +161,10 @@ html.authed.employee-app #empScreenMessages .emp-messages-layout {
 }
 
 /*
- * Employee Schedule: freeze week/location/legend chrome (same idea as manager
- * #screen-schedule flex + scrolling #calendarGrid). Only the matrix scrolls.
+ * Employee Schedule: one scrollport on .emp-schedule-wrap so week/restaurant
+ * chrome scrolls away while Person/day thead sticks under .app-top. Nested
+ * overflow on #empCalendarGrid would block that sticky (same idea as manager
+ * narrow schedule).
  */
 html.authed.employee-app .main.emp-main > #empScreenSchedule:not([hidden]) {
   display: flex;
@@ -178,24 +180,16 @@ html.authed.employee-app #empScreenSchedule .emp-schedule-wrap {
   display: flex;
   flex-direction: column;
   padding-bottom: 12px;
-  /* Avoid the card growing past the flex pane (breaks #empCalendarGrid scroll). */
-  overflow: hidden;
-}
-
-html.authed.employee-app #empScreenSchedule .schedule-toolbar-compact,
-html.authed.employee-app #empScreenSchedule .emp-schedule-readonly-hint,
-html.authed.employee-app #empScreenSchedule .restaurant-switcher,
-html.authed.employee-app #empScreenSchedule .calendar-legend {
-  flex-shrink: 0;
-}
-
-html.authed.employee-app #empCalendarGrid {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-width: 100%;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+}
+
+html.authed.employee-app #empCalendarGrid {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-width: none;
+  overflow: visible;
 }
 
 html.authed .login-screen,
@@ -2865,8 +2859,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   html.authed.manager-app .app {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
-    min-height: 100dvh;
+    /* Bounded height so .main > .screen is the scrollport (sticky thead works). */
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    overflow: hidden;
   }
 
   html.authed.manager-app .main {
@@ -2889,6 +2887,22 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     overflow: hidden;
     max-height: none;
     min-height: 0;
+  }
+
+  /*
+   * Narrow Schedule: #screen-schedule is the scrollport (week/actions/restaurant
+   * scroll away). Drop nested overflow on #calendarGrid so Person/day thead can
+   * stick under .app-top; wide matrix still scrolls horizontally on the screen.
+   * Desktop (≥1024) keeps toolbar frozen + scrolling #calendarGrid only.
+   */
+  html.authed.manager-app #screen-schedule.active {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  html.authed.manager-app #screen-schedule #calendarGrid {
+    overflow: visible;
+    max-width: none;
   }
 }
 
@@ -5686,7 +5700,9 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .employee-card {
   display: block;
+  box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
   text-align: left;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -5697,6 +5713,10 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 400;
   line-height: 1.4;
   color: var(--text);
+  /* Div role=button — reset any UA button quirks if markup regresses. */
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
 }
 
 .employee-card-main {
@@ -5888,10 +5908,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .employee-card-meta-row {
   display: grid;
-  grid-template-columns: 5.25rem 1fr;
+  grid-template-columns: minmax(4.5rem, 5.25rem) minmax(0, 1fr);
   gap: 8px;
   align-items: baseline;
   margin: 0;
+  min-width: 0;
 }
 
 .employee-card-label,
@@ -5920,6 +5941,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
 
 .employee-card-primary-chip {
   appearance: none;
+  -webkit-appearance: none;
+  display: inline-block;
   border: 1px solid var(--border);
   background: var(--surface, #fff);
   color: var(--text-muted);
@@ -5929,6 +5952,7 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   font-weight: 600;
   line-height: 1.35;
   cursor: pointer;
+  user-select: none;
 }
 
 .employee-card-primary-chip:hover,
@@ -6833,14 +6857,22 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     max-width: 100%;
   }
 
+  /* Phone Chrome: wrap/reflow actions — avoid flex:1 + nowrap smash. */
   .schedule-toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(9.25rem, 1fr));
+    gap: 8px;
     width: 100%;
-    justify-content: flex-start;
+    max-width: 100%;
   }
 
   .btn.schedule-toolbar-btn {
-    flex: 1 1 0;
+    width: 100%;
     min-width: 0;
+    flex: none;
+    white-space: normal;
+    text-align: center;
+    padding: 8px 10px;
   }
 
   .employee-filter-chips {
