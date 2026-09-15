@@ -167,6 +167,7 @@
         /aborted|abort/i.test(String((netErr && netErr.message) || ""));
       return {
         ok: false,
+        timedOut: !!aborted,
         message: mapPortalMessage(
           aborted
             ? "Sign-in timed out. Wait a moment and try again."
@@ -196,7 +197,11 @@
       var timer = setTimeout(function () {
         if (settled) return;
         settled = true;
-        resolve({ ok: false, message: fallbackMessage || "Timed out. Try again." });
+        resolve({
+          ok: false,
+          timedOut: true,
+          message: fallbackMessage || "Timed out. Try again.",
+        });
       }, ms);
       Promise.resolve(promise).then(
         function (value) {
@@ -211,11 +216,111 @@
           clearTimeout(timer);
           resolve({
             ok: false,
+            timedOut: true,
             message: (err && err.message) || fallbackMessage || "Request failed.",
           });
         }
       );
     });
+  }
+
+  /**
+   * Red Poke name → Auth email. Lets iPhone Chrome sign in when Render
+   * /api/portal/resolve-auth is cold or hung (no password in this map).
+   */
+  var RED_POKE_COMPANY_ID = "a0000000-0000-4000-8000-000000000001";
+  var RED_POKE_AUTH_HINTS = {
+    "martin long": {
+      authEmail: "gm.19a08d7d8f7849498b34a67d5d5ea22a@example.org",
+      role: "admin",
+      displayName: "Martin Long",
+    },
+  };
+
+  function redPokeAuthHint(loginName, companyId) {
+    var cid = String(companyId || "").trim();
+    if (cid && cid !== RED_POKE_COMPANY_ID) return null;
+    var norm = String(loginName || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    return RED_POKE_AUTH_HINTS[norm] || null;
+  }
+
+  /** Browser → Supabase Auth token endpoint (skips Render + supabase-js lock). */
+  async function goTruePasswordGrant(email, password, timeoutMs) {
+    var base =
+      typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
+    var key =
+      typeof window.__GM_SUPABASE_ANON_KEY__ === "string"
+        ? window.__GM_SUPABASE_ANON_KEY__.trim()
+        : "";
+    if (!base || !key || !email) {
+      return { ok: false, message: "Supabase client is not ready." };
+    }
+    var ms = typeof timeoutMs === "number" ? timeoutMs : 15000;
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var abortTimer = null;
+    if (controller) {
+      abortTimer = setTimeout(function () {
+        try {
+          controller.abort();
+        } catch (_ab) {
+          /* ignore */
+        }
+      }, ms);
+    }
+    try {
+      var res = await fetch(String(base).replace(/\/$/, "") + "/auth/v1/token?grant_type=password", {
+        method: "POST",
+        headers: {
+          apikey: key,
+          Authorization: "Bearer " + key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: email, password: password }),
+        signal: controller ? controller.signal : undefined,
+      });
+      var data = {};
+      try {
+        data = await res.json();
+      } catch (_j) {
+        data = {};
+      }
+      if (!res.ok) {
+        var errMsg = String((data && (data.error_description || data.msg || data.error)) || "");
+        if (/email not confirmed|not confirmed/i.test(errMsg)) {
+          return {
+            ok: false,
+            message:
+              "Confirm your email before signing in. Check your inbox for the Shiflow confirmation link.",
+          };
+        }
+        return { ok: false, message: "Name or password is incorrect." };
+      }
+      if (!data.access_token || !data.refresh_token) {
+        return { ok: false, message: "Name or password is incorrect." };
+      }
+      var applied = await applyPortalSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+      });
+      if (!applied.ok) return applied;
+      return { ok: true, session: data };
+    } catch (netErr) {
+      var aborted =
+        (netErr && netErr.name === "AbortError") ||
+        /aborted|abort/i.test(String((netErr && netErr.message) || ""));
+      return {
+        ok: false,
+        timedOut: !!aborted,
+        message: aborted
+          ? "Sign-in timed out. Wait a moment and try again."
+          : (netErr && netErr.message) || "Network error. Check your connection and try again.",
+      };
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
+    }
   }
 
   async function applyPortalSession(tokens) {
@@ -478,8 +583,41 @@
     prefetchResolve: function (loginName, companyId) {
       var name = String(loginName || "").trim();
       var cid = companyId ? String(companyId).trim() : "";
-      if (!name || name.length < 2 || !cid) return;
+      if (!name || name.length < 2) return;
       var norm = name.toLowerCase().replace(/\s+/g, " ");
+      var hint = redPokeAuthHint(name, cid);
+      if (hint && hint.authEmail) {
+        window.__GM_AUTH_RESOLVE_CACHE__ = {
+          norm: norm,
+          companyId: cid || RED_POKE_COMPANY_ID,
+          data: {
+            ok: true,
+            authEmail: hint.authEmail,
+            role: hint.role,
+            displayName: hint.displayName,
+            companyId: cid || RED_POKE_COMPANY_ID,
+            companyName: "Red Poke",
+            accessCode: "redpoke",
+            teamStateId: "main",
+          },
+          promise: Promise.resolve({
+            ok: true,
+            data: {
+              authEmail: hint.authEmail,
+              role: hint.role,
+              displayName: hint.displayName,
+              companyId: cid || RED_POKE_COMPANY_ID,
+              companyName: "Red Poke",
+              accessCode: "redpoke",
+              teamStateId: "main",
+            },
+          }),
+          startedAt: Date.now(),
+          readyAt: Date.now(),
+        };
+        return window.__GM_AUTH_RESOLVE_CACHE__.promise;
+      }
+      if (!cid) return;
       var cache = window.__GM_AUTH_RESOLVE_CACHE__;
       if (
         cache &&
@@ -493,7 +631,7 @@
       var promise = portalFetch(
         "/api/portal/resolve-auth",
         { loginName: name, companyId: cid },
-        { timeoutMs: 12000 }
+        { timeoutMs: 5000 }
       ).then(function (r) {
         if (r && r.ok && r.data && r.data.authEmail) {
           window.__GM_AUTH_RESOLVE_CACHE__ = {
@@ -593,8 +731,13 @@
       }
 
       async function clientPasswordGrant(email) {
+        /* Prefer raw GoTrue — avoids supabase-js auth lock stalls on iPhone Chrome. */
+        var direct = await goTruePasswordGrant(email, pw, 15000);
+        if (direct.ok) return direct;
+        if (direct.timedOut) return direct;
+        if (direct.message && !/incorrect/i.test(direct.message)) return direct;
         if (!window.gmSupabase || !window.gmSupabase.auth || !email) {
-          return { ok: false, message: "Supabase client is not ready." };
+          return direct;
         }
         var result = await withClientTimeout(
           window.gmSupabase.auth.signInWithPassword({ email: email, password: pw }),
@@ -627,8 +770,13 @@
           }
           if (mem.promise) {
             try {
-              var awaited = await mem.promise;
+              var awaited = await withClientTimeout(
+                mem.promise,
+                4000,
+                "Sign-in timed out. Wait a moment and try again."
+              );
               if (awaited && awaited.ok && awaited.data && awaited.data.authEmail) return awaited;
+              if (awaited && awaited.timedOut) return awaited;
             } catch (_ap) {
               /* fall through */
             }
@@ -637,77 +785,105 @@
         return portalFetch(
           "/api/portal/resolve-auth",
           { loginName: name, companyId: cid || undefined },
-          { timeoutMs: 12000 }
+          { timeoutMs: 5000 }
         );
       }
 
-      /* Do NOT start app.js download here — it competed with Auth on iPhone Chrome.
-       * finishPortalLogin / whenManagerAppReady loads the app after tokens land. */
+      function finishOk(role, displayName, companyFields) {
+        if (typeof window.gmEnsureManagerAppLoaded === "function") {
+          void window.gmEnsureManagerAppLoaded();
+        }
+        return packOk(role, displayName, companyFields);
+      }
+
+      /* Warm only — never await Render. */
       window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
 
       /*
-       * Fast path for every account: browser → Supabase Auth directly.
-       * Resolve email via prefetch / cache / tiny server lookup.
+       * iPhone Chrome hot path: hint/cache → Supabase Auth directly.
+       * Production Render /resolve-auth has been hanging 20s+; do not wait on it first.
        */
-      if (window.gmSupabase && window.gmSupabase.auth) {
-        var cached = readCachedAuth();
-        if (cached && cached.email) {
-          var cachedGrant = await clientPasswordGrant(cached.email);
-          if (cachedGrant.ok) {
-            /* Refresh role/company in background in case cache is stale. */
-            void resolveAuthEmail().then(function (fresh) {
-              if (fresh && fresh.ok && fresh.data && fresh.data.authEmail) {
-                cacheAuthEmail(
-                  fresh.data.authEmail,
-                  fresh.data.role,
-                  fresh.data.displayName
-                );
-              }
-            });
-            if (typeof window.gmEnsureManagerAppLoaded === "function") {
-              void window.gmEnsureManagerAppLoaded();
-            }
-            return packOk(cached.role || "employee", cached.displayName || name, {
-              companyId: cid,
-            });
-          }
-        }
-
-        var resolved = await resolveAuthEmail();
-        if (resolved.ok && resolved.data && resolved.data.authEmail) {
-          cacheAuthEmail(
-            resolved.data.authEmail,
-            resolved.data.role,
-            resolved.data.displayName
-          );
-          var grant = await clientPasswordGrant(resolved.data.authEmail);
-          if (grant.ok) {
-            if (typeof window.gmEnsureManagerAppLoaded === "function") {
-              void window.gmEnsureManagerAppLoaded();
-            }
-            return packOk(resolved.data.role, resolved.data.displayName, resolved.data);
-          }
-          if (grant.message && !/incorrect/i.test(grant.message)) return grant;
-          return { ok: false, message: grant.message || "Name or password is incorrect." };
-        }
-        if (resolved.status && resolved.status !== 404) {
-          return resolved;
-        }
+      var hint = redPokeAuthHint(name, cid);
+      var emailCandidates = [];
+      function pushEmail(email, role, displayName, companyFields) {
+        if (!email) return;
+        emailCandidates.push({
+          email: String(email).trim(),
+          role: role || "employee",
+          displayName: displayName || name,
+          companyFields: companyFields || { companyId: cid },
+        });
+      }
+      if (hint && hint.authEmail) {
+        pushEmail(hint.authEmail, hint.role, hint.displayName, {
+          companyId: cid || RED_POKE_COMPANY_ID,
+          companyName: "Red Poke",
+          accessCode: "redpoke",
+          teamStateId: "main",
+        });
+      }
+      var cached = readCachedAuth();
+      if (cached && cached.email) {
+        pushEmail(cached.email, cached.role, cached.displayName, { companyId: cid });
       }
 
+      for (var i = 0; i < emailCandidates.length; i += 1) {
+        var cand = emailCandidates[i];
+        var grant = await clientPasswordGrant(cand.email);
+        if (grant.ok) {
+          cacheAuthEmail(cand.email, cand.role, cand.displayName);
+          /* Refresh role from server in background when Render is healthy. */
+          void resolveAuthEmail().then(function (fresh) {
+            if (fresh && fresh.ok && fresh.data && fresh.data.authEmail) {
+              cacheAuthEmail(
+                fresh.data.authEmail,
+                fresh.data.role,
+                fresh.data.displayName
+              );
+            }
+          });
+          return finishOk(cand.role, cand.displayName, cand.companyFields);
+        }
+        if (grant.timedOut) return grant;
+        if (grant.message && !/incorrect/i.test(grant.message)) return grant;
+      }
+
+      var resolved = await resolveAuthEmail();
+      if (resolved.ok && resolved.data && resolved.data.authEmail) {
+        cacheAuthEmail(
+          resolved.data.authEmail,
+          resolved.data.role,
+          resolved.data.displayName
+        );
+        var grant2 = await clientPasswordGrant(resolved.data.authEmail);
+        if (grant2.ok) {
+          return finishOk(resolved.data.role, resolved.data.displayName, resolved.data);
+        }
+        if (grant2.message && !/incorrect/i.test(grant2.message)) return grant2;
+        return { ok: false, message: grant2.message || "Name or password is incorrect." };
+      }
+      if (resolved.timedOut || (resolved.message && /timed out/i.test(resolved.message))) {
+        return {
+          ok: false,
+          timedOut: true,
+          message: "Sign-in timed out. Wait a moment and try again.",
+        };
+      }
+      if (resolved.status && resolved.status !== 404) {
+        return resolved;
+      }
+
+      /* Last resort Render sign-in — short timeout so we do not stack 20s+20s. */
       const payload = { loginName: name, password: pw };
       if (cid) payload.companyId = cid;
-      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 20000 });
+      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 8000 });
       if (!r.ok) return r;
       if (r.data.authEmail) {
         cacheAuthEmail(r.data.authEmail, r.data.role, r.data.displayName);
       }
       const applied = await applyPortalSession(r.data);
       if (!applied.ok) return applied;
-      if (typeof window.gmEnsureManagerAppLoaded === "function") {
-        void window.gmEnsureManagerAppLoaded();
-      }
-      return packOk(r.data.role, r.data.displayName, r.data);
+      return finishOk(r.data.role, r.data.displayName, r.data);
     },
 
     verifyAccessCode: async function (accessCode) {

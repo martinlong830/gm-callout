@@ -1387,6 +1387,18 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
    * Browser then calls supabase.auth.signInWithPassword directly — much faster
    * than Browser → Render → Supabase Auth. Used for every account, not just Mark Ong.
    */
+  const resolveAuthMemory = new Map();
+  function resolveAuthCacheKey(loginName, companyId) {
+    return (
+      String(companyId || "") +
+      "|" +
+      String(loginName || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+    );
+  }
+
   router.post("/resolve-auth", async (req, res) => {
     try {
       const loginName = req.body && req.body.loginName;
@@ -1410,12 +1422,32 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
-      /* Slim columns — resolve only needs email + shell role/name. */
-      const found = await findProfileByLoginName(
-        loginName,
-        companyId,
-        "id, role, display_name, login_name, login_name_norm, internal_auth_email, company_id"
-      );
+      const memKey = resolveAuthCacheKey(loginName, companyId);
+      const cached = resolveAuthMemory.get(memKey);
+      if (cached && Date.now() - cached.at < 10 * 60 * 1000 && cached.payload) {
+        return res.json(cached.payload);
+      }
+
+      /* Cap DB wait — hanging Supabase must not freeze Render for iPhone clients. */
+      const found = await Promise.race([
+        findProfileByLoginName(
+          loginName,
+          companyId,
+          "id, role, display_name, login_name, login_name_norm, internal_auth_email, company_id"
+        ),
+        new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve({ error: "resolve_timeout" });
+          }, 4000);
+        }),
+      ]);
+      if (found && found.error === "resolve_timeout") {
+        return res.status(504).json({
+          ok: false,
+          message: "Sign-in timed out. Wait a moment and try again.",
+          timedOut: true,
+        });
+      }
       if (found.error) {
         return res.status(401).json({ ok: false, message: found.error });
       }
@@ -1451,13 +1483,15 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       });
 
       const companyPayload = companyPayloadForFastSignIn(companyId, profile, null);
-      return res.json({
+      const payload = {
         ok: true,
         authEmail,
         role: profile.role,
         displayName: profile.display_name || profile.login_name || String(loginName).trim(),
         ...(companyPayload || {}),
-      });
+      };
+      resolveAuthMemory.set(memKey, { at: Date.now(), payload });
+      return res.json(payload);
     } catch (err) {
       console.warn("portal resolve-auth", err);
       return res.status(500).json({ ok: false, message: "Sign in failed." });
