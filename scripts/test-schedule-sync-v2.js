@@ -355,6 +355,77 @@ function emptyState() {
   );
 })();
 
+// 16) Conscious deactivate: lagged fetchSlots must not revive slot / inflate activeSlotCount
+(function () {
+  sync.clearLocalDeactivatedSlots();
+  var keep0 = '11111111-1111-4111-8111-111111111111';
+  var keep1 = '22222222-2222-4222-8222-222222222222';
+  var deleted = '33333333-3333-4333-8333-333333333333';
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: keep0, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: keep1, sort_order: 1, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: deleted, sort_order: 2, active: true },
+  ]);
+  assert(sync.activeSlotCount('rp-9', 'Bartender') === 3, 'three active bartender slots before delete');
+  sync.enqueueOps([sync.opDeactivateSlot('rp-9', 'Bartender', deleted)]);
+  sync.remapSlotMapAfterDelete('rp-9', 'Bartender', 2);
+  assert(sync.isLocallyDeactivatedSlot('rp-9', 'Bartender', deleted), 'deactivate arms local guard');
+  assert(sync.activeSlotCount('rp-9', 'Bartender') === 2, 'map remapped to two active slots');
+  /* Replica lag: cloud still returns deleted slot as active. */
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: keep0, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: keep1, sort_order: 1, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: deleted, sort_order: 2, active: true },
+  ]);
+  assert(
+    sync.activeSlotCount('rp-9', 'Bartender') === 2,
+    'lagged fetchSlots must not revive locally deactivated slot'
+  );
+  assert(
+    !sync.getSlotCache()[['rp-9', 'Bartender', deleted].join('\0')],
+    'deactivated slot absent from active cache after lagged replace'
+  );
+  /* Cells for deactivated slot must not project into draft indices. */
+  sync.mergeRemoteCells([
+    {
+      restaurant_id: 'rp-9',
+      role: 'Bartender',
+      slot_key: deleted,
+      day_iso: '2026-09-08',
+      start_hhmm: '10:00',
+      end_hhmm: '18:00',
+      worker_name: 'CHARLES',
+      rev: 20,
+      deleted: false,
+    },
+    {
+      restaurant_id: 'rp-9',
+      role: 'Bartender',
+      slot_key: keep0,
+      day_iso: '2026-09-08',
+      start_hhmm: '09:00',
+      end_hhmm: '17:00',
+      worker_name: 'MARK ONG',
+      rev: 21,
+      deleted: false,
+    },
+  ]);
+  var patchDel = sync.projectCellsToAssignmentPatch(
+    { '2026-09-08': 7 },
+    { Kitchen: 0, Bartender: 1, Server: 2 }
+  );
+  assert(
+    !(patchDel['rp-9'] && patchDel['rp-9']['shift-7-1-2']),
+    'deactivated slot cells do not project to deleted trIdx'
+  );
+  assert(
+    patchDel['rp-9'] && patchDel['rp-9']['shift-7-1-0'] && patchDel['rp-9']['shift-7-1-0'].rowOwner === 'MARK ONG',
+    'remaining active slot still projects'
+  );
+  sync.clearLocalDeactivatedSlots();
+  sync.clearOutbox();
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

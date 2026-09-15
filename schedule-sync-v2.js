@@ -22,9 +22,42 @@
    */
   var recentLocalCellGuards = Object.create(null);
   var LOCAL_CELL_GUARD_MS = 25000;
+  /**
+   * After a conscious local deactivate_slot, refuse fetchSlots / mergeRemoteSlots from
+   * re-activating that slot_key briefly. Replica lag used to return the old active row,
+   * replaceActiveSlots revived it, and soft poll re-inflated the deleted draft line on
+   * the deleting device ("deleted then came back after a while").
+   */
+  var recentLocalDeactivatedSlots = Object.create(null);
+  var LOCAL_DEACTIVATED_SLOT_MS = 45000;
 
   function cellKey(restaurantId, dayIso, role, slotKey) {
     return [restaurantId, dayIso, role, slotKey].join('\0');
+  }
+
+  function deactivatedSlotGuardKey(restaurantId, role, slotKey) {
+    return [String(restaurantId || ''), String(role || ''), String(slotKey || '')].join('\0');
+  }
+
+  function armLocalDeactivatedSlot(restaurantId, role, slotKey) {
+    var k = deactivatedSlotGuardKey(restaurantId, role, slotKey);
+    if (!k || k === '\0\0') return;
+    recentLocalDeactivatedSlots[k] = Date.now() + LOCAL_DEACTIVATED_SLOT_MS;
+  }
+
+  function clearLocalDeactivatedSlots() {
+    recentLocalDeactivatedSlots = Object.create(null);
+  }
+
+  function isLocallyDeactivatedSlot(restaurantId, role, slotKey) {
+    var k = deactivatedSlotGuardKey(restaurantId, role, slotKey);
+    var until = recentLocalDeactivatedSlots[k];
+    if (!until) return false;
+    if (Date.now() >= until) {
+      delete recentLocalDeactivatedSlots[k];
+      return false;
+    }
+    return true;
   }
 
   function armLocalCellGuard(ck, intent) {
@@ -572,6 +605,9 @@
       box.push(op);
       if (!op || !op.payload) return;
       var p = op.payload;
+      if (op.op_type === 'deactivate_slot' && p.slot_key) {
+        armLocalDeactivatedSlot(p.restaurant_id, p.role, p.slot_key);
+      }
       if (!p.day_iso || !p.slot_key || !p.role) return;
       var ck = cellKey(p.restaurant_id, p.day_iso, p.role, p.slot_key);
       if (op.op_type === 'set_day_off') {
@@ -829,6 +865,13 @@
     var bySort = {};
     rows.forEach(function (row) {
       if (!row) return;
+      /* Conscious local delete wins over lagged remote "still active" echoes. */
+      if (
+        row.active !== false &&
+        isLocallyDeactivatedSlot(row.restaurant_id, row.role, row.slot_key)
+      ) {
+        return;
+      }
       var pk = [row.restaurant_id, row.role, row.slot_key].join('\0');
       slots[pk] = {
         restaurant_id: row.restaurant_id,
@@ -868,6 +911,8 @@
       var role = String(row.role || '');
       var slotKey = String(row.slot_key || '');
       if (!rid || !role || !slotKey) return;
+      /* Lagged fetch must not revive a slot this device just deactivated. */
+      if (isLocallyDeactivatedSlot(rid, role, slotKey)) return;
       var pk = [rid, role, slotKey].join('\0');
       nextSlots[pk] = {
         restaurant_id: rid,
@@ -1172,6 +1217,9 @@
     getOutbox: getOutbox,
     clearOutbox: clearOutbox,
     clearLocalCellGuards: clearLocalCellGuards,
+    armLocalDeactivatedSlot: armLocalDeactivatedSlot,
+    clearLocalDeactivatedSlots: clearLocalDeactivatedSlots,
+    isLocallyDeactivatedSlot: isLocallyDeactivatedSlot,
     getLastRev: getLastRev,
     setLastRev: setLastRev,
     trIdxForSlotKey: trIdxForSlotKey,

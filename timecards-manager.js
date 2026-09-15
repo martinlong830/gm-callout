@@ -12180,9 +12180,6 @@
       );
     }
     removeAddedOffScheduleDay(emp.id, shiftRow.iso);
-    if (typeof d().flushTimecardPayrollSync === 'function') {
-      d().flushTimecardPayrollSync();
-    }
     timecardState.entryId = null;
     timecardState.shiftId = null;
     timecardState.shiftRow = null;
@@ -12190,6 +12187,9 @@
     setSaveStatus('Punch removed.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
+    if (typeof d().flushTimecardPayrollSync === 'function') {
+      d().flushTimecardPayrollSync();
+    }
     void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     return true;
   }
@@ -12271,12 +12271,13 @@
       }
       setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
       persistShiftDayTipsFromForm(emp, shiftRow);
-      if (typeof d().flushTimecardPayrollSync === 'function') {
-        d().flushTimecardPayrollSync();
-      }
       setSaveStatus('Saved vacation/sick hours.', false);
       syncRosterRowForEmployee(emp);
       returnToEmployeeShifts(emp);
+      /* Flush after navigate — leave-only saves need cloud week-extras promptly. */
+      if (typeof d().flushTimecardPayrollSync === 'function') {
+        d().flushTimecardPayrollSync();
+      }
       void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
       return;
     }
@@ -12429,16 +12430,18 @@
     if (rpcRes.data.id) {
       timecardState.entryId = rpcRes.data.id;
     }
-    setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
-    persistShiftDayTipsFromForm(emp, shiftRow);
-    if (typeof d().flushTimecardPayrollSync === 'function') {
-      d().flushTimecardPayrollSync();
-    }
     var localEntry = entryFromManagerSave(rpcRes.data, row);
     if (localEntry) upsertLocalWeekEntry(localEntry);
+    /*
+     * Navigate first — Save should feel done after the punch RPC. Do not dual-write
+     * VL/SL or flush tip-payroll here (that re-upserted employees + team_state on every
+     * punch and made Save feel multi-second). Tips already debounce via week-extras maps;
+     * VL/SL are edited on Schedule.
+     */
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
+    persistShiftDayTipsFromForm(emp, shiftRow);
     /* Background SoT reconcile — do not block the Save button on a full-week refetch. */
     void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     } catch (ex) {

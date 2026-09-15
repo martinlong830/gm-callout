@@ -1,7 +1,7 @@
 /**
- * Regression: peer row-delete must shrink local draft to cloud activeSlotCount
- * even when the deleted row still has local Person/times (old keepOwner bug).
- * Runs without DOM — mirrors reconcileLocalScheduleToActiveSlots cloud-win trim.
+ * Regression: peer / self row-delete must shrink local draft to cloud activeSlotCount
+ * and must not re-inflate from denser local leftovers or softDayOffGrow past want.
+ * Runs without DOM — mirrors reconcile + soft upsert growth caps.
  */
 'use strict';
 
@@ -61,6 +61,33 @@ function legacyKeepOwnerTrim(layersByRole, assignments, wantByRole) {
   return changed;
 }
 
+/**
+ * Soft upsert growth: never extend past cloud activeSlotCount (even softDayOffGrow).
+ * Mirrors applyScheduleCellsCacheToLocalStore maxSlots cap.
+ */
+function softUpsertGrowDraft(layersByRole, role, trIdx, maxSlots, softDayOffGrow) {
+  if (!layersByRole[role]) layersByRole[role] = [];
+  if (maxSlots > 0 && trIdx >= maxSlots) return false;
+  if (trIdx < layersByRole[role].length) return false;
+  if (!softDayOffGrow && trIdx >= layersByRole[role].length) return false;
+  var grew = false;
+  while (layersByRole[role].length <= trIdx) {
+    if (maxSlots > 0 && layersByRole[role].length >= maxSlots) break;
+    layersByRole[role].push([null, null, null, null, null, null, null]);
+    grew = true;
+  }
+  return grew && trIdx < layersByRole[role].length;
+}
+
+function legacySoftDayOffGrowPastMax(layersByRole, role, trIdx, maxSlots) {
+  if (!layersByRole[role]) layersByRole[role] = [];
+  /* Old bug: softDayOffGrow bypassed maxSlots. */
+  while (layersByRole[role].length <= trIdx) {
+    layersByRole[role].push([null, null, null, null, null, null, null]);
+  }
+  return layersByRole[role].length > maxSlots;
+}
+
 /* Peer still has staffed trailing FOH row; cloud deactivated it (want=4). */
 var local = {
   Bartender: [
@@ -95,6 +122,51 @@ var dayOffPerson = {
 var unchanged = reconcileDraftToWant(dayOffPerson, { Bartender: 5 });
 assert(unchanged === false, 'matching activeSlotCount leaves intentional Person row');
 assert(dayOffPerson.Bartender.length === 5, 'intentional all-day-off cloud row preserved');
+
+/*
+ * Deleting device: after local shrink to 4, denser leftover must not soft-win.
+ * Soft poll with cloud want=4 must keep draft at 4 (not revive from local assignments).
+ */
+var deletingDevice = {
+  Bartender: [
+    [null, null, null, null, null, null, null],
+    [null, null, null, null, null, null, null],
+    [null, null, null, null, null, null, null],
+    [null, null, null, null, null, null, null],
+  ],
+};
+var denserAsg = { 'Bartender|4|0': { rowOwner: 'CHARLES', workers: ['CHARLES'] } };
+var noRevive = JSON.parse(JSON.stringify(deletingDevice));
+reconcileDraftToWant(noRevive, { Bartender: 4 });
+assert(noRevive.Bartender.length === 4, 'soft poll on deleting device stays at cloud want');
+/* Legacy keepOwner would inflate from leftover assignment if draft grew first. */
+var inflated = JSON.parse(JSON.stringify(deletingDevice));
+inflated.Bartender.push([['10:00', '18:00'], null, null, null, null, null, null]);
+legacyKeepOwnerTrim(inflated, denserAsg, { Bartender: 4 });
+assert(inflated.Bartender.length === 5, 'legacy denser-local soft-win revived deleted row');
+var cloudTrim = JSON.parse(JSON.stringify(deletingDevice));
+cloudTrim.Bartender.push([['10:00', '18:00'], null, null, null, null, null, null]);
+reconcileDraftToWant(cloudTrim, { Bartender: 4 });
+assert(cloudTrim.Bartender.length === 4, 'cloud trim drops denser-local revive on deleting device');
+
+/*
+ * Empty Unassigned shell / softDayOffGrow must not inflate past activeSlotCount.
+ */
+var shells = { Bartender: [[null, null, null, null, null, null, null]] };
+assert(
+  legacySoftDayOffGrowPastMax(JSON.parse(JSON.stringify(shells)), 'Bartender', 3, 2) === true,
+  'legacy softDayOffGrow could pad Unassigned past cloud want'
+);
+var capped = JSON.parse(JSON.stringify(shells));
+var grewBlocked = softUpsertGrowDraft(capped, 'Bartender', 3, 2, true);
+assert(grewBlocked === false, 'softDayOffGrow blocked past activeSlotCount');
+assert(capped.Bartender.length === 1, 'draft length unchanged when grow past want refused');
+var allowed = JSON.parse(JSON.stringify(shells));
+assert(
+  softUpsertGrowDraft(allowed, 'Bartender', 1, 2, true) === true,
+  'softDayOffGrow may extend within activeSlotCount'
+);
+assert(allowed.Bartender.length === 2, 'in-cap softDayOffGrow adds one row only');
 
 if (process.exitCode) {
   console.error('\nPeer slot-delete reconcile regressions failed.');
