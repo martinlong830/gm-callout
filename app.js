@@ -12165,14 +12165,8 @@
       }
     }
     var cols;
-    if (
-      opts.skipScheduleBlobs &&
-      scheduleSyncV2WriteOnly() &&
-      scheduleCellsHydratedOk &&
-      gmCalloutSessionIsManager &&
-      !fields
-    ) {
-      /* Idle: skip multi-MB schedule_assignments / draft_schedule — cells are SoT. */
+    if (opts.skipScheduleBlobs && scheduleSyncV2WriteOnly() && !fields) {
+      /* Idle / Refresh background: skip multi-MB schedule blobs — cells are SoT. */
       cols = stripMissingTeamStateColumns(TEAM_STATE_IDLE_META_COLUMNS);
     } else {
       cols = teamStateColumnsForRemoteFetch(fields);
@@ -12202,15 +12196,11 @@
     opts = opts || {};
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false };
     var sb = window.gmSupabase;
-    var sessRes = await sb.auth.getSession();
-    if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
-    var res = await sb
-      .from('team_state')
-      .select(
-        'timecard_week_tip_pool, timecard_dishwasher_tips, timecard_week_extras, updated_at'
-      )
-      .eq('id', gmCalloutTeamStateRowId())
-      .maybeSingle();
+    /* Prefer selectTeamStateRow — avoid an extra auth.getSession hop on iPhone Chrome. */
+    var res = await selectTeamStateRow(
+      sb,
+      'timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,updated_at'
+    );
     if (res.error) {
       console.warn('gm-callout: team_state tip payroll refresh', res.error);
       return { ok: false, error: res.error };
@@ -12222,6 +12212,75 @@
       });
     }
     return { ok: true, applied: applied, data: res.data || null };
+  }
+
+  function notifyTipPayrollStoresChanged() {
+    if (
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
+    ) {
+      try {
+        window.gmCalloutTimecards.applyRemoteTipPayroll();
+      } catch (_tcTip) {
+        /* ignore */
+      }
+    }
+    if (typeof renderCalendar === 'function') {
+      try {
+        if (currentScreen === 1) renderCalendar({ force: true });
+      } catch (_rcTip) {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Cloud tip/VL/SL as SoT: first hydrate, Refresh, and open-tile.
+   * Never merge stale localStorage 0/0 over remote SL (iPhone Chrome bug).
+   * Only pending-ack keys (conscious unacked edits) overlay remote.
+   */
+  function applyTipPayrollCloudAuthority(row, hasTipPool, hasDishwasher, hasWeekExtras, remoteTip, remoteDw, remoteExtras) {
+    var localTip0 = loadTimecardWeekTipPoolStore();
+    var localDw0 = loadTimecardDishwasherTipsStore();
+    var localExtras0 = loadTimecardWeekExtrasStore();
+    var nextTip = hasTipPool ? remoteTip || {} : localTip0;
+    var nextDw = hasDishwasher ? remoteDw || {} : localDw0;
+    var nextExtras = hasWeekExtras ? remoteExtras || {} : localExtras0;
+    if (hasWeekExtras) {
+      nextExtras = JSON.parse(JSON.stringify(nextExtras || {}));
+      restoreTipPayrollPendingAckKeys(nextExtras, localExtras0, tipPayrollPendingAckExtras);
+    }
+    if (hasDishwasher) {
+      nextDw = JSON.parse(JSON.stringify(nextDw || {}));
+      restoreTipPayrollPendingAckKeys(nextDw, localDw0, tipPayrollPendingAckDishwasher);
+    }
+    var changed = false;
+    if (hasTipPool) {
+      persistTimecardWeekTipPoolStore(nextTip);
+      changed = true;
+    }
+    if (hasDishwasher) {
+      persistTimecardDishwasherTipsStore(nextDw);
+      changed = true;
+    }
+    if (hasWeekExtras) {
+      persistTimecardWeekExtrasStore(nextExtras);
+      changed = true;
+    }
+    tipPayrollRemoteBaseline = {
+      tipPool: hasTipPool ? remoteTip || {} : tipPayrollRemoteBaseline.tipPool || {},
+      dishwasher: hasDishwasher ? remoteDw || {} : tipPayrollRemoteBaseline.dishwasher || {},
+      weekExtras: hasWeekExtras ? remoteExtras || {} : tipPayrollRemoteBaseline.weekExtras || {},
+    };
+    tipPayrollBaselineReady = true;
+    if (
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+    ) {
+      scheduleTipPayrollDebouncedSync();
+    }
+    if (changed) notifyTipPayrollStoresChanged();
+    return changed;
   }
 
   function applyTimecardTipPayrollFromRemote(row, opts) {
@@ -12277,72 +12336,21 @@
       );
     }
 
-    // First hydrate: merge remote over baseline empty, but keep any local week-extras /
-    // tip keys already written this session (e.g. schedule VL/SL=0) so they are not wiped.
-    if (!tipPayrollBaselineReady) {
-      var localTip0 = loadTimecardWeekTipPoolStore();
-      var localDw0 = loadTimecardDishwasherTipsStore();
-      var localExtras0 = loadTimecardWeekExtrasStore();
-      tipPayrollRemoteBaseline = { tipPool: {}, dishwasher: {}, weekExtras: {} };
-      var mergedFirst = mergeTipPayrollStoresForPush(
-        localTip0,
-        localDw0,
-        remoteTip || {},
-        remoteDw || {},
-        localExtras0,
-        remoteExtras || {}
+    /*
+     * First hydrate + force (Refresh / tile): cloud is SoT.
+     * Merging local vs empty baseline treated stale Safari 0/0 as "dirty" and
+     * permanently overrode peer SL/VL — that is why iPhone stayed at 0 after reload.
+     */
+    if (opts.force || !tipPayrollBaselineReady) {
+      return applyTipPayrollCloudAuthority(
+        row,
+        hasTipPool,
+        hasDishwasher,
+        hasWeekExtras,
+        remoteTip,
+        remoteDw,
+        remoteExtras
       );
-      restoreTipPayrollPendingAckKeys(mergedFirst.weekExtras, localExtras0, tipPayrollPendingAckExtras);
-      restoreTipPayrollPendingAckKeys(mergedFirst.dishwasher, localDw0, tipPayrollPendingAckDishwasher);
-      var changedFirst = false;
-      if (remoteTip || Object.keys(localTip0).length) {
-        persistTimecardWeekTipPoolStore(mergedFirst.tipPool);
-        changedFirst = true;
-      }
-      if (remoteDw || Object.keys(localDw0).length || tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)) {
-        persistTimecardDishwasherTipsStore(mergedFirst.dishwasher);
-        changedFirst = true;
-      }
-      if (
-        remoteExtras ||
-        Object.keys(localExtras0).length ||
-        tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)
-      ) {
-        persistTimecardWeekExtrasStore(mergedFirst.weekExtras);
-        changedFirst = true;
-      }
-      tipPayrollRemoteBaseline = {
-        tipPool: hasTipPool ? remoteTip || {} : {},
-        dishwasher: hasDishwasher ? remoteDw || {} : {},
-        /*
-         * Only adopt remote week-extras as baseline when the select included the column.
-         * Never seed baseline from local — that made local===baseline and blocked push.
-         * Empty baseline when omitted keeps local VL/SL as diffs for the next push.
-         */
-        weekExtras: hasWeekExtras ? remoteExtras || {} : {},
-      };
-      tipPayrollBaselineReady = true;
-      if (
-        tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
-        tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
-      ) {
-        scheduleTipPayrollDebouncedSync();
-      }
-      if (
-        changedFirst &&
-        window.gmCalloutTimecards &&
-        typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
-      ) {
-        window.gmCalloutTimecards.applyRemoteTipPayroll();
-      }
-      if (changedFirst && typeof renderCalendar === 'function') {
-        try {
-          if (currentScreen === 1) renderCalendar({ force: true });
-        } catch (_rcTip0) {
-          /* ignore */
-        }
-      }
-      return changedFirst;
     }
 
     var nextBaseline = {
@@ -12399,24 +12407,7 @@
       /* Stale remote applied — keep local VL/SL and push again until cloud echoes. */
       scheduleTipPayrollDebouncedSync();
     }
-    if (
-      changed &&
-      window.gmCalloutTimecards &&
-      typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
-    ) {
-      window.gmCalloutTimecards.applyRemoteTipPayroll();
-    }
-    /*
-     * Tip/VL/SL often arrive after the first Schedule paint (deferred team_state
-     * columns). Phones were stuck without leave flags until a manual Refresh.
-     */
-    if (changed && typeof renderCalendar === 'function') {
-      try {
-        if (currentScreen === 1) renderCalendar({ force: true });
-      } catch (_rcTip) {
-        /* ignore */
-      }
-    }
+    if (changed) notifyTipPayrollStoresChanged();
     return changed;
   }
 
@@ -12643,52 +12634,41 @@
     }
     persistTeamStateDirtyFlags();
     /*
-     * Do NOT flush tip payroll before fetch — that set tipPayrollPushInFlight and
-     * blocked applyTimecardTipPayrollFromRemote, so iPhone Refresh never stored VL/SL.
-     * Tips/leave are pulled in parallel with cells below (force apply).
+     * One visible-week cells fetch + tip/VL force-apply in parallel.
+     * Do NOT also await hydrateScheduleSyncV2FromCloud — that duplicated slots+cells
+     * and made iPhone Chrome Refresh hang for minutes.
      */
     var prevCached = teamStateCachedUpdatedAt;
     teamStateCachedUpdatedAt = null;
+    var needSlotsRefresh =
+      !localWeekHasAuthoritativeTimedDraft(scheduleCalendarWeekIndex) ||
+      scheduleWeekIsDayOffShellOnly(scheduleCalendarWeekIndex);
 
-    /* Fast path: VL/SL + cells in parallel; defer heavy team_state blobs. */
     var tipP = refreshTeamStateTipPayrollFromRemote({ force: true });
-    var cellsP = hydrateScheduleSyncV2FromCloud({ cloudAuthorityReplace: true });
+    var cellsP = pollVisibleScheduleCellsFromCloud({
+      rebuild: true,
+      force: true,
+      forceSlots: needSlotsRefresh,
+      replaceTrusted: true,
+      allowRevive: false,
+      replaceWeekIndex: scheduleCalendarWeekIndex,
+      forceDayOffReplace: false,
+      cloudAuthorityReplace: true,
+      noSoftFallback: true,
+    });
     var tipRes = null;
-    var cellRes = null;
+    var cellOk = false;
     try {
       var parallel = await Promise.all([tipP, cellsP]);
       tipRes = parallel[0];
-      cellRes = parallel[1];
+      cellOk = !!parallel[1];
     } catch (_par) {
-      /* continue with poll */
+      /* continue to paint whatever we have */
     }
 
     try {
-      await pollVisibleScheduleCellsFromCloud({
-        rebuild: true,
-        force: true,
-        forceSlots: true,
-        replaceTrusted: true,
-        allowRevive: false,
-        replaceWeekIndex: scheduleCalendarWeekIndex,
-        forceDayOffReplace: false,
-        cloudAuthorityReplace: true,
-        noSoftFallback: true,
-      });
-    } catch (_refPoll) {
-      /* ignore */
-    }
-    try {
       reconcileLocalScheduleToActiveSlots({ weekIndex: scheduleCalendarWeekIndex });
       clearPhantomRowOwnersForEmptySlots(scheduleCalendarWeekIndex, currentRestaurantId);
-      if (!scheduleAutoRowStructureBlocked(currentRestaurantId, scheduleCalendarWeekIndex)) {
-        trimTrailingGhostScheduleSlots(scheduleCalendarWeekIndex, currentRestaurantId);
-      }
-      repairFlippedFohBohRolesForWeek(scheduleCalendarWeekIndex, currentRestaurantId, {
-        skipDirty: true,
-        skipInteractiveMark: true,
-        writeCloud: false,
-      });
     } catch (_refTrim) {
       /* ignore */
     }
@@ -12707,12 +12687,20 @@
       scheduleDeferredScheduleChrome(scheduleCalendarWeekIndex);
     }
 
-    /* Background: templates/meta + roster — do not hold the Refresh spinner. */
+    if (!opts.silent) {
+      showScheduleNotice(
+        gmT('schedule.refreshDone') || 'Schedule refreshed. All managers share this cloud copy.',
+        false
+      );
+    }
+
+    /* Background only — never block the Refresh toast on heavy team_state / roster. */
     void refreshTeamStateFromRemote(null, {
       forceFetch: true,
       notifyPeerUpdate: false,
       forceAcceptRemote: false,
       allowDiscardDirty: false,
+      skipScheduleBlobs: true,
     }).then(function (res) {
       if (!res || !res.ok) {
         teamStateCachedUpdatedAt = prevCached;
@@ -12720,13 +12708,7 @@
     });
     void queueEmployeesRemoteRefresh();
 
-    if (!opts.silent) {
-      showScheduleNotice(
-        gmT('schedule.refreshDone') || 'Schedule refreshed. All managers share this cloud copy.',
-        false
-      );
-    }
-    return { ok: true, tip: tipRes, cells: cellRes };
+    return { ok: true, tip: tipRes, cells: cellOk };
   }
 
   function mergeStaffRequestsFromRemoteRows(rows) {
@@ -35926,7 +35908,7 @@
     )
       .then(function (tipRow) {
         if (!tipRow || tipRow.error || !tipRow.data) return;
-        applyTimecardTipPayrollFromRemote(tipRow.data);
+        applyTimecardTipPayrollFromRemote(tipRow.data, { force: true });
       })
       .catch(function () {
         /* ignore */

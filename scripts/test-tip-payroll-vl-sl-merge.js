@@ -197,6 +197,40 @@ wipedAgain[week] = mergeTipPayrollWeekSliceForPush(
 );
 assert(!wipedAgain[week][leaveKey], 'precondition: polluted baseline===local still wipes without pending');
 
+/*
+ * Cloud-authority first hydrate / force Refresh must NOT merge stale local 0/0 over
+ * remote SL (iPhone Chrome bug). Pending-ack-only overlay is the correct model.
+ */
+function applyTipPayrollCloudAuthoritySim(remoteExtras, localExtras, pendingMap) {
+  var next = JSON.parse(JSON.stringify(remoteExtras || {}));
+  restoreTipPayrollPendingAckKeys(next, localExtras || {}, pendingMap || {});
+  return next;
+}
+var staleLocalZero = {};
+staleLocalZero[week] = {};
+staleLocalZero[week][leaveKey] = { vl: 0, sl: 0, manual: true };
+var cloudSl = {};
+cloudSl[week] = {};
+cloudSl[week][leaveKey] = leaveSl;
+cloudSl[week]['other@2026-09-09'] = { vl: 0, sl: 4, manual: true };
+var forced = applyTipPayrollCloudAuthoritySim(cloudSl, staleLocalZero, {});
+assert(
+  forced[week][leaveKey] && forced[week][leaveKey].sl === 10,
+  'cloud authority drops stale local 0/0 and keeps remote SL 10'
+);
+assert(
+  forced[week]['other@2026-09-09'].sl === 4,
+  'cloud authority keeps peer leave keys from remote'
+);
+var pendingClear = {};
+pendingClear[week] = {};
+pendingClear[week][leaveKey] = true;
+var forcedPending = applyTipPayrollCloudAuthoritySim(cloudSl, staleLocalZero, pendingClear);
+assert(
+  forcedPending[week][leaveKey] && forcedPending[week][leaveKey].sl === 0,
+  'cloud authority still honors pending-ack local overlay'
+);
+
 if (process.exitCode) {
   console.error('\nVL/SL merge tests failed');
   process.exit(1);
