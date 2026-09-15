@@ -6053,8 +6053,8 @@
   var TEAM_STATE_POLL_MS = 15000;
   /** Soft cell poll backup (Realtime handles most). Longer = less idle jank. */
   var SCHEDULE_CELLS_POLL_MS = 12000;
-  /** Refetch slot rows rarely once the map is warm (slots change infrequently). */
-  var SCHEDULE_SLOTS_POLL_EVERY_N = 24;
+  /** Refetch slot rows periodically once warm (peer deletes need a slots refresh). */
+  var SCHEDULE_SLOTS_POLL_EVERY_N = 8;
   var scheduleSlotsPollTick = 0;
   var scheduleLastAppliedFingerprint = '';
   var scheduleCellsBackgroundHydratePromise = null;
@@ -6152,6 +6152,8 @@
           deviceId: v2 && v2.deviceId ? v2.deviceId() : null,
           ts: Date.now(),
           forceDayOffReplace: !!opts.forceDayOffReplace,
+          /* Peer row delete / slot structure — refetch slots so activeSlotCount converges. */
+          forceSlots: !!opts.forceSlots || !!opts.forceDayOffReplace,
           weekIndex:
             opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
               ? Number(opts.weekIndex)
@@ -6463,6 +6465,8 @@
        * Soft idle polls must only merge cell upserts. reconcile/trim/dedupe/restore
        * used to run every 5s and chop newly added Eugene rows / reshuffle the grid
        * with nobody editing — that looked like the schedule "changing by itself".
+       * Exception: after a fresh slots fetch, shrink draft to cloud activeSlotCount so
+       * peer row-delete converges without waiting for Manual Refresh.
        */
       var mutatingRepair = !!(
         opts.force ||
@@ -6471,12 +6475,23 @@
         opts.allowMutatingRepair ||
         opts.allowRevive
       );
+      var slotsFresh = !!(slotsRes && !slotsRes.skipped);
       var interactiveHold =
         hasInteractiveScheduleEditsThisSession() ||
         scheduleLocalAuthorityActive() ||
         schedulePersonRowProtectActive(currentRestaurantId, targetWi);
+      var structureBlocked = scheduleAutoRowStructureBlocked(
+        currentRestaurantId,
+        targetWi
+      );
+      /* Cloud slot trim only — never revive/scrub on soft poll. */
+      var allowCloudSlotTrim =
+        !interactiveHold &&
+        !structureBlocked &&
+        slotsFresh &&
+        (mutatingRepair || softOnly || !!opts.forceSlots);
       var trimmed = false;
-      if (mutatingRepair && !interactiveHold && slotsRes && !slotsRes.skipped) {
+      if (allowCloudSlotTrim) {
         try {
           trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi });
         } catch (_trim) {
@@ -6501,7 +6516,7 @@
         if (gen !== scheduleCellsPollGeneration) return false;
         if (slotsForced && slotsForced.ok === false) return false;
         slotsRes = slotsForced || { ok: true };
-        if (mutatingRepair && !interactiveHold) {
+        if (allowCloudSlotTrim || (mutatingRepair && !interactiveHold && !structureBlocked)) {
           try {
             trimmed = !!reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi }) || trimmed;
           } catch (_trim0) {
@@ -6598,14 +6613,18 @@
         minCloudTimed: 4,
         fetchTimedCount: cloudTimedVisible,
       });
-      /* Mutating cleanup only on Refresh / trusted / hard assert — never on idle soft poll.
-       * Also skip while manager/admin edits are settling — trim/reconcile must not
-       * auto-delete slots or roll back Person/time changes. */
-      if (
-        mutatingRepair &&
-        !interactiveHold &&
-        !scheduleAutoRowStructureBlocked(currentRestaurantId, targetWi)
-      ) {
+      /* Cloud slot trim: Refresh/trusted OR soft poll after fresh slots (peer delete).
+       * Heavier revive/scrub/restore stays Refresh-only. Skip while edits settle. */
+      if (allowCloudSlotTrim) {
+        try {
+          if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
+            trimmed = true;
+          }
+        } catch (_trimSoft) {
+          /* ignore */
+        }
+      }
+      if (mutatingRepair && !interactiveHold && !structureBlocked) {
         try {
           if (reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })) {
             trimmed = true;
@@ -7044,14 +7063,21 @@
     }
     return drainOutbox().then(function (res) {
       scheduleLocalAuthorityUntil = 0;
-      void broadcastScheduleCellsChanged();
+      void broadcastScheduleCellsChanged({
+        forceSlots: true,
+        weekIndex: wi,
+        restaurantId: rid,
+      });
       return res || { ok: true };
     });
   }
 
   /**
    * Shrink local draft + assignments to match active cloud slot counts so peer
-   * Refresh drops deleted rows (cell apply alone never truncates draft length).
+   * soft poll / Refresh drops deleted rows (cell apply alone never truncates draft length).
+   * When this runs, cloud slots are SoT — do not keep local staffed/Person rows past
+   * activeSlotCount (that blocked peer delete convergence). Edit settle / person-protect
+   * already early-return via scheduleAutoRowStructureBlocked.
    */
   function reconcileLocalScheduleToActiveSlots(opts) {
     opts = opts || {};
@@ -7098,60 +7124,19 @@
           var weekStart = wi * 7;
           if (layers[role].length > want) {
             /*
-             * Do not chop intentional all-day-off Person rows past cloud activeSlotCount
-             * while a local assign / opAddSlot is in flight — that snapped Eugene → Unassigned.
+             * Cloud active slots win. Keeping local staffed/Person rows past `want`
+             * left deleted rows on peer devices after Refresh.
+             * Intentional all-day-off Person rows that still exist in cloud are counted
+             * in activeSlotCount; in-flight local adds are gated by person-protect above.
              */
-            if (schedulePersonRowProtectActive(rid, wi)) {
-              /* keep full local length during protect */
-            } else {
-            var keepThrough = want;
-            for (var trKeep = want; trKeep < layers[role].length; trKeep += 1) {
-              var keepOwner = false;
-              for (var dKeep = 0; dKeep < 7; dKeep += 1) {
-                var keepEnt = normalizeScheduleAssignment(
-                  rs['shift-' + (weekStart + dKeep) + '-' + roleIdx + '-' + trKeep]
-                );
-                if (
-                  (keepEnt && keepEnt.rowOwner && keepEnt.rowOwner !== 'Unassigned') ||
-                  scheduleAssignmentHasStaffedWorkers(keepEnt)
-                ) {
-                  keepOwner = true;
-                  break;
-                }
-                var keepCell = layers[role][trKeep] && layers[role][trKeep][dKeep];
-                if (keepCell && keepCell[0] && keepCell[1]) {
-                  keepOwner = true;
-                  break;
-                }
-              }
-              if (keepOwner) keepThrough = trKeep + 1;
-              else break;
-            }
-            if (layers[role].length > keepThrough) {
-              layers[role] = layers[role].slice(0, keepThrough);
-              layerChanged = true;
-            }
-            }
+            layers[role] = layers[role].slice(0, want);
+            layerChanged = true;
           }
           Object.keys(rs).forEach(function (shiftId) {
             var p = parseShiftIdParts(shiftId);
             if (!p || p.roleIdx !== roleIdx) return;
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekStart + 7) return;
             if (p.trIdx < want) return;
-            /*
-             * Always honor rowOwner / staffed — even when draft length already shrank
-             * below this trIdx. Old gate (trIdx < layers.length) deleted Eugene stubs.
-             */
-            var protect = normalizeScheduleAssignment(rs[shiftId]);
-            if (
-              (protect && protect.rowOwner && protect.rowOwner !== 'Unassigned') ||
-              scheduleAssignmentHasStaffedWorkers(protect)
-            ) {
-              return;
-            }
-            if (schedulePersonRowProtectActive(rid, wi) && p.trIdx >= want) {
-              return;
-            }
             delete rs[shiftId];
             changed = true;
           });
@@ -9153,29 +9138,35 @@
             if (maxRowTr >= 0) n = Math.max(n, maxRowTr + 1);
             if (n <= 0) n = 1;
             /*
-             * Keep trailing day-off Person rows (rowOwner / staffed) only — never inflate
-             * n for empty Unassigned shells (that flashed a ghost FOH row on Refresh).
+             * Soft/non-authoritative: keep trailing day-off Person rows (rowOwner /
+             * staffed) so an in-flight local add is not chopped before slots echo.
+             * Refresh / cloud SoT: never inflate past cloud activeSlotCount from local
+             * leftovers — that resurrected peer-deleted rows after Refresh.
              */
-            var keepOwnerThrough = n;
-            for (var trOwn = n; trOwn < ((layers[role] && layers[role].length) || 0); trOwn += 1) {
-              var hasOwn = false;
-              for (var dOwn = 0; dOwn < 7; dOwn += 1) {
-                var ownEnt = normalizeScheduleAssignment(
-                  store[rid] &&
-                    store[rid]['shift-' + (weekStart + dOwn) + '-' + roleIdx + '-' + trOwn]
-                );
-                if (
-                  (ownEnt && ownEnt.rowOwner && ownEnt.rowOwner !== 'Unassigned') ||
-                  scheduleAssignmentHasStaffedWorkers(ownEnt)
-                ) {
-                  hasOwn = true;
-                  break;
+            if (!cloudAuthorityWeek && !opts.replaceTrusted && !opts.force) {
+              var keepOwnerThrough = n;
+              for (var trOwn = n; trOwn < ((layers[role] && layers[role].length) || 0); trOwn += 1) {
+                var hasOwn = false;
+                for (var dOwn = 0; dOwn < 7; dOwn += 1) {
+                  var ownEnt = normalizeScheduleAssignment(
+                    store[rid] &&
+                      store[rid]['shift-' + (weekStart + dOwn) + '-' + roleIdx + '-' + trOwn]
+                  );
+                  if (
+                    (ownEnt && ownEnt.rowOwner && ownEnt.rowOwner !== 'Unassigned') ||
+                    scheduleAssignmentHasStaffedWorkers(ownEnt)
+                  ) {
+                    hasOwn = true;
+                    break;
+                  }
                 }
+                if (hasOwn) keepOwnerThrough = trOwn + 1;
+                else break;
               }
-              if (hasOwn) keepOwnerThrough = trOwn + 1;
-              else break;
+              n = Math.max(n, keepOwnerThrough);
+            } else if (activeN > 0) {
+              n = Math.min(n, Math.max(activeN, maxRowTr >= 0 ? maxRowTr + 1 : activeN));
             }
-            n = Math.max(n, keepOwnerThrough);
             if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
             while (layers[role].length < n) {
               layers[role].push([null, null, null, null, null, null, null]);
@@ -12313,6 +12304,7 @@
         if (!payload) return;
         if (payload.clientId && payload.clientId === TEAM_STATE_CLIENT_INSTANCE_ID) return;
         var hardPeer = !!payload.forceDayOffReplace;
+        var peerForceSlots = hardPeer || !!payload.forceSlots;
         var peerWi =
           payload.weekIndex != null && !isNaN(Number(payload.weekIndex))
             ? Number(payload.weekIndex)
@@ -12328,11 +12320,12 @@
             120000
           );
         }
-        /* Soft upsert by default; hard-revert / template peers full-replace including day-offs. */
+        /* Soft upsert by default; hard-revert / template peers full-replace including day-offs.
+         * Row-delete peers pass forceSlots so activeSlotCount + draft length converge. */
         var peerPollOpts = {
           rebuild: hardPeer,
           force: hardPeer,
-          forceSlots: hardPeer,
+          forceSlots: peerForceSlots,
           replaceTrusted: hardPeer,
           forceDayOffReplace: hardPeer,
           replaceWeekIndex: hardPeer ? peerWi : undefined,
