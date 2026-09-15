@@ -63,6 +63,37 @@ function restoreTipPayrollPendingAckKeys(mergedStore, localStore, pendingMap) {
   return mergedStore;
 }
 
+/** Value-aware: only clear when remote matches local (mirrors app.js). */
+function clearTipPayrollPendingAckConfirmed(pendingMap, remoteStore, localStore) {
+  if (!pendingMap) return;
+  localStore = localStore && typeof localStore === 'object' ? localStore : {};
+  Object.keys(pendingMap).forEach(function (weekKey) {
+    var pendingSlice = pendingMap[weekKey];
+    if (!pendingSlice || typeof pendingSlice !== 'object') return;
+    var remoteWeek =
+      remoteStore && remoteStore[weekKey] && typeof remoteStore[weekKey] === 'object'
+        ? remoteStore[weekKey]
+        : null;
+    var localWeek =
+      localStore[weekKey] && typeof localStore[weekKey] === 'object' ? localStore[weekKey] : null;
+    Object.keys(pendingSlice).forEach(function (dayKey) {
+      var localHas = !!(localWeek && Object.prototype.hasOwnProperty.call(localWeek, dayKey));
+      var remoteHas = !!(remoteWeek && Object.prototype.hasOwnProperty.call(remoteWeek, dayKey));
+      if (localHas) {
+        if (
+          remoteHas &&
+          tipPayrollSliceJson(remoteWeek[dayKey]) === tipPayrollSliceJson(localWeek[dayKey])
+        ) {
+          delete pendingSlice[dayKey];
+        }
+        return;
+      }
+      if (!remoteHas) delete pendingSlice[dayKey];
+    });
+    if (!Object.keys(pendingSlice).length) delete pendingMap[weekKey];
+  });
+}
+
 function assert(cond, msg) {
   if (!cond) {
     console.error('FAIL:', msg);
@@ -75,6 +106,7 @@ function assert(cond, msg) {
 var week = '2026-09-08_2026-09-14';
 var leaveKey = 'emp-1@2026-09-10';
 var leaveRow = { vl: 8, sl: 0, manual: true };
+var leaveSl = { vl: 0, sl: 10, manual: true };
 
 /* Bug: after push, baseline===local with VL; stale remote missing VL wipes on merge. */
 var local = {};
@@ -116,6 +148,54 @@ remotePeer[week] = { tipOnly: true };
 var pushMerged = {};
 pushMerged[week] = mergeTipPayrollWeekSliceForPush(local[week], remotePeer[week] || {}, emptyBase);
 assert(pushMerged[week][leaveKey].vl === 8, 'dirty local VL overlays onto remote week on push');
+
+/* Stale remote key with 0/0 must NOT clear pending when local has SL 10. */
+var localSl = {};
+localSl[week] = {};
+localSl[week][leaveKey] = leaveSl;
+var pendingSl = {};
+pendingSl[week] = {};
+pendingSl[week][leaveKey] = true;
+var staleZeroRemote = {};
+staleZeroRemote[week] = {};
+staleZeroRemote[week][leaveKey] = { vl: 0, sl: 0, manual: true };
+clearTipPayrollPendingAckConfirmed(pendingSl, staleZeroRemote, localSl);
+assert(pendingSl[week] && pendingSl[week][leaveKey], 'stale 0/0 remote does not clear pending SL');
+
+/* Matching remote clears pending. */
+var matchRemote = {};
+matchRemote[week] = {};
+matchRemote[week][leaveKey] = leaveSl;
+clearTipPayrollPendingAckConfirmed(pendingSl, matchRemote, localSl);
+assert(!pendingSl[week], 'matching remote SL clears pending');
+
+/*
+ * Baseline must stay remote SoT. If baseline were set to merged (local), a later stale
+ * poll with empty pending would wipe — with remote baseline, merge re-overlays SL.
+ */
+var localAfter = JSON.parse(JSON.stringify(localSl));
+var remoteBaseline = {};
+remoteBaseline[week] = { 'other@2026-09-09': { vl: 0, sl: 4, manual: true } };
+var reOverlay = {};
+reOverlay[week] = mergeTipPayrollWeekSliceForPush(
+  localAfter[week],
+  staleRemote[week],
+  remoteBaseline[week]
+);
+assert(
+  reOverlay[week][leaveKey] && reOverlay[week][leaveKey].sl === 10,
+  'remote baseline keeps local SL overlay on stale poll'
+);
+
+/* Polluted baseline===local without pending still wipes — document why baseline≠merged. */
+var pollutedBase = JSON.parse(JSON.stringify(localSl));
+var wipedAgain = {};
+wipedAgain[week] = mergeTipPayrollWeekSliceForPush(
+  localSl[week],
+  staleRemote[week],
+  pollutedBase[week]
+);
+assert(!wipedAgain[week][leaveKey], 'precondition: polluted baseline===local still wipes without pending');
 
 if (process.exitCode) {
   console.error('\nVL/SL merge tests failed');

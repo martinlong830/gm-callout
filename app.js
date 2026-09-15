@@ -5637,7 +5637,20 @@
   var gmEmployeeProfileSaveInFlight = false;
   /** empId → timestamp while leaveBalance is being upserted (block roster clobber). */
   var employeeLeaveCloudSaveIds = Object.create(null);
-  var EMPLOYEE_LEAVE_CLOUD_SAVE_GUARD_MS = 30000;
+  /**
+   * empId → leaveBalance snapshot from a conscious VL/SL edit. Roster soft-apply must not
+   * drop these until cloud employees.meta echoes the same JSON (timer alone was too short).
+   */
+  var employeeLeavePendingById = Object.create(null);
+  var EMPLOYEE_LEAVE_CLOUD_SAVE_GUARD_MS = 120000;
+
+  function leaveBalanceSnapshotJson(bal) {
+    try {
+      return JSON.stringify(bal != null ? bal : null);
+    } catch (_lj) {
+      return '';
+    }
+  }
 
   function employeeCloudSaveFailureMessage(cloudRes) {
     cloudRes = cloudRes || {};
@@ -5708,7 +5721,7 @@
       res = await sb.from('employees').upsert(row, { onConflict: 'id' });
     }
     if (res.error) {
-      if (emp.id) delete employeeLeaveCloudSaveIds[String(emp.id)];
+      /* Keep pending leaveBalance — a failed upsert must not open a roster wipe window. */
       console.warn('gm-callout: employee upsert', res.error);
       return {
         ok: false,
@@ -5716,7 +5729,7 @@
         message: employeeCloudSaveFailureMessage({ error: res.error }),
       };
     }
-    /* Keep leaveBalance guard briefly so a realtime roster echo cannot clobber the write. */
+    /* Keep leaveBalance guard / pending until remote roster echoes matching leave. */
     return { ok: true };
   }
 
@@ -5792,15 +5805,33 @@
     var localLeaveById = Object.create(null);
     employees.forEach(function (e) {
       if (!e || !e.id || !e.meta || !e.meta.leaveBalance) return;
-      var markedAt = employeeLeaveCloudSaveIds[String(e.id)];
+      var id = String(e.id);
+      if (employeeLeavePendingById[id]) {
+        localLeaveById[id] = employeeLeavePendingById[id];
+        return;
+      }
+      var markedAt = employeeLeaveCloudSaveIds[id];
       if (!markedAt || now - markedAt > EMPLOYEE_LEAVE_CLOUD_SAVE_GUARD_MS) return;
-      localLeaveById[String(e.id)] = e.meta.leaveBalance;
+      localLeaveById[id] = e.meta.leaveBalance;
     });
     var next = dbRows.map(mapEmployeeDbRowToRecord).filter(Boolean);
     if (!next.length && !opts.allowEmpty) return false;
     next.forEach(function (e) {
       if (!e || !e.id) return;
-      var keep = localLeaveById[String(e.id)];
+      var id = String(e.id);
+      var pending = employeeLeavePendingById[id];
+      var remoteBal = e.meta && e.meta.leaveBalance ? e.meta.leaveBalance : null;
+      if (pending) {
+        e.meta = e.meta && typeof e.meta === 'object' ? e.meta : {};
+        if (leaveBalanceSnapshotJson(remoteBal) === leaveBalanceSnapshotJson(pending)) {
+          delete employeeLeavePendingById[id];
+          delete employeeLeaveCloudSaveIds[id];
+        } else {
+          e.meta.leaveBalance = pending;
+        }
+        return;
+      }
+      var keep = localLeaveById[id];
       if (!keep) return;
       e.meta = e.meta && typeof e.meta === 'object' ? e.meta : {};
       e.meta.leaveBalance = keep;
@@ -11595,9 +11626,10 @@
     return mergedStore;
   }
 
-  /** Drop pending acks once remote carries the same day key (value may still differ). */
-  function clearTipPayrollPendingAckConfirmed(pendingMap, remoteStore) {
+  /** Drop pending acks only when remote matches local for that day key (value-aware). */
+  function clearTipPayrollPendingAckConfirmed(pendingMap, remoteStore, localStore) {
     if (!pendingMap) return;
+    localStore = localStore && typeof localStore === 'object' ? localStore : {};
     Object.keys(pendingMap).forEach(function (weekKey) {
       var pendingSlice = pendingMap[weekKey];
       if (!pendingSlice || typeof pendingSlice !== 'object') return;
@@ -11605,10 +11637,22 @@
         remoteStore && remoteStore[weekKey] && typeof remoteStore[weekKey] === 'object'
           ? remoteStore[weekKey]
           : null;
+      var localWeek =
+        localStore[weekKey] && typeof localStore[weekKey] === 'object' ? localStore[weekKey] : null;
       Object.keys(pendingSlice).forEach(function (dayKey) {
-        if (remoteWeek && Object.prototype.hasOwnProperty.call(remoteWeek, dayKey)) {
-          delete pendingSlice[dayKey];
+        var localHas = !!(localWeek && Object.prototype.hasOwnProperty.call(localWeek, dayKey));
+        var remoteHas = !!(remoteWeek && Object.prototype.hasOwnProperty.call(remoteWeek, dayKey));
+        if (localHas) {
+          if (
+            remoteHas &&
+            tipPayrollSliceJson(remoteWeek[dayKey]) === tipPayrollSliceJson(localWeek[dayKey])
+          ) {
+            delete pendingSlice[dayKey];
+          }
+          return;
         }
+        /* Local deleted this key — confirm only when remote also lacks it. */
+        if (!remoteHas) delete pendingSlice[dayKey];
       });
       if (!Object.keys(pendingSlice).length) delete pendingMap[weekKey];
     });
@@ -11756,12 +11800,27 @@
             tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher))
         ) {
           var verify = await fetchRemoteTipPayrollStores(sb);
-          clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckExtras, verify.weekExtras);
-          clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckDishwasher, verify.dishwasher);
+          clearTipPayrollPendingAckConfirmed(
+            tipPayrollPendingAckExtras,
+            verify.weekExtras,
+            localExtrasPush
+          );
+          clearTipPayrollPendingAckConfirmed(
+            tipPayrollPendingAckDishwasher,
+            verify.dishwasher,
+            localDwPush
+          );
           if (
             !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) &&
             !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
           ) {
+            tipPayrollRemoteBaseline = {
+              tipPool: verify.tipPool,
+              dishwasher: verify.dishwasher,
+              weekExtras: verify.weekExtras,
+            };
+            tipPayrollBaselineReady = true;
+            tipPayrollLastPushOkAt = Date.now();
             break;
           }
           continue;
@@ -11783,19 +11842,41 @@
           teamStateCachedUpdatedAt = String(res.data.updated_at);
           persistSchedulePushGuard();
         }
+        /*
+         * Baseline must be remote SoT, not merged local. Setting baseline=merged made
+         * local===baseline so a later stale poll dropped unacked VL/SL.
+         */
+        var postVerify = await fetchRemoteTipPayrollStores(sb);
+        clearTipPayrollPendingAckConfirmed(
+          tipPayrollPendingAckExtras,
+          postVerify.weekExtras,
+          loadTimecardWeekExtrasStore()
+        );
+        clearTipPayrollPendingAckConfirmed(
+          tipPayrollPendingAckDishwasher,
+          postVerify.dishwasher,
+          loadTimecardDishwasherTipsStore()
+        );
         tipPayrollRemoteBaseline = {
-          tipPool: merged.tipPool,
-          dishwasher: merged.dishwasher,
-          weekExtras: merged.weekExtras,
+          tipPool: postVerify.tipPool,
+          dishwasher: postVerify.dishwasher,
+          weekExtras: postVerify.weekExtras,
         };
         tipPayrollBaselineReady = true;
         tipPayrollLastPushOkAt = Date.now();
-        /* Keep pending-ack until a remote SELECT echoes the keys (apply / verify). */
+        /* Keep pending-ack until a remote SELECT echoes matching values. */
         void broadcastTeamStateChanged([
           'timecard_week_tip_pool',
           'timecard_dishwasher_tips',
           'timecard_week_extras',
         ]);
+        /* If cloud still missing our VL/SL, queue another push after peers settle. */
+        if (
+          tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
+          tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+        ) {
+          scheduleTipPayrollDebouncedSync();
+        }
       }
     } finally {
       tipPayrollPushInFlight = false;
@@ -12117,10 +12198,18 @@
         : null;
 
     if (remoteExtras) {
-      clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckExtras, remoteExtras);
+      clearTipPayrollPendingAckConfirmed(
+        tipPayrollPendingAckExtras,
+        remoteExtras,
+        loadTimecardWeekExtrasStore()
+      );
     }
     if (remoteDw) {
-      clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckDishwasher, remoteDw);
+      clearTipPayrollPendingAckConfirmed(
+        tipPayrollPendingAckDishwasher,
+        remoteDw,
+        loadTimecardDishwasherTipsStore()
+      );
     }
 
     // First hydrate: merge remote over baseline empty, but keep any local week-extras /
@@ -12173,6 +12262,12 @@
       };
       tipPayrollBaselineReady = true;
       if (
+        tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
+        tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+      ) {
+        scheduleTipPayrollDebouncedSync();
+      }
+      if (
         changedFirst &&
         window.gmCalloutTimecards &&
         typeof window.gmCalloutTimecards.applyRemoteTipPayroll === 'function'
@@ -12215,13 +12310,10 @@
       if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {
         localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
         /*
-         * Baseline must reflect keys we still owe an ack for, otherwise the next merge
-         * treats pending VL/SL as "unchanged vs baseline" while remote lacks them and
-         * drops them from the push payload.
+         * Baseline stays remote SoT — never merged. Merged-as-baseline made
+         * local===baseline so the next stale poll dropped unacked VL/SL.
          */
-        nextBaseline.weekExtras = tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)
-          ? merged.weekExtras
-          : remoteExtras;
+        nextBaseline.weekExtras = remoteExtras;
         changed = true;
       } else if (
         hasWeekExtras &&
@@ -12229,13 +12321,20 @@
         Object.keys(localExtras).length
       ) {
         localStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
-        nextBaseline.weekExtras = merged.weekExtras;
+        nextBaseline.weekExtras = remoteExtras || {};
         changed = true;
       }
     } catch (_set) {
       /* ignore */
     }
     tipPayrollRemoteBaseline = nextBaseline;
+    if (
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+    ) {
+      /* Stale remote applied — keep local VL/SL and push again until cloud echoes. */
+      scheduleTipPayrollDebouncedSync();
+    }
     if (
       changed &&
       window.gmCalloutTimecards &&
@@ -17080,7 +17179,17 @@
     var s = Math.max(0, parseFloat(sl) || 0);
     L.upsertLeaveBalanceEntry(emp, 'vacation', dayIso, v);
     L.upsertLeaveBalanceEntry(emp, 'sick', dayIso, s);
-    if (emp.id) employeeLeaveCloudSaveIds[String(emp.id)] = Date.now();
+    if (emp.id) {
+      var leaveId = String(emp.id);
+      employeeLeaveCloudSaveIds[leaveId] = Date.now();
+      try {
+        employeeLeavePendingById[leaveId] = JSON.parse(
+          JSON.stringify((emp.meta && emp.meta.leaveBalance) || {})
+        );
+      } catch (_pendLeave) {
+        employeeLeavePendingById[leaveId] = (emp.meta && emp.meta.leaveBalance) || {};
+      }
+    }
     saveEmployees({ singleEmployee: emp });
     return true;
   }

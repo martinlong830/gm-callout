@@ -164,18 +164,30 @@ function restoreTipPayrollPendingAckKeys(
 
 function clearTipPayrollPendingAckConfirmed(
   pendingMap: Record<string, Record<string, true>>,
-  remoteStore: Record<string, unknown> | null | undefined
+  remoteStore: Record<string, unknown> | null | undefined,
+  localStore?: Record<string, unknown> | null
 ): void {
+  const local = isRecord(localStore) ? localStore : {};
   Object.keys(pendingMap).forEach((weekKey) => {
     const pendingSlice = pendingMap[weekKey];
     if (!pendingSlice) return;
     const remoteWeek = isRecord(remoteStore?.[weekKey])
       ? (remoteStore![weekKey] as Record<string, unknown>)
       : null;
+    const localWeek = isRecord(local[weekKey]) ? (local[weekKey] as Record<string, unknown>) : null;
     Object.keys(pendingSlice).forEach((dayKey) => {
-      if (remoteWeek && Object.prototype.hasOwnProperty.call(remoteWeek, dayKey)) {
-        delete pendingSlice[dayKey];
+      const localHas = !!(localWeek && Object.prototype.hasOwnProperty.call(localWeek, dayKey));
+      const remoteHas = !!(remoteWeek && Object.prototype.hasOwnProperty.call(remoteWeek, dayKey));
+      if (localHas) {
+        if (
+          remoteHas &&
+          tipPayrollSliceJson(remoteWeek![dayKey]) === tipPayrollSliceJson(localWeek![dayKey])
+        ) {
+          delete pendingSlice[dayKey];
+        }
+        return;
       }
+      if (!remoteHas) delete pendingSlice[dayKey];
     });
     if (!Object.keys(pendingSlice).length) delete pendingMap[weekKey];
   });
@@ -277,7 +289,11 @@ export async function applyTipPayrollFromTeamState(
     hasWeekExtras && isRecord(teamState.timecard_week_extras) ? teamState.timecard_week_extras : null;
 
   if (remoteExtras) {
-    clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckExtras, remoteExtras);
+    clearTipPayrollPendingAckConfirmed(
+      tipPayrollPendingAckExtras,
+      remoteExtras,
+      await loadWeekExtrasStore()
+    );
   }
 
   if (!tipPayrollBaselineReady) {
@@ -351,9 +367,8 @@ export async function applyTipPayrollFromTeamState(
   }
   if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {
     await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
-    nextBaseline.weekExtras = tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)
-      ? merged.weekExtras
-      : remoteExtras;
+    /* Baseline stays remote SoT — never merged (avoids local===baseline VL/SL wipe). */
+    nextBaseline.weekExtras = remoteExtras;
     changed = true;
   } else if (
     hasWeekExtras &&
@@ -361,7 +376,7 @@ export async function applyTipPayrollFromTeamState(
     Object.keys(localExtras).length
   ) {
     await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));
-    nextBaseline.weekExtras = merged.weekExtras;
+    nextBaseline.weekExtras = remoteExtras || {};
     changed = true;
   }
   tipPayrollRemoteBaseline = nextBaseline;
@@ -477,8 +492,21 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
         tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)
       ) {
         const verify = await fetchRemoteTipPayrollStores(sb);
-        clearTipPayrollPendingAckConfirmed(tipPayrollPendingAckExtras, verify.weekExtras);
-        if (!tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)) break;
+        clearTipPayrollPendingAckConfirmed(
+          tipPayrollPendingAckExtras,
+          verify.weekExtras,
+          localExtras
+        );
+        if (!tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)) {
+          tipPayrollRemoteBaseline = {
+            tipPool: verify.tipPool,
+            dishwasher: verify.dishwasher,
+            weekExtras: verify.weekExtras,
+          };
+          tipPayrollBaselineReady = true;
+          tipPayrollLastPushOkAt = Date.now();
+          break;
+        }
         continue;
       }
       break;
@@ -489,10 +517,16 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
       return;
     }
     if (!merged) return;
+    const postVerify = await fetchRemoteTipPayrollStores(sb);
+    clearTipPayrollPendingAckConfirmed(
+      tipPayrollPendingAckExtras,
+      postVerify.weekExtras,
+      await loadWeekExtrasStore()
+    );
     tipPayrollRemoteBaseline = {
-      tipPool: merged.tipPool,
-      dishwasher: merged.dishwasher,
-      weekExtras: merged.weekExtras,
+      tipPool: postVerify.tipPool,
+      dishwasher: postVerify.dishwasher,
+      weekExtras: postVerify.weekExtras,
     };
     tipPayrollBaselineReady = true;
     tipPayrollLastPushOkAt = Date.now();
@@ -503,6 +537,9 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
       ['timecard_week_tip_pool', 'timecard_dishwasher_tips', 'timecard_week_extras'],
       sess.data.session?.user.id
     );
+    if (tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras)) {
+      queueTipPayrollPushToSupabase(sb);
+    }
   } finally {
     pushInFlight = false;
     if (pushQueued) {
