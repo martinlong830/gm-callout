@@ -5218,6 +5218,21 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   overflow: hidden;
 }
 
+/* Keep VL/SL reachable on phone — editor body scrolls; Save stays pinned. */
+#screen-eligible .mode-panel:not(.hidden) .shift-details-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: max(20px, env(safe-area-inset-bottom, 0px));
+}
+
+.shift-detail-leave {
+  padding-top: 4px;
+  scroll-margin-bottom: 48px;
+}
+
 .panel-subtitle {
   flex-shrink: 0;
   margin: 0 0 var(--space-tight);

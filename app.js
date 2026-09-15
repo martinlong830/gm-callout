@@ -12342,6 +12342,17 @@
     ) {
       window.gmCalloutTimecards.applyRemoteTipPayroll();
     }
+    /*
+     * Tip/VL/SL often arrive after the first Schedule paint (deferred team_state
+     * columns). Phones were stuck without leave flags until a manual Refresh.
+     */
+    if (changed && typeof renderCalendar === 'function') {
+      try {
+        if (currentScreen === 1) renderCalendar({ force: true });
+      } catch (_rcTip) {
+        /* ignore */
+      }
+    }
     return changed;
   }
 
@@ -31559,13 +31570,14 @@
     }
     applyLeave(readEffectiveLeaveForShiftDay(emp, dayIso));
     if (shiftDetailLeaveHint) {
-      if (!person) {
+      if (!emp || !person) {
         shiftDetailLeaveHint.textContent =
           'Assign a person on this shift to record vacation / sick hours for the day.';
       } else {
+        var dn = employeeDisplayName(emp) || person;
         shiftDetailLeaveHint.textContent =
           'VL / SL for ' +
-          person +
+          dn +
           (dayIso ? ' on ' + dayIso : '') +
           '. Saved into Timecards totals and Team leave history.';
       }
@@ -31575,6 +31587,18 @@
       if (shiftDetailVl) shiftDetailVl.disabled = !emp;
       if (shiftDetailSl) shiftDetailSl.disabled = !emp;
     }
+    /* Phone web often opens the tile before week-extras hydrate — pull leave now. */
+    void refreshTeamStateTipPayrollFromRemote().then(function (res) {
+      if (!res || !res.ok) return;
+      if (
+        !shiftDetailSlotTarget ||
+        shiftDetailSlotTarget.role !== role ||
+        shiftDetailSlotTarget.trIdx !== trIdx
+      ) {
+        return;
+      }
+      applyLeave(readEffectiveLeaveForShiftDay(emp, dayIso));
+    });
   }
 
   function fillShiftDetailEditor(opts) {
@@ -35826,7 +35850,18 @@
     gmCalloutShellUiRendered = true;
     setupScheduleCellsRealtimeSubscription();
     void hydrateScheduleSyncV2FromCloud();
-    /* Tip/payroll + messaging blobs are not needed for Schedule first paint. */
+    /* Tip/VL/SL week-extras — needed for leave flags on Schedule (all roles). */
+    void selectTeamStateRow(
+      sb,
+      'timecard_week_tip_pool,timecard_dishwasher_tips,timecard_week_extras,timecard_tip_takehome_pct,updated_at'
+    )
+      .then(function (tipRow) {
+        if (!tipRow || tipRow.error || !tipRow.data) return;
+        applyTimecardTipPayrollFromRemote(tipRow.data);
+      })
+      .catch(function () {
+        /* ignore */
+      });
     if (isManager) {
       void selectTeamStateRow(sb, TEAM_STATE_MANAGER_COLUMNS)
         .then(function (fullTeam) {
