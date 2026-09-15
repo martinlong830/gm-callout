@@ -1867,7 +1867,7 @@ html.authed .header-signout-btn {
 .top-nav {
   display: flex;
   align-items: stretch;
-  gap: 0;
+  gap: 0.25rem;
   min-height: 0;
   height: 100%;
   padding: 0;
@@ -1888,19 +1888,19 @@ html.authed .header-signout-btn {
   flex-direction: row;
   align-items: center;
   justify-content: center;
-  padding: 0 2px;
+  padding: 0 0.65rem;
   border: none;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   border-radius: 0;
   background: transparent;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
   text-align: center;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6929,12 +6929,12 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   }
 
   /*
-   * Top tabs (Schedule / Team / Availability / …): don’t crush labels into each
-   * other — natural width + horizontal scroll instead of flex:1 ellipsis mush.
+   * Top tabs: roomy padding + gap so labels aren’t cramped; scroll sideways
+   * rather than shrinking into each other.
    */
   .top-nav {
     justify-content: flex-start;
-    gap: 0;
+    gap: 0.35rem;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
@@ -6948,11 +6948,16 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   .top-nav .nav-item {
     flex: 0 0 auto;
     min-width: auto;
-    padding: 0 0.7rem;
-    font-size: 0.6875rem;
-    letter-spacing: 0.01em;
+    padding: 0 0.95rem;
+    font-size: 0.8125rem;
+    font-weight: 550;
+    letter-spacing: 0.03em;
     overflow: visible;
     text-overflow: clip;
+  }
+
+  .top-nav .nav-item.active {
+    font-weight: 650;
   }
 
   .employee-filter-chips {
