@@ -6867,22 +6867,53 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     max-width: 100%;
   }
 
-  /* Phone Chrome: wrap/reflow actions — avoid flex:1 + nowrap smash. */
+  /* Keep History / Approvals / Templates on one row; scroll sideways if needed. */
   .schedule-toolbar-actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(9.25rem, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
     gap: 8px;
     width: 100%;
     max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
   }
 
   .btn.schedule-toolbar-btn {
-    width: 100%;
+    flex: 0 0 auto;
+    width: auto;
     min-width: 0;
-    flex: none;
-    white-space: normal;
+    white-space: nowrap;
     text-align: center;
     padding: 8px 10px;
+  }
+
+  /*
+   * Top tabs (Schedule / Team / Availability / …): don’t crush labels into each
+   * other — natural width + horizontal scroll instead of flex:1 ellipsis mush.
+   */
+  .top-nav {
+    justify-content: flex-start;
+    gap: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .top-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .top-nav .nav-item {
+    flex: 0 0 auto;
+    min-width: auto;
+    padding: 0 0.7rem;
+    font-size: 0.6875rem;
+    letter-spacing: 0.01em;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .employee-filter-chips {
