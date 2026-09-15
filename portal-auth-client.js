@@ -471,6 +471,52 @@
       }
     },
 
+    /**
+     * Prefetch auth email while the user types their name (any account).
+     * Sign-in then skips the resolve round-trip when the cache is warm.
+     */
+    prefetchResolve: function (loginName, companyId) {
+      var name = String(loginName || "").trim();
+      var cid = companyId ? String(companyId).trim() : "";
+      if (!name || name.length < 2 || !cid) return;
+      var norm = name.toLowerCase().replace(/\s+/g, " ");
+      var cache = window.__GM_AUTH_RESOLVE_CACHE__;
+      if (
+        cache &&
+        cache.norm === norm &&
+        cache.companyId === cid &&
+        cache.promise &&
+        Date.now() - (cache.startedAt || 0) < 90000
+      ) {
+        return cache.promise;
+      }
+      var promise = portalFetch(
+        "/api/portal/resolve-auth",
+        { loginName: name, companyId: cid },
+        { timeoutMs: 12000 }
+      ).then(function (r) {
+        if (r && r.ok && r.data && r.data.authEmail) {
+          window.__GM_AUTH_RESOLVE_CACHE__ = {
+            norm: norm,
+            companyId: cid,
+            data: r.data,
+            promise: promise,
+            startedAt: Date.now(),
+            readyAt: Date.now(),
+          };
+        }
+        return r;
+      });
+      window.__GM_AUTH_RESOLVE_CACHE__ = {
+        norm: norm,
+        companyId: cid,
+        data: null,
+        promise: promise,
+        startedAt: Date.now(),
+      };
+      return promise;
+    },
+
     signIn: async function (loginName, password, companyId) {
       var name = String(loginName || "").trim();
       var pw = String(password || "");
@@ -478,6 +524,7 @@
       if (!name || !pw) {
         return { ok: false, message: mapPortalMessage("Name and password are required.") };
       }
+      var nameNorm = name.toLowerCase().replace(/\s+/g, " ");
 
       function packOk(role, displayName, companyFields) {
         companyFields = companyFields || {};
@@ -493,19 +540,15 @@
         };
       }
 
+      function cacheKey() {
+        return "gm-portal-auth-email-v1:" + (cid || "_") + ":" + nameNorm;
+      }
+
       function cacheAuthEmail(email, role, displayName) {
-        if (!email || !cid) return;
+        if (!email) return;
         try {
-          var key =
-            "gm-portal-auth-email-v1:" +
-            cid +
-            ":" +
-            String(name)
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, " ");
           localStorage.setItem(
-            key,
+            cacheKey(),
             JSON.stringify({
               email: email,
               role: role || "",
@@ -519,17 +562,8 @@
       }
 
       function readCachedAuth() {
-        if (!cid) return null;
         try {
-          var key =
-            "gm-portal-auth-email-v1:" +
-            cid +
-            ":" +
-            String(name)
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, " ");
-          var raw = localStorage.getItem(key);
+          var raw = localStorage.getItem(cacheKey());
           if (!raw) return null;
           var parsed = JSON.parse(raw);
           if (!parsed || !parsed.email) return null;
@@ -545,7 +579,7 @@
         }
         var result = await withClientTimeout(
           window.gmSupabase.auth.signInWithPassword({ email: email, password: pw }),
-          15000,
+          12000,
           "Sign-in timed out. Wait a moment and try again."
         );
         if (result && result.ok === false && result.message) return result;
@@ -566,27 +600,60 @@
         return { ok: true, session: result.data.session };
       }
 
+      async function resolveAuthEmail() {
+        var mem = window.__GM_AUTH_RESOLVE_CACHE__;
+        if (mem && mem.norm === nameNorm && mem.companyId === cid) {
+          if (mem.data && mem.data.authEmail && Date.now() - (mem.readyAt || mem.startedAt || 0) < 90000) {
+            return { ok: true, data: mem.data };
+          }
+          if (mem.promise) {
+            try {
+              var awaited = await mem.promise;
+              if (awaited && awaited.ok && awaited.data && awaited.data.authEmail) return awaited;
+            } catch (_ap) {
+              /* fall through */
+            }
+          }
+        }
+        return portalFetch(
+          "/api/portal/resolve-auth",
+          { loginName: name, companyId: cid || undefined },
+          { timeoutMs: 12000 }
+        );
+      }
+
+      /* Overlap app.js download with Auth — shell still waits for correct role. */
+      if (typeof window.gmEnsureManagerAppLoaded === "function") {
+        void window.gmEnsureManagerAppLoaded();
+      }
+      window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
+
       /*
-       * Fast path: browser → Supabase Auth directly (skips Render→Auth hop that
-       * timed out for Mark Ong). Resolve email via tiny server lookup, or cache.
+       * Fast path for every account: browser → Supabase Auth directly.
+       * Resolve email via prefetch / cache / tiny server lookup.
        */
       if (window.gmSupabase && window.gmSupabase.auth) {
         var cached = readCachedAuth();
         if (cached && cached.email) {
           var cachedGrant = await clientPasswordGrant(cached.email);
           if (cachedGrant.ok) {
-            window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
+            /* Refresh role/company in background in case cache is stale. */
+            void resolveAuthEmail().then(function (fresh) {
+              if (fresh && fresh.ok && fresh.data && fresh.data.authEmail) {
+                cacheAuthEmail(
+                  fresh.data.authEmail,
+                  fresh.data.role,
+                  fresh.data.displayName
+                );
+              }
+            });
             return packOk(cached.role || "employee", cached.displayName || name, {
               companyId: cid,
             });
           }
         }
 
-        var resolved = await portalFetch(
-          "/api/portal/resolve-auth",
-          { loginName: name, companyId: cid || undefined },
-          { timeoutMs: 12000 }
-        );
+        var resolved = await resolveAuthEmail();
         if (resolved.ok && resolved.data && resolved.data.authEmail) {
           var grant = await clientPasswordGrant(resolved.data.authEmail);
           if (grant.ok) {
@@ -595,13 +662,11 @@
               resolved.data.role,
               resolved.data.displayName
             );
-            window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
             return packOk(resolved.data.role, resolved.data.displayName, resolved.data);
           }
           if (grant.message && !/incorrect/i.test(grant.message)) return grant;
           return { ok: false, message: grant.message || "Name or password is incorrect." };
         }
-        /* Fall through to legacy /signin if resolve unsupported on old deploy. */
         if (resolved.status && resolved.status !== 404) {
           return resolved;
         }
@@ -609,7 +674,7 @@
 
       const payload = { loginName: name, password: pw };
       if (cid) payload.companyId = cid;
-      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 25000 });
+      const r = await portalFetch("/api/portal/signin", payload, { timeoutMs: 20000 });
       if (!r.ok) return r;
       if (r.data.authEmail) {
         cacheAuthEmail(r.data.authEmail, r.data.role, r.data.displayName);

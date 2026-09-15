@@ -1072,9 +1072,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       .eq("id", profile.id);
   }
 
-  async function findProfileByLoginName(loginName, companyId) {
+  async function findProfileByLoginName(loginName, companyId, selectCols) {
     const norm = normalizeLoginName(loginName);
     if (!norm) return { error: "Enter your name." };
+    const cols = selectCols || profileSelect;
 
     if (companyId) {
       /* Red Poke: run company-scoped + legacy-null lookups in parallel (was serial). */
@@ -1082,13 +1083,13 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         const [scopedRes, legacyRes] = await Promise.all([
           admin
             .from("profiles")
-            .select(profileSelect)
+            .select(cols)
             .eq("login_name_norm", norm)
             .eq("company_id", companyId)
             .limit(5),
           admin
             .from("profiles")
-            .select(profileSelect)
+            .select(cols)
             .eq("login_name_norm", norm)
             .is("company_id", null)
             .limit(5),
@@ -1109,7 +1110,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
       const { data: scoped, error: scopedErr } = await admin
         .from("profiles")
-        .select(profileSelect)
+        .select(cols)
         .eq("login_name_norm", norm)
         .eq("company_id", companyId)
         .limit(5);
@@ -1127,7 +1128,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     // Unscoped (password reset): single match OK; if duplicates, prefer Red Poke / legacy null.
     const { data: rows, error } = await admin
       .from("profiles")
-      .select(profileSelect)
+      .select(cols)
       .eq("login_name_norm", norm)
       .limit(20);
     if (error) return { error: error.message };
@@ -1303,6 +1304,30 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   router.post("/verify-access-code", async (req, res) => {
     try {
       const accessCode = req.body && req.body.accessCode;
+      const raw = String(accessCode || "")
+        .trim()
+        .toLowerCase();
+      /*
+       * Red Poke ids are fixed — return immediately so every device skips a
+       * companies round-trip before the sign-in form.
+       */
+      if (raw === PORTAL_ACCESS_CODE) {
+        void admin
+          .from("companies")
+          .select(COMPANY_SELECT)
+          .eq("id", RED_POKE_COMPANY_ID)
+          .maybeSingle()
+          .then(function () {
+            /* warm only */
+          })
+          .catch(function () {
+            /* ignore */
+          });
+        return res.json({
+          ok: true,
+          ...companyClientPayload(redPokeCompanyStub()),
+        });
+      }
       const found = await findCompanyByAccessCode(admin, accessCode);
       if (found.error) {
         return res.status(400).json({ ok: false, message: found.error });
@@ -1324,7 +1349,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     }
   });
 
-  /** Cheap ping so Render + Supabase stay warm before Mark Ong hits Sign in. */
+  /** Cheap ping so Render + Supabase stay warm before anyone hits Sign in. */
   router.get("/warmup", async (_req, res) => {
     try {
       void admin.from("profiles").select("id").limit(1).then(
@@ -1360,7 +1385,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   /**
    * Fast sign-in prep: profile lookup only (no password grant through Render).
    * Browser then calls supabase.auth.signInWithPassword directly — much faster
-   * than Browser → Render → Supabase Auth.
+   * than Browser → Render → Supabase Auth. Used for every account, not just Mark Ong.
    */
   router.post("/resolve-auth", async (req, res) => {
     try {
@@ -1385,7 +1410,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         });
       }
 
-      const found = await findProfileByLoginName(loginName, companyId);
+      /* Slim columns — resolve only needs email + shell role/name. */
+      const found = await findProfileByLoginName(
+        loginName,
+        companyId,
+        "id, role, display_name, login_name, login_name_norm, internal_auth_email, company_id"
+      );
       if (found.error) {
         return res.status(401).json({ ok: false, message: found.error });
       }

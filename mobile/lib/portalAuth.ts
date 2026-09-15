@@ -1,5 +1,6 @@
 import { friendlyAuthTokenMessage, isInvalidAuthTokenError } from './authErrors';
 import { supabase } from './supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 function portalApiBase(): string {
   const raw = process.env.EXPO_PUBLIC_GM_WEB_URL ?? '';
@@ -174,6 +175,34 @@ export async function portalSignIn(
 
   /* Fast path: resolve email on server, password grant from the device → Supabase. */
   if (supabase && (companyId || accessCode)) {
+    const cacheKey =
+      'gm-portal-auth-email-v1:' +
+      String(companyId || accessCode || '_') +
+      ':' +
+      name.toLowerCase().replace(/\s+/g, ' ');
+    try {
+      const raw = await AsyncStorage.getItem(cacheKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { email?: string; role?: string; displayName?: string };
+        if (parsed && parsed.email) {
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: String(parsed.email),
+            password,
+          });
+          if (!error && data.session) {
+            return {
+              ok: true,
+              role: parsed.role || 'employee',
+              displayName: parsed.displayName || name,
+              companyId: companyId,
+            };
+          }
+        }
+      }
+    } catch {
+      /* ignore cache miss */
+    }
+
     const resolved = await portalPost<{
       authEmail?: string;
       role?: string;
@@ -199,6 +228,18 @@ export async function portalSignIn(
           password,
         });
         if (!error && data.session) {
+          try {
+            await AsyncStorage.setItem(
+              cacheKey,
+              JSON.stringify({
+                email: resolved.authEmail,
+                role: resolved.role || '',
+                displayName: resolved.displayName || '',
+              })
+            );
+          } catch {
+            /* ignore */
+          }
           return {
             ok: true,
             role: resolved.role,
