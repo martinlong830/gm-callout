@@ -264,7 +264,8 @@ window.GM_I18N_EN = {
   'schedule.undo': 'Undo',
   'schedule.undoTitle': 'Undo last schedule or shift time change',
   'schedule.refresh': 'Refresh',
-  'schedule.refreshTitle': 'Pull the latest schedule from the cloud (other managers’ edits)',
+  'schedule.refreshTitle':
+    'Reload every week from the cloud (times, people, and row order — no page reload needed)',
   'schedule.refreshing': 'Refreshing schedule from cloud…',
   'schedule.refreshDone': 'Schedule refreshed. All managers share this cloud copy.',
   'schedule.refreshFailed': 'Could not refresh schedule.',
@@ -496,6 +497,11 @@ window.GM_I18N_EN = {
   'team.pin': 'PIN',
   'team.location': 'Location',
   'team.primaryLocation': 'Primary location',
+  'team.singleStorePayroll': 'Single-store payroll',
+  'team.singleStorePayrollOn': 'On',
+  'team.singleStorePayrollOff': 'Off',
+  'team.singleStorePayrollHint':
+    'On: always paid at the primary store. Off: paid at the store they work each day.',
   'team.employmentStatus': 'Employment status',
   'team.partTime': 'Part-time',
   'team.fullTime': 'Full-time',

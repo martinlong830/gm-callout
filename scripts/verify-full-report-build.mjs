@@ -78,7 +78,7 @@ const mockEmployees = [
     hourlyRate: 20,
     tipPoint: 4,
     weeklyGrid: {},
-    meta: { position: 'SERVICE REP', primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9' },
+    meta: { position: 'SERVICE REP', primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9', singleStorePayroll: true },
   },
   {
     id: 'eboth8',
@@ -90,7 +90,19 @@ const mockEmployees = [
     hourlyRate: 19,
     tipPoint: 3,
     weeklyGrid: {},
-    meta: { position: 'COOK', primaryLocationId: 'rp-8', primaryRestaurantId: 'rp-8' },
+    meta: { position: 'COOK', primaryLocationId: 'rp-8', primaryRestaurantId: 'rp-8', singleStorePayroll: true },
+  },
+  {
+    id: 'e-split',
+    firstName: 'SPLIT',
+    lastName: 'WORKER',
+    staffType: 'Bartender',
+    phone: '',
+    usualRestaurant: 'both',
+    hourlyRate: 18,
+    tipPoint: 3,
+    weeklyGrid: {},
+    meta: { position: 'SERVICE REP', primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9' },
   },
   {
     id: 'eboth-noprim',
@@ -160,6 +172,25 @@ const deps = {
   employeeDisplayName(e) {
     return `${e.firstName} ${e.lastName}`.trim();
   },
+  employeeHasSingleStorePayroll(e) {
+    var meta = e && e.meta && typeof e.meta === 'object' ? e.meta : {};
+    if (meta.singleStorePayroll === true || meta.singleStorePayroll === 'true' || meta.singleStorePayroll === 1) {
+      return true;
+    }
+    if (meta.singleStorePayroll === false || meta.singleStorePayroll === 'false' || meta.singleStorePayroll === 0) {
+      return false;
+    }
+    var blob = String((e.firstName || '') + ' ' + (e.lastName || '')).toUpperCase();
+    return /\bZEFERINO\b/.test(blob) || /\bIRINEO\b/.test(blob) || /\bESPINOBARROS\b/.test(blob);
+  },
+  employeePayrollHomeRestaurantId(e) {
+    var meta = e && e.meta && typeof e.meta === 'object' ? e.meta : {};
+    var primary = meta.primaryLocationId || meta.primaryRestaurantId;
+    if (primary === 'rp-8' || primary === 'rp-9') return primary;
+    var home = e && e.usualRestaurant;
+    if (home === 'rp-8' || home === 'rp-9') return home;
+    return null;
+  },
   normNameKey(s) {
     return String(s || '')
       .trim()
@@ -180,8 +211,23 @@ const deps = {
   getThisMondayDate() {
     return new Date('2026-05-18T12:00:00');
   },
-  punchShiftRoundedMinutes(mins) {
-    return Math.max(0, Math.round((mins || 0) / 5) * 5);
+  punchShiftRoundedMinutes(clockInAt, clockOutAt) {
+    function round5(d) {
+      if (!d || Number.isNaN(d.getTime())) return null;
+      var ms = 5 * 60 * 1000;
+      return new Date(Math.round(d.getTime() / ms) * ms);
+    }
+    var inD = clockInAt instanceof Date ? clockInAt : clockInAt ? new Date(clockInAt) : null;
+    if (!inD || Number.isNaN(inD.getTime())) {
+      var n = Number(clockInAt);
+      return Number.isFinite(n) ? Math.max(0, Math.round(n / 5) * 5) : 0;
+    }
+    var outD = clockOutAt instanceof Date ? clockOutAt : clockOutAt ? new Date(clockOutAt) : new Date();
+    if (Number.isNaN(outD.getTime())) return 0;
+    var rin = round5(inD);
+    var rout = round5(outD);
+    if (!rin || !rout) return 0;
+    return Math.max(0, Math.round((rout.getTime() - rin.getTime()) / 60000));
   },
   scheduledShiftStartAt() {
     return null;
@@ -207,6 +253,26 @@ const deps = {
       '\n' +
       String(shift.redPokeHours || '')
     );
+  },
+  appendScheduleCalendarFlagLines(baseText, personName) {
+    var body = String(baseText || '');
+    var name = String(personName || '').toUpperCase();
+    var extra = [];
+    if (name.indexOf('MARK ONG') >= 0) extra.push('VL 8h');
+    if (name.indexOf('BALTAZAR') >= 0) extra.push('8th Ave');
+    if (!extra.length) return body;
+    return (body ? body + '\n' : '') + extra.join('\n');
+  },
+  scheduleCalendarExportFlagKindFromText(text) {
+    var t = String(text || '');
+    var hasVL = /\bVL\b/.test(t);
+    var hasSL = /\bSL\b/.test(t);
+    var hasOther = /\b(?:8th|9th)\s+Ave\b/i.test(t);
+    if (hasVL && hasSL) return 'vl-sl';
+    if (hasVL) return 'vl';
+    if (hasSL) return 'sl';
+    if (hasOther) return 'other';
+    return '';
   },
   getStaffRequests() {
     return [];
@@ -278,6 +344,34 @@ const deps = {
       redPokeHours: '8',
       workers: ['EIGHTH ONLY'],
     },
+    {
+      id: 'shift-0-0-split',
+      restaurantId: 'rp-9',
+      restaurantName: 'Red Poke 598 9th Ave',
+      day: 'Mon May 18',
+      trIdx: 1,
+      role: 'Bartender',
+      start: '11:00',
+      end: '21:00',
+      timeLabel: '11:00AM - 9:00PM',
+      redPokeBreak: '(3:00PM BREAK TIME)',
+      redPokeHours: '10',
+      workers: ['SPLIT WORKER'],
+    },
+    {
+      id: 'shift-8-0-split',
+      restaurantId: 'rp-8',
+      restaurantName: 'Red Poke 885 8th Ave',
+      day: 'Tue May 19',
+      trIdx: 1,
+      role: 'Bartender',
+      start: '11:00',
+      end: '21:00',
+      timeLabel: '11:00AM - 9:00PM',
+      redPokeBreak: '(3:00PM BREAK TIME)',
+      redPokeHours: '10',
+      workers: ['SPLIT WORKER'],
+    },
   ],
   buildScheduleSnapshotForPayWeek() {
     return (deps.__scheduleSnapshotRows || []).map((row) => Object.assign({}, row, {
@@ -338,7 +432,7 @@ vm.runInContext(code, sandbox);
 sandbox.gmCalloutTimecards.init(deps);
 
 const mockRows = mockEmployees.map((emp) => {
-  const onSchedule = emp.id === 'e1' || emp.id === 'e2' || emp.id === 'e8';
+  const onSchedule = emp.id === 'e1' || emp.id === 'e2' || emp.id === 'e8' || emp.id === 'e-split';
   const paidOffSchedule = emp.id === 'e-paid-off';
   const hasPay = onSchedule || paidOffSchedule;
   return {
@@ -421,6 +515,93 @@ if (scheduleText.indexOf('11:00AM - 9:00PM') < 0) {
 if (scheduleText.indexOf('3:00PM BREAK TIME') < 0) {
   throw new Error('Schedule sheet missing break annotation');
 }
+if (scheduleText.indexOf('VL 8h') < 0) {
+  throw new Error('Schedule sheet missing VL flag lines');
+}
+if (scheduleText.indexOf('8th Ave') < 0) {
+  throw new Error('Schedule sheet missing other-store flag lines');
+}
+function findCellWithText(ws, needle) {
+  var keys = Object.keys(ws || {}).filter(function (k) {
+    return k.charAt(0) !== '!';
+  });
+  for (var i = 0; i < keys.length; i += 1) {
+    var cell = ws[keys[i]];
+    if (cell && String(cell.v || '').indexOf(needle) >= 0) return cell;
+  }
+  return null;
+}
+function cellFillRgb(cell) {
+  var rgb = cell && cell.s && cell.s.fill && cell.s.fill.fgColor && cell.s.fill.fgColor.rgb;
+  rgb = String(rgb || '').replace(/^#/, '').toUpperCase();
+  if (rgb.length === 8 && rgb.slice(0, 2) === 'FF') rgb = rgb.slice(2);
+  return rgb;
+}
+const scheduleWs = build.find((s) => s.name === 'Schedule').worksheet;
+if (cellFillRgb(findCellWithText(scheduleWs, 'VL 8h')) !== 'C6EFCE') {
+  throw new Error('VL tiles should be green on the downloaded Schedule sheet');
+}
+if (cellFillRgb(findCellWithText(scheduleWs, '8th Ave')) !== 'F8CBAD') {
+  throw new Error('Other-store tiles should be orange on the downloaded Schedule sheet');
+}
+
+const calendarFlagDays = [
+  { kind: 'work', text: '09:00am-06:00pm\nVL 8h', hours: 8, hoursAfter: 8, flagKind: 'vl' },
+  { kind: 'work', text: '09:00am-06:00pm\nSL 8h', hours: 8, hoursAfter: 8, flagKind: 'sl' },
+  { kind: 'work', text: '09:00am-06:00pm\n8th Ave', hours: 8, hoursAfter: 8, flagKind: 'other' },
+  { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
+  { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
+  { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
+  { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
+];
+deps.buildScheduleCalendarExportModel = function () {
+  return {
+    restaurantName: 'Red Poke 598 9th Ave',
+    days: deps.WEEK_META.map(function (m) {
+      return {
+        label: m.label,
+        iso: m.iso,
+        dayNameUpper: m.dayNameUpper,
+        dateLabel: '18-May-26',
+      };
+    }),
+    sections: [
+      {
+        role: 'Bartender',
+        title: 'FRONT OF THE HOUSE',
+        rows: [
+          {
+            personName: 'FLAG COLORS',
+            position: 'STORE MANAGER',
+            days: calendarFlagDays,
+            totalHours: 24,
+            totalHoursAfter: 24,
+          },
+        ],
+      },
+    ],
+    groupOrder: [],
+  };
+};
+sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
+const calSheet = sandbox.__gmTimecardsTest.buildScheduleWorksheet({ matchCalendar: true });
+const vlFill = cellFillRgb(findCellWithText(calSheet, 'VL 8h'));
+const slFill = cellFillRgb(findCellWithText(calSheet, 'SL 8h'));
+const otherFill = cellFillRgb(findCellWithText(calSheet, '8th Ave'));
+if (vlFill !== 'C6EFCE') {
+  throw new Error('Main-schedule download VL tiles should be green, got ' + vlFill);
+}
+if (slFill !== 'FFC7CE') {
+  throw new Error('Main-schedule download SL tiles should be pink, got ' + slFill);
+}
+if (otherFill !== 'F8CBAD') {
+  throw new Error('Main-schedule download other-store tiles should be orange, got ' + otherFill);
+}
+if (vlFill === slFill || vlFill === otherFill || slFill === otherFill) {
+  throw new Error('VL, SL, and other-store tile fills must be distinct');
+}
+delete deps.buildScheduleCalendarExportModel;
+sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
 
 /* forceFresh must rebuild from the live assignment snapshot (not a stale sheet cache). */
 deps.__scheduleSnapshotRows = [
@@ -551,6 +732,34 @@ deps.__scheduleSnapshotRows = [
     redPokeHours: '8',
     workers: ['EIGHTH ONLY'],
   },
+  {
+    id: 'shift-0-0-1',
+    restaurantId: 'rp-9',
+    restaurantName: 'Red Poke 598 9th Ave',
+    day: 'Mon May 18',
+    trIdx: 1,
+    role: 'Bartender',
+    start: '11:00',
+    end: '21:00',
+    timeLabel: '11:00AM - 9:00PM',
+    redPokeBreak: '(3:00PM BREAK TIME)',
+    redPokeHours: '10',
+    workers: ['SPLIT WORKER'],
+  },
+  {
+    id: 'shift-8-0-1',
+    restaurantId: 'rp-8',
+    restaurantName: 'Red Poke 885 8th Ave',
+    day: 'Tue May 19',
+    trIdx: 1,
+    role: 'Bartender',
+    start: '11:00',
+    end: '21:00',
+    timeLabel: '11:00AM - 9:00PM',
+    redPokeBreak: '(3:00PM BREAK TIME)',
+    redPokeHours: '10',
+    workers: ['SPLIT WORKER'],
+  },
 ];
 sandbox.__gmTimecardsTest.invalidatePayWeekScheduleCache();
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
@@ -606,19 +815,25 @@ if (eighth.visible.indexOf('MARK ONG') >= 0) {
   throw new Error('8th Ave roster should not include 9th-only employee');
 }
 if (ninth.visible.indexOf('BOTH STORES') < 0) {
-  throw new Error('both-location employee with primary rp-9 should appear on 9th export');
+  throw new Error('single-store-payroll employee with primary rp-9 should appear on 9th export');
 }
 if (eighth.visible.indexOf('BOTH STORES') >= 0) {
-  throw new Error('both-location employee with primary rp-9 should not appear on 8th export');
+  throw new Error('single-store-payroll employee with primary rp-9 should not appear on 8th export');
 }
 if (eighth.visible.indexOf('BOTH EIGHTH') < 0) {
-  throw new Error('both-location employee with primary rp-8 should appear on 8th export');
+  throw new Error('single-store-payroll employee with primary rp-8 should appear on 8th export');
 }
 if (ninth.visible.indexOf('BOTH EIGHTH') >= 0) {
-  throw new Error('both-location employee with primary rp-8 should not appear on 9th export');
+  throw new Error('single-store-payroll employee with primary rp-8 should not appear on 9th export');
+}
+if (ninth.visible.indexOf('SPLIT WORKER') < 0) {
+  throw new Error('working-location employee scheduled at 9th should appear on 9th payroll');
+}
+if (eighth.visible.indexOf('SPLIT WORKER') < 0) {
+  throw new Error('working-location employee scheduled at 8th should appear on 8th payroll');
 }
 if (ninth.visible.indexOf('BOTH NOPRIMARY') >= 0 || eighth.visible.indexOf('BOTH NOPRIMARY') >= 0) {
-  throw new Error('both-location employee with missing primary should be excluded from single-store filters');
+  throw new Error('both-location employee with no work this week should not appear on either payroll');
 }
 if (ninth.infoText.indexOf('EIGHTH ONLY') >= 0) {
   throw new Error('Employee Information sheet leaked 8th-only staff into 9th Ave export');
@@ -1115,5 +1330,149 @@ await verifyPayslipPatchedExport();
     }
   }
   console.log('OK: forceFresh refreshes Employee Info + PTO from live leave/profile data');
+}
+
+/* Live punch payroll: single-store rolls all hours onto primary; working-location splits by store. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  function punchAt(id, empId, y, mo, d, startH, endH, restaurantId) {
+    return {
+      id: id,
+      employee_id: empId,
+      clock_in_at: new Date(y, mo - 1, d, startH, 0, 0).toISOString(),
+      clock_out_at: new Date(y, mo - 1, d, endH, 0, 0).toISOString(),
+      break_minutes: 0,
+      clock_restaurant_id: restaurantId,
+    };
+  }
+  /* 6×8h = 48h. Mon–Thu at 9th (32h), Fri–Sat at 8th (16h). Company-wide 40h OT cap. */
+  const dualStoreDays = [
+    [18, 'rp-9'],
+    [19, 'rp-9'],
+    [20, 'rp-9'],
+    [21, 'rp-9'],
+    [22, 'rp-8'],
+    [23, 'rp-8'],
+  ];
+  const punches = [];
+  dualStoreDays.forEach(function (pair, i) {
+    punches.push(punchAt('p-both-' + i, 'eboth', 2026, 5, pair[0], 11, 19, pair[1]));
+    punches.push(punchAt('p-split-' + i, 'e-split', 2026, 5, pair[0], 11, 19, pair[1]));
+    punches.push(punchAt('p-both8-' + i, 'eboth8', 2026, 5, pair[0], 11, 19, pair[1]));
+  });
+  T.setWeekEntriesForTest(punches);
+  T.setEmployeeDayLeave('eboth', '2026-05-24', 8, 0);
+  T.setEmployeeDayLeave('e-split', '2026-05-24', 8, 0);
+  T.invalidateWeekExtrasSliceCache();
+
+  function payrollByEmp(loc) {
+    T.setTimecardsLocationFilterForTest(loc);
+    T.buildFullReportSheets({ forceFresh: true });
+    const rows = T.fullReportRosterRows();
+    const labor = T.buildLaborExportAoa() || [];
+    const out = {};
+    rows.forEach(function (row) {
+      if (!row || !row.emp) return;
+      const m = T.computePayrollRowMetrics(row);
+      const laborRow = labor.find(function (r) {
+        return (
+          String(r[0] || '').toUpperCase() === String(row.emp.firstName || '').toUpperCase() &&
+          String(r[1] || '').toUpperCase() === String(row.emp.lastName || '').toUpperCase()
+        );
+      });
+      out[row.emp.id] = { row: row, metrics: m, labor: laborRow };
+    });
+    return out;
+  }
+
+  const ninthPay = payrollByEmp('rp-9');
+  const eighthPay = payrollByEmp('rp-8');
+
+  if (!ninthPay.eboth) throw new Error('single-store BOTH STORES missing from 9th payroll');
+  if (eighthPay.eboth) throw new Error('single-store BOTH STORES must not appear on 8th payroll');
+  if (Math.abs(ninthPay.eboth.metrics.regH - 40) > 0.01 || Math.abs(ninthPay.eboth.metrics.otH - 8) > 0.01) {
+    throw new Error(
+      'single-store 9th payroll should be 40h regular + 8h OT, got ' +
+        ninthPay.eboth.metrics.regH +
+        '/' +
+        ninthPay.eboth.metrics.otH
+    );
+  }
+  if (Math.abs(ninthPay.eboth.metrics.vlH - 8) > 0.01) {
+    throw new Error('single-store 9th payroll should include 8h VL, got ' + ninthPay.eboth.metrics.vlH);
+  }
+  const bothGross = 40 * 20 + 8 * 20 * 1.5 + 8 * 20;
+  if (Math.abs(ninthPay.eboth.metrics.gross - bothGross) > 0.01) {
+    throw new Error('single-store 9th gross expected ' + bothGross + ', got ' + ninthPay.eboth.metrics.gross);
+  }
+  if (!ninthPay.eboth.labor || Math.abs(Number(ninthPay.eboth.labor[7]) - bothGross) > 0.01) {
+    throw new Error('Labor Cost must match Payroll gross for single-store hours+VL');
+  }
+  if (Math.abs(Number(ninthPay.eboth.labor[4]) - ninthPay.eboth.metrics.totalH) > 0.01) {
+    throw new Error('Labor total paid hours must match Payroll TOTAL HOURS');
+  }
+
+  if (!eighthPay.eboth8) throw new Error('single-store BOTH EIGHTH missing from 8th payroll');
+  if (ninthPay.eboth8) throw new Error('single-store BOTH EIGHTH must not appear on 9th payroll');
+  if (Math.abs(eighthPay.eboth8.metrics.regH - 40) > 0.01 || Math.abs(eighthPay.eboth8.metrics.otH - 8) > 0.01) {
+    throw new Error(
+      'single-store 8th payroll should be 40h regular + 8h OT, got ' +
+        eighthPay.eboth8.metrics.regH +
+        '/' +
+        eighthPay.eboth8.metrics.otH
+    );
+  }
+
+  if (!ninthPay['e-split'] || !eighthPay['e-split']) {
+    throw new Error('working-location SPLIT WORKER must appear on both store payrolls');
+  }
+  /* Chronological OT: Mon–Thu 9th = 32h regular; Fri 8th = 8h regular; Sat 8th = 8h OT. */
+  if (Math.abs(ninthPay['e-split'].metrics.regH - 32) > 0.01 || Math.abs(ninthPay['e-split'].metrics.otH) > 0.01) {
+    throw new Error(
+      'working-location 9th payroll should be 32h regular / 0 OT, got ' +
+        ninthPay['e-split'].metrics.regH +
+        '/' +
+        ninthPay['e-split'].metrics.otH
+    );
+  }
+  if (Math.abs(eighthPay['e-split'].metrics.regH - 8) > 0.01 || Math.abs(eighthPay['e-split'].metrics.otH - 8) > 0.01) {
+    throw new Error(
+      'working-location 8th payroll should be 8h regular + 8h OT, got ' +
+        eighthPay['e-split'].metrics.regH +
+        '/' +
+        eighthPay['e-split'].metrics.otH
+    );
+  }
+  const split9Gross = 32 * 18 + 8 * 18;
+  const split8Gross = 8 * 18 + 8 * 18 * 1.5;
+  if (Math.abs(ninthPay['e-split'].metrics.vlH - 8) > 0.01) {
+    throw new Error('working-location VL should pay on home (9th), got ' + ninthPay['e-split'].metrics.vlH);
+  }
+  if (Math.abs(eighthPay['e-split'].metrics.vlH) > 0.01) {
+    throw new Error('working-location VL must not duplicate on 8th, got ' + eighthPay['e-split'].metrics.vlH);
+  }
+  if (Math.abs(eighthPay['e-split'].metrics.otherStoreTips || 0) > 0.01) {
+    throw new Error('working-location staff must not get Other Store Tips (already on that store’s payroll)');
+  }
+  if (Math.abs(ninthPay['e-split'].metrics.gross - split9Gross) > 0.01) {
+    throw new Error('SPLIT WORKER 9th gross expected ' + split9Gross + ', got ' + ninthPay['e-split'].metrics.gross);
+  }
+  if (Math.abs(eighthPay['e-split'].metrics.gross - split8Gross) > 0.01) {
+    throw new Error('SPLIT WORKER 8th gross expected ' + split8Gross + ', got ' + eighthPay['e-split'].metrics.gross);
+  }
+  if (
+    Math.abs(
+      ninthPay['e-split'].metrics.gross + eighthPay['e-split'].metrics.gross - (split9Gross + split8Gross)
+    ) > 0.01
+  ) {
+    throw new Error('SPLIT WORKER combined store pay must equal company-wide 40h + 8h OT + home VL');
+  }
+  if (Math.abs(Number(eighthPay['e-split'].labor[7]) - split8Gross) > 0.01) {
+    throw new Error('Labor Cost must match Payroll gross on the 8th sheet');
+  }
+
+  T.setWeekEntriesForTest([]);
+  T.setTimecardsLocationFilterForTest('rp-9');
+  console.log('OK: full-report payroll hours/pay follow single-store vs working-location punches');
 }
 

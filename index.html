@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-280" />
+  <link rel="stylesheet" href="styles.css?v=perf-295" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-280';
+    window.__GM_ASSET_V = 'perf-295';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -908,6 +908,16 @@
               </button>
               <button
                 type="button"
+                class="btn btn-primary schedule-toolbar-btn"
+                id="scheduleReviewInboxBtn"
+                title="Send or review schedule approvals"
+                data-i18n="schedule.approvals"
+                data-i18n-title="schedule.approvalsTitle"
+              >
+                Schedule Approvals
+              </button>
+              <button
+                type="button"
                 class="btn btn-secondary schedule-toolbar-btn"
                 id="scheduleUndoBtn"
                 disabled
@@ -919,7 +929,7 @@
                 type="button"
                 class="btn btn-secondary schedule-toolbar-btn"
                 id="scheduleRefreshBtn"
-                title="Refresh schedule from cloud (other managers’ edits)"
+                title="Refresh every week from cloud (times, people, and row order)"
                 data-i18n="schedule.refresh"
                 data-i18n-title="schedule.refreshTitle"
               >
@@ -945,16 +955,6 @@
                 data-i18n-title="schedule.holidaysTitle"
               >
                 Holidays
-              </button>
-              <button
-                type="button"
-                class="btn btn-primary schedule-toolbar-btn"
-                id="scheduleReviewInboxBtn"
-                title="Send or review schedule approvals"
-                data-i18n="schedule.approvals"
-                data-i18n-title="schedule.approvalsTitle"
-              >
-                Schedule Approvals
               </button>
               <button
                 type="button"
@@ -1045,6 +1045,7 @@
           <div class="worker-list-scroll hidden" hidden aria-hidden="true">
             <ul class="worker-list" id="editWorkerList"></ul>
           </div>
+          <form id="shiftDetailsForm" class="shift-details-form" action="#" novalidate>
           <div class="shift-details-editor" id="shiftDetailsEditor">
             <div class="shift-detail-master-template" id="shiftDetailMasterTemplateWrap" hidden>
               <label class="shift-detail-field form-field-block">
@@ -1058,12 +1059,12 @@
             <div class="shift-detail-times timecards-datetime-row" id="shiftDetailTimesWrap">
               <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="common.start">Start</span></span>
-                <input type="time" id="shiftDetailStart" class="timecards-input timecards-input--time" step="60" />
+                <input type="time" id="shiftDetailStart" class="timecards-input timecards-input--time" step="60" enterkeyhint="done" />
               </label>
               <span class="draft-time-sep" aria-hidden="true">–</span>
               <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="common.end">End</span></span>
-                <input type="time" id="shiftDetailEnd" class="timecards-input timecards-input--time" step="60" />
+                <input type="time" id="shiftDetailEnd" class="timecards-input timecards-input--time" step="60" enterkeyhint="done" />
               </label>
               <span class="shift-detail-hours" id="shiftDetailHours"></span>
             </div>
@@ -1086,18 +1087,19 @@
               <div class="shift-detail-times timecards-datetime-row">
                 <label class="shift-detail-field form-field-block">
                   <span class="shift-detail-field-label">VL (hrs)</span>
-                  <input type="number" id="shiftDetailVl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" />
+                  <input type="number" id="shiftDetailVl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" enterkeyhint="done" />
                 </label>
                 <label class="shift-detail-field form-field-block">
                   <span class="shift-detail-field-label">SL (hrs)</span>
-                  <input type="number" id="shiftDetailSl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" />
+                  <input type="number" id="shiftDetailSl" class="timecards-input" min="0" step="0.25" inputmode="decimal" value="0" enterkeyhint="done" />
                 </label>
               </div>
             </div>
           </div>
           <div class="screen-actions screen-actions-footer">
-            <button type="button" class="btn btn-primary btn-block" id="saveScheduleBtn" data-i18n="schedule.saveShift">Save shift</button>
+            <button type="submit" class="btn btn-primary btn-block" id="saveScheduleBtn" data-i18n="schedule.saveShift">Save shift</button>
           </div>
+          </form>
         </div>
 
         <!-- Robocall / Coverage UI retained (unreachable) — do not delete triggerCoverage / Twilio paths -->
@@ -1320,6 +1322,16 @@
           <label class="form-field form-field-block" id="empPrimaryLocationWrap">
             <span class="form-label"><span data-i18n="team.primaryLocation">Primary location</span></span>
             <select name="primaryLocationId" id="empPrimaryLocation" required></select>
+          </label>
+          <label class="form-field form-field-block" id="empSingleStorePayrollWrap">
+            <span class="form-label"><span data-i18n="team.singleStorePayroll">Single-store payroll</span></span>
+            <span class="employee-card-primary-toggle">
+              <label class="employee-card-primary-chip employee-card-payroll-check">
+                <input type="checkbox" name="singleStorePayroll" id="empSingleStorePayroll" />
+                <span data-i18n="team.singleStorePayrollOn">On</span>
+              </label>
+            </span>
+            <span class="calendar-hint" data-i18n="team.singleStorePayrollHint">On: always paid at the primary store. Off: paid at the store they work each day.</span>
           </label>
           <select name="usualRestaurant" id="empUsualRestaurant" hidden aria-hidden="true" tabindex="-1"></select>
           <div class="form-row">
@@ -2642,7 +2654,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-230"></script>
+  <script src="locales/en.js?v=perf-231"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2654,7 +2666,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-230';
+      s.src = 'locales/es.js?v=perf-231';
       document.head.appendChild(s);
     })();
   </script>
@@ -3292,9 +3304,34 @@
         }
         try {
           if (companyPayload) storeCompanySession(companyPayload);
+          try {
+            localStorage.removeItem('gm-callout-pending-manager-restaurant');
+            var homeRid = '';
+            var usual =
+              companyPayload && companyPayload.usualRestaurant
+                ? String(companyPayload.usualRestaurant).trim()
+                : '';
+            var primary =
+              companyPayload && companyPayload.primaryLocationId
+                ? String(companyPayload.primaryLocationId).trim()
+                : '';
+            if (usual === 'rp-8' || usual === 'rp-9') homeRid = usual;
+            else if (primary === 'rp-8' || primary === 'rp-9') homeRid = primary;
+            if (homeRid) {
+              localStorage.setItem('gm-callout-pending-manager-restaurant', homeRid);
+              localStorage.setItem('gm-callout-current-restaurant-v1', homeRid);
+            }
+          } catch (_homeRid) {
+            /* ignore */
+          }
+          if (typeof window.gmCalloutMarkManagerSession === 'function') {
+            window.gmCalloutMarkManagerSession(role, displayName);
+          }
           if (role === 'manager' || role === 'admin') {
             try {
-              sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+              if (displayName) {
+                sessionStorage.setItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY, displayName || '');
+              }
             } catch (_e0) {
               /* ignore */
             }
@@ -3321,7 +3358,12 @@
               .catch(function (_hydr) {
                 /* ignore */
               });
-            void promptRecoveryEmailIfNeeded();
+            if (window.gmPortalAuth && typeof window.gmPortalAuth.getAccount === 'function') {
+              void window.gmPortalAuth.getAccount();
+            }
+            setTimeout(function () {
+              void promptRecoveryEmailIfNeeded();
+            }, 8000);
             return;
           }
           if (role === 'employee') {
@@ -3358,7 +3400,12 @@
               .catch(function (_hydr2) {
                 /* ignore */
               });
-            void promptRecoveryEmailIfNeeded();
+            if (window.gmPortalAuth && typeof window.gmPortalAuth.getAccount === 'function') {
+              void window.gmPortalAuth.getAccount();
+            }
+            setTimeout(function () {
+              void promptRecoveryEmailIfNeeded();
+            }, 8000);
             return;
           }
           if (role === 'timeclock') {
@@ -3464,17 +3511,51 @@
         resetAccountDeleteConfirm();
         setAccountSettingsModalOpen(true);
         accountSettingsLoaded = false;
+        try {
+          var dn = sessionStorage.getItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+          if (accountSettingsLoginName && !accountSettingsLoginName.value && dn) {
+            accountSettingsLoginName.value = String(dn).trim();
+          }
+        } catch (_prefill) {
+          /* ignore */
+        }
+        if (accountSettingsLoginName && !accountSettingsLoginName.value) {
+          accountSettingsLoginName.placeholder = 'Loading…';
+        }
         await loadAccountSettingsForm();
+        if (accountSettingsLoginName) accountSettingsLoginName.placeholder = '';
         if (accountSettingsRecoveryEmail) {
           accountSettingsRecoveryEmail.focus();
         }
       }
 
       async function currentPortalUserId() {
+        try {
+          var raw = sessionStorage.getItem('gm-callout-auth-session-backup');
+          if (!raw) raw = localStorage.getItem('gm-callout-auth-session-backup');
+          if (raw) {
+            var bak = JSON.parse(raw);
+            if (bak && bak.access_token) {
+              var payloadB64 = String(bak.access_token).split('.')[1] || '';
+              var json = atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'));
+              var obj = JSON.parse(json);
+              if (obj && obj.sub) return String(obj.sub);
+            }
+          }
+        } catch (_bakUid) {
+          /* ignore */
+        }
         if (!window.gmSupabase || !window.gmSupabase.auth) return '';
         try {
-          var sessRes = await window.gmSupabase.auth.getSession();
-          if (sessRes.data && sessRes.data.session && sessRes.data.session.user) {
+          var sessRes = await Promise.race([
+            window.gmSupabase.auth.getSession(),
+            new Promise(function (resolve) {
+              setTimeout(function () {
+                resolve(null);
+              }, 2000);
+            }),
+          ]);
+          if (sessRes && sessRes.data && sessRes.data.session && sessRes.data.session.user) {
             return sessRes.data.session.user.id || '';
           }
         } catch (_uid) {
@@ -4153,10 +4234,15 @@
             { passive: true }
           );
         }
-        loginForm.addEventListener('submit', function (e) {
+          loginForm.addEventListener('submit', function (e) {
           e.preventDefault();
           clearLoginError();
           armLoginAppPrefetch();
+          if (window.gmPortalAuth && typeof window.gmPortalAuth.prefetchResolve === 'function') {
+            var nmNow = loginEmail && loginEmail.value ? String(loginEmail.value).trim() : '';
+            var cidNow = readStoredCompanyId();
+            if (nmNow && cidNow) window.gmPortalAuth.prefetchResolve(nmNow, cidNow);
+          }
           var rawLogin = loginEmail.value;
           var password = loginPassword.value || '';
 
@@ -4212,6 +4298,8 @@
                   companyId: res.companyId,
                   companyName: res.companyName,
                   accessCode: res.accessCode,
+                  usualRestaurant: res.usualRestaurant,
+                  primaryLocationId: res.primaryLocationId,
                   teamStateId: res.teamStateId,
                   restaurantsConfig: res.restaurantsConfig,
                 });
@@ -4732,7 +4820,7 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="portal-auth-client.js?v=perf-280"></script>
+  <script defer src="portal-auth-client.js?v=perf-281"></script>
   <script defer src="login-timeclock.js?v=perf-63"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
@@ -4747,8 +4835,8 @@
         'employee-leave.js?v=perf-69',
         'break-policy.js?v=perf-2',
         'availability-paint.js?v=perf-230',
-        'schedule-sync-v2.js?v=perf-280',
-        'app.js?v=perf-280',
+        'schedule-sync-v2.js?v=' + encodeURIComponent(window.__GM_ASSET_V || '1'),
+        'app.js?v=' + encodeURIComponent(window.__GM_ASSET_V || '1'),
       ].forEach(function (src) {
         var s = document.createElement('script');
         s.defer = true;

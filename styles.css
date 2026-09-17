@@ -2026,14 +2026,14 @@ html.authed .header-signout-btn {
 
 .schedule-sheet-modal {
   z-index: 65;
+  padding: 1.25vh 1.25vw;
 }
 
-/* Templates sheet: use almost the full viewport (base modal is ~26rem). */
-#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel {
-  width: min(98vw, 96rem);
-  max-width: min(98vw, 96rem);
-  max-height: min(96vh, 96dvh);
-  height: min(96vh, 96dvh);
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel {
+  width: min(97.5vw, 100%);
+  max-width: min(97.5vw, 100%);
+  max-height: min(97.5vh, 97.5dvh);
+  height: min(97.5vh, 97.5dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2041,16 +2041,22 @@ html.authed .header-signout-btn {
   box-sizing: border-box;
 }
 
-#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .availability-modal-head,
-#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .availability-modal-meta {
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .availability-modal-head,
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .availability-modal-meta {
   flex-shrink: 0;
 }
 
-#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .schedule-sheet-stack {
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .schedule-sheet-stack {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+.schedule-sheet-modal .template-shift-edit-screen {
+  max-width: none;
+  width: 100%;
+  margin: 0;
 }
 
 .draft-schedule-modal {
@@ -2532,7 +2538,7 @@ html.authed .header-signout-btn {
 .schedule-template-preview-stage {
   position: relative;
   isolation: isolate;
-  min-height: min(58vh, 520px);
+  min-height: min(72vh, 820px);
 }
 
 .schedule-template-preview-mount {
@@ -2640,6 +2646,11 @@ html.authed .header-signout-btn {
 
 .template-shift-edit-overlay .shift-details-editor {
   padding: 4px 2px 12px;
+}
+
+.template-shift-edit-overlay .shift-details-form {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .template-shift-edit-overlay .screen-actions-footer {
@@ -2993,8 +3004,8 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   box-sizing: border-box;
   /*
    * Sticky-left inside #screen-schedule: pans away vertically with the page, but
-   * stays put when scrolling the matrix sideways. Width is synced to the screen
-   * clientWidth in JS so the pin matches the visible viewport, not the table.
+   * stays put when scrolling the matrix sideways. Cap to the visible scrollport
+   * immediately so Approvals / Templates are not off-screen until JS measures.
    */
   position: sticky;
   left: 0;
@@ -3002,6 +3013,11 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   width: 100%;
   max-width: 100%;
   background: var(--bg);
+}
+
+html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
+  width: 100%;
+  max-width: 100%;
 }
 
 /* Matrix shares the screen scrollport — required for sticky Person/day + FOH/BOH. */
@@ -4916,6 +4932,13 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     max-width: min(92vw, 44rem);
   }
 
+  .schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel {
+    width: min(97.5vw, 100%);
+    max-width: min(97.5vw, 100%);
+    max-height: min(97.5vh, 97.5dvh);
+    height: min(97.5vh, 97.5dvh);
+  }
+
   .availability-matrix-dayhead {
     min-width: 4.25rem;
   }
@@ -5223,6 +5246,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+#shiftDetailsForm,
+.shift-details-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* Keep VL/SL reachable on phone — editor body scrolls; Save stays pinned. */
@@ -6030,6 +6061,17 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
   background: color-mix(in srgb, var(--primary) 14%, transparent);
   border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
   color: var(--primary);
+}
+
+.employee-card-payroll-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.employee-card-payroll-check input {
+  margin: 0;
 }
 
 .employee-card-leave {
@@ -6921,17 +6963,14 @@ html.authed.manager-app #screen-manager-messages .emp-messages-layout {
     max-width: 100%;
   }
 
-  /* Keep History / Approvals / Templates on one row; scroll sideways if needed. */
+  /* Wrap so Schedule Approvals stays in the top chrome instead of off-screen. */
   .schedule-toolbar-actions {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 8px;
     width: 100%;
     max-width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
-    scrollbar-width: thin;
+    overflow: visible;
   }
 
   .btn.schedule-toolbar-btn {

@@ -899,7 +899,12 @@ function humanizePushDeliveryErrors(errors) {
   return "Push was sent but not delivered: " + joined;
 }
 
-function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBaseUrl }) {
+function createPortalAuthRouter({
+  supabaseUrl,
+  supabaseServiceRoleKey,
+  supabaseAnonKey,
+  publicBaseUrl,
+}) {
   const router = require("express").Router();
 
   if (!supabaseUrl || !supabaseServiceRoleKey) {
@@ -928,6 +933,97 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       },
     },
   });
+  const goTrueApiKey = String(supabaseAnonKey || supabaseServiceRoleKey || "").trim();
+  const goTrueBase = String(supabaseUrl || "").replace(/\/$/, "");
+
+  /**
+   * Password grant via GoTrue REST (abortable). supabase-js signInWithPassword
+   * cannot be cancelled and used to hang past Render/iPhone budgets (TG_TIMEOUT).
+   */
+  async function fetchGoTruePasswordGrant(email, password, timeoutMs) {
+    const t0 = Date.now();
+    if (!goTrueBase || !goTrueApiKey) {
+      return { ok: false, error: { message: "auth_not_configured" }, ms: Date.now() - t0 };
+    }
+    const ms = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 12000;
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    let timer = null;
+    if (controller) {
+      timer = setTimeout(function () {
+        try {
+          controller.abort();
+        } catch (_ab) {
+          /* ignore */
+        }
+      }, ms);
+    }
+    try {
+      const res = await fetch(goTrueBase + "/auth/v1/token?grant_type=password", {
+        method: "POST",
+        headers: {
+          apikey: goTrueApiKey,
+          Authorization: "Bearer " + goTrueApiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: email, password: password }),
+        signal: controller ? controller.signal : undefined,
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_j) {
+        data = {};
+      }
+      return { ok: res.ok, status: res.status, data: data, ms: Date.now() - t0 };
+    } catch (err) {
+      const aborted =
+        (err && err.name === "AbortError") ||
+        /aborted|abort/i.test(String((err && err.message) || ""));
+      return {
+        ok: false,
+        aborted: !!aborted,
+        error: { message: aborted ? "auth_timeout" : String((err && err.message) || "net") },
+        ms: Date.now() - t0,
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function grantPasswordSession(email, password) {
+    /* One short attempt. A 12s+8s retry guaranteed a 20s 504 while Auth origin was hung. */
+    return fetchGoTruePasswordGrant(email, password, 8000);
+  }
+
+  function pingGoTrueHealth() {
+    if (!goTrueBase || !goTrueApiKey || typeof fetch !== "function") return;
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(function () {
+          try {
+            controller.abort();
+          } catch (_ab) {
+            /* ignore */
+          }
+        }, 4000)
+      : null;
+    void fetch(goTrueBase + "/auth/v1/health", {
+      headers: {
+        apikey: goTrueApiKey,
+        Authorization: "Bearer " + goTrueApiKey,
+      },
+      signal: controller ? controller.signal : undefined,
+    })
+      .catch(function () {
+        /* ignore */
+      })
+      .finally(function () {
+        if (timer) clearTimeout(timer);
+      });
+  }
+
+  /* Warm Auth TLS on boot so the first Sign in is not a cold handshake. */
+  pingGoTrueHealth();
 
   const profileSelect =
     "id, role, display_name, internal_auth_email, login_name, login_name_norm, recovery_email, recovery_email_norm, company_id";
@@ -963,19 +1059,55 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
     if (!match) {
       return { error: "Sign in required.", status: 401, needsSignIn: true };
     }
-    const { data, error } = await admin.auth.getUser(match[1]);
-    if (error || !data.user) {
+    const token = match[1];
+    let userId = "";
+    let user = null;
+    let timer = null;
+    try {
+      const raced = await Promise.race([
+        admin.auth.getUser(token),
+        new Promise(function (resolve) {
+          timer = setTimeout(function () {
+            resolve({ data: null, error: { message: "auth_timeout" } });
+          }, 3000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (raced && raced.data && raced.data.user && raced.data.user.id) {
+        user = raced.data.user;
+        userId = String(raced.data.user.id);
+      }
+    } catch (_gu) {
+      if (timer) clearTimeout(timer);
+    }
+    if (!userId) {
+      try {
+        const payloadB64 = String(token).split(".")[1] || "";
+        const json = Buffer.from(
+          payloadB64.replace(/-/g, "+").replace(/_/g, "/"),
+          "base64"
+        ).toString("utf8");
+        const obj = JSON.parse(json);
+        const exp = Number(obj && obj.exp);
+        if (!exp || exp * 1000 >= Date.now() - 30000) {
+          userId = obj && obj.sub ? String(obj.sub) : "";
+        }
+      } catch (_jwt) {
+        userId = "";
+      }
+    }
+    if (!userId) {
       return { error: "Sign in required.", status: 401, needsSignIn: true };
     }
     const { data: profile, error: profErr } = await admin
       .from("profiles")
       .select(profileSelect)
-      .eq("id", data.user.id)
+      .eq("id", userId)
       .maybeSingle();
     if (profErr || !profile) {
       return { error: "Account not found.", status: 404 };
     }
-    return { profile, userId: data.user.id, user: data.user };
+    return { profile, userId: userId, user: user || { id: userId } };
   }
 
   async function createPasswordResetToken(profileId) {
@@ -1253,12 +1385,17 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           "Account is missing sign-in data. Ask a manager to reset your account, then try again.",
       };
     }
-    const { data, error } = await admin.auth.signInWithPassword({
-      email: authEmail,
-      password,
-    });
-    if (error || !data.session) {
-      const errMsg = String((error && error.message) || "");
+    const grant = await grantPasswordSession(authEmail, password);
+    if (grant.aborted || (grant.error && /auth_timeout/i.test(String(grant.error.message || "")))) {
+      return {
+        error:
+          "Cloud sign-in is not responding. This is not your password. Open Supabase → this project → Restart project, wait a minute, then try again.",
+        timedOut: true,
+      };
+    }
+    const data = grant.data || {};
+    if (!grant.ok || !data.access_token || !data.refresh_token) {
+      const errMsg = String(data.error_description || data.msg || data.error || "");
       if (/email not confirmed|not confirmed/i.test(errMsg)) {
         return {
           error:
@@ -1267,6 +1404,14 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
       return { error: "Name or password is incorrect." };
     }
+    const session = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_in: data.expires_in,
+      expires_at: data.expires_at,
+      token_type: data.token_type || "bearer",
+      user: data.user || null,
+    };
     const backfillName =
       loginNameForBackfill ||
       profile.login_name ||
@@ -1277,7 +1422,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       console.warn("portal company ready on login", err);
     });
     return {
-      session: data.session,
+      session: session,
       role: profile.role,
       displayName: profile.display_name || profile.login_name || backfillName,
       company: null,
@@ -1352,6 +1497,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
   /** Cheap ping so Render + Supabase stay warm before anyone hits Sign in. */
   router.get("/warmup", async (_req, res) => {
     try {
+      pingGoTrueHealth();
       void admin.from("profiles").select("id").limit(1).then(
         function () {
           /* ignore */
@@ -1368,6 +1514,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
 
   router.post("/warmup", async (_req, res) => {
     try {
+      pingGoTrueHealth();
       void admin.from("profiles").select("id").limit(1).then(
         function () {
           /* ignore */
@@ -1402,38 +1549,57 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return res.status(400).json({ ok: false, message: "Password is required.", code: "TG_NO_PW" });
       }
       if (!email && loginName) {
-        const norm = normalizeLoginName(loginName);
-        /* Keep in sync with portal-auth-client RED_POKE_AUTH_HINTS. */
-        if (norm === "martin long") {
-          email = "gm.19a08d7d8f7849498b34a67d5d5ea22a@example.org";
+        try {
+          const found = await Promise.race([
+            findProfileByLoginName(
+              loginName,
+              RED_POKE_COMPANY_ID,
+              "internal_auth_email, login_name_norm"
+            ),
+            new Promise(function (resolve) {
+              setTimeout(function () {
+                resolve({ skipped: true });
+              }, 1200);
+            }),
+          ]);
+          if (found && found.profile && found.profile.internal_auth_email) {
+            email = String(found.profile.internal_auth_email).trim().toLowerCase();
+          }
+        } catch (_lookup) {
+          /* client should send email after resolve/cache */
         }
       }
       if (!email) {
         return res.status(400).json({ ok: false, message: "Email is required.", code: "TG_NO_EMAIL" });
       }
 
-      let timer = null;
-      const raced = await Promise.race([
-        admin.auth.signInWithPassword({ email, password }),
-        new Promise(function (resolve) {
-          timer = setTimeout(function () {
-            resolve({ data: null, error: { message: "auth_timeout" } });
-          }, 8000);
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
+      let grant = await grantPasswordSession(email, password);
 
-      if (raced && raced.error) {
-        const errMsg = String(raced.error.message || "");
-        if (/auth_timeout/i.test(errMsg)) {
-          return res.status(504).json({
-            ok: false,
-            timedOut: true,
-            message: "Sign-in timed out talking to Auth (server).",
-            code: "TG_TIMEOUT",
-            ms: Date.now() - t0,
-          });
-        }
+      if (grant.aborted || (grant.error && /auth_timeout/i.test(String(grant.error.message || "")))) {
+        return res.status(504).json({
+          ok: false,
+          timedOut: true,
+          message:
+            "Cloud sign-in is not responding. This is not your password. Open Supabase → this project → Restart project, wait a minute, then try again.",
+          code: "TG_TIMEOUT",
+          ms: Date.now() - t0,
+        });
+      }
+      if (grant.error && /auth_not_configured/i.test(String(grant.error.message || ""))) {
+        return res.status(503).json({ ok: false, message: keyDiag.message || "Auth is not configured.", code: "TG_NO_KEYS" });
+      }
+      if (grant.error && !grant.ok) {
+        return res.status(502).json({
+          ok: false,
+          message: "Could not reach Auth. Wait a moment and try again.",
+          code: "TG_NET",
+          ms: Date.now() - t0,
+        });
+      }
+
+      const data = grant.data || {};
+      if (!grant.ok) {
+        const errMsg = String(data.error_description || data.msg || data.error || "");
         if (/email not confirmed|not confirmed/i.test(errMsg)) {
           return res.status(401).json({
             ok: false,
@@ -1450,8 +1616,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           ms: Date.now() - t0,
         });
       }
-      const session = raced && raced.data && raced.data.session;
-      if (!session || !session.access_token || !session.refresh_token) {
+      if (!data.access_token || !data.refresh_token) {
         return res.status(401).json({
           ok: false,
           message: "Name or password is incorrect.",
@@ -1463,12 +1628,12 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         ok: true,
         code: "TG_OK",
         ms: Date.now() - t0,
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        expires_in: session.expires_in,
-        expires_at: session.expires_at,
-        token_type: session.token_type || "bearer",
-        user: session.user || null,
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_in: data.expires_in,
+        expires_at: data.expires_at,
+        token_type: data.token_type || "bearer",
+        user: data.user || null,
       });
     } catch (err) {
       console.warn("portal token-grant", err);
@@ -1528,16 +1693,33 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
       }
 
       /* Cap DB wait — hanging Supabase must not freeze Render for iPhone clients. */
-      const found = await Promise.race([
-        findProfileByLoginName(
-          loginName,
-          companyId,
-          "id, role, display_name, login_name, login_name_norm, internal_auth_email, company_id"
-        ),
-        new Promise(function (resolve) {
-          setTimeout(function () {
-            resolve({ error: "resolve_timeout" });
-          }, 4000);
+      const loginTrim = String(loginName || "").trim();
+      const [found, empNameRes] = await Promise.all([
+        Promise.race([
+          findProfileByLoginName(
+            loginName,
+            companyId,
+            "id, role, display_name, login_name, login_name_norm, internal_auth_email, company_id"
+          ),
+          new Promise(function (resolve) {
+            setTimeout(function () {
+              resolve({ error: "resolve_timeout" });
+            }, 4000);
+          }),
+        ]),
+        Promise.race([
+          admin
+            .from("employees")
+            .select("usual_restaurant, meta, auth_user_id, display_name")
+            .ilike("display_name", loginTrim)
+            .limit(5),
+          new Promise(function (resolve) {
+            setTimeout(function () {
+              resolve({ data: null, skipped: true });
+            }, 1200);
+          }),
+        ]).catch(function () {
+          return { data: null };
         }),
       ]);
       if (found && found.error === "resolve_timeout") {
@@ -1581,12 +1763,36 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         console.warn("portal resolve-auth backfill company_id", bfErr);
       });
 
+      let usualRestaurant = "";
+      let primaryLocationId = "";
+      try {
+        const empRows = empNameRes && Array.isArray(empNameRes.data) ? empNameRes.data : [];
+        let empRow = null;
+        if (empRows.length && profile && profile.id) {
+          empRow =
+            empRows.filter(function (row) {
+              return row && String(row.auth_user_id || "") === String(profile.id);
+            })[0] || empRows[0];
+        } else if (empRows.length) {
+          empRow = empRows[0];
+        }
+        if (empRow) {
+          usualRestaurant = String(empRow.usual_restaurant || "").trim();
+          const meta = empRow.meta && typeof empRow.meta === "object" ? empRow.meta : {};
+          primaryLocationId = String(meta.primaryLocationId || meta.primaryRestaurantId || "").trim();
+        }
+      } catch (_empHome) {
+        /* ignore — schedule default can wait for roster hydrate */
+      }
+
       const companyPayload = companyPayloadForFastSignIn(companyId, profile, null);
       const payload = {
         ok: true,
         authEmail,
         role: profile.role,
         displayName: profile.display_name || profile.login_name || String(loginName).trim(),
+        usualRestaurant: usualRestaurant,
+        primaryLocationId: primaryLocationId,
         ...(companyPayload || {}),
       };
       resolveAuthMemory.set(memKey, { at: Date.now(), payload });
@@ -2091,6 +2297,10 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
           needsSignIn: true,
           message: "Account created. Sign in with your name and password.",
           employeeId: rosterEmployeeId,
+          authEmail: internalEmail,
+          companyId: companyId || "",
+          role,
+          displayName,
         });
       }
 
@@ -2099,6 +2309,8 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         role,
         displayName,
         employeeId: rosterEmployeeId,
+        authEmail: internalEmail,
+        companyId: companyId || "",
         access_token: signInData.session.access_token,
         refresh_token: signInData.session.refresh_token,
       });
@@ -2289,6 +2501,7 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         displayName,
         role: accountRole,
         employeeId: rosterEmployeeId,
+        authEmail: internalEmail,
         message:
           accountRole === "manager"
             ? "Manager account created. They can sign in with their name and password."
@@ -2578,7 +2791,19 @@ function createPortalAuthRouter({ supabaseUrl, supabaseServiceRoleKey, publicBas
         return res.status(authed.status || 401).json({ ok: false, message: authed.error });
       }
       const p = authed.profile;
-      const company = await loadCompanyForProfile(admin, p);
+      let company = null;
+      try {
+        company = await Promise.race([
+          loadCompanyForProfile(admin, p),
+          new Promise(function (resolve) {
+            setTimeout(function () {
+              resolve(null);
+            }, 2000);
+          }),
+        ]);
+      } catch (_co) {
+        company = null;
+      }
       const companyPayload = companyClientPayload(company, p);
       return res.json({
         ok: true,

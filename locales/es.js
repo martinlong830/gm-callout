@@ -263,7 +263,8 @@ window.GM_I18N_ES = {
   'schedule.undo': 'Deshacer',
   'schedule.undoTitle': 'Deshacer el último cambio de horario o turno',
   'schedule.refresh': 'Actualizar',
-  'schedule.refreshTitle': 'Traer el horario más reciente de la nube (cambios de otros gerentes)',
+  'schedule.refreshTitle':
+    'Recargar todas las semanas desde la nube (horarios, personas y orden — sin recargar la página)',
   'schedule.refreshing': 'Actualizando el horario desde la nube…',
   'schedule.refreshDone': 'Horario actualizado. Todos los gerentes comparten esta copia en la nube.',
   'schedule.refreshFailed': 'No se pudo actualizar el horario.',
@@ -496,6 +497,11 @@ window.GM_I18N_ES = {
   'team.pin': 'PIN',
   'team.location': 'Ubicación',
   'team.primaryLocation': 'Ubicación principal',
+  'team.singleStorePayroll': 'Nómina de una sola tienda',
+  'team.singleStorePayrollOn': 'Sí',
+  'team.singleStorePayrollOff': 'No',
+  'team.singleStorePayrollHint':
+    'Activado: siempre se paga en la tienda principal. Desactivado: se paga en la tienda donde trabaja ese día.',
   'team.employmentStatus': 'Estado laboral',
   'team.partTime': 'Medio tiempo',
   'team.fullTime': 'Tiempo completo',

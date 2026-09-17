@@ -998,21 +998,46 @@
   async function fetchCellsRange(sb, companyId, fromIso, toIso, opts) {
     if (!sb) return { ok: false };
     opts = opts || {};
-    var q = sb
-      .from('schedule_cells')
-      .select(
-        'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at,updated_by_device'
-      )
-      .eq('deleted', false)
-      .gte('day_iso', fromIso)
-      .lte('day_iso', toIso);
-    if (companyId) q = q.eq('company_id', companyId);
-    var res = await q;
-    if (res.error) return { ok: false, error: res.error };
-    replaceCellsInRange(res.data || [], fromIso, toIso, {
+    var PAGE = 1000;
+    var all = [];
+    var from = 0;
+    var selectCols =
+      'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at,updated_by_device';
+    function baseQuery() {
+      var q = sb
+        .from('schedule_cells')
+        .select(selectCols)
+        .eq('deleted', false)
+        .gte('day_iso', fromIso)
+        .lte('day_iso', toIso);
+      if (companyId) q = q.eq('company_id', companyId);
+      return q;
+    }
+    for (;;) {
+      var q = baseQuery()
+        .order('day_iso', { ascending: true })
+        .order('restaurant_id', { ascending: true })
+        .order('role', { ascending: true })
+        .order('slot_key', { ascending: true })
+        .range(from, from + PAGE - 1);
+      var res = await q;
+      if (res.error && from === 0) {
+        var fallback = await baseQuery();
+        if (fallback.error) return { ok: false, error: fallback.error };
+        all = fallback.data || [];
+        break;
+      }
+      if (res.error) return { ok: false, error: res.error };
+      var chunk = res.data || [];
+      for (var i = 0; i < chunk.length; i += 1) all.push(chunk[i]);
+      if (chunk.length < PAGE) break;
+      from += PAGE;
+      if (from > 40000) break;
+    }
+    replaceCellsInRange(all, fromIso, toIso, {
       forceTombstone: !!opts.forceTombstone,
     });
-    return { ok: true, rows: res.data || [] };
+    return { ok: true, rows: all };
   }
 
   async function fetchSlots(sb, companyId) {

@@ -52,27 +52,95 @@
     return isValidRecoveryEmail(row.recovery_email);
   }
 
+  function readStashedAccessToken() {
+    try {
+      var raw = sessionStorage.getItem("gm-callout-auth-session-backup");
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (p && p.access_token) return String(p.access_token);
+      }
+    } catch (_ss) {
+      /* ignore */
+    }
+    try {
+      var raw2 = localStorage.getItem("gm-callout-auth-session-backup");
+      if (raw2) {
+        var p2 = JSON.parse(raw2);
+        if (p2 && p2.access_token) return String(p2.access_token);
+      }
+    } catch (_ls) {
+      /* ignore */
+    }
+    try {
+      var base =
+        typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
+      var ref = base ? new URL(base).hostname.split(".")[0] : "";
+      if (!ref) return "";
+      var raw3 = localStorage.getItem("sb-" + ref + "-auth-token");
+      if (!raw3) return "";
+      var p3 = JSON.parse(raw3);
+      if (p3 && p3.access_token) return String(p3.access_token);
+      if (p3 && p3.currentSession && p3.currentSession.access_token) {
+        return String(p3.currentSession.access_token);
+      }
+    } catch (_sb) {
+      /* ignore */
+    }
+    return "";
+  }
+
   async function portalAuthedFetch(method, path, body) {
-    var session = await portalSession();
-    if (!session || !session.access_token) {
+    /* Prefer the login stash. getSession can sit on the supabase-js lock while
+     * setSession from Sign in is still finishing, which left Account blank. */
+    var token = readStashedAccessToken();
+    if (!token) {
+      var session = await withClientTimeout(portalSession(), 2000, "session_timeout");
+      token =
+        session && session.access_token && !session.timedOut ? String(session.access_token) : "";
+    }
+    if (!token) {
       return { ok: false, message: mapPortalMessage("Sign in required.", "common.signInRequired") };
     }
     var opts = {
       method: method,
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + session.access_token,
+        Authorization: "Bearer " + token,
       },
     };
     if (body !== undefined) opts.body = JSON.stringify(body);
     var res;
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var abortTimer = null;
+    if (controller) {
+      abortTimer = setTimeout(function () {
+        try {
+          controller.abort();
+        } catch (_ab) {
+          /* ignore */
+        }
+      }, 10000);
+    }
+    if (controller) opts.signal = controller.signal;
     try {
       res = await fetch(path, opts);
     } catch (netErr) {
+      var aborted =
+        (netErr && netErr.name === "AbortError") ||
+        /aborted|abort/i.test(String((netErr && netErr.message) || ""));
       return {
         ok: false,
-        message: mapPortalMessage((netErr && netErr.message) || "Network error. Check your connection and try again.", "common.networkError"),
+        timedOut: !!aborted,
+        message: mapPortalMessage(
+          aborted
+            ? "Could not load account. Wait a moment and try again."
+            : (netErr && netErr.message) ||
+                "Network error. Check your connection and try again.",
+          "common.networkError"
+        ),
       };
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
     }
     var data = await readPortalResponse(res);
     if (!res.ok || !data.ok) {
@@ -228,8 +296,8 @@
   }
 
   /**
-   * Red Poke name → Auth email. Lets iPhone Chrome sign in when Render
-   * /api/portal/resolve-auth is cold or hung (no password in this map).
+   * Optional name → Auth email seeds. Written into the same durable cache every
+   * other account uses after first resolve/signup — not a separate login path.
    */
   var RED_POKE_COMPANY_ID = "a0000000-0000-4000-8000-000000000001";
   var RED_POKE_AUTH_HINTS = {
@@ -240,18 +308,99 @@
     },
   };
 
-  function redPokeAuthHint(loginName, companyId) {
-    var norm = String(loginName || "")
+  function normalizeLoginKey(loginName) {
+    return String(loginName || "")
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
-    var hint = RED_POKE_AUTH_HINTS[norm];
-    if (!hint) return null;
-    /*
-     * Always honor known Red Poke manager hints even if companyId is missing/stale —
-     * a wrong stored company id previously skipped the fast path and hung on Render.
-     */
-    return hint;
+  }
+
+  function redPokeAuthHint(loginName) {
+    return RED_POKE_AUTH_HINTS[normalizeLoginKey(loginName)] || null;
+  }
+
+  function authEmailCacheKey(companyId, loginName) {
+    var cid = String(companyId || "").trim() || "_";
+    return "gm-portal-auth-email-v1:" + cid + ":" + normalizeLoginKey(loginName);
+  }
+
+  function writeAuthEmailCache(companyId, loginName, fields) {
+    fields = fields || {};
+    var email = String(fields.email || fields.authEmail || "").trim().toLowerCase();
+    if (!email || !loginName) return;
+    var cid = String(companyId || fields.companyId || "").trim();
+    var payload = JSON.stringify({
+      email: email,
+      role: fields.role || "",
+      displayName: fields.displayName || String(loginName).trim(),
+      usualRestaurant: fields.usualRestaurant || "",
+      primaryLocationId: fields.primaryLocationId || "",
+      companyId: cid,
+      ts: Date.now(),
+    });
+    var keys = [authEmailCacheKey(cid || "_", loginName)];
+    if (cid && cid !== "_") keys.push(authEmailCacheKey("_", loginName));
+    var k;
+    for (k = 0; k < keys.length; k += 1) {
+      try {
+        localStorage.setItem(keys[k], payload);
+      } catch (_ls) {
+        /* ignore */
+      }
+      try {
+        sessionStorage.setItem(keys[k], payload);
+      } catch (_ss) {
+        /* ignore */
+      }
+    }
+  }
+
+  function readAuthEmailCache(companyId, loginName) {
+    var cid = String(companyId || "").trim();
+    var ids = [];
+    if (cid) ids.push(cid);
+    ids.push("_");
+    if (cid !== RED_POKE_COMPANY_ID) ids.push(RED_POKE_COMPANY_ID);
+    var i;
+    for (i = 0; i < ids.length; i += 1) {
+      var key = authEmailCacheKey(ids[i], loginName);
+      var raw = null;
+      try {
+        raw = sessionStorage.getItem(key);
+      } catch (_ss) {
+        raw = null;
+      }
+      if (!raw) {
+        try {
+          raw = localStorage.getItem(key);
+        } catch (_ls) {
+          raw = null;
+        }
+      }
+      if (!raw) continue;
+      try {
+        var parsed = JSON.parse(raw);
+        if (!parsed || !parsed.email) continue;
+        if (parsed.ts && Date.now() - Number(parsed.ts) > 30 * 24 * 60 * 60 * 1000) {
+          continue;
+        }
+        return parsed;
+      } catch (_p) {
+        /* ignore */
+      }
+    }
+    var hint = redPokeAuthHint(loginName);
+    if (hint && hint.authEmail) {
+      var seeded = {
+        email: hint.authEmail,
+        role: hint.role || "",
+        displayName: hint.displayName || String(loginName).trim(),
+        companyId: cid || RED_POKE_COMPANY_ID,
+      };
+      writeAuthEmailCache(cid || RED_POKE_COMPANY_ID, loginName, seeded);
+      return seeded;
+    }
+    return null;
   }
 
   function maskAuthEmail(email) {
@@ -302,7 +451,7 @@
   }
 
   /** Browser → Supabase Auth token endpoint (skips Render + supabase-js lock). */
-  async function goTruePasswordGrant(email, password, timeoutMs) {
+  async function goTruePasswordGrant(email, password, timeoutMs, skipApply) {
     var t0 = Date.now();
     var base =
       typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
@@ -369,6 +518,10 @@
           email: maskAuthEmail(email),
         });
       }
+      if (skipApply) {
+        stashSupabaseSessionLocally(data);
+        return { ok: true, session: data, code: "GT_OK", ms: Date.now() - t0 };
+      }
       /*
        * Apply session with a short cap. setSession used to hang 10s on iPhone after
        * tokens already arrived — stash manually and continue so Sign in can finish.
@@ -398,7 +551,7 @@
         /aborted|abort/i.test(String((netErr && netErr.message) || ""));
       return packAuthFail(
         aborted
-          ? "Sign-in timed out talking to Auth. Wait a moment and try again."
+          ? "Cloud sign-in is not responding. This is not your password. Open Supabase → this project → Restart project, wait a minute, then try again."
           : (netErr && netErr.message) || "Network error. Check your connection and try again.",
         aborted ? "GT_TIMEOUT" : "GT_NET",
         {
@@ -441,17 +594,20 @@
     } catch (_ls) {
       /* ignore */
     }
+    var backup = JSON.stringify({
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at: expiresAt,
+      saved_at: Date.now(),
+    });
     try {
-      sessionStorage.setItem(
-        "gm-callout-auth-session-backup",
-        JSON.stringify({
-          access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
-          expires_at: expiresAt,
-          saved_at: Date.now(),
-        })
-      );
+      sessionStorage.setItem("gm-callout-auth-session-backup", backup);
     } catch (_ss) {
+      /* ignore */
+    }
+    try {
+      localStorage.setItem("gm-callout-auth-session-backup", backup);
+    } catch (_lsBak) {
       /* ignore */
     }
   }
@@ -695,6 +851,10 @@
     };
   }
 
+  var getAccountInflight = null;
+  var lastAccountResult = null;
+  var lastAccountAt = 0;
+
   window.gmPortalAuth = {
     mapPortalMessage: mapPortalMessage,
 
@@ -719,45 +879,67 @@
       }
     },
 
+    rememberAuthEmail: function (loginName, companyId, fields) {
+      writeAuthEmailCache(companyId, loginName, fields || {});
+    },
+
     /**
-     * Prefetch auth email while the user types their name (any account).
-     * Sign-in then skips the resolve round-trip when the cache is warm.
+     * Prefetch auth email while the user types their name (every account).
+     * Result is stored in memory AND durable cache so Sign in skips resolve.
      */
     prefetchResolve: function (loginName, companyId) {
       var name = String(loginName || "").trim();
       var cid = companyId ? String(companyId).trim() : "";
       if (!name || name.length < 2) return;
-      var norm = name.toLowerCase().replace(/\s+/g, " ");
-      var hint = redPokeAuthHint(name, cid);
-      if (hint && hint.authEmail) {
+      var norm = normalizeLoginKey(name);
+      var cached = readAuthEmailCache(cid, name);
+      if (cached && cached.email) {
         window.__GM_AUTH_RESOLVE_CACHE__ = {
           norm: norm,
-          companyId: cid || RED_POKE_COMPANY_ID,
+          companyId: cid,
           data: {
             ok: true,
-            authEmail: hint.authEmail,
-            role: hint.role,
-            displayName: hint.displayName,
-            companyId: cid || RED_POKE_COMPANY_ID,
-            companyName: "Red Poke",
-            accessCode: "redpoke",
-            teamStateId: "main",
+            authEmail: cached.email,
+            role: cached.role,
+            displayName: cached.displayName,
+            companyId: cached.companyId || cid,
+            usualRestaurant: cached.usualRestaurant || "",
+            primaryLocationId: cached.primaryLocationId || "",
           },
           promise: Promise.resolve({
             ok: true,
             data: {
-              authEmail: hint.authEmail,
-              role: hint.role,
-              displayName: hint.displayName,
-              companyId: cid || RED_POKE_COMPANY_ID,
-              companyName: "Red Poke",
-              accessCode: "redpoke",
-              teamStateId: "main",
+              authEmail: cached.email,
+              role: cached.role,
+              displayName: cached.displayName,
+              companyId: cached.companyId || cid,
+              usualRestaurant: cached.usualRestaurant || "",
+              primaryLocationId: cached.primaryLocationId || "",
             },
           }),
           startedAt: Date.now(),
           readyAt: Date.now(),
         };
+        /* Refresh in the background so home-store fields stay current. */
+        if (cid) {
+          void portalFetch(
+            "/api/portal/resolve-auth",
+            { loginName: name, companyId: cid },
+            { timeoutMs: 5000 }
+          ).then(function (r) {
+            if (r && r.ok && r.data && r.data.authEmail) {
+              writeAuthEmailCache(cid, name, r.data);
+              window.__GM_AUTH_RESOLVE_CACHE__ = {
+                norm: norm,
+                companyId: cid,
+                data: r.data,
+                promise: Promise.resolve({ ok: true, data: r.data }),
+                startedAt: Date.now(),
+                readyAt: Date.now(),
+              };
+            }
+          });
+        }
         return window.__GM_AUTH_RESOLVE_CACHE__.promise;
       }
       if (!cid) return;
@@ -777,6 +959,7 @@
         { timeoutMs: 5000 }
       ).then(function (r) {
         if (r && r.ok && r.data && r.data.authEmail) {
+          writeAuthEmailCache(cid, name, r.data);
           window.__GM_AUTH_RESOLVE_CACHE__ = {
             norm: norm,
             companyId: cid,
@@ -818,67 +1001,29 @@
           accessCode: companyFields.accessCode || "",
           teamStateId: companyFields.teamStateId || "",
           restaurantsConfig: companyFields.restaurantsConfig || [],
+          usualRestaurant: companyFields.usualRestaurant || "",
+          primaryLocationId: companyFields.primaryLocationId || "",
         };
       }
 
-      function cacheKey() {
-        return "gm-portal-auth-email-v1:" + (cid || "_") + ":" + nameNorm;
-      }
-
-      function cacheAuthEmail(email, role, displayName) {
-        if (!email) return;
-        var payload = JSON.stringify({
+      function cacheAuthEmail(email, role, displayName, extra) {
+        extra = extra || {};
+        writeAuthEmailCache(cid || extra.companyId, name, {
           email: email,
-          role: role || "",
-          displayName: displayName || "",
-          ts: Date.now(),
+          role: role,
+          displayName: displayName,
+          usualRestaurant: extra.usualRestaurant || "",
+          primaryLocationId: extra.primaryLocationId || "",
+          companyId: extra.companyId || cid,
         });
-        try {
-          localStorage.setItem(cacheKey(), payload);
-        } catch (_c) {
-          /* ignore */
-        }
-        try {
-          sessionStorage.setItem(cacheKey(), payload);
-        } catch (_c2) {
-          /* ignore */
-        }
       }
 
-      function readCachedAuth() {
-        var raw = null;
-        try {
-          raw = sessionStorage.getItem(cacheKey());
-        } catch (_ss) {
-          raw = null;
-        }
-        if (!raw) {
-          try {
-            raw = localStorage.getItem(cacheKey());
-          } catch (_ls) {
-            raw = null;
-          }
-        }
-        if (!raw) return null;
-        try {
-          var parsed = JSON.parse(raw);
-          if (!parsed || !parsed.email) return null;
-          /* Keep email cache for 30 days — iPhone Chrome often drops warm memory. */
-          if (parsed.ts && Date.now() - Number(parsed.ts) > 30 * 24 * 60 * 60 * 1000) {
-            return null;
-          }
-          return parsed;
-        } catch (_r) {
-          return null;
-        }
-      }
-
-      async function proxyTokenGrant(email) {
+      async function proxyTokenGrant(email, skipApply) {
         var t0 = Date.now();
         var r = await portalFetch(
           "/api/portal/token-grant",
           { email: email, password: pw, loginName: name },
-          { timeoutMs: 12000 }
+          { timeoutMs: 9000 }
         );
         if (!r.ok) {
           return packAuthFail(r.message || "Sign in failed.", r.code || (r.timedOut ? "TG_TIMEOUT" : "TG_FAIL"), {
@@ -896,6 +1041,10 @@
             email: maskAuthEmail(email),
             via: "proxy",
           });
+        }
+        if (skipApply) {
+          stashSupabaseSessionLocally(data);
+          return { ok: true, session: data, code: data.code || "TG_OK", ms: data.ms || Date.now() - t0, via: "proxy" };
         }
         var applied = await applyPortalSession({
           access_token: data.access_token,
@@ -916,20 +1065,72 @@
         }
       }
 
+      function firstOkGrant(a, b) {
+        return new Promise(function (resolve) {
+          var done = false;
+          var fails = [];
+          function consider(r) {
+            if (done) return;
+            if (r && r.ok) {
+              done = true;
+              resolve(r);
+              return;
+            }
+            fails.push(r || { ok: false });
+            if (fails.length >= 2) {
+              done = true;
+              var timed = fails.filter(function (f) {
+                return f && f.timedOut;
+              })[0];
+              resolve(timed || fails[0]);
+            }
+          }
+          Promise.resolve(a).then(consider, function (err) {
+            consider({
+              ok: false,
+              message: String((err && err.message) || err || "Sign in failed."),
+            });
+          });
+          Promise.resolve(b).then(consider, function (err) {
+            consider({
+              ok: false,
+              message: String((err && err.message) || err || "Sign in failed."),
+            });
+          });
+        });
+      }
+
       async function clientPasswordGrant(email) {
         /*
-         * iPhone Chrome: browser→Supabase Auth hangs (~10s). Use same-origin proxy first.
-         * Desktop: try direct GoTrue, fall back to proxy on timeout.
+         * Race same-origin proxy and direct GoTrue for tokens, then apply once.
+         * Serial fallback used to add 8–10s when the first path hung.
          */
-        if (preferSameOriginAuth()) {
-          return proxyTokenGrant(email);
+        var tokens = await firstOkGrant(
+          goTruePasswordGrant(email, pw, 8000, true),
+          proxyTokenGrant(email, true)
+        );
+        if (!tokens.ok || !tokens.session || !tokens.session.access_token) return tokens;
+        stashSupabaseSessionLocally(tokens.session);
+        var applied = await applyPortalSession({
+          access_token: tokens.session.access_token,
+          refresh_token: tokens.session.refresh_token,
+        });
+        if (!applied.ok) {
+          return {
+            ok: true,
+            session: tokens.session,
+            sessionApplyDeferred: true,
+            code: tokens.code || "GT_OK_STASH",
+            via: tokens.via,
+          };
         }
-        var direct = await goTruePasswordGrant(email, pw, 6000);
-        if (direct.ok) return direct;
-        if (direct.timedOut || (direct.code && /TIMEOUT/i.test(direct.code))) {
-          return proxyTokenGrant(email);
-        }
-        return direct;
+        return {
+          ok: true,
+          session: tokens.session,
+          code: tokens.code || "GT_OK",
+          ms: tokens.ms,
+          via: tokens.via,
+        };
       }
 
       async function resolveAuthEmail() {
@@ -967,10 +1168,10 @@
       }
 
       var signStartedAt = Date.now();
+      var emailCandidates = [];
       function failWith(message, code, extra) {
         extra = extra || {};
-        extra.path = extra.path || (hint ? "hint" : "resolve");
-        extra.hint = hint ? "1" : "0";
+        extra.path = extra.path || (emailCandidates.length ? "cache" : "resolve");
         extra.cand = String(emailCandidates.length);
         extra.name = nameNorm.slice(0, 24);
         extra.cid = cid ? "1" : "0";
@@ -979,16 +1180,11 @@
         return packAuthFail(message, code, extra);
       }
 
-      /*
-       * iPhone Chrome hot path: hint/cache → Supabase Auth directly.
-       * Never await Render warmup on this path (hung API ate mobile connections).
-       */
-      var hint = redPokeAuthHint(name, cid);
-      var emailCandidates = [];
       function pushEmail(email, role, displayName, companyFields) {
         if (!email) return;
         var em = String(email).trim().toLowerCase();
-        for (var p = 0; p < emailCandidates.length; p += 1) {
+        var p;
+        for (p = 0; p < emailCandidates.length; p += 1) {
           if (emailCandidates[p].email.toLowerCase() === em) return;
         }
         emailCandidates.push({
@@ -998,30 +1194,48 @@
           companyFields: companyFields || { companyId: cid },
         });
       }
-      if (hint && hint.authEmail) {
-        pushEmail(hint.authEmail, hint.role, hint.displayName, {
-          companyId: cid || RED_POKE_COMPANY_ID,
-          companyName: "Red Poke",
-          accessCode: "redpoke",
-          teamStateId: "main",
-        });
-      }
-      var cached = readCachedAuth();
+
+      /* Same path for every account: durable cache / prefetch → grant. Resolve in parallel. */
+      window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
+      void window.gmPortalAuth.prefetchResolve(name, cid);
+
+      var cached = readAuthEmailCache(cid, name);
       if (cached && cached.email) {
         pushEmail(cached.email, cached.role, cached.displayName, {
-          companyId: cid || (hint ? RED_POKE_COMPANY_ID : ""),
-          companyName: hint ? "Red Poke" : "",
-          accessCode: hint ? "redpoke" : "",
-          teamStateId: hint ? "main" : "",
+          companyId: cached.companyId || cid,
+          usualRestaurant: cached.usualRestaurant || "",
+          primaryLocationId: cached.primaryLocationId || "",
         });
       }
 
-      for (var i = 0; i < emailCandidates.length; i += 1) {
+      var resolvePromise = resolveAuthEmail();
+
+      async function mergeResolvedFields(base) {
+        base = base || {};
+        var late = await withClientTimeout(resolvePromise, 400, { timedOut: true });
+        if (late && late.ok && late.data && late.data.authEmail) {
+          writeAuthEmailCache(cid, name, late.data);
+          return {
+            companyId: late.data.companyId || base.companyId || cid,
+            companyName: late.data.companyName || base.companyName || "",
+            accessCode: late.data.accessCode || base.accessCode || "",
+            teamStateId: late.data.teamStateId || base.teamStateId || "",
+            restaurantsConfig: late.data.restaurantsConfig || base.restaurantsConfig || [],
+            usualRestaurant: late.data.usualRestaurant || base.usualRestaurant || "",
+            primaryLocationId: late.data.primaryLocationId || base.primaryLocationId || "",
+          };
+        }
+        return base;
+      }
+
+      var i;
+      for (i = 0; i < emailCandidates.length; i += 1) {
         var cand = emailCandidates[i];
         var grant = await clientPasswordGrant(cand.email);
         if (grant.ok) {
-          cacheAuthEmail(cand.email, cand.role, cand.displayName);
-          return finishOk(cand.role, cand.displayName, cand.companyFields);
+          cacheAuthEmail(cand.email, cand.role, cand.displayName, cand.companyFields);
+          var merged = await mergeResolvedFields(cand.companyFields);
+          return finishOk(cand.role, cand.displayName, merged);
         }
         if (grant.timedOut || (grant.code && /TIMEOUT/i.test(grant.code))) {
           return failWith(
@@ -1040,35 +1254,16 @@
             from: grant.diag || "",
           });
         }
-        /* Keep last incorrect for hinted path final message. */
-        if (hint && i === emailCandidates.length - 1) {
-          return failWith(
-            grant.message || "Name or password is incorrect.",
-            grant.code || "GT_BAD_CREDS",
-            { email: maskAuthEmail(cand.email), from: grant.diag || "" }
-          );
-        }
+        /* Stale cache / wrong password — fall through to resolve like every other account. */
       }
 
-      /* Hinted Red Poke managers: never fall through to Render (that was the iPhone hang). */
-      if (hint) {
-        return failWith(
-          emailCandidates.length
-            ? "Name or password is incorrect."
-            : "Could not sign in. Check your password and try again.",
-          emailCandidates.length ? "HINT_BAD_CREDS" : "HINT_NO_EMAIL",
-          {}
-        );
-      }
-
-      window.gmPortalAuth && window.gmPortalAuth.warmup && window.gmPortalAuth.warmup();
-
-      var resolved = await resolveAuthEmail();
+      var resolved = await resolvePromise;
       if (resolved.ok && resolved.data && resolved.data.authEmail) {
         cacheAuthEmail(
           resolved.data.authEmail,
           resolved.data.role,
-          resolved.data.displayName
+          resolved.data.displayName,
+          resolved.data
         );
         var grant2 = await clientPasswordGrant(resolved.data.authEmail);
         if (grant2.ok) {
@@ -1175,8 +1370,18 @@
     },
 
     signUp: async function (payload) {
-      const r = await portalFetch("/api/portal/signup", payload || {});
+      payload = payload || {};
+      const r = await portalFetch("/api/portal/signup", payload);
       if (!r.ok) return r;
+      if (r.data && r.data.authEmail) {
+        writeAuthEmailCache(payload.companyId || r.data.companyId, payload.loginName, {
+          email: r.data.authEmail,
+          role: r.data.role,
+          displayName: r.data.displayName || payload.displayName || payload.loginName,
+          companyId: payload.companyId || r.data.companyId,
+          usualRestaurant: payload.usualRestaurant || r.data.usualRestaurant || "",
+        });
+      }
       if (r.data.needsSignIn) {
         return {
           ok: true,
@@ -1197,8 +1402,17 @@
 
     /** Manager-only: create portal login for a new employee without changing the current session. */
     createEmployeeAccount: async function (payload) {
-      var r = await portalAuthedFetch("POST", "/api/portal/admin/create-employee", payload || {});
+      payload = payload || {};
+      var r = await portalAuthedFetch("POST", "/api/portal/admin/create-employee", payload);
       if (!r.ok) return r;
+      if (r.data && r.data.authEmail && (r.data.loginName || payload.loginName)) {
+        writeAuthEmailCache(payload.companyId, r.data.loginName || payload.loginName, {
+          email: r.data.authEmail,
+          role: r.data.role,
+          displayName: r.data.displayName || payload.displayName,
+          companyId: payload.companyId,
+        });
+      }
       return {
         ok: true,
         userId: r.data.userId,
@@ -1299,49 +1513,76 @@
     },
 
     getAccount: async function () {
-      var viaApi = await portalAuthedFetch("GET", "/api/portal/account");
-      if (viaApi.ok && viaApi.data) {
-        return {
+      if (lastAccountResult && Date.now() - lastAccountAt < 20000) {
+        return lastAccountResult;
+      }
+      if (getAccountInflight) return getAccountInflight;
+      getAccountInflight = (async function () {
+        var viaApi = await portalAuthedFetch("GET", "/api/portal/account");
+        if (viaApi.ok && viaApi.data) {
+          var packed = {
+            ok: true,
+            loginName: viaApi.data.loginName || "",
+            recoveryEmail: viaApi.data.recoveryEmail || "",
+            hasRecoveryEmail: !!viaApi.data.hasRecoveryEmail,
+            role: viaApi.data.role || "",
+            companyId: viaApi.data.companyId || "",
+            companyName: viaApi.data.companyName || "",
+            accessCode: viaApi.data.accessCode || "",
+            isCompanyCreator: !!viaApi.data.isCompanyCreator,
+            needsAccessCodeSetup: !!viaApi.data.needsAccessCodeSetup,
+          };
+          lastAccountResult = packed;
+          lastAccountAt = Date.now();
+          return packed;
+        }
+        var session = await withClientTimeout(portalSession(), 2000, "session_timeout");
+        if (!session || session.timedOut || !session.user) {
+          return {
+            ok: false,
+            message: mapPortalMessage(
+              (viaApi && viaApi.message) || "Could not load account. Wait a moment and try again.",
+              "common.requestFailed"
+            ),
+          };
+        }
+        var result = await withClientTimeout(
+          window.gmSupabase
+            .from("profiles")
+            .select("login_name, display_name, recovery_email, recovery_email_norm, role, company_id")
+            .eq("id", session.user.id)
+            .maybeSingle(),
+          4000,
+          { error: { message: "Could not load account. Wait a moment and try again." } }
+        );
+        if (result.error) {
+          return { ok: false, message: result.error.message || "Could not load account." };
+        }
+        if (!result.data) {
+          return { ok: false, message: "Account not found." };
+        }
+        var row = result.data;
+        var fromRow = {
           ok: true,
-          loginName: viaApi.data.loginName || "",
-          recoveryEmail: viaApi.data.recoveryEmail || "",
-          hasRecoveryEmail: !!viaApi.data.hasRecoveryEmail,
-          role: viaApi.data.role || "",
-          companyId: viaApi.data.companyId || "",
-          companyName: viaApi.data.companyName || "",
-          accessCode: viaApi.data.accessCode || "",
-          isCompanyCreator: !!viaApi.data.isCompanyCreator,
-          needsAccessCodeSetup: !!viaApi.data.needsAccessCodeSetup,
+          loginName: row.login_name || row.display_name || "",
+          recoveryEmail: row.recovery_email || "",
+          hasRecoveryEmail: profileHasRecoveryEmail(row),
+          role: row.role || "",
+          companyId: row.company_id || "",
+          companyName: "",
+          accessCode: "",
+          isCompanyCreator: false,
+          needsAccessCodeSetup: false,
         };
+        lastAccountResult = fromRow;
+        lastAccountAt = Date.now();
+        return fromRow;
+      })();
+      try {
+        return await getAccountInflight;
+      } finally {
+        getAccountInflight = null;
       }
-      var session = await portalSession();
-      if (!session) {
-        return { ok: false, message: mapPortalMessage("Sign in required.", "common.signInRequired") };
-      }
-      var result = await window.gmSupabase
-        .from("profiles")
-        .select("login_name, display_name, recovery_email, recovery_email_norm, role, company_id")
-        .eq("id", session.user.id)
-        .maybeSingle();
-      if (result.error) {
-        return { ok: false, message: result.error.message || "Could not load account." };
-      }
-      if (!result.data) {
-        return { ok: false, message: "Account not found." };
-      }
-      var row = result.data;
-      return {
-        ok: true,
-        loginName: row.login_name || row.display_name || "",
-        recoveryEmail: row.recovery_email || "",
-        hasRecoveryEmail: profileHasRecoveryEmail(row),
-        role: row.role || "",
-        companyId: row.company_id || "",
-        companyName: "",
-        accessCode: "",
-        isCompanyCreator: false,
-        needsAccessCodeSetup: false,
-      };
     },
 
     updateRecoveryEmail: async function (recoveryEmail) {
