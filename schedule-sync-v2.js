@@ -995,14 +995,70 @@
     return { ok: true, data: data, conflicts: (data && data.conflicts) || [] };
   }
 
+  function isoAddDaysLocal(iso, days) {
+    var p = String(iso || '')
+      .slice(0, 10)
+      .split('-');
+    if (p.length < 3) return '';
+    var dt = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + days);
+    if (isNaN(dt.getTime())) return '';
+    return (
+      dt.getFullYear() +
+      '-' +
+      String(dt.getMonth() + 1).padStart(2, '0') +
+      '-' +
+      String(dt.getDate()).padStart(2, '0')
+    );
+  }
+
+  function isoDaySpanInclusive(fromIso, toIso) {
+    var a = Date.parse(String(fromIso).slice(0, 10) + 'T12:00:00');
+    var b = Date.parse(String(toIso).slice(0, 10) + 'T12:00:00');
+    if (!isFinite(a) || !isFinite(b) || b < a) return 0;
+    return Math.round((b - a) / 86400000) + 1;
+  }
+
   async function fetchCellsRange(sb, companyId, fromIso, toIso, opts) {
     if (!sb) return { ok: false };
     opts = opts || {};
-    var PAGE = 1000;
-    var all = [];
-    var from = 0;
     var selectCols =
-      'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at,updated_by_device';
+      'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at';
+    var span = isoDaySpanInclusive(fromIso, toIso);
+    /*
+     * Long windows (Refresh used to pull 15 weeks as one ordered 1000-row pager).
+     * Split into week chunks and fetch a few in parallel — much faster, same cache.
+     */
+    if (span > 8 && !opts._noSplit) {
+      var chunks = [];
+      var cur = String(fromIso).slice(0, 10);
+      var end = String(toIso).slice(0, 10);
+      while (cur && cur <= end) {
+        var chunkEnd = isoAddDaysLocal(cur, 6);
+        if (!chunkEnd || chunkEnd > end) chunkEnd = end;
+        chunks.push({ from: cur, to: chunkEnd });
+        cur = isoAddDaysLocal(chunkEnd, 1);
+        if (!cur) break;
+      }
+      var all = [];
+      var BATCH = 6;
+      var childOpts = Object.assign({}, opts, { _noSplit: true });
+      for (var bi = 0; bi < chunks.length; bi += BATCH) {
+        var slice = chunks.slice(bi, bi + BATCH);
+        var parts = await Promise.all(
+          slice.map(function (c) {
+            return fetchCellsRange(sb, companyId, c.from, c.to, childOpts);
+          })
+        );
+        for (var pi = 0; pi < parts.length; pi += 1) {
+          if (!parts[pi] || parts[pi].ok === false) {
+            return parts[pi] || { ok: false };
+          }
+          var rows = parts[pi].rows || [];
+          for (var ri = 0; ri < rows.length; ri += 1) all.push(rows[ri]);
+        }
+      }
+      return { ok: true, rows: all };
+    }
     function baseQuery() {
       var q = sb
         .from('schedule_cells')
@@ -1013,31 +1069,47 @@
       if (companyId) q = q.eq('company_id', companyId);
       return q;
     }
+    var PAGE = 1000;
+    var allShort = [];
+    var from = 0;
+    var useOrder = false;
     for (;;) {
-      var q = baseQuery()
-        .order('day_iso', { ascending: true })
-        .order('restaurant_id', { ascending: true })
-        .order('role', { ascending: true })
-        .order('slot_key', { ascending: true })
-        .range(from, from + PAGE - 1);
+      var q = baseQuery();
+      if (useOrder) {
+        q = q
+          .order('day_iso', { ascending: true })
+          .order('restaurant_id', { ascending: true })
+          .order('role', { ascending: true })
+          .order('slot_key', { ascending: true })
+          .range(from, from + PAGE - 1);
+      } else {
+        q = q.limit(PAGE);
+      }
       var res = await q;
-      if (res.error && from === 0) {
+      if (res.error && from === 0 && !useOrder) {
         var fallback = await baseQuery();
         if (fallback.error) return { ok: false, error: fallback.error };
-        all = fallback.data || [];
+        allShort = fallback.data || [];
         break;
       }
       if (res.error) return { ok: false, error: res.error };
       var chunk = res.data || [];
-      for (var i = 0; i < chunk.length; i += 1) all.push(chunk[i]);
+      if (!useOrder && chunk.length >= PAGE) {
+        /* Rare dense week: restart with a stable order so pages don't skip rows. */
+        useOrder = true;
+        allShort = [];
+        from = 0;
+        continue;
+      }
+      for (var i = 0; i < chunk.length; i += 1) allShort.push(chunk[i]);
       if (chunk.length < PAGE) break;
       from += PAGE;
       if (from > 40000) break;
     }
-    replaceCellsInRange(all, fromIso, toIso, {
+    replaceCellsInRange(allShort, fromIso, toIso, {
       forceTombstone: !!opts.forceTombstone,
     });
-    return { ok: true, rows: all };
+    return { ok: true, rows: allShort };
   }
 
   async function fetchSlots(sb, companyId) {
