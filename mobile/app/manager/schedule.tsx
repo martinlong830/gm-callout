@@ -124,12 +124,10 @@ import {
   weekStartMondayIsoFromDayIso,
   ingestPublishedSnapshotsFromRaw,
   savePublishedWeekSnapshot,
-  listPublishedWeekSnapshotsForRestaurant,
   getPublishedWeekSnapshot,
   formatPublishedAtLabel,
   cloneWeekAssignmentsForRestaurant,
   remapWeekAssignmentsToWeekIndex,
-  type PublishedWeekSnapshot,
   type BreakAnnotationType,
   type CalendarBodyRow,
   type CalendarCell,
@@ -432,8 +430,8 @@ export default function ManagerScheduleScreen() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [hubOpen, setHubOpen] = useState(false);
   const [hubTab, setHubTab] = useState<'pending' | 'published'>('pending');
+  const [hubWeekIndex, setHubWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [reviewsState, setReviewsState] = useState<ScheduleReviewsState>({ v: 1, items: [] });
-  const [hubPreviewSnap, setHubPreviewSnap] = useState<PublishedWeekSnapshot | null>(null);
   const [hubBusy, setHubBusy] = useState(false);
   const [historyRows, setHistoryRows] = useState<ScheduleRevisionRow[]>([]);
   const [laborPanelOpen, setLaborPanelOpen] = useState(false);
@@ -590,6 +588,7 @@ export default function ManagerScheduleScreen() {
   }, [teamState?.schedule_published, weekMeta]);
 
   const selectedWeekMonday = weekMeta[weekIndex * 7]?.iso || '';
+  const hubWeekMonday = weekMeta[hubWeekIndex * 7]?.iso || '';
   const selectedWeekPublished = !!(
     selectedWeekMonday && isScheduleWeekPublished(publishedMap, selectedWeekMonday)
   );
@@ -600,6 +599,29 @@ export default function ManagerScheduleScreen() {
   );
   const selectedWeekIsPast = weekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
   const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
+  const inboxForSelectedWeek = useMemo(
+    () =>
+      inboxReviewsForViewer(reviewsState, currentRestaurantId, role).filter(
+        (it) => it.weekMondayIso === selectedWeekMonday
+      ),
+    [reviewsState, currentRestaurantId, role, selectedWeekMonday]
+  );
+  const inboxForHubWeek = useMemo(
+    () =>
+      inboxReviewsForViewer(reviewsState, currentRestaurantId, role).filter(
+        (it) => it.weekMondayIso === hubWeekMonday
+      ),
+    [reviewsState, currentRestaurantId, role, hubWeekMonday]
+  );
+  const hubWeekPublishedSnap = useMemo(
+    () => getPublishedWeekSnapshot(currentRestaurantId, hubWeekMonday),
+    [currentRestaurantId, hubWeekMonday]
+  );
+
+  useEffect(() => {
+    const local = normalizeScheduleReviewsState(teamState?.schedule_reviews);
+    setReviewsState((prev) => mergeScheduleReviewsStates(prev, local));
+  }, [teamState?.schedule_reviews]);
   const scheduleTemplates = useMemo(
     () => normalizeScheduleTemplates(teamState?.schedule_templates),
     [teamState?.schedule_templates]
@@ -787,7 +809,7 @@ export default function ManagerScheduleScreen() {
 
   const openSchedulePublishHub = useCallback(() => {
     ingestPublishedSnapshotsFromRaw(teamState?.schedule_published);
-    setHubPreviewSnap(getPublishedWeekSnapshot(currentRestaurantId, selectedWeekMonday));
+    setHubWeekIndex(weekIndex);
     setHubTab('pending');
     setHubOpen(true);
     void (async () => {
@@ -802,6 +824,7 @@ export default function ManagerScheduleScreen() {
       }
     })();
   }, [
+    weekIndex,
     currentRestaurantId,
     selectedWeekMonday,
     supabase,
@@ -810,15 +833,15 @@ export default function ManagerScheduleScreen() {
   ]);
 
   const sendWeekForApproval = useCallback(async () => {
-    if (!supabase || !selectedWeekMonday) return;
+    if (!supabase || !hubWeekMonday) return;
     setHubBusy(true);
     try {
       const teamStateId = await readStoredTeamStateId();
       const status = role === 'admin' ? 'pending_manager' : 'pending_admin';
       const item = makeScheduleReviewItem({
         restaurantId: currentRestaurantId,
-        weekMondayIso: selectedWeekMonday,
-        weekIndex,
+        weekMondayIso: hubWeekMonday,
+        weekIndex: hubWeekIndex,
         status,
         actor: {
           id: String(session?.user?.id || ''),
@@ -827,13 +850,13 @@ export default function ManagerScheduleScreen() {
         },
         draft: loadDraftFromTeamState(
           draftScheduleRawRef.current ?? {},
-          weekIndex,
+          hubWeekIndex,
           currentRestaurantId
         ),
         assignments: cloneWeekAssignmentsForRestaurant(
           assignmentStoreRef.current,
           currentRestaurantId,
-          weekIndex
+          hubWeekIndex
         ),
       });
       const next = mergeScheduleReviewsStates(reviewsState, { v: 1, items: [item] });
@@ -851,10 +874,10 @@ export default function ManagerScheduleScreen() {
     }
   }, [
     supabase,
-    selectedWeekMonday,
+    hubWeekMonday,
+    hubWeekIndex,
     role,
     currentRestaurantId,
-    weekIndex,
     session?.user?.id,
     myEmployee,
     reviewsState,
@@ -3020,7 +3043,11 @@ export default function ManagerScheduleScreen() {
               style={[styles.publishBtn, publishing && styles.publishBtnDisabled]}
             >
               <Text style={styles.publishBtnText}>
-                {publishing ? t('common.publishing') : t('schedule.publishHub')}
+                {publishing
+                  ? t('common.publishing')
+                  : inboxForSelectedWeek.length
+                    ? `${t('schedule.publishHub')} (${inboxForSelectedWeek.length})`
+                    : t('schedule.publishHub')}
               </Text>
             </Pressable>
             {isManagerLikeRole(role) ? (
@@ -3642,7 +3669,9 @@ export default function ManagerScheduleScreen() {
                 onPress={() => setHubTab('pending')}
               >
                 <Text style={[styles.hubTabText, hubTab === 'pending' && styles.hubTabTextOn]}>
-                  {t('schedule.publishHubPending')}
+                  {inboxForHubWeek.length
+                    ? `${t('schedule.publishHubPending')} (${inboxForHubWeek.length})`
+                    : t('schedule.publishHubPending')}
                 </Text>
               </Pressable>
               <Pressable
@@ -3654,13 +3683,27 @@ export default function ManagerScheduleScreen() {
                 </Text>
               </Pressable>
             </View>
+            <View style={styles.hubWeekNav}>
+            <ScheduleWeekPicker
+              mode="managerNav"
+              weekMeta={weekMeta}
+              weekIndex={hubWeekIndex}
+              onWeekIndexChange={(next) => {
+                setHubWeekIndex(next);
+              }}
+              minWeekIndex={0}
+              maxWeekIndex={SCHEDULE_VIEW_WEEK_COUNT - 1}
+              templateWeekIndex={SCHEDULE_TEMPLATE_WEEK_INDEX}
+            />
+            </View>
             {hubTab === 'pending' ? (
               <ScrollView style={styles.hubList}>
-                {inboxReviewsForViewer(reviewsState, currentRestaurantId, role).length ? (
-                  inboxReviewsForViewer(reviewsState, currentRestaurantId, role).map((rev) => (
+                {inboxForHubWeek.length ? (
+                  inboxForHubWeek.map((rev) => (
                     <View key={rev.id} style={styles.hubCard}>
                       <Text style={styles.hubCardTitle}>
-                        {rev.weekMondayIso} · {rev.status.replace('_', ' ')}
+                        {formatScheduleWeekRangeLabel(weekMeta, hubWeekIndex)} ·{' '}
+                        {rev.status.replace('_', ' ')}
                       </Text>
                       <Text style={styles.modalSub}>
                         {rev.lastActor?.name || rev.createdBy?.name || ''}
@@ -3677,9 +3720,14 @@ export default function ManagerScheduleScreen() {
                     </View>
                   ))
                 ) : (
-                  <Text style={styles.modalSub}>{t('schedule.publishHubNoPending')}</Text>
+                  <>
+                    <Text style={styles.hubCardTitle}>{t('schedule.publishHubNoPending')}</Text>
+                    <Text style={styles.modalSub}>{t('schedule.publishHubNoPendingBody')}</Text>
+                  </>
                 )}
-                {scheduleEditable && !selectedWeekIsPast ? (
+                {scheduleEditable &&
+                hubWeekIndex >= SCHEDULE_TEMPLATE_WEEK_INDEX &&
+                !inboxForHubWeek.length ? (
                   <Pressable
                     style={[styles.undoBtn, { marginTop: 12 }]}
                     disabled={hubBusy}
@@ -3691,26 +3739,23 @@ export default function ManagerScheduleScreen() {
               </ScrollView>
             ) : (
               <ScrollView style={styles.hubList}>
-                {listPublishedWeekSnapshotsForRestaurant(currentRestaurantId).length ? (
-                  listPublishedWeekSnapshotsForRestaurant(currentRestaurantId).map((snap) => (
-                    <Pressable
-                      key={`${snap.restaurantId}|${snap.weekMondayIso}`}
-                      style={[
-                        styles.hubCard,
-                        hubPreviewSnap?.weekMondayIso === snap.weekMondayIso && styles.hubCardOn,
-                      ]}
-                      onPress={() => setHubPreviewSnap(snap)}
-                    >
-                      <Text style={styles.hubCardTitle}>{snap.weekMondayIso}</Text>
-                      <Text style={styles.modalSub}>
-                        {t('schedule.publishHubPublishedAt', {
-                          when: formatPublishedAtLabel(snap.publishedAt) || snap.publishedAt,
-                          who: snap.publishedBy?.name || '',
-                        })}
-                      </Text>
-                      <Text style={styles.modalSub}>{t('schedule.publishHubReadOnly')}</Text>
-                    </Pressable>
-                  ))
+                {hubWeekPublishedSnap ? (
+                  <Pressable
+                    style={[styles.hubCard, styles.hubCardOn]}
+                  >
+                    <Text style={styles.hubCardTitle}>
+                      {formatScheduleWeekRangeLabel(weekMeta, hubWeekIndex)}
+                    </Text>
+                    <Text style={styles.modalSub}>
+                      {t('schedule.publishHubPublishedAt', {
+                        when:
+                          formatPublishedAtLabel(hubWeekPublishedSnap.publishedAt) ||
+                          hubWeekPublishedSnap.publishedAt,
+                        who: hubWeekPublishedSnap.publishedBy?.name || '',
+                      })}
+                    </Text>
+                    <Text style={styles.modalSub}>{t('schedule.publishHubReadOnly')}</Text>
+                  </Pressable>
                 ) : (
                   <Text style={styles.modalSub}>{t('schedule.publishHubNoPublished')}</Text>
                 )}
@@ -5088,6 +5133,7 @@ const styles = StyleSheet.create({
   hubTabOn: { backgroundColor: '#1e3a5f', borderColor: '#1e3a5f' },
   hubTabText: { fontWeight: '700', color: '#334155', fontSize: 13 },
   hubTabTextOn: { color: '#fff' },
+  hubWeekNav: { marginBottom: 10 },
   hubList: { flexGrow: 0, maxHeight: 360 },
   hubCard: {
     borderWidth: 1,

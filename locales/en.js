@@ -247,7 +247,9 @@ window.GM_I18N_EN = {
     'Pending edits, apply to the live schedule, publish, and view published copies',
   'schedule.publishHubPending': 'Pending edits',
   'schedule.publishHubPublished': 'Published schedules',
-  'schedule.publishHubWeek': 'Published week',
+  'schedule.publishHubWeek': 'Week',
+  'schedule.publishHubNoPending': 'No pending edits',
+  'schedule.publishHubNoPendingBody': 'No submitted schedule for this week.',
   'schedule.publishHubApplyPublish': 'Apply to live & publish',
   'schedule.publishHubPublish': 'Publish & notify',
   'schedule.publishHubNoSnapshot':

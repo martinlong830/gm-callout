@@ -3023,6 +3023,46 @@
     });
   }
 
+  function inboxScheduleReviewsForWeek(weekMondayIso) {
+    var mon = String(weekMondayIso || '').slice(0, 10);
+    return inboxScheduleReviewsForViewer().filter(function (it) {
+      return String(it.weekMondayIso || '').slice(0, 10) === mon;
+    });
+  }
+
+  function inboxScheduleReviewForWeek(weekMondayIso) {
+    var items = inboxScheduleReviewsForWeek(weekMondayIso);
+    return items.length ? items[0] : null;
+  }
+
+  function mainScheduleWeekMondayIsoForToolbar() {
+    var wi =
+      scheduleReviewUi &&
+      scheduleReviewUi.liveWeekIndex != null &&
+      !isNaN(Number(scheduleReviewUi.liveWeekIndex))
+        ? Number(scheduleReviewUi.liveWeekIndex)
+        : scheduleCalendarWeekIndex;
+    return mondayIsoForScheduleWeekIndex(wi);
+  }
+
+  function scheduleHubWeekMondayIso() {
+    if (scheduleReviewUi && scheduleReviewUi.hubMondayIso) {
+      return String(scheduleReviewUi.hubMondayIso).slice(0, 10);
+    }
+    if (scheduleReviewUi && scheduleReviewUi.publishedMondayIso) {
+      return String(scheduleReviewUi.publishedMondayIso).slice(0, 10);
+    }
+    return mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+  }
+
+  function scheduleHubWeekIndex() {
+    var wi = weekIndexForReviewMonday(scheduleHubWeekMondayIso());
+    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return scheduleCalendarWeekIndex;
+    }
+    return wi;
+  }
+
   function weekIndexForReviewMonday(mondayIso) {
     var mon = String(mondayIso || '').slice(0, 10);
     if (!mon) return scheduleCalendarWeekIndex;
@@ -3495,15 +3535,15 @@
     var publishBtn = document.getElementById('schedulePublishNotifyBtn');
     var hubBtn = document.getElementById('schedulePublishHubBtn');
     var isMgrShell = viewerCanUseScheduleApprovals();
-    var inbox = inboxScheduleReviewsForViewer();
     if (inboxBtn) inboxBtn.hidden = true;
     if (publishBtn) publishBtn.hidden = true;
     if (hubBtn) {
       hubBtn.hidden = !isMgrShell;
       var base = gmT('schedule.publishHub');
       if (!base || base === 'schedule.publishHub') base = 'Publish & Approvals';
-      if (isMgrShell && inbox.length > 0) {
-        hubBtn.textContent = base + ' (' + inbox.length + ')';
+      var weekInbox = inboxScheduleReviewsForWeek(mainScheduleWeekMondayIsoForToolbar());
+      if (isMgrShell && weekInbox.length > 0) {
+        hubBtn.textContent = base + ' (' + weekInbox.length + ')';
       } else {
         hubBtn.textContent = base;
       }
@@ -3555,10 +3595,10 @@
     if (pendingBtn) {
       pendingBtn.classList.toggle('is-active', hubTab === 'pending' && !compose);
       pendingBtn.setAttribute('aria-selected', hubTab === 'pending' && !compose ? 'true' : 'false');
-      var inboxN = inboxScheduleReviewsForViewer().length;
+      var pendingN = inboxScheduleReviewsForWeek(scheduleHubWeekMondayIso()).length;
       var pendingLabel = gmT('schedule.publishHubPending') || 'Pending edits';
       if (!pendingLabel || pendingLabel === 'schedule.publishHubPending') pendingLabel = 'Pending edits';
-      pendingBtn.textContent = inboxN > 0 ? pendingLabel + ' (' + inboxN + ')' : pendingLabel;
+      pendingBtn.textContent = pendingN > 0 ? pendingLabel + ' (' + pendingN + ')' : pendingLabel;
     }
     if (publishedBtn) {
       publishedBtn.classList.toggle('is-active', hubTab === 'published' && !compose);
@@ -3569,18 +3609,11 @@
       }
       publishedBtn.textContent = publishedLabel;
     }
-    if (bar) bar.hidden = compose || hubTab !== 'published';
+    if (bar) bar.hidden = !!compose;
   }
 
   function scheduleHubPublishedWeekIndex() {
-    var mon =
-      (scheduleReviewUi && scheduleReviewUi.publishedMondayIso) ||
-      mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
-    var wi = weekIndexForReviewMonday(mon);
-    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
-      return scheduleCalendarWeekIndex;
-    }
-    return wi;
+    return scheduleHubWeekIndex();
   }
 
   function updateScheduleHubPublishedWeekNav() {
@@ -3598,22 +3631,151 @@
     if (today) today.hidden = isCurrent;
   }
 
+  function rememberScheduleHubWeek(weekIndex) {
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var mon = mondayIsoForScheduleWeekIndex(wi);
+    if (!scheduleReviewUi) return mon;
+    if (scheduleReviewUi.review && !scheduleReviewUi.publishedView) {
+      commitPendingPublishHubEditsIntoProposal(scheduleReviewUi.review);
+    }
+    closeScheduleReviewCellPanel();
+    scheduleTemplateEditorState = null;
+    scheduleReviewUi.hubMondayIso = mon;
+    scheduleReviewUi.publishedMondayIso = mon;
+    return mon;
+  }
+
   function stepScheduleHubPublishedWeek(delta) {
     if (!scheduleReviewUi) return;
-    var wi = scheduleHubPublishedWeekIndex() + delta;
+    var wi = scheduleHubWeekIndex() + delta;
     if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
-    scheduleReviewUi.publishedMondayIso = mondayIsoForScheduleWeekIndex(wi);
-    scheduleReviewUi.hubTab = 'published';
-    renderSchedulePublishedHub();
+    rememberScheduleHubWeek(wi);
+    if (scheduleHubIsPublishedTab()) {
+      renderSchedulePublishedHub();
+    } else {
+      renderSchedulePendingHub();
+    }
   }
 
   function jumpScheduleHubPublishedWeekToThisWeek() {
     if (!scheduleReviewUi) return;
-    scheduleReviewUi.publishedMondayIso = mondayIsoForScheduleWeekIndex(
-      SCHEDULE_TEMPLATE_WEEK_INDEX
-    );
-    scheduleReviewUi.hubTab = 'published';
-    renderSchedulePublishedHub();
+    rememberScheduleHubWeek(SCHEDULE_TEMPLATE_WEEK_INDEX);
+    if (scheduleHubIsPublishedTab()) {
+      renderSchedulePublishedHub();
+    } else {
+      renderSchedulePendingHub();
+    }
+  }
+
+  function renderSchedulePendingHub() {
+    var mount = document.getElementById('scheduleReviewPreviewMount');
+    var title = document.getElementById('scheduleReviewModalTitle');
+    var pubMeta = document.getElementById('scheduleHubPublishedMeta');
+    var hubTitle = gmT('schedule.publishHub');
+    if (!hubTitle || hubTitle === 'schedule.publishHub') hubTitle = 'Publish & Approvals';
+    if (!scheduleReviewUi) {
+      scheduleReviewUi = {
+        mode: 'review',
+        reviewId: null,
+        review: null,
+        activeCellKey: null,
+        emptyInbox: true,
+        hubTab: 'pending',
+        publishedView: false,
+        liveWeekIndex: scheduleCalendarWeekIndex,
+        hubMondayIso: mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex),
+        publishedMondayIso: mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex),
+      };
+    }
+    scheduleReviewUi.hubTab = 'pending';
+    scheduleReviewUi.publishedView = false;
+    scheduleReviewUi.mode = 'review';
+    if (scheduleReviewUi.liveWeekIndex == null) {
+      scheduleReviewUi.liveWeekIndex = scheduleCalendarWeekIndex;
+    }
+    if (!scheduleReviewUi.hubMondayIso) {
+      scheduleReviewUi.hubMondayIso =
+        scheduleReviewUi.publishedMondayIso ||
+        mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+    }
+    scheduleReviewUi.publishedMondayIso = scheduleReviewUi.hubMondayIso;
+    var wi = scheduleHubWeekIndex();
+    var mon = mondayIsoForScheduleWeekIndex(wi);
+    scheduleReviewUi.hubMondayIso = mon;
+    scheduleReviewUi.publishedMondayIso = mon;
+    if (title) title.textContent = hubTitle;
+    if (pubMeta) pubMeta.textContent = '';
+    closeScheduleReviewCellPanel();
+    updateScheduleHubPublishedWeekNav();
+    var review = inboxScheduleReviewForWeek(mon);
+    var pendingAny = pendingScheduleReviewForWeek(currentRestaurantId, mon);
+    var canCompose = managerCanComposeScheduleReview();
+    scheduleCalendarWeekIndex = wi;
+    if (review) {
+      scheduleReviewUi.review = review;
+      scheduleReviewUi.reviewId = review.id;
+      scheduleReviewUi.emptyInbox = false;
+      if (review.restaurantId && review.restaurantId !== currentRestaurantId) {
+        try {
+          switchRestaurant(review.restaurantId);
+        } catch (_sw) {
+          /* ignore */
+        }
+      }
+      scheduleTemplatePreviewSession = {
+        rid: currentRestaurantId,
+        wi: wi,
+        draft: withLiveScheduleData(function () {
+          return cloneDraftSchedule(
+            getDraftScheduleRowsForWeek(wi, currentRestaurantId)
+          );
+        }),
+        assignments: withLiveScheduleData(function () {
+          return JSON.parse(JSON.stringify(loadScheduleAssignmentsStore()));
+        }),
+      };
+      scheduleTemplateEditorState = null;
+      renderScheduleReviewPreview();
+      syncScheduleReviewActionButtons();
+      return;
+    }
+    scheduleReviewUi.review = null;
+    scheduleReviewUi.reviewId = null;
+    scheduleReviewUi.emptyInbox = true;
+    scheduleTemplatePreviewSession = null;
+    scheduleTemplateEditorState = null;
+    scheduleTemplateScratchActive = false;
+    if (mount) {
+      var emptyTitleText = gmT('schedule.publishHubNoPending');
+      if (!emptyTitleText || emptyTitleText === 'schedule.publishHubNoPending') {
+        emptyTitleText = 'No pending edits';
+      }
+      var emptyBodyText = gmT('schedule.publishHubNoPendingBody');
+      if (!emptyBodyText || emptyBodyText === 'schedule.publishHubNoPendingBody') {
+        emptyBodyText = 'No submitted schedule for this week.';
+      }
+      if (canCompose && pendingAny) {
+        emptyTitleText =
+          gmT('schedule.approvalsPendingWeekTitle') || 'Already submitted';
+        emptyBodyText =
+          gmT('schedule.approvalsPendingWeekBody') ||
+          'This week’s schedule is already out for approval. You’ll see actions here when it’s sent back.';
+      } else if (canCompose) {
+        emptyBodyText =
+          gmT('schedule.approvalsEmptyManagerBody') ||
+          'No proposals are waiting for you. Send this week’s schedule to an admin when it’s ready for review.';
+      }
+      mount.innerHTML =
+        '<div class="schedule-review-empty">' +
+        '<p class="schedule-review-empty-title">' +
+        escapeHtml(emptyTitleText) +
+        '</p>' +
+        '<p class="calendar-hint">' +
+        escapeHtml(emptyBodyText) +
+        '</p>' +
+        '</div>';
+    }
+    syncScheduleReviewActionButtons();
   }
 
   function renderSchedulePublishedHub() {
@@ -3621,9 +3783,13 @@
     var meta = document.getElementById('scheduleReviewModalMeta');
     var pubMeta = document.getElementById('scheduleHubPublishedMeta');
     var title = document.getElementById('scheduleReviewModalTitle');
+    if (scheduleReviewUi && scheduleReviewUi.liveWeekIndex == null) {
+      scheduleReviewUi.liveWeekIndex = scheduleCalendarWeekIndex;
+    }
     updateScheduleHubPublishedWeekNav();
     var mon =
-      (scheduleReviewUi && scheduleReviewUi.publishedMondayIso) ||
+      (scheduleReviewUi &&
+        (scheduleReviewUi.hubMondayIso || scheduleReviewUi.publishedMondayIso)) ||
       mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
     var rid = currentRestaurantId;
     var snap = getPublishedWeekSnapshot(rid, mon);
@@ -3632,6 +3798,7 @@
     }
     closeScheduleReviewCellPanel();
     scheduleTemplateEditorState = null;
+    scheduleReviewUi.hubMondayIso = mon;
     scheduleReviewUi.publishedMondayIso = mon;
     scheduleReviewUi.publishedView = true;
     var targetWiAlways = weekIndexForReviewMonday(mon);
@@ -3717,17 +3884,13 @@
   function openSchedulePublishHub(opts) {
     opts = opts || {};
     return (async function () {
-      var inbox = inboxScheduleReviewsForViewer();
-      var hubTab =
-        opts.hubTab === 'published' || opts.hubTab === 'pending'
-          ? opts.hubTab
-          : inbox.length
-            ? 'pending'
-            : 'published';
+      var hubTab = opts.hubTab === 'published' ? 'published' : 'pending';
+      var mon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
       openScheduleReviewModal({
         mode: 'review',
-        review: hubTab === 'pending' ? inbox[0] || null : null,
+        review: hubTab === 'pending' ? inboxScheduleReviewForWeek(mon) : null,
         hubTab: hubTab,
+        hubMondayIso: mon,
       });
       try {
         await fetchScheduleReviewsFromRemoteOptional();
@@ -3735,17 +3898,8 @@
         /* ignore */
       }
       if (scheduleReviewModalIsOpen() && !scheduleHubIsPublishedTab()) {
-        var latest = inboxScheduleReviewsForViewer();
-        if (latest.length && (!scheduleReviewUi || !scheduleReviewUi.review)) {
-          openScheduleReviewModal({
-            mode: 'review',
-            review: latest[0],
-            hubTab: 'pending',
-          });
-        } else {
-          syncScheduleReviewActionButtons();
-          updateScheduleReviewToolbarUi();
-        }
+        renderSchedulePendingHub();
+        updateScheduleReviewToolbarUi();
       }
       try {
         var rec = await recoverPublishedSnapshotsFromRevisions();
@@ -3778,6 +3932,12 @@
 
   function closeScheduleReviewModal() {
     closeScheduleReviewCellPanel();
+    var restoreWi =
+      scheduleReviewUi &&
+      scheduleReviewUi.liveWeekIndex != null &&
+      !isNaN(Number(scheduleReviewUi.liveWeekIndex))
+        ? Number(scheduleReviewUi.liveWeekIndex)
+        : null;
     var modal = document.getElementById('scheduleReviewModal');
     if (modal) {
       modal.hidden = true;
@@ -3787,6 +3947,9 @@
     scheduleTemplateScratchActive = false;
     scheduleTemplateEditorState = null;
     scheduleTemplatePreviewSession = null;
+    if (restoreWi != null) {
+      scheduleCalendarWeekIndex = restoreWi;
+    }
     withLiveScheduleData(function () {
       AVAILABILITY_SLOT_RANGES = buildAvailabilitySlotRangesUnion();
       rebuildSchedule({
@@ -3853,6 +4016,16 @@
     );
   }
 
+  function pendingScheduleReviewForActionWeek() {
+    if (scheduleReviewModalIsOpen() && scheduleReviewUi) {
+      return pendingScheduleReviewForWeek(
+        currentRestaurantId,
+        scheduleHubWeekMondayIso()
+      );
+    }
+    return pendingScheduleReviewForCurrentWeek();
+  }
+
   function notifyScheduleReviewHandoff(opts) {
     opts = opts || {};
     if (
@@ -3889,13 +4062,12 @@
     var hint = document.getElementById('scheduleReviewHint');
     var meta = document.getElementById('scheduleReviewModalMeta');
     var canCompose = managerCanComposeScheduleReview();
-    var pendingWeek = pendingScheduleReviewForCurrentWeek();
+    var pendingWeek = pendingScheduleReviewForActionWeek();
     var pendingReview = review && !review.publishedView ? review : pendingWeek;
     var canEditStore = managerCanEditCurrentRestaurant();
-    var selectedWi =
-      publishedTab && scheduleReviewUi && scheduleReviewUi.publishedMondayIso
-        ? weekIndexForReviewMonday(scheduleReviewUi.publishedMondayIso)
-        : scheduleCalendarWeekIndex;
+    var selectedWi = scheduleReviewModalIsOpen()
+      ? scheduleHubWeekIndex()
+      : scheduleCalendarWeekIndex;
     var past = isScheduleWeekIndexPast(selectedWi);
     /* Once this store/week is submitted, only send-back + accept — no re-send. */
     var canStartSend =
@@ -4087,7 +4259,14 @@
           : 'pending';
     var hubTitle = gmT('schedule.publishHub');
     if (!hubTitle || hubTitle === 'schedule.publishHub') hubTitle = 'Publish & Approvals';
-    var mount = document.getElementById('scheduleReviewPreviewMount');
+    var liveWi =
+      scheduleReviewUi && scheduleReviewUi.liveWeekIndex != null
+        ? scheduleReviewUi.liveWeekIndex
+        : scheduleCalendarWeekIndex;
+    var hubMon =
+      (opts.hubMondayIso && String(opts.hubMondayIso).slice(0, 10)) ||
+      (review && review.weekMondayIso && String(review.weekMondayIso).slice(0, 10)) ||
+      mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
     if (mode === 'compose') {
       var snap = captureLiveWeekSnapshot(currentRestaurantId, scheduleCalendarWeekIndex);
       review = {
@@ -4112,19 +4291,6 @@
         cells: {},
       };
       if (title) title.textContent = gmT('schedule.approvalsSendTitle') || 'Send for approval';
-    } else if (review) {
-      var targetWi = weekIndexForReviewMonday(review.weekMondayIso);
-      if (targetWi !== scheduleCalendarWeekIndex) {
-        setScheduleCalendarWeekIndex(targetWi);
-      }
-      if (review.restaurantId && review.restaurantId !== currentRestaurantId) {
-        try {
-          switchRestaurant(review.restaurantId);
-        } catch (_sw) {
-          /* ignore */
-        }
-      }
-      if (title) title.textContent = hubTitle;
     } else if (hubTab === 'published') {
       if (title) title.textContent = hubTitle;
       scheduleReviewUi = {
@@ -4135,6 +4301,9 @@
         emptyInbox: false,
         hubTab: 'published',
         publishedView: true,
+        liveWeekIndex: liveWi,
+        hubMondayIso: hubMon,
+        publishedMondayIso: hubMon,
       };
       scheduleTemplatePreviewSession = null;
       scheduleTemplateEditorState = null;
@@ -4145,57 +4314,26 @@
       refreshScheduleSheetBodyLock();
       return;
     } else {
-      /* Empty inbox — still open the modal with a clear empty state. */
-      var canCompose = managerCanComposeScheduleReview();
-      var pendingWeekEmpty = pendingScheduleReviewForCurrentWeek();
       if (title) title.textContent = hubTitle;
       scheduleReviewUi = {
         mode: 'review',
-        reviewId: null,
-        review: null,
+        reviewId: review && review.id ? review.id : null,
+        review: review,
         activeCellKey: null,
-        emptyInbox: true,
+        emptyInbox: !review,
         hubTab: 'pending',
+        publishedView: false,
+        liveWeekIndex: liveWi,
+        hubMondayIso: hubMon,
+        publishedMondayIso: hubMon,
       };
       scheduleTemplatePreviewSession = null;
       scheduleTemplateEditorState = null;
       closeScheduleReviewCellPanel();
-      if (mount) {
-        var emptyTitleText;
-        var emptyBodyText;
-        if (canCompose && pendingWeekEmpty) {
-          emptyTitleText =
-            gmT('schedule.approvalsPendingWeekTitle') || 'Already submitted';
-          emptyBodyText =
-            gmT('schedule.approvalsPendingWeekBody') ||
-            'This week’s schedule is already out for approval. You’ll see actions here when it’s sent back.';
-        } else if (canCompose) {
-          emptyTitleText =
-            gmT('schedule.approvalsEmptyManagerTitle') || 'Nothing pending';
-          emptyBodyText =
-            gmT('schedule.approvalsEmptyManagerBody') ||
-            'No proposals are waiting for you. Send this week’s schedule to an admin when it’s ready for review.';
-        } else {
-          emptyTitleText =
-            gmT('schedule.reviewInboxEmptyTitle') || 'No submitted schedules yet';
-          emptyBodyText =
-            gmT('schedule.reviewInboxEmptyBody') ||
-            'Managers haven’t sent any schedules for approval yet. When they do, those proposals will appear here.';
-        }
-        mount.innerHTML =
-          '<div class="schedule-review-empty">' +
-          '<p class="schedule-review-empty-title">' +
-          escapeHtml(emptyTitleText) +
-          '</p>' +
-          '<p class="calendar-hint">' +
-          escapeHtml(emptyBodyText) +
-          '</p>' +
-          '</div>';
-      }
-      syncScheduleReviewActionButtons();
       modal.hidden = false;
       modal.setAttribute('aria-hidden', 'false');
       refreshScheduleSheetBodyLock();
+      renderSchedulePendingHub();
       return;
     }
     scheduleReviewUi = {
@@ -4203,8 +4341,11 @@
       reviewId: review.id,
       review: review,
       activeCellKey: null,
-      hubTab: hubTab,
-      publishedView: !!review.publishedView,
+      hubTab: 'pending',
+      publishedView: false,
+      liveWeekIndex: liveWi,
+      hubMondayIso: mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex),
+      publishedMondayIso: mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex),
     };
     scheduleTemplatePreviewSession = {
       rid: currentRestaurantId,
@@ -4220,12 +4361,8 @@
     };
     scheduleTemplateEditorState = null;
     closeScheduleReviewCellPanel();
-    if (hubTab === 'published') {
-      renderSchedulePublishedHub();
-    } else {
-      renderScheduleReviewPreview();
-      syncScheduleReviewActionButtons();
-    }
+    renderScheduleReviewPreview();
+    syncScheduleReviewActionButtons();
     modal.hidden = false;
     modal.setAttribute('aria-hidden', 'false');
     refreshScheduleSheetBodyLock();
@@ -4600,19 +4737,20 @@
           } catch (_fetchInbox) {
             /* ignore */
           }
-          var inbox = inboxScheduleReviewsForViewer();
-          if (inbox.length) {
-            openScheduleReviewModal({ mode: 'review', review: inbox[0] });
-          } else {
-            openScheduleReviewModal({ mode: 'review', review: null });
-          }
+          var mon = mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
+          openScheduleReviewModal({
+            mode: 'review',
+            review: inboxScheduleReviewForWeek(mon),
+            hubTab: 'pending',
+            hubMondayIso: mon,
+          });
         })();
       });
     }
     if (startSend) {
       startSend.addEventListener('click', function () {
         if (!managerCanComposeScheduleReview()) return;
-        if (pendingScheduleReviewForCurrentWeek()) {
+        if (pendingScheduleReviewForActionWeek()) {
           window.alert(
             gmT('schedule.approvalsPendingWeekMeta') ||
               'This week is already submitted. Wait for send-back, or accept and apply when ready.'
@@ -4878,6 +5016,9 @@
           openScheduleReviewModal({ mode: 'review', review: null, hubTab: 'published' });
           return;
         }
+        if (scheduleReviewUi.review && !scheduleReviewUi.publishedView) {
+          commitPendingPublishHubEditsIntoProposal(scheduleReviewUi.review);
+        }
         scheduleReviewUi.hubTab = 'published';
         scheduleReviewUi.publishedView = true;
         scheduleReviewUi.mode = 'review';
@@ -4886,12 +5027,11 @@
         renderSchedulePublishedHub();
         return;
       }
-      var inbox = inboxScheduleReviewsForViewer();
-      openScheduleReviewModal({
-        mode: 'review',
-        review: inbox[0] || null,
-        hubTab: 'pending',
-      });
+      if (!scheduleReviewUi) {
+        openScheduleReviewModal({ mode: 'review', review: null, hubTab: 'pending' });
+        return;
+      }
+      renderSchedulePendingHub();
     }
     if (hubTabPending) {
       hubTabPending.addEventListener('click', function () {
@@ -4920,7 +5060,7 @@
     if (hubPublish) {
       hubPublish.addEventListener('click', function () {
         if (!managerCanEditCurrentRestaurant()) return;
-        if (isScheduleWeekIndexPast(scheduleCalendarWeekIndex)) return;
+        if (isScheduleWeekIndexPast(scheduleHubWeekIndex())) return;
         closeScheduleReviewModal();
         if (!openSchedulePublishNotifyModal()) {
           void publishSelectedWeekScheduleAndNotify({ audience: 'employees' });
@@ -4933,7 +5073,7 @@
         var live =
           (scheduleReviewUi &&
             (findScheduleReviewById(scheduleReviewUi.reviewId) || scheduleReviewUi.review)) ||
-          pendingScheduleReviewForCurrentWeek();
+          pendingScheduleReviewForActionWeek();
         if (!live || live.publishedView) {
           window.alert(
             gmT('schedule.reviewInboxEmpty') || 'No pending schedule reviews.'
@@ -22394,10 +22534,10 @@
     if (prev) prev.disabled = scheduleCalendarWeekIndex <= 0;
     if (next) next.disabled = scheduleCalendarWeekIndex >= SCHEDULE_VIEW_WEEK_COUNT - 1;
     if (today) today.hidden = isCurrent;
+    if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
     if (opts.lite) return;
     updateSchedulePublishNotifyButton();
     updateScheduleDownloadWeekButton();
-    if (typeof updateScheduleReviewToolbarUi === 'function') updateScheduleReviewToolbarUi();
   }
 
   function initScheduleWeekNav() {
@@ -27616,19 +27756,29 @@
               } catch (_fr) {
                 /* ignore */
               }
-              var inbox = inboxScheduleReviewsForViewer();
+              var mon =
+                /^\d{4}-\d{2}-\d{2}$/.test(weekIso)
+                  ? weekIso
+                  : mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
               openScheduleReviewModal({
                 mode: 'review',
-                review: inbox.length ? inbox[0] : null,
+                review: inboxScheduleReviewForWeek(mon),
+                hubTab: 'pending',
+                hubMondayIso: mon,
               });
             })();
           }
         });
       } else if (openApprovals && typeof openScheduleReviewModal === 'function') {
-        var inboxLocal = inboxScheduleReviewsForViewer();
+        var monLocal =
+          /^\d{4}-\d{2}-\d{2}$/.test(weekIso)
+            ? weekIso
+            : mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
         openScheduleReviewModal({
           mode: 'review',
-          review: inboxLocal.length ? inboxLocal[0] : null,
+          review: inboxScheduleReviewForWeek(monLocal),
+          hubTab: 'pending',
+          hubMondayIso: monLocal,
         });
       }
       return;

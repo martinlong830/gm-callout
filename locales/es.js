@@ -246,7 +246,9 @@ window.GM_I18N_ES = {
     'Ediciones pendientes, aplicar al horario en vivo, publicar y ver copias publicadas',
   'schedule.publishHubPending': 'Ediciones pendientes',
   'schedule.publishHubPublished': 'Horarios publicados',
-  'schedule.publishHubWeek': 'Semana publicada',
+  'schedule.publishHubWeek': 'Semana',
+  'schedule.publishHubNoPending': 'No hay ediciones pendientes',
+  'schedule.publishHubNoPendingBody': 'No hay un horario enviado para esta semana.',
   'schedule.publishHubApplyPublish': 'Aplicar en vivo y publicar',
   'schedule.publishHubPublish': 'Publicar y avisar',
   'schedule.publishHubNoSnapshot':
