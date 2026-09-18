@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-299" />
+  <link rel="stylesheet" href="styles.css?v=perf-302" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-305';
+    window.__GM_ASSET_V = 'perf-308';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -896,7 +896,7 @@
                 data-i18n="schedule.publishHub"
                 data-i18n-title="schedule.publishHubTitle"
               >
-                Publish &amp; approvals
+                Publish &amp; Approvals
               </button>
               <button
                 type="button"
@@ -2281,7 +2281,7 @@
     <div class="availability-modal-backdrop" id="scheduleReviewModalBackdrop"></div>
     <div class="availability-modal-panel schedule-sheet-panel">
       <div class="availability-modal-head">
-        <h2 class="availability-modal-title" id="scheduleReviewModalTitle">Publish &amp; approvals</h2>
+        <h2 class="availability-modal-title" id="scheduleReviewModalTitle">Publish &amp; Approvals</h2>
         <button type="button" class="availability-modal-close" id="scheduleReviewModalClose" data-i18n-aria="common.close" aria-label="Close">
           ×
         </button>
@@ -2289,7 +2289,7 @@
       <p class="availability-modal-meta" id="scheduleReviewModalMeta">
         Review pending edits, apply them to the live schedule, publish, or view a published copy.
       </p>
-      <div class="schedule-publish-hub-tabs" id="schedulePublishHubTabs" role="tablist" aria-label="Publish and approvals">
+      <div class="schedule-publish-hub-tabs" id="schedulePublishHubTabs" role="tablist" aria-label="Publish and Approvals">
         <button
           type="button"
           class="schedule-publish-hub-tab is-active"
@@ -2312,10 +2312,46 @@
         </button>
       </div>
       <div class="schedule-publish-hub-published-bar" id="scheduleHubPublishedBar" hidden>
-        <label class="schedule-publish-hub-week-label" for="scheduleHubPublishedWeekSelect">
-          <span data-i18n="schedule.publishHubWeek">Published week</span>
-          <select id="scheduleHubPublishedWeekSelect" class="schedule-template-select"></select>
-        </label>
+        <span class="employee-filter-label" data-i18n="common.week">Week</span>
+        <div
+          class="schedule-week-nav"
+          id="scheduleHubPublishedWeekNav"
+          role="group"
+          data-i18n-aria="schedule.publishHubWeek"
+          aria-label="Published week"
+        >
+          <button
+            type="button"
+            class="btn btn-secondary schedule-week-nav-btn"
+            id="scheduleHubPublishedWeekPrev"
+            data-hub-published-week-step="-1"
+            data-i18n-aria="schedule.prevWeekAria"
+            aria-label="Previous week"
+          >
+            ‹
+          </button>
+          <span class="schedule-week-nav-label" id="scheduleHubPublishedWeekLabel">—</span>
+          <span class="schedule-week-nav-badge" id="scheduleHubPublishedWeekBadge" hidden data-i18n="common.thisWeek">This week</span>
+          <button
+            type="button"
+            class="btn btn-secondary schedule-week-nav-btn"
+            id="scheduleHubPublishedWeekNext"
+            data-hub-published-week-step="1"
+            data-i18n-aria="schedule.nextWeekAria"
+            aria-label="Next week"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary schedule-week-nav-today"
+            id="scheduleHubPublishedWeekToday"
+            hidden
+            data-i18n="common.thisWeek"
+          >
+            This week
+          </button>
+        </div>
         <span class="schedule-publish-hub-published-meta" id="scheduleHubPublishedMeta"></span>
       </div>
       <div class="schedule-sheet-stack">
@@ -2701,7 +2737,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-233"></script>
+  <script src="locales/en.js?v=perf-234"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2713,7 +2749,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-233';
+      s.src = 'locales/es.js?v=perf-234';
       document.head.appendChild(s);
     })();
   </script>

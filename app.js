@@ -3338,7 +3338,7 @@
     if (hubBtn) {
       hubBtn.hidden = !isMgrShell;
       var base = gmT('schedule.publishHub');
-      if (!base || base === 'schedule.publishHub') base = 'Publish & approvals';
+      if (!base || base === 'schedule.publishHub') base = 'Publish & Approvals';
       if (isMgrShell && inbox.length > 0) {
         hubBtn.textContent = base + ' (' + inbox.length + ')';
       } else {
@@ -3409,47 +3409,48 @@
     if (bar) bar.hidden = compose || hubTab !== 'published';
   }
 
-  function fillScheduleHubPublishedWeekSelect() {
-    var sel = document.getElementById('scheduleHubPublishedWeekSelect');
-    if (!sel) return;
-    var rid = currentRestaurantId;
-    var preferred =
+  function scheduleHubPublishedWeekIndex() {
+    var mon =
       (scheduleReviewUi && scheduleReviewUi.publishedMondayIso) ||
       mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
-    var snaps = listPublishedWeekSnapshotsForRestaurant(rid);
-    var seen = Object.create(null);
-    var options = [];
-    snaps.forEach(function (snap) {
-      if (!snap || !snap.weekMondayIso || seen[snap.weekMondayIso]) return;
-      seen[snap.weekMondayIso] = true;
-      options.push({
-        mondayIso: snap.weekMondayIso,
-        snap: snap,
-      });
-    });
-    for (var wi = SCHEDULE_VIEW_WEEK_COUNT - 1; wi >= 0; wi -= 1) {
-      var mon = mondayIsoForScheduleWeekIndex(wi);
-      if (!mon || seen[mon]) continue;
-      seen[mon] = true;
-      options.push({ mondayIso: mon, snap: null });
+    var wi = weekIndexForReviewMonday(mon);
+    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return scheduleCalendarWeekIndex;
     }
-    options.sort(function (a, b) {
-      return String(b.mondayIso).localeCompare(String(a.mondayIso));
-    });
-    sel.innerHTML = '';
-    options.forEach(function (opt) {
-      var wi = weekIndexForReviewMonday(opt.mondayIso);
-      var range = formatScheduleWeekRangeLabel(wi);
-      var when = opt.snap && opt.snap.publishedAt ? formatPublishedAtLabel(opt.snap.publishedAt) : '';
-      var label = range + ' · ' + opt.mondayIso;
-      if (when) label += ' · ' + when;
-      else if (isScheduleWeekPublished(opt.mondayIso)) label += ' · published (no saved copy)';
-      var el = document.createElement('option');
-      el.value = opt.mondayIso;
-      el.textContent = label;
-      sel.appendChild(el);
-    });
-    if (preferred && seen[preferred]) sel.value = preferred;
+    return wi;
+  }
+
+  function updateScheduleHubPublishedWeekNav() {
+    var wi = scheduleHubPublishedWeekIndex();
+    var label = document.getElementById('scheduleHubPublishedWeekLabel');
+    var badge = document.getElementById('scheduleHubPublishedWeekBadge');
+    var prev = document.getElementById('scheduleHubPublishedWeekPrev');
+    var next = document.getElementById('scheduleHubPublishedWeekNext');
+    var today = document.getElementById('scheduleHubPublishedWeekToday');
+    var isCurrent = wi === SCHEDULE_TEMPLATE_WEEK_INDEX;
+    if (label) label.textContent = formatScheduleWeekRangeLabel(wi);
+    if (badge) badge.hidden = !isCurrent;
+    if (prev) prev.disabled = wi <= 0;
+    if (next) next.disabled = wi >= SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (today) today.hidden = isCurrent;
+  }
+
+  function stepScheduleHubPublishedWeek(delta) {
+    if (!scheduleReviewUi) return;
+    var wi = scheduleHubPublishedWeekIndex() + delta;
+    if (isNaN(wi) || wi < 0 || wi >= SCHEDULE_VIEW_WEEK_COUNT) return;
+    scheduleReviewUi.publishedMondayIso = mondayIsoForScheduleWeekIndex(wi);
+    scheduleReviewUi.hubTab = 'published';
+    renderSchedulePublishedHub();
+  }
+
+  function jumpScheduleHubPublishedWeekToThisWeek() {
+    if (!scheduleReviewUi) return;
+    scheduleReviewUi.publishedMondayIso = mondayIsoForScheduleWeekIndex(
+      SCHEDULE_TEMPLATE_WEEK_INDEX
+    );
+    scheduleReviewUi.hubTab = 'published';
+    renderSchedulePublishedHub();
   }
 
   function renderSchedulePublishedHub() {
@@ -3457,15 +3458,14 @@
     var meta = document.getElementById('scheduleReviewModalMeta');
     var pubMeta = document.getElementById('scheduleHubPublishedMeta');
     var title = document.getElementById('scheduleReviewModalTitle');
-    fillScheduleHubPublishedWeekSelect();
-    var sel = document.getElementById('scheduleHubPublishedWeekSelect');
+    updateScheduleHubPublishedWeekNav();
     var mon =
-      (sel && sel.value) ||
+      (scheduleReviewUi && scheduleReviewUi.publishedMondayIso) ||
       mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex);
     var rid = currentRestaurantId;
     var snap = getPublishedWeekSnapshot(rid, mon);
     if (title) {
-      title.textContent = gmT('schedule.publishHub') || 'Publish & approvals';
+      title.textContent = gmT('schedule.publishHub') || 'Publish & Approvals';
     }
     closeScheduleReviewCellPanel();
     scheduleTemplateEditorState = null;
@@ -3932,7 +3932,7 @@
           ? 'published'
           : 'pending';
     var hubTitle = gmT('schedule.publishHub');
-    if (!hubTitle || hubTitle === 'schedule.publishHub') hubTitle = 'Publish & approvals';
+    if (!hubTitle || hubTitle === 'schedule.publishHub') hubTitle = 'Publish & Approvals';
     var mount = document.getElementById('scheduleReviewPreviewMount');
     if (mode === 'compose') {
       var snap = captureLiveWeekSnapshot(currentRestaurantId, scheduleCalendarWeekIndex);
@@ -4426,7 +4426,7 @@
     var hubPublish = document.getElementById('scheduleHubPublishBtn');
     var hubTabPending = document.getElementById('scheduleHubTabPending');
     var hubTabPublished = document.getElementById('scheduleHubTabPublished');
-    var publishedWeekSel = document.getElementById('scheduleHubPublishedWeekSelect');
+    var publishedWeekNav = document.getElementById('scheduleHubPublishedWeekNav');
     if (hubBtn) {
       hubBtn.addEventListener('click', function () {
         void openSchedulePublishHub();
@@ -4743,12 +4743,18 @@
         switchScheduleHubTab('published');
       });
     }
-    if (publishedWeekSel) {
-      publishedWeekSel.addEventListener('change', function () {
+    if (publishedWeekNav) {
+      publishedWeekNav.addEventListener('click', function (e) {
         if (!scheduleReviewUi) return;
-        scheduleReviewUi.publishedMondayIso = publishedWeekSel.value;
-        scheduleReviewUi.hubTab = 'published';
-        renderSchedulePublishedHub();
+        var stepBtn = e.target.closest('[data-hub-published-week-step]');
+        if (stepBtn && !stepBtn.disabled) {
+          var step = parseInt(stepBtn.getAttribute('data-hub-published-week-step'), 10);
+          if (!isNaN(step)) stepScheduleHubPublishedWeek(step);
+          return;
+        }
+        if (e.target.closest && e.target.closest('#scheduleHubPublishedWeekToday')) {
+          jumpScheduleHubPublishedWeekToThisWeek();
+        }
       });
     }
     if (hubPublish) {
@@ -8786,8 +8792,8 @@
    */
 
   /**
-   * Make cloud schedule_slots.sort_order match restored draft row indices (0..n-1),
-   * and deactivate extra rows so peers cannot keep trailing/jumbled FOH lines.
+   * Make cloud schedule_slots.sort_order match restored draft row indices (0..n-1).
+   * Do not deactivate extra forked UUIDs — that wiped other weeks (Eugene).
    */
   function enqueueHardRevertSlotAlignmentOps(restaurantId, weekIndex) {
     var v2 = gmScheduleV2();
@@ -8844,12 +8850,13 @@
       if (v2.opReorderSlots && keepKeys.length) {
         ops.push(v2.opReorderSlots(rid, role, keepKeys.slice()));
       }
-      existing.forEach(function (e) {
-        if (used[e.slot_key]) return;
-        if (v2.opDeactivateSlot) {
-          ops.push(v2.opDeactivateSlot(rid, role, e.slot_key));
-        }
-      });
+      /*
+       * Never auto-deactivate "extra" forked UUIDs. deactivate_slot tombstones
+       * that key on EVERY week, not just the week being asserted. Mark asserting
+       * Sep 21–27 deactivated Eugene’s live Sep 14–20 fork (6bf7940f) while the
+       * kept sort-4 key was an empty shell. Only deleteScheduleSlotLine may
+       * deactivate.
+       */
       /* Rewrite local map so enqueue writes cells to the aligned keys. */
       if (v2.setSlotMap && v2.getSlotMap) {
         var map = v2.getSlotMap() || {};

@@ -202,7 +202,7 @@ const EN: Dict = {
   'account.pushNotAvailable': 'Notifications are not available on this device build.',
 
   'schedule.publishNotify': 'Publish / Notify',
-  'schedule.publishHub': 'Publish & approvals',
+  'schedule.publishHub': 'Publish & Approvals',
   'schedule.publishHubHint':
     'Pending manager/admin edits, published copies for this store, and publish for employees.',
   'schedule.publishHubPending': 'Pending edits',

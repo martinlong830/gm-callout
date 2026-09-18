@@ -242,7 +242,7 @@ window.GM_I18N_EN = {
   'account.deleted': 'Account deleted',
 
   'schedule.publishNotify': 'Publish / Notify',
-  'schedule.publishHub': 'Publish & approvals',
+  'schedule.publishHub': 'Publish & Approvals',
   'schedule.publishHubTitle':
     'Pending edits, apply to the live schedule, publish, and view published copies',
   'schedule.publishHubPending': 'Pending edits',

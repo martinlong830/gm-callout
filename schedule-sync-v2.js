@@ -844,18 +844,46 @@
     pruneCellsForInactiveSlots();
   }
 
+  /** Live timed cells on this slot_key (any week) — used to prefer a fork that still has the person. */
+  function liveTimedCellCountForSlotKey(slotKey) {
+    var key = String(slotKey || '');
+    if (!key) return 0;
+    var cache = getCellCache();
+    var n = 0;
+    Object.keys(cache).forEach(function (ck) {
+      var c = cache[ck];
+      if (!c || c.deleted) return;
+      if (String(c.slot_key) !== key) return;
+      if (c.start_hhmm && c.end_hhmm) n += 1;
+    });
+    return n;
+  }
+
   /**
    * Pick canonical slot_key for restaurant|role|sort_order.
-   * Prefer an already-bound local map key so devices never reshuffle rows when
-   * duplicate/forked UUIDs exist; only fall back to lex-smallest for cold start.
+   * Keep an already-bound local map key so devices never reshuffle rows when
+   * duplicate/forked UUIDs exist — unless another fork actually holds live
+   * timed cells and the bound key does not (empty shell vs Eugene’s week).
    */
   function pickStableSlotKey(mapKey, candidates, preferMap) {
-    var list = (candidates || []).slice().filter(Boolean);
+    var list = (candidates || []).slice().filter(Boolean).map(String);
     if (!list.length) return null;
     list.sort();
+    var richest = list[0];
+    var richestN = liveTimedCellCountForSlotKey(richest);
+    for (var i = 1; i < list.length; i += 1) {
+      var n = liveTimedCellCountForSlotKey(list[i]);
+      if (n > richestN) {
+        richest = list[i];
+        richestN = n;
+      }
+    }
     var prev = preferMap && preferMap[mapKey];
-    if (prev && list.indexOf(String(prev)) >= 0) return String(prev);
-    return list[0];
+    if (prev && list.indexOf(String(prev)) >= 0) {
+      var prevN = liveTimedCellCountForSlotKey(prev);
+      if (prevN >= richestN || richestN < 1) return String(prev);
+    }
+    return richest;
   }
 
   function mergeRemoteSlots(rows) {
@@ -1305,6 +1333,7 @@
     mergeRemoteSlots: mergeRemoteSlots,
     replaceCellsInRange: replaceCellsInRange,
     replaceActiveSlots: replaceActiveSlots,
+    pickStableSlotKey: pickStableSlotKey,
     pruneCellsForInactiveSlots: pruneCellsForInactiveSlots,
     activeSlotCount: activeSlotCount,
     backfillIfNeeded: backfillIfNeeded,

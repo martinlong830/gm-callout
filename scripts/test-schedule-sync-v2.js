@@ -426,6 +426,48 @@ function emptyState() {
   sync.clearOutbox();
 })();
 
+// 17) Duplicate sort_order: bind the fork that still has live times, not the empty shell
+(function () {
+  var rid = 'rp-eugene-fork-test';
+  var empty = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  var fork = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  sync.mergeRemoteCells(
+    [
+      {
+        restaurant_id: rid,
+        role: 'Bartender',
+        slot_key: fork,
+        day_iso: '2026-09-20',
+        start_hhmm: '10:30',
+        end_hhmm: '20:30',
+        worker_name: 'EUGENE VILLARRUZ',
+        rev: 100,
+        deleted: false,
+      },
+    ],
+    { preferRemote: true }
+  );
+  sync.replaceActiveSlots([
+    { restaurant_id: rid, role: 'Bartender', slot_key: empty, sort_order: 4, active: true },
+    { restaurant_id: rid, role: 'Bartender', slot_key: fork, sort_order: 4, active: true },
+  ]);
+  assert(
+    sync.resolveSlotKey(rid, 'Bartender', 4) === fork,
+    'prefer fork with live Eugene times over empty sort-4 shell'
+  );
+  var map = sync.getSlotMap() || {};
+  map[rid + '|Bartender|4'] = empty;
+  sync.setSlotMap(map);
+  sync.replaceActiveSlots([
+    { restaurant_id: rid, role: 'Bartender', slot_key: empty, sort_order: 4, active: true },
+    { restaurant_id: rid, role: 'Bartender', slot_key: fork, sort_order: 4, active: true },
+  ]);
+  assert(
+    sync.resolveSlotKey(rid, 'Bartender', 4) === fork,
+    'rebind leftover empty map key to live fork'
+  );
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);
