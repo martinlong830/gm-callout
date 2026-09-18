@@ -2553,7 +2553,125 @@
       draft[role][trIdx][dayIdx] = null;
       return;
     }
-    draft[role][trIdx][dayIdx] = [String(times.start), String(times.end)];
+    var start = normalizeHHMM(times.start) || String(times.start);
+    var end = normalizeHHMM(times.end) || String(times.end);
+    draft[role][trIdx][dayIdx] = [start, end];
+  }
+
+  function remapWeekAssignmentShiftIds(assignMap, fromWeekIndex, toWeekIndex) {
+    var fromWi = resolveDraftWeekIndex(fromWeekIndex);
+    var toWi = resolveDraftWeekIndex(toWeekIndex);
+    if (fromWi === toWi) return assignMap || {};
+    var fromStart = fromWi * 7;
+    var toStart = toWi * 7;
+    var out = {};
+    Object.keys(assignMap || {}).forEach(function (shiftId) {
+      var p = parseShiftIdParts(shiftId);
+      if (!p) return;
+      if (p.globalDayIdx < fromStart || p.globalDayIdx >= fromStart + 7) {
+        out[shiftId] = assignMap[shiftId];
+        return;
+      }
+      var nextId =
+        'shift-' +
+        (toStart + (p.globalDayIdx - fromStart)) +
+        '-' +
+        p.roleIdx +
+        '-' +
+        p.trIdx;
+      out[nextId] = assignMap[shiftId];
+    });
+    return out;
+  }
+
+  function capturePublishHubEditorSnapshot(restaurantId, weekIndex) {
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var wi = resolveDraftWeekIndex(weekIndex);
+    if (
+      !scheduleTemplateScratchActive ||
+      !scheduleTemplateEditorState ||
+      !scheduleTemplateEditorState.draft
+    ) {
+      return null;
+    }
+    return {
+      draft: cloneDraftSchedule(scheduleTemplateEditorState.draft),
+      assignments: cloneWeekAssignmentsForRestaurant(
+        scheduleTemplateEditorState.assignmentScratch || {},
+        rid,
+        wi
+      ),
+    };
+  }
+
+  function commitPendingPublishHubEditsIntoProposal(review) {
+    if (!review || review.publishedView || !review.proposal) return review;
+    if (scheduleTemplateEditorState && scheduleTemplateEditorState.draft) {
+      review.proposal.draft = cloneDraftSchedule(scheduleTemplateEditorState.draft);
+      var rid = review.restaurantId;
+      var wi = weekIndexForReviewMonday(review.weekMondayIso);
+      if (scheduleTemplateEditorState.assignmentScratch) {
+        var fromScratch = cloneWeekAssignmentsForRestaurant(
+          scheduleTemplateEditorState.assignmentScratch,
+          rid,
+          wi
+        );
+        if (Object.keys(fromScratch).length) {
+          review.proposal.assignments = fromScratch;
+        }
+      }
+    }
+    var startEl = document.getElementById('scheduleReviewCellStart');
+    var endEl = document.getElementById('scheduleReviewCellEnd');
+    var cellKey = scheduleReviewUi && scheduleReviewUi.activeCellKey;
+    if (cellKey && startEl && endEl) {
+      var start =
+        normalizeHHMM(String(startEl.value || '').trim()) ||
+        String(startEl.value || '').trim();
+      var end =
+        normalizeHHMM(String(endEl.value || '').trim()) ||
+        String(endEl.value || '').trim();
+      var typeEl = document.getElementById('scheduleReviewCellBreakType');
+      var timeEl = document.getElementById('scheduleReviewCellBreakTime');
+      var breakVal = typeEl
+        ? formatBreakAnnotation(timeEl && timeEl.value, typeEl.value)
+        : '';
+      if (start && end) {
+        var parsed = parseScheduleReviewCellKey(cellKey);
+        var cur = parsed
+          ? cellTimesFromDraft(
+              review.proposal.draft,
+              parsed.role,
+              parsed.trIdx,
+              parsed.dayIdx
+            )
+          : null;
+        if (
+          !cur ||
+          normalizeHHMM(cur.start) !== normalizeHHMM(start) ||
+          normalizeHHMM(cur.end) !== normalizeHHMM(end)
+        ) {
+          suggestReviewCellChange(
+            review,
+            cellKey,
+            { start: start, end: end },
+            breakVal,
+            ''
+          );
+        } else if (parsed) {
+          setAssignmentBreakForCell(
+            review.proposal.assignments,
+            weekIndexForReviewMonday(review.weekMondayIso),
+            parsed.role,
+            parsed.trIdx,
+            parsed.dayIdx,
+            breakVal
+          );
+        }
+      }
+    }
+    persistScheduleReviewsLocal();
+    return review;
   }
 
   function assignmentBreakForCell(assignments, restaurantId, weekIndex, role, trIdx, dayIdx) {
@@ -2963,7 +3081,9 @@
     if (!managerCanEditRestaurant(rid)) {
       return { ok: false, message: 'You can only send schedules for your store.' };
     }
-    var snap = captureLiveWeekSnapshot(rid, wi);
+    var liveSnap = captureLiveWeekSnapshot(rid, wi);
+    var hubSnap = capturePublishHubEditorSnapshot(rid, wi);
+    var snap = opts.snapshot || hubSnap || liveSnap;
     var actor = scheduleReviewActor();
     supersedePendingReviews(rid, mon);
     var item = {
@@ -2977,7 +3097,7 @@
       updatedAt: new Date().toISOString(),
       createdBy: actor,
       lastActor: actor,
-      baseline: snap,
+      baseline: liveSnap,
       proposal: {
         draft: cloneDraftSchedule(snap.draft),
         assignments: JSON.parse(JSON.stringify(snap.assignments)),
@@ -2997,8 +3117,17 @@
     if (review.publishedView) {
       return { ok: false, message: 'Published copies are view-only.' };
     }
+    commitPendingPublishHubEditsIntoProposal(review);
     var rid = review.restaurantId;
     var wi = weekIndexForReviewMonday(review.weekMondayIso);
+    var proposalAssign = review.proposal.assignments || {};
+    var sentWi =
+      review.weekIndexAtSend != null && !isNaN(Number(review.weekIndexAtSend))
+        ? Number(review.weekIndexAtSend)
+        : wi;
+    if (sentWi !== wi) {
+      proposalAssign = remapWeekAssignmentShiftIds(proposalAssign, sentWi, wi);
+    }
     /* Scratch from the hub preview must not win over the proposal write. */
     scheduleTemplateScratchActive = false;
     scheduleTemplateEditorState = null;
@@ -3013,7 +3142,7 @@
     if (!store[rid] || typeof store[rid] !== 'object') store[rid] = {};
     store[rid] = mergeRestaurantWeekAssignmentsFromScratch(
       store[rid],
-      review.proposal.assignments,
+      proposalAssign,
       wi
     );
     saveScheduleAssignmentsStore(store);
@@ -3221,6 +3350,7 @@
     companyHolidaysDirty = true;
     persistTeamStateDirtyFlags();
     scheduleTeamStateDebouncedSync();
+    void flushTeamStateSyncNow();
     return true;
   }
 
@@ -3234,14 +3364,44 @@
     companyHolidaysDirty = true;
     persistTeamStateDirtyFlags();
     scheduleTeamStateDebouncedSync();
+    void flushTeamStateSyncNow();
     return true;
   }
 
-  function updateCompanyHolidaysUi() {
-    var btn = document.getElementById('scheduleHolidaysBtn');
-    if (btn) {
-      btn.hidden = !gmCalloutSessionIsAdmin || !!teamStateMissingColumns.company_holidays;
+  function schedulePushToCloudHostAllowed() {
+    try {
+      var host = String((location && location.hostname) || '');
+      return host === 'localhost' || host === '127.0.0.1';
+    } catch (_host) {
+      return false;
     }
+  }
+
+  function closeScheduleMoreMenu() {
+    var drop = document.getElementById('scheduleMoreDropdown');
+    var btn = document.getElementById('scheduleMoreBtn');
+    if (drop) drop.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+
+  function updateScheduleMoreMenuUi() {
+    var holBtn = document.getElementById('scheduleHolidaysBtn');
+    var pushBtn = document.getElementById('schedulePushLocalToCloudBtn');
+    var locBtn = document.getElementById('openScheduleAddLocationModal');
+    var wrap = document.getElementById('scheduleMoreMenu');
+    var holShow = !!(gmCalloutSessionIsAdmin && !teamStateMissingColumns.company_holidays);
+    var pushShow = schedulePushToCloudHostAllowed();
+    var locShow = !!locBtn;
+    if (holBtn) holBtn.hidden = !holShow;
+    if (pushBtn) pushBtn.hidden = !pushShow;
+    if (wrap) {
+      wrap.hidden = !(holShow || pushShow || locShow);
+      if (wrap.hidden) closeScheduleMoreMenu();
+    }
+  }
+
+  function updateCompanyHolidaysUi() {
+    updateScheduleMoreMenuUi();
     var listEl = document.getElementById('companyHolidaysList');
     if (listEl) {
       if (!companyHolidaysList.length) {
@@ -3278,8 +3438,11 @@
     if (calendarGrid && typeof renderCalendar === 'function') {
       renderCalendar();
     }
-    if (currentScreen === 14 && typeof renderManagerHomeShifts === 'function') {
+    if (typeof renderManagerHomeShifts === 'function') {
       renderManagerHomeShifts();
+    }
+    if (typeof window.gmCalloutEmployeeScheduleRefreshUi === 'function') {
+      window.gmCalloutEmployeeScheduleRefreshUi();
     }
   }
 
@@ -3658,15 +3821,6 @@
         })(),
         draft: cloneDraftSchedule(review.proposal.draft),
       };
-    } else {
-      scheduleTemplateEditorState.draft = cloneDraftSchedule(review.proposal.draft);
-      var rid = review.restaurantId;
-      if (!scheduleTemplateEditorState.assignmentScratch) {
-        scheduleTemplateEditorState.assignmentScratch = {};
-      }
-      scheduleTemplateEditorState.assignmentScratch[rid] = JSON.parse(
-        JSON.stringify(review.proposal.assignments || {})
-      );
     }
     scheduleTemplateScratchActive = true;
     if (!review.publishedView) {
@@ -4320,8 +4474,14 @@
         var startEl = document.getElementById('scheduleReviewCellStart');
         var endEl = document.getElementById('scheduleReviewCellEnd');
         var noteEl = document.getElementById('scheduleReviewCellNote');
-        var start = startEl ? String(startEl.value || '').trim() : '';
-        var end = endEl ? String(endEl.value || '').trim() : '';
+        var start = startEl
+          ? normalizeHHMM(String(startEl.value || '').trim()) ||
+            String(startEl.value || '').trim()
+          : '';
+        var end = endEl
+          ? normalizeHHMM(String(endEl.value || '').trim()) ||
+            String(endEl.value || '').trim()
+          : '';
         if (!start || !end) {
           window.alert('Enter start and end times, or use Mark day off.');
           return;
@@ -20210,6 +20370,10 @@
   }
 
   function refreshScheduleCalendarAfterEdit(opts) {
+    if (scheduleReviewModalIsOpen() && scheduleReviewUi && scheduleReviewUi.review) {
+      renderScheduleReviewPreview();
+      return;
+    }
     if (scheduleTemplateScratchActive && scheduleTemplateEditorState) {
       renderScheduleTemplatePreview();
       return;
@@ -22032,7 +22196,10 @@
     var rmBtn = document.getElementById('removeRestaurantBtn');
     if (!sel) return;
     if (restaurantsList.length <= 1) {
-      sel.innerHTML = '<option value="">At least one location required</option>';
+      sel.innerHTML =
+        '<option value="">' +
+        escapeHtml(gmT('schedule.atLeastOneLocation') || 'At least one location required') +
+        '</option>';
       sel.disabled = true;
       if (rmBtn) rmBtn.disabled = true;
       return;
@@ -22059,7 +22226,11 @@
     });
     if (ix === -1) return false;
     var label = restaurantsList[ix].name || id;
-    if (!confirm('Remove "' + label + '"? Saved schedule for this location will be deleted.')) {
+    var confirmMsg = gmT('schedule.locationRemoveConfirm', { name: label });
+    if (!confirmMsg || confirmMsg === 'schedule.locationRemoveConfirm') {
+      confirmMsg = 'Remove "' + label + '"? Saved schedule for this location will be deleted.';
+    }
+    if (!confirm(confirmMsg)) {
       return false;
     }
     restaurantsList.splice(ix, 1);
@@ -26198,6 +26369,7 @@
   }
 
   function openScheduleAddLocationModal() {
+    closeScheduleMoreMenu();
     if (!scheduleAddLocationModal) return;
     if (draftScheduleModal && !draftScheduleModal.hidden) {
       closeDraftScheduleModal();
@@ -34860,17 +35032,11 @@
   }
   var schedulePushLocalToCloudBtn = document.getElementById('schedulePushLocalToCloudBtn');
   if (schedulePushLocalToCloudBtn) {
-    try {
-      var pushHost = String((location && location.hostname) || '');
-      if (pushHost === 'localhost' || pushHost === '127.0.0.1') {
-        schedulePushLocalToCloudBtn.hidden = false;
-      }
-    } catch (_hostPush) {
-      /* leave hidden */
-    }
+    updateScheduleMoreMenuUi();
     schedulePushLocalToCloudBtn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
+      closeScheduleMoreMenu();
       if (!managerCanEditCurrentRestaurant()) {
         showScheduleNotice(
           gmT('schedule.viewOnlyOtherStoreHint') ||
@@ -35451,9 +35617,37 @@
     });
     updateSchedulePublishNotifyButton();
   }
+  var scheduleMoreBtn = document.getElementById('scheduleMoreBtn');
+  var scheduleMoreDropdown = document.getElementById('scheduleMoreDropdown');
+  var scheduleMoreMenu = document.getElementById('scheduleMoreMenu');
+  if (scheduleMoreBtn && scheduleMoreDropdown) {
+    scheduleMoreBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var open = !!scheduleMoreDropdown.hidden;
+      if (open) {
+        scheduleMoreDropdown.hidden = false;
+        scheduleMoreBtn.setAttribute('aria-expanded', 'true');
+      } else {
+        closeScheduleMoreMenu();
+      }
+    });
+    document.addEventListener('click', function (e) {
+      if (!scheduleMoreMenu || scheduleMoreMenu.hidden || !scheduleMoreDropdown || scheduleMoreDropdown.hidden) {
+        return;
+      }
+      var t = e.target;
+      if (t && scheduleMoreMenu.contains(t)) return;
+      closeScheduleMoreMenu();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeScheduleMoreMenu();
+    });
+  }
   var scheduleHolidaysBtn = document.getElementById('scheduleHolidaysBtn');
   if (scheduleHolidaysBtn) {
     scheduleHolidaysBtn.addEventListener('click', function () {
+      closeScheduleMoreMenu();
       openCompanyHolidaysModal();
     });
   }
@@ -35546,6 +35740,7 @@
   }
   if (openScheduleAddLocationModalBtn) {
     openScheduleAddLocationModalBtn.addEventListener('click', function () {
+      closeScheduleMoreMenu();
       openScheduleAddLocationModal();
     });
   }

@@ -221,6 +221,8 @@ const EN: Dict = {
   'schedule.publishNotifyEmployees': 'Publish / notify employees',
   'schedule.undo': 'Undo',
   'schedule.history': 'History',
+  'schedule.more': 'More',
+  'schedule.moreTitle': 'Holidays, locations, and upload',
   'schedule.holidays': 'Holidays',
   'schedule.holidaysTitle': 'Add or edit company holidays',
   'schedule.holidaysHint':
@@ -268,6 +270,23 @@ const EN: Dict = {
   'schedule.keepCurrentShift': 'Keep current shift',
   'schedule.noMasterOptions': 'No options in section',
   'schedule.manageLocations': 'Manage Locations',
+  'schedule.manageLocationsHint':
+    'New locations start with every shift unassigned until you save staffing. They appear in the switcher, filters, and employee forms.',
+  'schedule.locationName': 'Restaurant name',
+  'schedule.locationShortLabel': 'Short label (optional)',
+  'schedule.addLocation': 'Add location',
+  'schedule.removeLocation': 'Remove location',
+  'schedule.atLeastOneLocation': 'At least one location required',
+  'schedule.locationRemoveConfirm':
+    'Remove "{name}"? Saved schedule for this location will be deleted.',
+  'schedule.pushToCloud': 'Upload this PC to cloud',
+  'schedule.pushToCloudTitle':
+    'Upload this device’s schedule so the cloud and other devices match what you see here',
+  'schedule.pushCloudSaving': 'Uploading this device’s schedule to the cloud…',
+  'schedule.pushCloudDone':
+    'This device’s schedule is now the shared cloud copy. Other devices will update shortly.',
+  'schedule.pushCloudFailed':
+    'Could not connect to the cloud. Check your connection, wait a moment, and try Upload again.',
   'schedule.noShifts': 'No shifts to show.',
   'schedule.dayOffLabel': 'DAY-OFF',
   'schedule.editStaffing': 'Edit Staffing',
@@ -1008,6 +1027,8 @@ const ES: Dict = {
   'schedule.publishNotifyEmployees': 'Publicar / avisar a empleados',
   'schedule.undo': 'Deshacer',
   'schedule.history': 'Historial',
+  'schedule.more': 'Más',
+  'schedule.moreTitle': 'Feriados, ubicaciones y subir a la nube',
   'schedule.holidays': 'Feriados',
   'schedule.holidaysTitle': 'Agregar o editar feriados de la empresa',
   'schedule.holidaysHint':
@@ -1055,6 +1076,23 @@ const ES: Dict = {
   'schedule.keepCurrentShift': 'Mantener turno actual',
   'schedule.noMasterOptions': 'No hay opciones en esta sección',
   'schedule.manageLocations': 'Administrar ubicaciones',
+  'schedule.manageLocationsHint':
+    'Las ubicaciones nuevas empiezan con todos los turnos sin asignar hasta que guardes el personal. Aparecen en el selector, los filtros y los formularios de empleados.',
+  'schedule.locationName': 'Nombre del restaurante',
+  'schedule.locationShortLabel': 'Etiqueta corta (opcional)',
+  'schedule.addLocation': 'Agregar ubicación',
+  'schedule.removeLocation': 'Quitar ubicación',
+  'schedule.atLeastOneLocation': 'Se requiere al menos una ubicación',
+  'schedule.locationRemoveConfirm':
+    '¿Quitar "{name}"? Se eliminará el horario guardado de esta ubicación.',
+  'schedule.pushToCloud': 'Subir este PC a la nube',
+  'schedule.pushToCloudTitle':
+    'Sube el horario de este dispositivo para que la nube y otros dispositivos coincidan con lo que ves aquí',
+  'schedule.pushCloudSaving': 'Subiendo el horario de este dispositivo a la nube…',
+  'schedule.pushCloudDone':
+    'El horario de este dispositivo es ahora la copia compartida en la nube. Los otros dispositivos se actualizarán en breve.',
+  'schedule.pushCloudFailed':
+    'No se pudo conectar a la nube. Revisa la conexión, espera un momento e intenta Subir de nuevo.',
   'schedule.noShifts': 'No hay turnos para mostrar.',
   'schedule.dayOffLabel': 'DÍA LIBRE',
   'schedule.editStaffing': 'Editar personal',

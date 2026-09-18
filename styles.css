@@ -3314,6 +3314,7 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   gap: var(--space-tight);
   align-items: center;
   max-width: 100%;
+  overflow: visible;
 }
 
 /* Compact type for the schedule toolbar */
@@ -3324,6 +3325,50 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   line-height: 1.2;
   letter-spacing: 0;
   white-space: nowrap;
+}
+
+.schedule-more-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.schedule-more-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 80;
+  min-width: 240px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+}
+
+.schedule-more-item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #0f172a;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.schedule-more-item:hover,
+.schedule-more-item:focus-visible {
+  background: #f1f5f9;
+  outline: none;
+}
+
+.schedule-more-item[hidden] {
+  display: none;
 }
 
 .btn:disabled,

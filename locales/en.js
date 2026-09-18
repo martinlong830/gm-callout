@@ -288,6 +288,8 @@ window.GM_I18N_EN = {
     'Schedule updated from another manager. Your view now matches the cloud.',
   'schedule.history': 'History',
   'schedule.historyTitle': 'View saved schedule versions and hard-revert',
+  'schedule.more': 'More',
+  'schedule.moreTitle': 'Holidays, locations, and upload',
   'schedule.holidays': 'Holidays',
   'schedule.holidaysTitle': 'Add or edit company holidays',
   'schedule.holidaysHint':
@@ -372,6 +374,15 @@ window.GM_I18N_EN = {
   'schedule.keepCurrentShift': 'Keep current shift',
   'schedule.noMasterOptions': 'No options in section',
   'schedule.manageLocations': 'Manage Locations',
+  'schedule.manageLocationsHint':
+    'New locations start with every shift unassigned until you save staffing. They appear in the switcher, filters, and employee forms.',
+  'schedule.locationName': 'Restaurant name',
+  'schedule.locationShortLabel': 'Short label (optional)',
+  'schedule.addLocation': 'Add location',
+  'schedule.removeLocation': 'Remove location',
+  'schedule.atLeastOneLocation': 'At least one location required',
+  'schedule.locationRemoveConfirm':
+    'Remove "{name}"? Saved schedule for this location will be deleted.',
   'schedule.noShifts': 'No shifts to show.',
   'schedule.dayOffLabel': 'DAY-OFF',
   'schedule.dayTotals': 'Day totals',

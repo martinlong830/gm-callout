@@ -46,6 +46,21 @@ export async function readStoredCompanyName(): Promise<string> {
   return (await AsyncStorage.getItem(COMPANY_NAME_KEY)) || '';
 }
 
+export async function readStoredRestaurantsConfig(): Promise<unknown[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(COMPANY_RESTAURANTS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveStoredRestaurantsConfig(config: unknown[]): Promise<void> {
+  await AsyncStorage.setItem(COMPANY_RESTAURANTS_KEY, JSON.stringify(config || []));
+}
+
 export async function clearCompanySession(): Promise<void> {
   await AsyncStorage.multiRemove([
     COMPANY_ID_KEY,

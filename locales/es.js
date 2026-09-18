@@ -287,6 +287,8 @@ window.GM_I18N_ES = {
     'Horario actualizado por otro gerente. Tu vista ahora coincide con la nube.',
   'schedule.history': 'Historial',
   'schedule.historyTitle': 'Ver versiones guardadas y revertir',
+  'schedule.more': 'Más',
+  'schedule.moreTitle': 'Feriados, ubicaciones y subir a la nube',
   'schedule.holidays': 'Feriados',
   'schedule.holidaysTitle': 'Agregar o editar feriados de la empresa',
   'schedule.holidaysHint':
@@ -371,6 +373,15 @@ window.GM_I18N_ES = {
   'schedule.keepCurrentShift': 'Mantener turno actual',
   'schedule.noMasterOptions': 'No hay opciones en esta sección',
   'schedule.manageLocations': 'Administrar ubicaciones',
+  'schedule.manageLocationsHint':
+    'Las ubicaciones nuevas empiezan con todos los turnos sin asignar hasta que guardes el personal. Aparecen en el selector, los filtros y los formularios de empleados.',
+  'schedule.locationName': 'Nombre del restaurante',
+  'schedule.locationShortLabel': 'Etiqueta corta (opcional)',
+  'schedule.addLocation': 'Agregar ubicación',
+  'schedule.removeLocation': 'Quitar ubicación',
+  'schedule.atLeastOneLocation': 'Se requiere al menos una ubicación',
+  'schedule.locationRemoveConfirm':
+    '¿Quitar "{name}"? Se eliminará el horario guardado de esta ubicación.',
   'schedule.noShifts': 'No hay turnos para mostrar.',
   'schedule.dayOffLabel': 'DÍA LIBRE',
   'schedule.dayTotals': 'Totales del día',

@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { ScheduleTemplatesSheet } from '../../components/ScheduleTemplatesSheet';
 import { CompanyHolidaysSheet } from '../../components/CompanyHolidaysSheet';
+import { ManageLocationsSheet } from '../../components/ManageLocationsSheet';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
 import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -37,7 +38,7 @@ import {
   orderRestaurantsMainFirst,
   type EmployeeRow,
 } from '../../lib/employees';
-import { readStoredCompanyId, readStoredTeamStateId } from '../../lib/companySession';
+import { readStoredCompanyId, readStoredRestaurantsConfig, readStoredTeamStateId, saveStoredRestaurantsConfig } from '../../lib/companySession';
 import { loadSavedRestaurantId, saveRestaurantId } from '../../lib/restaurantPref';
 import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
@@ -339,7 +340,7 @@ export default function ManagerScheduleScreen() {
   } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
-  const [restaurants] = useState<Restaurant[]>(() => defaultRestaurants());
+  const [restaurants, setRestaurants] = useState<Restaurant[]>(() => defaultRestaurants());
   /** Main store leftmost; does not reshuffle when the selected chip changes. */
   const scheduleRestaurants = useMemo(
     () => orderRestaurantsMainFirst(restaurants, managerScheduleMainRestaurantId(myEmployee)),
@@ -374,6 +375,40 @@ export default function ManagerScheduleScreen() {
     setCurrentRestaurantId(id);
     void saveRestaurantId(id);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readStoredRestaurantsConfig().then((raw) => {
+      if (cancelled || !Array.isArray(raw) || !raw.length) return;
+      const parsed: Restaurant[] = [];
+      for (const row of raw) {
+        if (!row || typeof row !== 'object') continue;
+        const rec = row as { id?: unknown; name?: unknown; shortLabel?: unknown; defaultUnassignedSchedule?: unknown };
+        const id = String(rec.id || '').trim();
+        if (!id) continue;
+        const name = String(rec.name || rec.shortLabel || 'Location');
+        parsed.push({
+          id,
+          name,
+          shortLabel: String(rec.shortLabel || name).slice(0, 24),
+          defaultUnassignedSchedule: rec.defaultUnassignedSchedule === true,
+        });
+      }
+      if (parsed.length) {
+        setRestaurants(parsed);
+        setAssignmentStore((prev) => {
+          const copy = JSON.parse(JSON.stringify(prev || {})) as AssignmentStore;
+          parsed.forEach((r) => {
+            if (!copy[r.id] || typeof copy[r.id] !== 'object') copy[r.id] = {};
+          });
+          return copy;
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
     assignmentShell(restaurants)
   );
@@ -407,6 +442,8 @@ export default function ManagerScheduleScreen() {
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [holidaysOpen, setHolidaysOpen] = useState(false);
+  const [locationsOpen, setLocationsOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [, setTemplateSaving] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Keeps a pending draft payload across debounced assignment saves (e.g. Monday window roll). */
@@ -1186,6 +1223,51 @@ export default function ManagerScheduleScreen() {
     if (!latestStore) return;
     await persistCloudRef.current?.(latestStore, pendingDraftRef.current);
   }, []);
+
+  const applyRestaurantsChange = useCallback(
+    (next: Restaurant[]) => {
+      if (!next.length) return;
+      setRestaurants(next);
+      void saveStoredRestaurantsConfig(next);
+      setAssignmentStore((prev) => {
+        const copy = JSON.parse(JSON.stringify(prev || {})) as AssignmentStore;
+        next.forEach((r) => {
+          if (!copy[r.id] || typeof copy[r.id] !== 'object') copy[r.id] = {};
+        });
+        Object.keys(copy).forEach((id) => {
+          if (!next.some((r) => r.id === id)) delete copy[id];
+        });
+        return copy;
+      });
+      if (!next.some((r) => r.id === currentRestaurantId)) {
+        selectRestaurant(next[0].id);
+      }
+    },
+    [currentRestaurantId, selectRestaurant]
+  );
+
+  const uploadThisDeviceToCloud = useCallback(() => {
+    Alert.alert(t('schedule.pushToCloud'), t('schedule.pushToCloudTitle'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('schedule.pushToCloud'),
+        onPress: () => {
+          void (async () => {
+            try {
+              await flushPendingNow();
+              await persistCloudRef.current?.(
+                assignmentStoreRef.current,
+                draftScheduleRawRef.current
+              );
+              Alert.alert(t('schedule.pushToCloud'), t('schedule.pushCloudDone'));
+            } catch {
+              Alert.alert(t('schedule.pushToCloud'), t('schedule.pushCloudFailed'));
+            }
+          })();
+        },
+      },
+    ]);
+  }, [flushPendingNow, t]);
 
   useEffect(() => {
     registerPendingScheduleFlush(() => flushPendingNow());
@@ -2941,16 +3023,6 @@ export default function ManagerScheduleScreen() {
                 {publishing ? t('common.publishing') : t('schedule.publishHub')}
               </Text>
             </Pressable>
-            {isAdminRole(role) ? (
-              <Pressable
-                onPress={() => setHolidaysOpen(true)}
-                style={styles.undoBtn}
-                accessibilityRole="button"
-                accessibilityLabel={t('schedule.holidays')}
-              >
-                <Text style={styles.undoBtnText}>{t('schedule.holidays')}</Text>
-              </Pressable>
-            ) : null}
             {isManagerLikeRole(role) ? (
               <Pressable
                 onPress={() => setTemplatesOpen(true)}
@@ -2959,6 +3031,16 @@ export default function ManagerScheduleScreen() {
                 accessibilityLabel={t('schedule.templates')}
               >
                 <Text style={styles.undoBtnText}>{t('schedule.templates')}</Text>
+              </Pressable>
+            ) : null}
+            {isManagerLikeRole(role) ? (
+              <Pressable
+                onPress={() => setMoreMenuOpen(true)}
+                style={styles.undoBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('schedule.more')}
+              >
+                <Text style={styles.undoBtnText}>{t('schedule.more')}</Text>
               </Pressable>
             ) : null}
             {isManagerLikeRole(role) && scheduleEditable ? (
@@ -3496,6 +3578,55 @@ export default function ManagerScheduleScreen() {
       />
 
       <CompanyHolidaysSheet visible={holidaysOpen} onClose={() => setHolidaysOpen(false)} />
+
+      <ManageLocationsSheet
+        visible={locationsOpen}
+        restaurants={restaurants}
+        onClose={() => setLocationsOpen(false)}
+        onChange={applyRestaurantsChange}
+      />
+
+      <Modal visible={moreMenuOpen} animationType="fade" transparent onRequestClose={() => setMoreMenuOpen(false)}>
+        <Pressable style={styles.moreBackdrop} onPress={() => setMoreMenuOpen(false)}>
+          <Pressable style={styles.moreSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.moreTitle}>{t('schedule.more')}</Text>
+            {isAdminRole(role) ? (
+              <Pressable
+                style={styles.moreItem}
+                onPress={() => {
+                  setMoreMenuOpen(false);
+                  setHolidaysOpen(true);
+                }}
+              >
+                <Text style={styles.moreItemText}>{t('schedule.holidays')}</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={styles.moreItem}
+              onPress={() => {
+                setMoreMenuOpen(false);
+                setLocationsOpen(true);
+              }}
+            >
+              <Text style={styles.moreItemText}>{t('schedule.manageLocations')}</Text>
+            </Pressable>
+            {scheduleEditable ? (
+              <Pressable
+                style={styles.moreItem}
+                onPress={() => {
+                  setMoreMenuOpen(false);
+                  uploadThisDeviceToCloud();
+                }}
+              >
+                <Text style={styles.moreItemText}>{t('schedule.pushToCloud')}</Text>
+              </Pressable>
+            ) : null}
+            <Pressable style={styles.moreCancel} onPress={() => setMoreMenuOpen(false)}>
+              <Text style={styles.moreCancelText}>{t('common.cancel')}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={hubOpen} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setHubOpen(false)}>
@@ -4379,6 +4510,28 @@ const styles = StyleSheet.create({
   undoBtnDisabled: { opacity: 0.45 },
   undoBtnText: { color: '#334155', fontWeight: '700', fontSize: 14 },
   undoBtnTextDisabled: { color: '#94a3b8' },
+  moreBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'flex-end',
+  },
+  moreSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 12,
+    paddingTop: 16,
+    paddingBottom: 28,
+  },
+  moreTitle: { fontSize: 13, fontWeight: '700', color: '#64748b', marginBottom: 8, paddingHorizontal: 6 },
+  moreItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    borderRadius: 10,
+  },
+  moreItemText: { fontSize: 16, fontWeight: '600', color: '#0f172a' },
+  moreCancel: { marginTop: 8, paddingVertical: 12, alignItems: 'center' },
+  moreCancelText: { fontSize: 15, fontWeight: '600', color: '#c41230' },
   historyRow: {
     flexDirection: 'row',
     alignItems: 'center',

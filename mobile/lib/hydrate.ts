@@ -4,6 +4,7 @@ import { applyLeaveSeedsToEmployees } from './employeeLeave';
 import { mapEmployeeFromDb, type EmployeeRow } from './employees';
 import { mapStaffRequestFromDbRow, type StaffRequestUi } from './staffRequests';
 import {
+  fetchTeamStateColumns,
   TEAM_STATE_EMPLOYEE_COLUMNS,
   TEAM_STATE_MANAGER_COLUMNS,
 } from './teamStateColumns';
@@ -70,6 +71,15 @@ export async function hydrateFromSupabase(
     sb.from('team_state').select(teamCols).eq('id', teamStateId).maybeSingle(),
   ]);
 
+  let teamRow = teamRes.data && typeof teamRes.data === 'object' ? teamRes.data : null;
+  if (teamRes.error) {
+    const fallback = await fetchTeamStateColumns(sb, {
+      role: opts?.role,
+      teamStateId,
+    });
+    if (fallback) teamRow = fallback;
+  }
+
   const employees: EmployeeRow[] = [];
   if (empRes.data?.length) {
     for (const row of empRes.data) {
@@ -112,9 +122,7 @@ export async function hydrateFromSupabase(
   applyLeaveSeedsToEmployees(employees);
 
   const teamState =
-    teamRes.data && typeof teamRes.data === 'object'
-      ? (teamRes.data as Record<string, unknown>)
-      : null;
+    teamRow && typeof teamRow === 'object' ? (teamRow as Record<string, unknown>) : null;
 
   return { employees, staffRequests, teamState };
 }
