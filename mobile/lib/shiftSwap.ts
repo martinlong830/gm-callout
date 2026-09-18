@@ -11,7 +11,6 @@ import {
   parseRedPokeTimeLabel,
   parseShiftIdParts,
   patchDraftScheduleForWeek,
-  redPokeBreakAnnotation,
   redPokeShiftHoursDecimal,
   redPokeShiftTimeLabel,
   ROLE_DEFS,
@@ -259,9 +258,7 @@ export async function applyApprovedSwapToSchedule(
       end = parsed.end;
     }
   }
-  const breakText =
-    origEntry.break ||
-    (start && end ? redPokeBreakAnnotation(start, end, offeredRole, shift.day || '') : '');
+  const breakText = origEntry.break || '';
   const timeLabel =
     origEntry.timeLabel ||
     (start && end ? redPokeShiftTimeLabel(start, end) : shift.timeLabel || '');

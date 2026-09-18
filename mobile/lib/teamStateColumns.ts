@@ -4,7 +4,7 @@ import { mergeDraftScheduleSlotOrderFromRemote } from './schedule/slotOrder';
 
 /** Schedule JSON only — largest egress columns. */
 export const TEAM_STATE_SCHEDULE_COLUMNS =
-  'schedule_assignments,schedule_templates,draft_schedule,schedule_published,company_holidays,updated_at';
+  'schedule_assignments,schedule_templates,draft_schedule,schedule_published,schedule_reviews,company_holidays,updated_at';
 
 export const TEAM_STATE_MANAGER_COLUMNS =
   TEAM_STATE_SCHEDULE_COLUMNS +
@@ -19,6 +19,7 @@ const MANAGER_ALLOWED = [
   'schedule_templates',
   'draft_schedule',
   'schedule_published',
+  'schedule_reviews',
   'company_holidays',
   'messaging_templates',
   'current_restaurant_id',
@@ -76,7 +77,6 @@ const MISSING_COLS_KEY = 'gm-callout-team-state-missing-cols-v1';
 /** Seed columns known missing until production migrations are applied. */
 const seededMissing: Record<string, true> = {
   company_holidays: true,
-  schedule_reviews: true,
   timecard_tip_takehome_pct: true,
 };
 
@@ -213,6 +213,9 @@ export function mergeTeamStatePartial(
     if (prev.schedule_published != null && partial.schedule_published != null) {
       /* Published flags can update; they do not discard assignment edits. */
       next.schedule_published = partial.schedule_published;
+    }
+    if (partial.schedule_reviews != null) {
+      next.schedule_reviews = partial.schedule_reviews;
     }
     if (
       Array.isArray(prev.schedule_templates) &&

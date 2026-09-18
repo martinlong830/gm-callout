@@ -242,6 +242,21 @@ window.GM_I18N_EN = {
   'account.deleted': 'Account deleted',
 
   'schedule.publishNotify': 'Publish / Notify',
+  'schedule.publishHub': 'Publish & approvals',
+  'schedule.publishHubTitle':
+    'Pending edits, apply to the live schedule, publish, and view published copies',
+  'schedule.publishHubPending': 'Pending edits',
+  'schedule.publishHubPublished': 'Published schedules',
+  'schedule.publishHubWeek': 'Published week',
+  'schedule.publishHubApplyPublish': 'Apply to live & publish',
+  'schedule.publishHubPublish': 'Publish & notify',
+  'schedule.publishHubNoSnapshot':
+    'No saved published copy for this week. Older weeks may be empty until the next publish.',
+  'schedule.publishHubPublishedAt': 'Published {when}',
+  'schedule.publishHubPublishedBy': 'Published {when} by {who}',
+  'schedule.publishHubRecovered': 'Recovered published copy · {when}',
+  'schedule.publishHubPublishWhenReady':
+    'Click Publish & notify when you want employees to see this week.',
   'schedule.viewOnlyOtherStoreHint':
     'Abbreviated view of the other store — only people tied to your store this week. View only.',
   'schedule.dragMoveHint':

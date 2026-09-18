@@ -160,7 +160,7 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     }
   }
 
-  return {
+  const mapped: EmployeeRow = {
     id: String(row.id),
     authUserId: row.auth_user_id ? String(row.auth_user_id) : undefined,
     firstName,
@@ -178,6 +178,8 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     weeklyGrid: (row.weekly_grid as Record<string, unknown>) ?? {},
     meta,
   };
+  applySingleStorePayrollDefaultIfMissing(mapped);
+  return mapped;
 }
 
 /** Matches web team card PIN line. */
@@ -213,6 +215,89 @@ export function normalizeDeliveryTipRetention(val: unknown): number | null {
     factor = factor / 100;
   }
   return Math.round(factor * 10000) / 10000;
+}
+
+function employeeNormTokensForPayrollFlag(emp: {
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+}): string {
+  const dn = String(emp.displayName || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const ln = String(emp.lastName || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const fn = String(emp.firstName || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${dn} ${fn} ${ln}`.replace(/\s+/g, ' ').trim();
+}
+
+/** Name defaults until Team explicitly saves meta.singleStorePayroll. */
+export function employeeNameDefaultsSingleStorePayroll(emp: {
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+} | null | undefined): boolean {
+  if (!emp) return false;
+  if (isJuanEspinobarrosEmployee(emp)) return true;
+  const blob = employeeNormTokensForPayrollFlag(emp);
+  if (/\bZEFERINO\b/.test(blob)) return true;
+  if (/\bIRINEO\b/.test(blob)) return true;
+  return false;
+}
+
+export function applySingleStorePayrollDefaultIfMissing(emp: {
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+  meta?: Record<string, unknown>;
+} | null | undefined): void {
+  if (!emp) return;
+  emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+  const v = emp.meta.singleStorePayroll;
+  if (v === true || v === 'true' || v === 1 || v === false || v === 'false' || v === 0) return;
+  if (employeeNameDefaultsSingleStorePayroll(emp)) {
+    emp.meta.singleStorePayroll = true;
+  }
+}
+
+/**
+ * Single-store payroll: always paid on the primary store.
+ * Off (default for everyone else): paid on the store they work each day.
+ */
+export function employeeHasSingleStorePayroll(emp: {
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+  meta?: Record<string, unknown> | null;
+} | null | undefined): boolean {
+  if (!emp) return false;
+  const meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+  if (meta.singleStorePayroll === true || meta.singleStorePayroll === 'true' || meta.singleStorePayroll === 1) {
+    return true;
+  }
+  if (meta.singleStorePayroll === false || meta.singleStorePayroll === 'false' || meta.singleStorePayroll === 0) {
+    return false;
+  }
+  return employeeNameDefaultsSingleStorePayroll(emp);
+}
+
+export function employeePayrollHomeRestaurantId(emp: {
+  usualRestaurant?: string;
+  primaryLocationId?: string | null;
+  meta?: Record<string, unknown> | null;
+} | null | undefined): string | null {
+  const home = employeeHomeOrPrimaryRestaurantId(emp);
+  if (home === 'rp-8' || home === 'rp-9') return home;
+  return null;
 }
 
 function isJuanEspinobarrosEmployee(emp: {

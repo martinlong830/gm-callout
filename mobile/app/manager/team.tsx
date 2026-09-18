@@ -10,6 +10,7 @@ import { useI18n } from '../../contexts/LocaleContext';
 import {
   employeeClockPinLine,
   employeeDisplayName,
+  employeeHasSingleStorePayroll,
   employeePrimaryLocationLine,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
@@ -65,6 +66,14 @@ const TeamMemberCard = memo(function TeamMemberCard({
           <Text style={styles.name}>{employeeDisplayName(item)}</Text>
           <MetaRow label={t('common.phone')} value={(item.phone || '').trim() || '—'} />
           <MetaRow label={t('team.primaryLocation')} value={employeePrimaryLocationLine(item)} />
+          <MetaRow
+            label={t('team.singleStorePayroll')}
+            value={
+              employeeHasSingleStorePayroll(item)
+                ? t('team.singleStorePayrollOn')
+                : t('team.singleStorePayrollOff')
+            }
+          />
           <MetaRow
             label={t('team.employmentStatus')}
             value={item.employmentStatus === 'full-time' ? t('team.fullTime') : t('team.partTime')}

@@ -7520,6 +7520,100 @@
   var SCHED_FILL_SL = { patternType: 'solid', fgColor: { rgb: 'FFC7CE' } };
   var SCHED_FILL_VL_SL = { patternType: 'solid', fgColor: { rgb: 'D9D2E9' } };
   var SCHED_FILL_OTHER_STORE = { patternType: 'solid', fgColor: { rgb: 'F8CBAD' } };
+  var SCHED_FILL_CHANGED = { patternType: 'solid', fgColor: { rgb: 'FFF2CC' } };
+  var SCHED_FILL_CHANGED_LEAVE = { patternType: 'solid', fgColor: { rgb: 'F4B183' } };
+
+  function scheduleWorkersKey(cell) {
+    return ((cell && cell.workers) || [])
+      .map(function (n) {
+        return String(n || '').trim().toUpperCase();
+      })
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }
+
+  function scheduleLeaveLabel(kind) {
+    if (kind === 'vl') return 'VL';
+    if (kind === 'sl') return 'SL';
+    if (kind === 'vl-sl') return 'VL+SL';
+    if (kind === 'other') return 'Other store';
+    return '(none)';
+  }
+
+  function scheduleTimeLabelFromCell(cell) {
+    if (!cell || cell.kind === 'dayoff' || !cell.start || !cell.end) return 'DAY-OFF';
+    if (cell.kind === 'rp2') return 'RP2';
+    return String(cell.start) + '–' + String(cell.end);
+  }
+
+  function describeScheduleCellDiffs(prev, next) {
+    var a = prev || { kind: 'dayoff', start: '', end: '', breakText: '', flagKind: '', workers: [] };
+    var b = next || { kind: 'dayoff', start: '', end: '', breakText: '', flagKind: '', workers: [] };
+    var diffs = [];
+    var aOff = a.kind === 'dayoff' || !a.start || !a.end;
+    var bOff = b.kind === 'dayoff' || !b.start || !b.end;
+    if (aOff !== bOff || a.kind !== b.kind) {
+      diffs.push('Shift: ' + scheduleTimeLabelFromCell(a) + ' → ' + scheduleTimeLabelFromCell(b));
+    } else if (String(a.start || '') !== String(b.start || '') || String(a.end || '') !== String(b.end || '')) {
+      diffs.push('Time: ' + scheduleTimeLabelFromCell(a) + ' → ' + scheduleTimeLabelFromCell(b));
+    }
+    var aBr = String(a.breakText || '').trim();
+    var bBr = String(b.breakText || '').trim();
+    if (aBr !== bBr) {
+      diffs.push('Break: ' + (aBr || '(none)') + ' → ' + (bBr || '(none)'));
+    }
+    var aFlag = String(a.flagKind || '');
+    var bFlag = String(b.flagKind || '');
+    if (aFlag !== bFlag) {
+      diffs.push('Leave: ' + scheduleLeaveLabel(aFlag) + ' → ' + scheduleLeaveLabel(bFlag));
+    }
+    var aWho = scheduleWorkersKey(a);
+    var bWho = scheduleWorkersKey(b);
+    if (aWho !== bWho) {
+      diffs.push('Person: ' + (aWho || 'UNASSIGNED') + ' → ' + (bWho || 'UNASSIGNED'));
+    }
+    return diffs;
+  }
+
+  function applyScheduleExportDiffs(updatedModel, publishedModel) {
+    if (!updatedModel || !publishedModel) return updatedModel;
+    var pubMap = Object.create(null);
+    (publishedModel.sections || []).forEach(function (sec) {
+      (sec.rows || []).forEach(function (row) {
+        (row.days || []).forEach(function (cell, di) {
+          pubMap[String(sec.role || '') + '|' + String(row.trIdx) + '|' + di] = cell;
+        });
+      });
+    });
+    (updatedModel.sections || []).forEach(function (sec) {
+      (sec.rows || []).forEach(function (row) {
+        (row.days || []).forEach(function (cell, di) {
+          if (!cell) return;
+          var prev = pubMap[String(sec.role || '') + '|' + String(row.trIdx) + '|' + di];
+          var diffs = describeScheduleCellDiffs(prev, cell);
+          if (!diffs.length) return;
+          cell.changed = true;
+          cell.changeLines = diffs;
+          cell.text = 'CHANGED\n' + diffs.join('\n') + '\n' + String(cell.text || '');
+        });
+      });
+    });
+    return updatedModel;
+  }
+
+  function withScheduleExportCellStyle(baseStyle, cell) {
+    var kind = scheduleFlagKindFromCell(cell);
+    var style = withScheduleFlagFill(baseStyle, kind);
+    if (cell && cell.changed) {
+      style = Object.assign({}, style);
+      style.fill = kind && kind !== 'other' ? SCHED_FILL_CHANGED_LEAVE : SCHED_FILL_CHANGED;
+      var font = Object.assign({}, style.font || {});
+      font.bold = true;
+      style.font = font;
+    }
+    return style;
+  }
 
   function scheduleFlagKindFromCell(cell, text) {
     if (cell && cell.flagKind) return String(cell.flagKind);
@@ -7741,30 +7835,99 @@
     };
   }
 
+  function scheduleExportWeekRestaurant(opts) {
+    opts = opts || {};
+    var weekIso =
+      (scheduleExportWeekOverrideIso && String(scheduleExportWeekOverrideIso).slice(0, 10)) ||
+      isoFromDate(payWeekBounds().start);
+    var weekIdx =
+      typeof d().weekIndexForPayWeekStartIso === 'function'
+        ? d().weekIndexForPayWeekStartIso(weekIso)
+        : 0;
+    var rid =
+      scheduleExportLocationOverride
+        ? String(scheduleExportLocationOverride)
+        : effectiveLocationFilter() === 'all'
+          ? null
+          : effectiveLocationFilter();
+    if (!rid && typeof d().managerManagedRestaurantId === 'function') {
+      rid = d().managerManagedRestaurantId() || null;
+    }
+    if (!rid && typeof d().getRestaurantsList === 'function') {
+      var rests = d().getRestaurantsList() || [];
+      rid = rests[0] && rests[0].id;
+    }
+    if (!rid) rid = 'rp-9';
+    return { weekIso: weekIso, weekIdx: weekIdx, rid: rid };
+  }
+
+  function buildEmptyPublishedScheduleWorksheet(titleText, message) {
+    var ws = {};
+    var merges = [];
+    var rowHeights = [];
+    var S = scheduleStyles();
+    var lastCol = SCHEDULE_COL_COUNT - 1;
+    xlSet(ws, 0, 0, titleText || 'PUBLISHED SCHEDULE', S.title);
+    xlMerge(merges, 0, 0, 0, lastCol);
+    rowHeights[0] = { hpt: 22 };
+    xlSet(ws, 1, 0, message || 'No published copy was saved for this week.', S.colHead);
+    xlMerge(merges, 1, 0, 1, lastCol);
+    rowHeights[1] = { hpt: 28 };
+    return xlFinalizeSheet(
+      ws,
+      merges,
+      [28, 16, 13, 13, 13, 13, 13, 13, 13, 11, 14],
+      null,
+      rowHeights
+    );
+  }
+
   function buildScheduleWorksheet(opts) {
     opts = opts || {};
     var matchCalendar = !!opts.matchCalendar;
-    var calendarModel = null;
-    if (matchCalendar && typeof d().buildScheduleCalendarExportModel === 'function') {
-      var weekIso =
-        (scheduleExportWeekOverrideIso && String(scheduleExportWeekOverrideIso).slice(0, 10)) ||
-        isoFromDate(payWeekBounds().start);
-      var weekIdx = d().weekIndexForPayWeekStartIso(weekIso);
-      var rid =
-        scheduleExportLocationOverride
-          ? String(scheduleExportLocationOverride)
-          : effectiveLocationFilter() === 'all'
-            ? null
-            : effectiveLocationFilter();
-      if (!rid && typeof d().managerManagedRestaurantId === 'function') {
-        rid = d().managerManagedRestaurantId() || null;
+    var calendarModel = opts.calendarModel || null;
+    if (matchCalendar && !calendarModel && typeof d().buildScheduleCalendarExportModel === 'function') {
+      var loc = scheduleExportWeekRestaurant(opts);
+      if (opts.publishedCopy) {
+        var snap =
+          typeof d().getPublishedWeekSnapshot === 'function'
+            ? d().getPublishedWeekSnapshot(loc.rid, loc.weekIso)
+            : null;
+        if (
+          !snap ||
+          !snap.draft ||
+          typeof d().buildScheduleCalendarExportModel !== 'function'
+        ) {
+          var restName = '';
+          try {
+            var rests = typeof d().getRestaurantsList === 'function' ? d().getRestaurantsList() || [] : [];
+            var rest = rests.find(function (r) {
+              return r && r.id === loc.rid;
+            });
+            restName = rest && (rest.name || rest.id) ? String(rest.name || rest.id).toUpperCase() : '';
+          } catch (_rn) {
+            restName = '';
+          }
+          return buildEmptyPublishedScheduleWorksheet(
+            (restName ? restName + ' — ' : '') + 'PUBLISHED SCHEDULE',
+            'No published copy was saved for this week.'
+          );
+        }
+        calendarModel = d().buildScheduleCalendarExportModel(loc.weekIdx, loc.rid, {
+          snapshot: snap,
+        });
+      } else {
+        calendarModel = d().buildScheduleCalendarExportModel(loc.weekIdx, loc.rid);
+        if (opts.updatedCopy && typeof d().getPublishedWeekSnapshot === 'function') {
+          var publishedSnap = d().getPublishedWeekSnapshot(loc.rid, loc.weekIso);
+          if (publishedSnap && publishedSnap.draft) {
+            var publishedModel = d().buildScheduleCalendarExportModel(loc.weekIdx, loc.rid, {
+              snapshot: publishedSnap,
+            });
+            applyScheduleExportDiffs(calendarModel, publishedModel);
+          }
+        }
       }
-      if (!rid && typeof d().getRestaurantsList === 'function') {
-        var rests = d().getRestaurantsList() || [];
-        rid = rests[0] && rests[0].id;
-      }
-      if (!rid) rid = 'rp-9';
-      calendarModel = d().buildScheduleCalendarExportModel(weekIdx, rid);
     }
 
     var weekDays = calendarModel && calendarModel.days && calendarModel.days.length
@@ -7789,10 +7952,21 @@
     var r = 0;
     var lastCol = SCHEDULE_COL_COUNT - 1;
 
+    var copyKind = opts.publishedCopy ? 'PUBLISHED SCHEDULE' : opts.updatedCopy ? 'UPDATED SCHEDULE' : 'SCHEDULE';
     var title =
       calendarModel && calendarModel.restaurantName
-        ? String(calendarModel.restaurantName).toUpperCase() + ' — SCHEDULE'
+        ? String(calendarModel.restaurantName).toUpperCase() + ' — ' + copyKind
         : scheduleSheetTitleForLocation();
+    if (opts.publishedCopy && calendarModel && calendarModel.publishedAt) {
+      var when =
+        typeof d().formatPublishedAtLabel === 'function'
+          ? d().formatPublishedAtLabel(calendarModel.publishedAt)
+          : String(calendarModel.publishedAt);
+      if (when) title += '  (' + when + ')';
+    }
+    if (opts.updatedCopy) {
+      title += '  (current main schedule)';
+    }
     xlSet(ws, r, 0, title, S.title);
     xlMerge(merges, r, 0, r, lastCol);
     rowHeights[r] = { hpt: 22 };
@@ -7827,16 +8001,15 @@
           xlSet(ws, r, 1, row.position || '', S.position);
           (row.days || []).forEach(function (cell, di) {
             var col = SCHEDULE_DAY_COL_START + di;
-            var kind = scheduleFlagKindFromCell(cell);
             if (cell && cell.kind === 'work') {
-              xlSet(ws, r, col, cell.text || '', withScheduleFlagFill(S.dayWork, kind));
+              xlSet(ws, r, col, cell.text || '', withScheduleExportCellStyle(S.dayWork, cell));
             } else {
               xlSet(
                 ws,
                 r,
                 col,
                 (cell && cell.text) || 'DAY-OFF',
-                withScheduleFlagFill(S.dayOff, kind)
+                withScheduleExportCellStyle(S.dayOff, cell)
               );
             }
           });
@@ -8068,7 +8241,7 @@
       }
       xlSanitizeSheetForExport(ws);
       var wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+      XLSX.utils.book_append_sheet(wb, ws, 'Updated schedule');
       var bounds = payWeekBounds();
       var fileBase =
         'schedule-' +
@@ -9434,7 +9607,12 @@
       { name: 'CPA', build: buildCpaWorksheet },
       { name: 'Payroll', build: buildPayrollWorksheet },
       { name: 'Payslip', build: buildPayslipWorksheet },
-      { name: 'Schedule', build: buildScheduleWorksheet },
+      { name: 'Published schedule', build: function () {
+        return buildScheduleWorksheet({ matchCalendar: true, publishedCopy: true });
+      } },
+      { name: 'Updated schedule', build: function () {
+        return buildScheduleWorksheet({ matchCalendar: true, updatedCopy: true });
+      } },
       { name: 'PTO', build: buildPtoWorksheet },
       { name: 'Employee Information', build: buildEmployeeInfoWorksheet },
     ];

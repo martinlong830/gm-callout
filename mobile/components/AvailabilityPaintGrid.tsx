@@ -25,9 +25,9 @@ import {
   type WeeklyGridNormalized,
 } from '../lib/weeklyAvailabilityMatrix';
 
-const TIME_COL = 36;
-const DAY_COL = 44;
-const CELL_H = 16;
+const TIME_COL = 52;
+const DAY_COL = 56;
+const CELL_H = 28;
 
 const WEEKDAY_I18N: Record<string, string> = {
   Mon: 'days.mon',
@@ -259,21 +259,21 @@ const styles = StyleSheet.create({
     borderRightColor: '#e8eaef',
   },
   dayDow: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0f172a',
     letterSpacing: 0.3,
   },
   daySum: {
-    fontSize: 8,
+    fontSize: 11,
     color: '#64748b',
     textAlign: 'center',
-    lineHeight: 10,
+    lineHeight: 14,
     marginTop: 2,
-    minHeight: 20,
+    minHeight: 28,
   },
   clearDay: {
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: '700',
     color: '#c41230',
     marginTop: 2,
@@ -282,12 +282,13 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row' },
   timeCell: {
     justifyContent: 'center',
-    paddingLeft: 2,
+    paddingLeft: 4,
+    paddingRight: 4,
     borderRightWidth: 1,
     borderRightColor: '#e8eaef',
     backgroundColor: '#fafbfc',
   },
-  timeText: { fontSize: 8, fontWeight: '600', color: '#64748b' },
+  timeText: { fontSize: 12, fontWeight: '700', color: '#334155' },
   cell: {
     borderRightWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,

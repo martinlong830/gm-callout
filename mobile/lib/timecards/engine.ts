@@ -1,5 +1,5 @@
 import type { EmployeeRow } from '../employees';
-import { employeeDisplayName, staffTypeLabel } from '../employees';
+import { employeeDisplayName, employeeHasSingleStorePayroll, employeePayrollHomeRestaurantId, staffTypeLabel } from '../employees';
 import type { StaffRequestUi } from '../staffRequests';
 import {
   buildAllLocationsScheduleRows,
@@ -350,13 +350,20 @@ export function filterRegOtByLocation(
 }
 
 /**
- * Multi-store staff only appear on their primary store's list — include all restaurants' hours
- * there. Single-store staff stay scoped to the active location filter.
+ * Single-store payroll: include every restaurant's hours on the primary-store roster.
+ * Working-location payroll: keep hours scoped to the store being viewed.
  */
 export function rosterAggregationLocationFilter(
   emp: EmployeeRow,
   locationFilter: LocationFilter
 ): LocationFilter {
+  if (
+    locationFilter !== 'all' &&
+    employeeHasSingleStorePayroll(emp) &&
+    employeePayrollHomeRestaurantId(emp) === locationFilter
+  ) {
+    return 'all';
+  }
   if (locationFilter !== 'all' && employeeHomeRestaurant(emp) === 'both') return 'all';
   return locationFilter;
 }

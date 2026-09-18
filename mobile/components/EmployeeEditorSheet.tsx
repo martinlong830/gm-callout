@@ -34,8 +34,9 @@ import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
   defaultDeliveryTipRetentionForEmployee,
   employeeDisplayName,
-  employeePrimaryLocationId,
+  employeeHasSingleStorePayroll,
   employeeHomeOrPrimaryRestaurantId,
+  employeePrimaryLocationId,
   isCloudEmployeeId,
   normalizeDeliveryTipRetention,
   type EmployeeRow,
@@ -144,6 +145,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
   const [email, setEmail] = useState('');
   const [usualRestaurant, setUsualRestaurant] = useState('both');
   const [primaryLocationId, setPrimaryLocationId] = useState('rp-9');
+  const [singleStorePayroll, setSingleStorePayroll] = useState(false);
   const [hourlyRate, setHourlyRate] = useState('');
   const [tipPoint, setTipPoint] = useState('');
   const [deliveryTipRetention, setDeliveryTipRetention] = useState('');
@@ -180,6 +182,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setEmail('');
     setUsualRestaurant('both');
     setPrimaryLocationId('rp-9');
+    setSingleStorePayroll(false);
     setHourlyRate('');
     setTipPoint('');
     setDeliveryTipRetention('');
@@ -269,6 +272,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
           employeeHomeOrPrimaryRestaurantId(emp) ||
           'rp-9'
       );
+      setSingleStorePayroll(employeeHasSingleStorePayroll(emp));
       setHourlyRate(emp.hourlyRate != null ? String(emp.hourlyRate) : '');
       setTipPoint(emp.tipPoint != null ? String(emp.tipPoint) : '');
       {
@@ -622,6 +626,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       primaryLocationId === 'rp-8' || primaryLocationId === 'rp-9' ? primaryLocationId : 'rp-9';
     meta.primaryLocationId = primary;
     meta.primaryRestaurantId = primary;
+    meta.singleStorePayroll = singleStorePayroll;
     applyLeaveAllowancesToMeta(meta, {
       vacAllowanceDays,
       sickAllowanceDays,
@@ -866,7 +871,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                   placeholder="name@example.com"
                 />
                 <Text style={styles.photoHint}>Account / profile email (not the sign-in username).</Text>
-                <FieldLabel>Primary location</FieldLabel>
+                <FieldLabel>{t('team.primaryLocation')}</FieldLabel>
                 <ChipRow
                   options={PRIMARY_LOCATIONS}
                   value={primaryLocationId === 'rp-8' ? 'rp-8' : 'rp-9'}
@@ -876,6 +881,16 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                     applyLocationRetentionDefault(v);
                   }}
                 />
+                <FieldLabel>{t('team.singleStorePayroll')}</FieldLabel>
+                <ChipRow
+                  options={[
+                    { value: 'on', label: t('team.singleStorePayrollOn') },
+                    { value: 'off', label: t('team.singleStorePayrollOff') },
+                  ]}
+                  value={singleStorePayroll ? 'on' : 'off'}
+                  onChange={(v) => setSingleStorePayroll(v === 'on')}
+                />
+                <Text style={styles.photoHint}>{t('team.singleStorePayrollHint')}</Text>
                 <View style={styles.row2}>
                   <View style={styles.fieldHalf}>
                     <FieldLabel>Hourly rate ($)</FieldLabel>

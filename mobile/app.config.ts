@@ -26,7 +26,7 @@ type AppConfig = ExpoConfig & {
 const config: AppConfig = {
   name: 'Shiflow',
   slug: 'gm-callout',
-  version: '1.0.2',
+  version: '1.0.3',
   orientation: 'default',
   icon: './assets/icon.png',
   userInterfaceStyle: 'light',
@@ -77,7 +77,7 @@ const config: AppConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: IOS_BUNDLE_ID,
-    buildNumber: '18',
+    buildNumber: '19',
     config: {
       usesNonExemptEncryption: false,
     },

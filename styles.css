@@ -2025,15 +2025,15 @@ html.authed .header-signout-btn {
 }
 
 .schedule-sheet-modal {
-  z-index: 65;
-  padding: 1.25vh 1.25vw;
+  z-index: 80;
+  padding: 1vh 1vw;
 }
 
 .schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel {
-  width: min(97.5vw, 100%);
-  max-width: min(97.5vw, 100%);
-  max-height: min(97.5vh, 97.5dvh);
-  height: min(97.5vh, 97.5dvh);
+  width: min(98vw, 100%);
+  max-width: min(98vw, 100%);
+  max-height: min(96vh, 96dvh);
+  height: min(96vh, 96dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2042,15 +2042,92 @@ html.authed .header-signout-btn {
 }
 
 .schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .availability-modal-head,
-.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .availability-modal-meta {
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .availability-modal-meta,
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .schedule-publish-hub-tabs,
+.schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .schedule-publish-hub-published-bar {
   flex-shrink: 0;
+}
+
+.schedule-publish-hub-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.schedule-publish-hub-tab {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.schedule-publish-hub-tab.is-active {
+  background: var(--text);
+  color: var(--surface);
+  border-color: var(--text);
+}
+
+.schedule-publish-hub-published-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 0 0 10px;
+}
+
+.schedule-publish-hub-week-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.schedule-publish-hub-week-label select {
+  min-width: 220px;
+}
+
+.schedule-publish-hub-published-meta {
+  font-size: 0.78rem;
+  color: var(--muted, #64748b);
 }
 
 .schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel > .schedule-sheet-stack {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   -webkit-overflow-scrolling: touch;
+}
+
+#scheduleReviewModal .schedule-template-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#scheduleReviewModal .schedule-template-preview-stage,
+#scheduleReviewModal .schedule-template-preview-wrap,
+#scheduleReviewModal .schedule-template-preview-mount {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  height: auto;
+}
+
+#scheduleReviewModal .schedule-template-preview-mount {
+  overflow: auto;
+}
+
+#scheduleReviewModal .schedule-template-actions,
+#scheduleReviewModal #scheduleReviewHint {
+  flex-shrink: 0;
 }
 
 .schedule-sheet-modal .template-shift-edit-screen {
@@ -4933,10 +5010,10 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   }
 
   .schedule-sheet-modal .availability-modal-panel.schedule-sheet-panel {
-    width: min(97.5vw, 100%);
-    max-width: min(97.5vw, 100%);
-    max-height: min(97.5vh, 97.5dvh);
-    height: min(97.5vh, 97.5dvh);
+    width: min(98vw, 100%);
+    max-width: min(98vw, 100%);
+    max-height: min(96vh, 96dvh);
+    height: min(96vh, 96dvh);
   }
 
   .availability-matrix-dayhead {
@@ -5848,6 +5925,16 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   z-index: 1;
 }
 
+.employee-photo-img,
+.emp-profile-photo-img {
+  opacity: 0;
+}
+
+.employee-photo--loaded .employee-photo-img,
+.emp-profile-photo--loaded .emp-profile-photo-img {
+  opacity: 1;
+}
+
 .employee-photo-initials,
 .emp-photo-preview-initials,
 .emp-profile-photo-initials {
@@ -5864,7 +5951,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .employee-photo--loaded .employee-photo-initials,
-.emp-profile-photo--loaded .emp-profile-photo-initials {
+.emp-profile-photo--loaded .emp-profile-photo-initials,
+.employee-photo:has(img) .employee-photo-initials,
+.emp-profile-photo:has(img) .emp-profile-photo-initials {
   opacity: 0;
 }
 
@@ -6446,6 +6535,7 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 .calendar-matrix--readonly .calendar-slot-wrap,
 .calendar-matrix--readonly .calendar-slot-wrap.calendar-slot-readonly {
   cursor: default;
+  pointer-events: none;
 }
 
 .calendar-matrix--readonly .calendar-slot-wrap:hover,
@@ -6695,6 +6785,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 /* WhenIsGood-style employee paint grid (30-min cells, 9a–11p). */
 .avail-paint {
+  --avail-paint-row-h: 28px;
+  --avail-paint-time-w: 3.5rem;
+  --avail-paint-day-w: 3.65rem;
   width: 100%;
   max-width: 100%;
   user-select: none;
@@ -6709,14 +6802,14 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   border-radius: var(--radius-sm);
   background: var(--surface);
   touch-action: none;
-  max-height: min(70vh, 560px);
+  max-height: min(78vh, 720px);
 }
 
 .avail-paint-table {
   border-collapse: collapse;
   width: max-content;
   min-width: 100%;
-  font-size: 0.65rem;
+  font-size: 0.8125rem;
   table-layout: fixed;
 }
 
@@ -6725,8 +6818,8 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   left: 0;
   top: 0;
   z-index: 3;
-  width: 2.4rem;
-  min-width: 2.4rem;
+  width: var(--avail-paint-time-w);
+  min-width: var(--avail-paint-time-w);
   background: var(--hover-fill);
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
@@ -6736,9 +6829,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   position: sticky;
   top: 0;
   z-index: 2;
-  min-width: 2.6rem;
-  width: 2.6rem;
-  padding: 4px 2px 6px;
+  min-width: var(--avail-paint-day-w);
+  width: var(--avail-paint-day-w);
+  padding: 8px 4px 8px;
   text-align: center;
   vertical-align: bottom;
   background: var(--hover-fill);
@@ -6749,7 +6842,7 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 .avail-paint-dayhead-dow {
   display: block;
-  font-size: 0.72rem;
+  font-size: 0.875rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   line-height: 1.2;
@@ -6757,23 +6850,23 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 .avail-paint-dayhead-sum {
   display: block;
-  margin-top: 2px;
-  font-size: 0.55rem;
+  margin-top: 3px;
+  font-size: 0.7rem;
   font-weight: 500;
   color: var(--text-muted);
-  line-height: 1.15;
-  max-height: 2.4em;
+  line-height: 1.2;
+  max-height: 2.5em;
   overflow: hidden;
 }
 
 .avail-paint-clear-day {
   display: inline-block;
-  margin-top: 3px;
+  margin-top: 4px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--accent, #c41230);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
   line-height: 1.2;
@@ -6787,25 +6880,25 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   position: sticky;
   left: 0;
   z-index: 1;
-  width: 2.4rem;
-  min-width: 2.4rem;
-  padding: 0 3px;
+  width: var(--avail-paint-time-w);
+  min-width: var(--avail-paint-time-w);
+  padding: 0 6px;
   text-align: right;
-  font-size: 0.58rem;
-  font-weight: 600;
-  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text);
   background: var(--hover-fill);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  height: 16px;
-  line-height: 16px;
+  height: var(--avail-paint-row-h);
+  line-height: var(--avail-paint-row-h);
   white-space: nowrap;
 }
 
 .avail-paint-cell {
-  width: 2.6rem;
-  min-width: 2.6rem;
-  height: 16px;
+  width: var(--avail-paint-day-w);
+  min-width: var(--avail-paint-day-w);
+  height: var(--avail-paint-row-h);
   padding: 0;
   border-right: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
@@ -6833,23 +6926,22 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 @media (max-width: 520px) {
-  .avail-paint-time,
-  .avail-paint-corner {
-    width: 2rem;
-    min-width: 2rem;
-    font-size: 0.52rem;
+  .avail-paint {
+    --avail-paint-row-h: 24px;
+    --avail-paint-time-w: 3.15rem;
+    --avail-paint-day-w: 3rem;
   }
 
-  .avail-paint-dayhead,
-  .avail-paint-cell {
-    width: 2.15rem;
-    min-width: 2.15rem;
-  }
-
-  .avail-paint-cell,
   .avail-paint-time {
-    height: 14px;
-    line-height: 14px;
+    font-size: 0.75rem;
+  }
+
+  .avail-paint-dayhead-dow {
+    font-size: 0.8rem;
+  }
+
+  .avail-paint-dayhead-sum {
+    font-size: 0.65rem;
   }
 }
 

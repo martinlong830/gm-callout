@@ -41,6 +41,7 @@ import {
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   scheduleRowPrimaryPerson,
+  ingestPublishedSnapshotsFromRaw,
   seedDefaultPublishedWeeks,
   type CalendarBodyRow,
   type CalendarCell,
@@ -48,18 +49,20 @@ import {
 import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
 import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
 import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
-import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import { loadWeekExtrasSlice, type WeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import { buildCalendarLeaveFlagMap } from '../../lib/schedule/leaveFlags';
 import {
   getEmployeeBorrowedRestaurantSync,
   restaurantShortLabel as borrowRestaurantShortLabel,
 } from '../../lib/timecards/weekBorrow';
 import { supabase } from '../../lib/supabase';
 import { readStoredCompanyId } from '../../lib/companySession';
+import { loadSavedRestaurantId, saveRestaurantId } from '../../lib/restaurantPref';
 import {
   backfillIfNeeded,
-  fetchCellsRange,
-  fetchSlots,
-  projectCellsOntoLocalStores,
+  consumeDocumentCloudSoT,
+  pullCloudCellsOntoStores,
+  pullCloudCellsVisibleThenFull,
   writeOnlyCells,
 } from '../../lib/schedule/syncV2';
 
@@ -119,11 +122,12 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 export default function EmployeeScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { t, staffTypeLabel } = useI18n();
-  const { myEmployee, employees, teamState, loading, refetch } = useAppData();
+  const { myEmployee, employees, staffRequests, teamState, loading, refetch } = useAppData();
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const allRestaurants = useMemo(() => defaultRestaurants(), []);
   const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
+  const [weekExtrasSlice, setWeekExtrasSlice] = useState<WeekExtrasSlice>({});
   const [currentRestaurantId, setCurrentRestaurantId] = useState(
     () => defaultRestaurants()[0]?.id ?? 'rp-9'
   );
@@ -144,6 +148,7 @@ export default function EmployeeScheduleScreen() {
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) {
       setBorrowByEmpId({});
+      setWeekExtrasSlice({});
       return;
     }
     let cancelled = false;
@@ -151,6 +156,7 @@ export default function EmployeeScheduleScreen() {
     const bounds = getPayWeekBoundsForMonday(mon);
     void loadWeekExtrasSlice(bounds).then((slice) => {
       if (cancelled) return;
+      setWeekExtrasSlice(slice);
       const next: Record<string, string> = {};
       for (const e of employees) {
         const b = getEmployeeBorrowedRestaurantSync(e.id, slice);
@@ -179,19 +185,31 @@ export default function EmployeeScheduleScreen() {
 
   useEffect(() => {
     if (!restaurants.length) return;
-    if (!didInitRestaurantRef.current) {
-      didInitRestaurantRef.current = true;
-      const main = managerScheduleMainRestaurantId(myEmployee);
-      if (main && restaurants.some((r) => r.id === main)) {
-        setCurrentRestaurantId(main);
+    let cancelled = false;
+    void loadSavedRestaurantId().then((saved) => {
+      if (cancelled) return;
+      if (saved && restaurants.some((r) => r.id === saved)) {
+        didInitRestaurantRef.current = true;
+        setCurrentRestaurantId(saved);
         return;
       }
-    }
-    if (restaurants.some((r) => r.id === currentRestaurantId)) return;
-    const main = managerScheduleMainRestaurantId(myEmployee);
-    const next =
-      (main && restaurants.find((r) => r.id === main)?.id) || restaurants[0]?.id;
-    if (next) setCurrentRestaurantId(next);
+      if (!didInitRestaurantRef.current) {
+        didInitRestaurantRef.current = true;
+        const main = managerScheduleMainRestaurantId(myEmployee);
+        if (main && restaurants.some((r) => r.id === main)) {
+          setCurrentRestaurantId(main);
+          return;
+        }
+      }
+      if (restaurants.some((r) => r.id === currentRestaurantId)) return;
+      const main = managerScheduleMainRestaurantId(myEmployee);
+      const next =
+        (main && restaurants.find((r) => r.id === main)?.id) || restaurants[0]?.id;
+      if (next) setCurrentRestaurantId(next);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [restaurants, currentRestaurantId, myEmployee]);
 
   useEffect(() => {
@@ -208,6 +226,10 @@ export default function EmployeeScheduleScreen() {
     void refetch({ silent: true });
   }, [params.weekMondayIso, weekMeta, refetch]);
 
+  useEffect(() => {
+    ingestPublishedSnapshotsFromRaw(teamState?.schedule_published);
+  }, [teamState?.schedule_published]);
+
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
     seedDefaultPublishedWeeks(map, weekMeta);
@@ -223,14 +245,23 @@ export default function EmployeeScheduleScreen() {
 
   const [cellAssign, setCellAssign] = useState<AssignmentStore | null>(null);
   const [cellDraft, setCellDraft] = useState<unknown>(null);
+  const cellAssignRef = useRef(cellAssign);
+  const cellDraftRef = useRef(cellDraft);
+  cellAssignRef.current = cellAssign;
+  cellDraftRef.current = cellDraft;
 
-  /** Same ISO cell SoT as managers — poll every 2s so employee view cannot drift. */
+  /** Same ISO cell SoT as managers — visible week first, then full window on open. */
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    const pullCells = async () => {
+    const applyProjected = (projected: { assign: AssignmentStore; draft: unknown }) => {
+      setCellAssign(projected.assign);
+      setCellDraft(projected.draft);
+    };
+
+    const pullCells = async (opts?: { fullWindow?: boolean; cloudAuthority?: boolean }) => {
       try {
         if (!supabase) return;
         const companyId = await readStoredCompanyId();
@@ -239,43 +270,58 @@ export default function EmployeeScheduleScreen() {
         if (cancelled) return;
         const cellsOnly = await writeOnlyCells();
         if (!cellsOnly || cancelled) return;
-        const fromIso = weekMeta[weekIndex * 7]?.iso;
-        const toIso = weekMeta[weekIndex * 7 + 6]?.iso;
-        if (!fromIso || !toIso) return;
-        const [cellsRes, slotsRes] = await Promise.all([
-          fetchCellsRange(supabase, companyId, fromIso, toIso),
-          fetchSlots(supabase, companyId),
-        ]);
-        if (cancelled || cellsRes.error || slotsRes.error) return;
-        const base = hydrateScheduleAssignmentsFromTeamState(
-          teamState?.schedule_assignments,
-          allRestaurants,
-          teamState?.draft_schedule
-        );
-        const projected = projectCellsOntoLocalStores({
-          cells: (cellsRes.data || []) as Record<string, unknown>[],
-          slots: (slotsRes.data || []) as {
-            restaurant_id?: string;
-            role?: string;
-            slot_key?: string;
-            sort_order?: number;
-          }[],
+        const liveAssign =
+          cellAssignRef.current ||
+          hydrateScheduleAssignmentsFromTeamState(
+            teamState?.schedule_assignments,
+            allRestaurants,
+            teamState?.draft_schedule
+          ).store;
+        const liveDraft =
+          cellDraftRef.current ??
+          hydrateScheduleAssignmentsFromTeamState(
+            teamState?.schedule_assignments,
+            allRestaurants,
+            teamState?.draft_schedule
+          ).draftSchedule ??
+          teamState?.draft_schedule ??
+          {};
+        if (opts?.fullWindow) {
+          const projected = await pullCloudCellsVisibleThenFull({
+            sb: supabase,
+            companyId,
+            weekMeta,
+            weekIndex,
+            liveAssign,
+            liveDraft,
+            cloudAuthority: !!opts.cloudAuthority,
+            onVisible: (vis) => {
+              if (!cancelled) applyProjected(vis);
+            },
+          });
+          if (!cancelled && projected) applyProjected(projected);
+          return;
+        }
+        const projected = await pullCloudCellsOntoStores({
+          sb: supabase,
+          companyId,
           weekMeta,
-          liveAssign: base.store,
-          liveDraft: base.draftSchedule ?? teamState?.draft_schedule ?? {},
-          replaceWeekIndex: weekIndex,
+          weekIndex,
+          liveAssign,
+          liveDraft,
+          cloudAuthority: !!opts?.cloudAuthority,
+          fullWindow: false,
         });
-        if (cancelled) return;
-        setCellAssign(projected.assign);
-        setCellDraft(projected.draft);
+        if (!cancelled && projected) applyProjected(projected);
       } catch (err) {
         console.warn('employee schedule cell poll', err);
       }
     };
 
-    void pullCells();
+    const first = consumeDocumentCloudSoT();
+    void pullCells({ fullWindow: first, cloudAuthority: first });
     pollTimer = setInterval(() => {
-      if (!cancelled) void pullCells();
+      if (!cancelled) void pullCells({ fullWindow: false });
     }, 5000);
 
     return () => {
@@ -371,6 +417,35 @@ export default function EmployeeScheduleScreen() {
     currentRestaurantId,
   ]);
 
+  const leaveFlagByPersonDay = useMemo(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) return new Map<string, string>();
+    try {
+      const bounds = getPayWeekBoundsForMonday(new Date(`${selectedWeekMonday}T12:00:00`));
+      return buildCalendarLeaveFlagMap({
+        visibleDays,
+        weekMeta,
+        employees,
+        employeesLite: lites,
+        extrasSlice: weekExtrasSlice,
+        staffRequests: staffRequests || [],
+        bounds,
+        teamState: (teamState as Record<string, unknown> | null) || null,
+      });
+    } catch (err) {
+      console.warn('buildCalendarLeaveFlagMap', err);
+      return new Map<string, string>();
+    }
+  }, [
+    selectedWeekMonday,
+    visibleDays,
+    weekMeta,
+    employees,
+    lites,
+    weekExtrasSlice,
+    staffRequests,
+    teamState,
+  ]);
+
   const calendarBody = useMemo(() => {
     try {
       return buildCalendarBody(
@@ -385,7 +460,9 @@ export default function EmployeeScheduleScreen() {
         ),
         assignmentStore,
         weekIndex,
-        otherStoreDayLabels
+        otherStoreDayLabels,
+        null,
+        leaveFlagByPersonDay
       );
     } catch (err) {
       console.warn('buildCalendarBody', err);
@@ -402,6 +479,7 @@ export default function EmployeeScheduleScreen() {
     weekIndex,
     assignmentStore,
     otherStoreDayLabels,
+    leaveFlagByPersonDay,
   ]);
 
   const daysWidth = visibleDays.length * CELL_MIN;
@@ -449,7 +527,10 @@ export default function EmployeeScheduleScreen() {
             {restaurants.map((r) => (
               <Pressable
                 key={r.id}
-                onPress={() => setCurrentRestaurantId(r.id)}
+                onPress={() => {
+                  setCurrentRestaurantId(r.id);
+                  void saveRestaurantId(r.id);
+                }}
                 style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
               >
                 <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
@@ -761,6 +842,19 @@ const CalendarCellView = memo(function CalendarCellView({
       </Text>
     </View>
   );
+  const leaveFlagBadge = (label: string, stacked: boolean) => (
+    <View style={[styles.leaveFlagPill, stacked ? styles.leaveFlagPillStacked : null]}>
+      <Text style={styles.leaveFlagPillText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+  const flagStrip = (leaveFlag?: string, otherStore?: string) => (
+    <>
+      {leaveFlag ? leaveFlagBadge(leaveFlag, !!otherStore) : null}
+      {otherStore ? otherStoreBadge(otherStore) : null}
+    </>
+  );
   if (cell.kind === 'empty') {
     const pill = pillForRole(cell.role);
     return (
@@ -775,7 +869,7 @@ const CalendarCellView = memo(function CalendarCellView({
         ]}
       >
         <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
       </View>
     );
   }
@@ -797,7 +891,7 @@ const CalendarCellView = memo(function CalendarCellView({
           {cell.timeLabel}
         </Text>
         <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
       </View>
     );
   }
@@ -827,7 +921,7 @@ const CalendarCellView = memo(function CalendarCellView({
           {cell.hours}
         </Text>
       ) : null}
-      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+      {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
     </View>
   );
 });
@@ -1062,6 +1156,28 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#9a3412',
+    textAlign: 'center',
+  },
+  leaveFlagPill: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#dbeafe',
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+  },
+  leaveFlagPillStacked: {
+    bottom: 22,
+  },
+  leaveFlagPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1e40af',
     textAlign: 'center',
   },
   cellBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },

@@ -44,7 +44,7 @@ export type EmployeeLite = {
   primaryLocationId?: string | null;
   /** Pay-week borrow overlay: restaurant this person is borrowed TO. */
   borrowedRestaurantId?: string | null;
-  meta?: { scheduleAliases?: string[]; hiringDate?: string; position?: string };
+  meta?: Record<string, unknown> & { scheduleAliases?: string[]; hiringDate?: string; position?: string };
 };
 
 export type DraftGrid = Record<RoleKey, (Array<string | null> | null)[][]>;

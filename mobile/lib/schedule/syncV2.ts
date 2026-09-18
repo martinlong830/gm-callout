@@ -8,7 +8,13 @@ import {
   loadDraftFromTeamState,
   patchDraftScheduleForWeek,
 } from './engine';
+import { isoAddDaysLocal, isoDaySpanInclusive } from './isoDate';
 import type { AssignmentStore } from './types';
+
+const CELL_SELECT =
+  'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at';
+const FETCH_PAGE = 1000;
+const FETCH_WEEK_BATCH = 6;
 
 const OUTBOX_KEY = 'gm-schedule-ops-outbox-v1';
 const DEVICE_KEY = 'gm-schedule-device-id-v1';
@@ -258,19 +264,124 @@ export async function flushOutboxFully(
   return { ok: !left.length };
 }
 
+export type CellsFetchResult = {
+  ok: boolean;
+  data: Record<string, unknown>[] | null;
+  rows: Record<string, unknown>[];
+  error: unknown | null;
+};
+
+export async function pruneBloatedOutbox(maxKeep = 500): Promise<{
+  ok: boolean;
+  pruned: boolean;
+  before: number;
+  after: number;
+}> {
+  const max = Number.isFinite(maxKeep) ? Math.max(1, Number(maxKeep)) : 500;
+  const box = await readJson<ScheduleOp[]>(OUTBOX_KEY, []);
+  if (!box.length || box.length <= max) {
+    return { ok: true, pruned: false, before: box.length, after: box.length };
+  }
+  const before = box.length;
+  const kept = box.slice(Math.max(0, before - max));
+  await writeJson(OUTBOX_KEY, kept);
+  return { ok: true, pruned: true, before, after: kept.length };
+}
+
+/**
+ * Fetch ISO cells. Long windows split into week chunks (6-wide parallel) then page
+ * at 1000 rows — same contract as web `fetchCellsRange`.
+ */
 export async function fetchCellsRange(
   sb: SupabaseClient,
   companyId: string,
   fromIso: string,
-  toIso: string
-) {
-  return sb
-    .from('schedule_cells')
-    .select('*')
-    .eq('company_id', companyId)
-    .eq('deleted', false)
-    .gte('day_iso', fromIso)
-    .lte('day_iso', toIso);
+  toIso: string,
+  opts?: { _noSplit?: boolean }
+): Promise<CellsFetchResult> {
+  const from = String(fromIso || '').slice(0, 10);
+  const to = String(toIso || '').slice(0, 10);
+  if (!from || !to) return { ok: false, data: null, rows: [], error: 'missing range' };
+  const span = isoDaySpanInclusive(from, to);
+  if (span > 8 && !opts?._noSplit) {
+    const chunks: { from: string; to: string }[] = [];
+    let cur = from;
+    while (cur && cur <= to) {
+      let chunkEnd = isoAddDaysLocal(cur, 6);
+      if (!chunkEnd || chunkEnd > to) chunkEnd = to;
+      chunks.push({ from: cur, to: chunkEnd });
+      cur = isoAddDaysLocal(chunkEnd, 1);
+      if (!cur) break;
+    }
+    const all: Record<string, unknown>[] = [];
+    for (let bi = 0; bi < chunks.length; bi += FETCH_WEEK_BATCH) {
+      const slice = chunks.slice(bi, bi + FETCH_WEEK_BATCH);
+      const parts = await Promise.all(
+        slice.map((c) => fetchCellsRange(sb, companyId, c.from, c.to, { _noSplit: true }))
+      );
+      for (const part of parts) {
+        if (!part || part.ok === false) {
+          return part || { ok: false, data: null, rows: [], error: 'cells fetch' };
+        }
+        all.push(...(part.rows || []));
+      }
+    }
+    return { ok: true, data: all, rows: all, error: null };
+  }
+
+  const baseQuery = (useOrder: boolean, start: number) => {
+    let q = sb
+      .from('schedule_cells')
+      .select(CELL_SELECT)
+      .eq('deleted', false)
+      .gte('day_iso', from)
+      .lte('day_iso', to);
+    if (companyId) q = q.eq('company_id', companyId);
+    if (useOrder) {
+      q = q
+        .order('day_iso', { ascending: true })
+        .order('restaurant_id', { ascending: true })
+        .order('role', { ascending: true })
+        .order('slot_key', { ascending: true })
+        .range(start, start + FETCH_PAGE - 1);
+    } else {
+      q = q.limit(FETCH_PAGE);
+    }
+    return q;
+  };
+
+  const allShort: Record<string, unknown>[] = [];
+  let fromIdx = 0;
+  let useOrder = false;
+  for (;;) {
+    const res = await baseQuery(useOrder, fromIdx);
+    if (res.error && fromIdx === 0 && !useOrder) {
+      let fallback = sb
+        .from('schedule_cells')
+        .select(CELL_SELECT)
+        .eq('deleted', false)
+        .gte('day_iso', from)
+        .lte('day_iso', to);
+      if (companyId) fallback = fallback.eq('company_id', companyId);
+      const fb = await fallback;
+      if (fb.error) return { ok: false, data: null, rows: [], error: fb.error };
+      const rows = (fb.data || []) as Record<string, unknown>[];
+      return { ok: true, data: rows, rows, error: null };
+    }
+    if (res.error) return { ok: false, data: null, rows: [], error: res.error };
+    const chunk = (res.data || []) as Record<string, unknown>[];
+    if (!useOrder && chunk.length >= FETCH_PAGE) {
+      useOrder = true;
+      fromIdx = 0;
+      allShort.length = 0;
+      continue;
+    }
+    allShort.push(...chunk);
+    if (chunk.length < FETCH_PAGE) break;
+    fromIdx += FETCH_PAGE;
+    if (fromIdx > 20000) break;
+  }
+  return { ok: true, data: allShort, rows: allShort, error: null };
 }
 
 export async function fetchSlots(sb: SupabaseClient, companyId: string) {
@@ -293,6 +404,8 @@ export function projectCellsOntoLocalStores(opts: {
   liveDraft: unknown;
   /** When set, replace that week from cells (drop stale local keys). */
   replaceWeekIndex?: number;
+  /** Replace every week in `weekMeta` (Refresh / first-open cloud SoT). */
+  replaceAllWeeks?: boolean;
 }): { assign: AssignmentStore; draft: unknown } {
   const isoToGdi: Record<string, number> = {};
   (opts.weekMeta || []).forEach((m, i) => {
@@ -366,13 +479,15 @@ export function projectCellsOntoLocalStores(opts: {
     nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
   });
 
-  const replaceWi =
-    opts.replaceWeekIndex != null && !Number.isNaN(Number(opts.replaceWeekIndex))
-      ? Number(opts.replaceWeekIndex)
-      : null;
-  if (replaceWi != null) {
-    const weekStart = replaceWi * 7;
-    const weekEnd = weekStart + 7;
+  const replaceWeeks: number[] = [];
+  if (opts.replaceAllWeeks) {
+    const n = Math.floor((opts.weekMeta || []).length / 7);
+    for (let wi = 0; wi < n; wi += 1) replaceWeeks.push(wi);
+  } else if (opts.replaceWeekIndex != null && !Number.isNaN(Number(opts.replaceWeekIndex))) {
+    replaceWeeks.push(Number(opts.replaceWeekIndex));
+  }
+  if (replaceWeeks.length) {
+    const weekSet = new Set(replaceWeeks);
     Object.keys(nextAssign).forEach((rid) => {
       const rs = nextAssign[rid];
       if (!rs || typeof rs !== 'object') return;
@@ -380,15 +495,152 @@ export function projectCellsOntoLocalStores(opts: {
         const m = /^shift-(\d+)-/.exec(shiftId);
         if (!m) return;
         const gdi = Number(m[1]);
-        if (gdi < weekStart || gdi >= weekEnd) return;
+        const wi = Math.floor(gdi / 7);
+        if (!weekSet.has(wi)) return;
         if (!projected.has(`${rid}\0${shiftId}`)) {
           delete rs[shiftId];
         }
       });
     });
+    /* Tombstone omitted draft times so leftover local hours cannot soft-win. */
+    replaceWeeks.forEach((wi) => {
+      const rids = new Set<string>([
+        ...Object.keys(nextAssign),
+        ...Array.from(slotTr.keys()).map((k) => k.split('\0')[0]),
+      ]);
+      rids.forEach((rid) => {
+        if (!rid) return;
+        const layers = loadDraftFromTeamState(nextDraft, wi, rid);
+        (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
+          const rows = (layers as Record<string, unknown[]>)[role];
+          if (!Array.isArray(rows)) return;
+          rows.forEach((row, trIdx) => {
+            if (!Array.isArray(row)) return;
+            const nextRow = [...row];
+            let changed = false;
+            for (let di = 0; di < 7; di += 1) {
+              const gdi = wi * 7 + di;
+              const roleIdx = roleToIdx[role];
+              const shiftId = `shift-${gdi}-${roleIdx}-${trIdx}`;
+              if (!projected.has(`${rid}\0${shiftId}`) && nextRow[di] != null) {
+                nextRow[di] = null;
+                changed = true;
+              }
+            }
+            if (changed) rows[trIdx] = nextRow;
+          });
+        });
+        nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
+      });
+    });
   }
 
   return { assign: nextAssign, draft: nextDraft };
+}
+
+export type CloudCellsPullOpts = {
+  sb: SupabaseClient;
+  companyId: string;
+  weekMeta: { iso?: string }[];
+  weekIndex: number;
+  liveAssign: AssignmentStore;
+  liveDraft: unknown;
+  /** First-open / Refresh: do not flush leftover outbox (would stamp stale times). */
+  cloudAuthority?: boolean;
+  fullWindow?: boolean;
+};
+
+/**
+ * Hydrate assignment/draft from cloud cells. Visible week first; full 15-week window
+ * when `fullWindow` (Refresh / first open). Cloud replace drops omitted local keys.
+ */
+export async function pullCloudCellsOntoStores(
+  opts: CloudCellsPullOpts
+): Promise<{ assign: AssignmentStore; draft: unknown } | null> {
+  const fromIso = opts.fullWindow
+    ? opts.weekMeta[0]?.iso
+    : opts.weekMeta[opts.weekIndex * 7]?.iso;
+  const toIso = opts.fullWindow
+    ? opts.weekMeta[opts.weekMeta.length - 1]?.iso
+    : opts.weekMeta[opts.weekIndex * 7 + 6]?.iso;
+  if (!fromIso || !toIso) return null;
+  try {
+    await pruneBloatedOutbox(500);
+    if (!opts.cloudAuthority) {
+      await flushOutbox(opts.sb);
+    }
+    const [cellsRes, slotsRes] = await Promise.all([
+      fetchCellsRange(opts.sb, opts.companyId, fromIso, toIso),
+      fetchSlots(opts.sb, opts.companyId),
+    ]);
+    if (!cellsRes.ok || cellsRes.error || slotsRes.error) return null;
+    return projectCellsOntoLocalStores({
+      cells: cellsRes.rows || [],
+      slots: (slotsRes.data || []) as {
+        restaurant_id?: string;
+        role?: string;
+        slot_key?: string;
+        sort_order?: number;
+      }[],
+      weekMeta: opts.weekMeta,
+      liveAssign: opts.liveAssign,
+      liveDraft: opts.liveDraft,
+      replaceWeekIndex: opts.fullWindow ? undefined : opts.weekIndex,
+      replaceAllWeeks: !!opts.fullWindow,
+    });
+  } catch (err) {
+    console.warn('pullCloudCellsOntoStores', err);
+    return null;
+  }
+}
+
+let documentNeedsCloudSoT = true;
+
+export function consumeDocumentCloudSoT(): boolean {
+  const v = documentNeedsCloudSoT;
+  documentNeedsCloudSoT = false;
+  return v;
+}
+
+export function armDocumentCloudSoT(): void {
+  documentNeedsCloudSoT = true;
+}
+
+/**
+ * Paint the visible week from cloud, then overlay the rest of the 15-week window.
+ * First-open / Refresh: skip leftover outbox flush so stale ops cannot stamp cloud.
+ */
+export async function pullCloudCellsVisibleThenFull(opts: {
+  sb: SupabaseClient;
+  companyId: string;
+  weekMeta: { iso?: string }[];
+  weekIndex: number;
+  liveAssign: AssignmentStore;
+  liveDraft: unknown;
+  cloudAuthority?: boolean;
+  onVisible?: (projected: { assign: AssignmentStore; draft: unknown }) => boolean | void;
+}): Promise<{ assign: AssignmentStore; draft: unknown } | null> {
+  const visible = await pullCloudCellsOntoStores({
+    ...opts,
+    fullWindow: false,
+    cloudAuthority: opts.cloudAuthority,
+  });
+  if (!visible) return null;
+  if (opts.onVisible) {
+    const keepGoing = opts.onVisible(visible);
+    if (keepGoing === false) return visible;
+  }
+  const full = await pullCloudCellsOntoStores({
+    sb: opts.sb,
+    companyId: opts.companyId,
+    weekMeta: opts.weekMeta,
+    weekIndex: opts.weekIndex,
+    liveAssign: visible.assign,
+    liveDraft: visible.draft,
+    fullWindow: true,
+    cloudAuthority: true,
+  });
+  return full || visible;
 }
 
 /** Subscribe to schedule_cells changes for a company; returns unsubscribe. */

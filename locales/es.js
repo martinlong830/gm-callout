@@ -241,6 +241,21 @@ window.GM_I18N_ES = {
   'account.deleted': 'Cuenta eliminada',
 
   'schedule.publishNotify': 'Publicar / Avisar',
+  'schedule.publishHub': 'Publicar y aprobaciones',
+  'schedule.publishHubTitle':
+    'Ediciones pendientes, aplicar al horario en vivo, publicar y ver copias publicadas',
+  'schedule.publishHubPending': 'Ediciones pendientes',
+  'schedule.publishHubPublished': 'Horarios publicados',
+  'schedule.publishHubWeek': 'Semana publicada',
+  'schedule.publishHubApplyPublish': 'Aplicar en vivo y publicar',
+  'schedule.publishHubPublish': 'Publicar y avisar',
+  'schedule.publishHubNoSnapshot':
+    'No hay una copia publicada guardada para esta semana. Las semanas anteriores pueden quedar vacías hasta la próxima publicación.',
+  'schedule.publishHubPublishedAt': 'Publicado {when}',
+  'schedule.publishHubPublishedBy': 'Publicado {when} por {who}',
+  'schedule.publishHubRecovered': 'Copia publicada recuperada · {when}',
+  'schedule.publishHubPublishWhenReady':
+    'Pulsa Publicar y avisar cuando quieras que los empleados vean esta semana.',
   'schedule.viewOnlyOtherStoreHint':
     'Vista abreviada de la otra tienda: solo personas vinculadas a tu tienda esta semana. Solo lectura.',
   'schedule.dragMoveHint':

@@ -480,7 +480,7 @@ if (!Array.isArray(build) || !build.length) {
 }
 
 const names = build.map((s) => s.name);
-const expected = ['Labor Cost', 'CPA', 'Payroll', 'Payslip', 'Schedule', 'PTO', 'Employee Information'];
+const expected = ['Labor Cost', 'CPA', 'Payroll', 'Payslip', 'Published schedule', 'Updated schedule', 'PTO', 'Employee Information'];
 for (const name of expected) {
   if (names.indexOf(name) < 0) throw new Error('Missing sheet: ' + name);
 }
@@ -492,9 +492,9 @@ function worksheetText(ws) {
     .join('\n');
 }
 
-const scheduleSheet = build.find((s) => s.name === 'Schedule');
+const scheduleSheet = build.find((s) => s.name === 'Updated schedule');
 if (!scheduleSheet || !scheduleSheet.worksheet) {
-  throw new Error('Schedule sheet missing worksheet');
+  throw new Error('Updated schedule sheet missing worksheet');
 }
 const scheduleText = worksheetText(scheduleSheet.worksheet);
 if (scheduleText.indexOf('TEAM MEMBERS') < 0) {
@@ -537,7 +537,7 @@ function cellFillRgb(cell) {
   if (rgb.length === 8 && rgb.slice(0, 2) === 'FF') rgb = rgb.slice(2);
   return rgb;
 }
-const scheduleWs = build.find((s) => s.name === 'Schedule').worksheet;
+const scheduleWs = build.find((s) => s.name === 'Updated schedule').worksheet;
 if (cellFillRgb(findCellWithText(scheduleWs, 'VL 8h')) !== 'C6EFCE') {
   throw new Error('VL tiles should be green on the downloaded Schedule sheet');
 }
@@ -621,12 +621,12 @@ deps.__scheduleSnapshotRows = [
   },
 ];
 const staleCached = sandbox.__gmTimecardsTest.buildFullReportSheets();
-const staleSched = worksheetText(staleCached.find((s) => s.name === 'Schedule').worksheet);
+const staleSched = worksheetText(staleCached.find((s) => s.name === 'Updated schedule').worksheet);
 if (staleSched.indexOf('12:00PM - 8:00PM') >= 0) {
   throw new Error('Expected sheet cache to keep prior Schedule until forceFresh');
 }
 const freshBuild = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
-const freshSched = worksheetText(freshBuild.find((s) => s.name === 'Schedule').worksheet);
+const freshSched = worksheetText(freshBuild.find((s) => s.name === 'Updated schedule').worksheet);
 if (freshSched.indexOf('12:00PM - 8:00PM') < 0) {
   throw new Error('forceFresh did not pick up updated schedule snapshot times');
 }
@@ -643,7 +643,7 @@ function sheetHasName(sheets, sheetName, person) {
   const sh = sheets.find((s) => s.name === sheetName);
   return worksheetText(sh && sh.worksheet).indexOf(person) >= 0;
 }
-for (const sheetName of ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Information', 'Schedule']) {
+for (const sheetName of ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Information', 'Updated schedule']) {
   if (sheetHasName(scheduledOnlyBuild, sheetName, 'JUAN SALVATIERRA')) {
     throw new Error(sheetName + ' should omit unscheduled JUAN SALVATIERRA');
   }
@@ -856,10 +856,10 @@ sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
 const sheets8 = sandbox.__gmTimecardsTest.buildFullReportSheets({ forceFresh: true });
 const payslip9 = sheets9.find((s) => s.name === 'Payslip');
 const payslip8 = sheets8.find((s) => s.name === 'Payslip');
-const schedule9 = sheets9.find((s) => s.name === 'Schedule');
-const schedule8 = sheets8.find((s) => s.name === 'Schedule');
+const schedule9 = sheets9.find((s) => s.name === 'Updated schedule');
+const schedule8 = sheets8.find((s) => s.name === 'Updated schedule');
 if (!payslip9 || !payslip8) throw new Error('Payslip sheet missing for location-scoped builds');
-if (!schedule9 || !schedule8) throw new Error('Schedule sheet missing for location-scoped builds');
+if (!schedule9 || !schedule8) throw new Error('Updated schedule sheet missing for location-scoped builds');
 const schedTitle9 = schedule9.worksheet.A1 && schedule9.worksheet.A1.v;
 const schedTitle8 = schedule8.worksheet.A1 && schedule8.worksheet.A1.v;
 if (String(schedTitle9).indexOf('RED POKE 1') < 0) {

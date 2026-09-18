@@ -38,6 +38,7 @@ import {
   type EmployeeRow,
 } from '../../lib/employees';
 import { readStoredCompanyId, readStoredTeamStateId } from '../../lib/companySession';
+import { loadSavedRestaurantId, saveRestaurantId } from '../../lib/restaurantPref';
 import { useI18n } from '../../contexts/LocaleContext';
 import { portalNotifySchedulePublished } from '../../lib/portalAuth';
 import { isAdminRole, isManagerLikeRole } from '../../lib/roles';
@@ -107,7 +108,6 @@ import {
   purgeDefaultUnassignedRestaurantAssignments,
   redPokeShiftHoursDecimal,
   formatScheduleDayHoursLabel,
-  restoreFohTemplateWeekBreaks,
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   schedulePublishedPayload,
@@ -121,24 +121,44 @@ import {
   WEEKDAY_KEYS,
   weekdayKeyFromScheduleDay,
   weekStartMondayIsoFromDayIso,
+  ingestPublishedSnapshotsFromRaw,
+  savePublishedWeekSnapshot,
+  listPublishedWeekSnapshotsForRestaurant,
+  getPublishedWeekSnapshot,
+  formatPublishedAtLabel,
+  cloneWeekAssignmentsForRestaurant,
+  remapWeekAssignmentsToWeekIndex,
+  type PublishedWeekSnapshot,
   type BreakAnnotationType,
   type CalendarBodyRow,
   type CalendarCell,
 } from '../../lib/schedule/engine';
 import {
-  backfillIfNeeded,
+  fetchScheduleReviews,
+  inboxReviewsForViewer,
+  makeScheduleReviewItem,
+  mergeScheduleReviewsStates,
+  normalizeScheduleReviewsState,
+  pushScheduleReviews,
+  type ScheduleReviewItem,
+  type ScheduleReviewsState,
+} from '../../lib/schedule/reviews';
+import { enqueueRestaurantWeekCellOps } from '../../lib/schedule/weekCellOps';
+import {
   enqueueOps,
   ensureSlotKey,
-  fetchCellsRange,
   fetchSlots,
   flushOutbox,
   flushOutboxFully,
+  backfillIfNeeded,
   opAddSlot,
   opDeactivateSlot,
   opSetDayOff,
   opSetTimes,
   opSetWorker,
-  projectCellsOntoLocalStores,
+  pullCloudCellsOntoStores,
+  pullCloudCellsVisibleThenFull,
+  consumeDocumentCloudSoT,
   writeOnlyCells,
   type ScheduleOp,
 } from '../../lib/schedule/syncV2';
@@ -157,7 +177,8 @@ import {
   getEffectiveDayLeaveSync,
   setEmployeeDayLeave,
 } from '../../lib/timecards/engine';
-import { loadWeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import { loadWeekExtrasSlice, type WeekExtrasSlice } from '../../lib/timecards/weekExtras';
+import { buildCalendarLeaveFlagMap } from '../../lib/schedule/leaveFlags';
 import {
   getEmployeeBorrowedRestaurantSync,
   restaurantShortLabel as borrowRestaurantShortLabel,
@@ -325,17 +346,34 @@ export default function ManagerScheduleScreen() {
     [restaurants, myEmployee]
   );
   const [currentRestaurantId, setCurrentRestaurantId] = useState(restaurants[0]?.id ?? 'rp-9');
+  const restaurantUserPickedRef = useRef(false);
   const scheduleEditable = managerCanEditRestaurant(myEmployee, currentRestaurantId, role);
 
   useEffect(() => {
+    let cancelled = false;
+    void loadSavedRestaurantId().then((saved) => {
+      if (cancelled) return;
+      if (saved === 'rp-8' || saved === 'rp-9') {
+        restaurantUserPickedRef.current = true;
+        setCurrentRestaurantId(saved);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (restaurantUserPickedRef.current) return;
     const main = managerScheduleMainRestaurantId(myEmployee);
-    if (main !== 'rp-8' && main !== 'rp-9') return;
-    const scope = managerManagedRestaurantId(myEmployee, role);
-    /* Store-scoped: always land on managed store. Company-wide / admin: prefer primary when set. */
-    if (scope === main || scope == null) {
-      setCurrentRestaurantId(main);
-    }
-  }, [myEmployee, role]);
+    if (main === 'rp-8' || main === 'rp-9') setCurrentRestaurantId(main);
+  }, [myEmployee]);
+
+  const selectRestaurant = useCallback((id: string) => {
+    restaurantUserPickedRef.current = true;
+    setCurrentRestaurantId(id);
+    void saveRestaurantId(id);
+  }, []);
   const [assignmentStore, setAssignmentStore] = useState<AssignmentStore>(() =>
     assignmentShell(restaurants)
   );
@@ -357,6 +395,11 @@ export default function ManagerScheduleScreen() {
   const [publishing, setPublishing] = useState(false);
   const [undoDepth, setUndoDepth] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [hubOpen, setHubOpen] = useState(false);
+  const [hubTab, setHubTab] = useState<'pending' | 'published'>('pending');
+  const [reviewsState, setReviewsState] = useState<ScheduleReviewsState>({ v: 1, items: [] });
+  const [hubPreviewSnap, setHubPreviewSnap] = useState<PublishedWeekSnapshot | null>(null);
+  const [hubBusy, setHubBusy] = useState(false);
   const [historyRows, setHistoryRows] = useState<ScheduleRevisionRow[]>([]);
   const [laborPanelOpen, setLaborPanelOpen] = useState(false);
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
@@ -413,71 +456,95 @@ export default function ManagerScheduleScreen() {
   }, [params.weekMondayIso, weekMeta, refetch]);
 
   useEffect(() => {
-    if (!supabase || !isManagerLikeRole(role)) return;
-    const sb = supabase;
-    let cancelled = false;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    ingestPublishedSnapshotsFromRaw(teamState?.schedule_published);
+  }, [teamState?.schedule_published]);
 
-    const pullCells = async () => {
+  const applyProjectedStores = useCallback(
+    (projected: { assign: AssignmentStore; draft: unknown }) => {
+      setAssignmentStore(projected.assign);
+      setRolledDraftRaw(projected.draft);
+      applyLocalScheduleAssignments(projected.assign, projected.draft, {
+        markDirty: false,
+      });
+    },
+    [applyLocalScheduleAssignments]
+  );
+
+  const pullCloudSchedule = useCallback(
+    async (opts?: {
+      fullWindow?: boolean;
+      cloudAuthority?: boolean;
+      ignoreLocalEdit?: boolean;
+    }) => {
+      if (!supabase || !isManagerLikeRole(role)) return;
+      if (localEditPendingRef.current && !opts?.ignoreLocalEdit) return;
       try {
         const companyId = await readStoredCompanyId();
-        if (!companyId || cancelled) return;
-        await backfillIfNeeded(sb, companyId);
-        if (cancelled) return;
-        await flushOutbox(sb);
-        if (cancelled) return;
+        if (!companyId) return;
+        await backfillIfNeeded(supabase, companyId);
         const cellsOnly = await writeOnlyCells();
-        if (!cellsOnly || cancelled) return;
-        const fromIso = weekMeta[weekIndex * 7]?.iso;
-        const toIso = weekMeta[weekIndex * 7 + 6]?.iso;
-        if (!fromIso || !toIso) return;
-        const [cellsRes, slotsRes] = await Promise.all([
-          fetchCellsRange(sb, companyId, fromIso, toIso),
-          fetchSlots(sb, companyId),
-        ]);
-        if (cancelled || cellsRes.error || slotsRes.error) return;
-        const projected = projectCellsOntoLocalStores({
-          cells: (cellsRes.data || []) as Record<string, unknown>[],
-          slots: (slotsRes.data || []) as {
-            restaurant_id?: string;
-            role?: string;
-            slot_key?: string;
-            sort_order?: number;
-          }[],
+        if (!cellsOnly) return;
+        const liveAssign = assignmentStoreRef.current;
+        const liveDraft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+        if (opts?.fullWindow) {
+          const projected = await pullCloudCellsVisibleThenFull({
+            sb: supabase,
+            companyId,
+            weekMeta,
+            weekIndex,
+            liveAssign,
+            liveDraft,
+            cloudAuthority: !!opts?.cloudAuthority,
+            onVisible: (vis) => {
+              if (opts?.ignoreLocalEdit || !localEditPendingRef.current) applyProjectedStores(vis);
+            },
+          });
+          if (projected && (opts?.ignoreLocalEdit || !localEditPendingRef.current)) {
+            applyProjectedStores(projected);
+          }
+          return;
+        }
+        const projected = await pullCloudCellsOntoStores({
+          sb: supabase,
+          companyId,
           weekMeta,
-          liveAssign: assignmentStoreRef.current,
-          liveDraft: draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {},
-          replaceWeekIndex: weekIndex,
+          weekIndex,
+          liveAssign,
+          liveDraft,
+          cloudAuthority: !!opts?.cloudAuthority,
+          fullWindow: false,
         });
-        if (cancelled || localEditPendingRef.current) return;
-        setAssignmentStore(projected.assign);
-        setRolledDraftRaw(projected.draft);
-        applyLocalScheduleAssignments(projected.assign, projected.draft, {
-          markDirty: false,
-        });
+        if (projected && (opts?.ignoreLocalEdit || !localEditPendingRef.current)) {
+          applyProjectedStores(projected);
+        }
       } catch (err) {
         console.warn('schedule sync v2 hydrate', err);
       }
-    };
+    },
+    [
+      supabase,
+      role,
+      weekMeta,
+      weekIndex,
+      teamState?.draft_schedule,
+      applyProjectedStores,
+    ]
+  );
 
-    void pullCells();
-    pollTimer = setInterval(() => {
+  useEffect(() => {
+    if (!supabase || !isManagerLikeRole(role)) return;
+    let cancelled = false;
+    const first = consumeDocumentCloudSoT();
+    void pullCloudSchedule({ fullWindow: first, cloudAuthority: first });
+    const pollTimer = setInterval(() => {
       if (cancelled || localEditPendingRef.current) return;
-      void pullCells();
+      void pullCloudSchedule({ fullWindow: false });
     }, 5000);
-
     return () => {
       cancelled = true;
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [
-    supabase,
-    role,
-    weekMeta,
-    weekIndex,
-    teamState?.draft_schedule,
-    applyLocalScheduleAssignments,
-  ]);
+  }, [supabase, role, weekIndex, pullCloudSchedule]);
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
@@ -554,6 +621,22 @@ export default function ManagerScheduleScreen() {
           /* Tile edits are debounced — flush before publish/notify so cloud matches the grid. */
           await flushPendingScheduleEdits();
           const map = { ...publishedMap, [selectedWeekMonday]: true as const };
+          savePublishedWeekSnapshot({
+            restaurantId: currentRestaurantId,
+            weekMondayIso: selectedWeekMonday,
+            weekIndex,
+            draft: draftScheduleRawRef.current ?? {},
+            assignments: cloneWeekAssignmentsForRestaurant(
+              assignmentStoreRef.current,
+              currentRestaurantId,
+              weekIndex
+            ),
+            publishedBy: {
+              id: session?.user?.id,
+              name: myEmployee ? employeeDisplayName(myEmployee) : '',
+              role: String(role || ''),
+            },
+          });
           const payload = schedulePublishedPayload(map);
           const teamStateId = await readStoredTeamStateId();
           /* Always write the live schedule bundle with publish — not only schedule_published.
@@ -661,8 +744,170 @@ export default function ManagerScheduleScreen() {
     session?.user?.id,
     myEmployee,
     currentRestaurantId,
+    weekIndex,
     t,
   ]);
+
+  const openSchedulePublishHub = useCallback(() => {
+    ingestPublishedSnapshotsFromRaw(teamState?.schedule_published);
+    setHubPreviewSnap(getPublishedWeekSnapshot(currentRestaurantId, selectedWeekMonday));
+    setHubTab('pending');
+    setHubOpen(true);
+    void (async () => {
+      try {
+        const teamStateId = await readStoredTeamStateId();
+        if (!supabase) return;
+        const remote = await fetchScheduleReviews(supabase, teamStateId);
+        const local = normalizeScheduleReviewsState(teamState?.schedule_reviews);
+        setReviewsState(mergeScheduleReviewsStates(local, remote));
+      } catch (err) {
+        console.warn('schedule reviews fetch', err);
+      }
+    })();
+  }, [
+    currentRestaurantId,
+    selectedWeekMonday,
+    supabase,
+    teamState?.schedule_published,
+    teamState?.schedule_reviews,
+  ]);
+
+  const sendWeekForApproval = useCallback(async () => {
+    if (!supabase || !selectedWeekMonday) return;
+    setHubBusy(true);
+    try {
+      const teamStateId = await readStoredTeamStateId();
+      const status = role === 'admin' ? 'pending_manager' : 'pending_admin';
+      const item = makeScheduleReviewItem({
+        restaurantId: currentRestaurantId,
+        weekMondayIso: selectedWeekMonday,
+        weekIndex,
+        status,
+        actor: {
+          id: String(session?.user?.id || ''),
+          name: myEmployee ? employeeDisplayName(myEmployee) : '',
+          role: String(role || 'manager'),
+        },
+        draft: loadDraftFromTeamState(
+          draftScheduleRawRef.current ?? {},
+          weekIndex,
+          currentRestaurantId
+        ),
+        assignments: cloneWeekAssignmentsForRestaurant(
+          assignmentStoreRef.current,
+          currentRestaurantId,
+          weekIndex
+        ),
+      });
+      const next = mergeScheduleReviewsStates(reviewsState, { v: 1, items: [item] });
+      const pushed = await pushScheduleReviews(supabase, teamStateId, next);
+      if (!pushed.ok) {
+        Alert.alert(t('schedule.couldNotSave'), pushed.error || t('schedule.couldNotSave'));
+        return;
+      }
+      setReviewsState(next);
+      Alert.alert(t('schedule.publishHub'), t('schedule.publishHubSent'));
+    } catch (err) {
+      console.warn('sendWeekForApproval', err);
+    } finally {
+      setHubBusy(false);
+    }
+  }, [
+    supabase,
+    selectedWeekMonday,
+    role,
+    currentRestaurantId,
+    weekIndex,
+    session?.user?.id,
+    myEmployee,
+    reviewsState,
+    t,
+  ]);
+
+  const applyReviewToLive = useCallback(
+    async (review: ScheduleReviewItem) => {
+      if (!supabase || review.status === 'cancelled') return;
+      if (review.restaurantId !== currentRestaurantId) return;
+      setHubBusy(true);
+      try {
+        const companyId = await readStoredCompanyId();
+        let targetWi = weekIndex;
+        for (let w = 0; w < SCHEDULE_VIEW_WEEK_COUNT; w += 1) {
+          if (weekMeta[w * 7]?.iso === review.weekMondayIso) {
+            targetWi = w;
+            break;
+          }
+        }
+        const fromWi = review.weekIndexAtSend != null ? review.weekIndexAtSend : targetWi;
+        const remapped = remapWeekAssignmentsToWeekIndex(
+          review.proposal.assignments,
+          fromWi,
+          targetWi
+        );
+        const nextStore = JSON.parse(JSON.stringify(assignmentStoreRef.current)) as AssignmentStore;
+        Object.keys(remapped).forEach((rid) => {
+          if (!nextStore[rid]) nextStore[rid] = {};
+          const weekStart = targetWi * 7;
+          Object.keys(nextStore[rid]).forEach((shiftId) => {
+            const m = /^shift-(\d+)-/.exec(shiftId);
+            if (!m) return;
+            const gdi = Number(m[1]);
+            if (gdi >= weekStart && gdi < weekStart + 7) delete nextStore[rid][shiftId];
+          });
+          Object.assign(nextStore[rid], remapped[rid] || {});
+        });
+        let nextDraft: unknown = draftScheduleRawRef.current ?? {};
+        if (review.proposal.draft && typeof review.proposal.draft === 'object') {
+          nextDraft = patchDraftScheduleForWeek(
+            nextDraft,
+            targetWi,
+            currentRestaurantId,
+            review.proposal.draft as DraftGrid
+          );
+        }
+        pushUndoSnapshot();
+        setAssignmentStore(nextStore);
+        setRolledDraftRaw(nextDraft);
+        applyLocalScheduleAssignments(nextStore, nextDraft);
+        if (companyId) {
+          await enqueueRestaurantWeekCellOps({
+            sb: supabase,
+            companyId,
+            restaurantId: currentRestaurantId,
+            weekIndex: targetWi,
+            weekMeta,
+            draftRaw: nextDraft,
+            assignmentStore: nextStore,
+          });
+        }
+        const teamStateId = await readStoredTeamStateId();
+        const accepted = {
+          ...review,
+          status: 'accepted' as const,
+          updatedAt: new Date().toISOString(),
+        };
+        const nextReviews = mergeScheduleReviewsStates(reviewsState, { v: 1, items: [accepted] });
+        await pushScheduleReviews(supabase, teamStateId, nextReviews);
+        setReviewsState(nextReviews);
+        setHubOpen(false);
+        Alert.alert(t('schedule.publishHub'), t('schedule.publishHubPublishWhenReady'));
+      } catch (err) {
+        console.warn('applyReviewToLive', err);
+        Alert.alert(t('schedule.couldNotSave'), t('schedule.couldNotSave'));
+      } finally {
+        setHubBusy(false);
+      }
+    },
+    [
+      supabase,
+      currentRestaurantId,
+      weekMeta,
+      weekIndex,
+      reviewsState,
+      applyLocalScheduleAssignments,
+      t,
+    ]
+  );
 
   const draftScheduleRaw = rolledDraftRaw ?? teamState?.draft_schedule;
   assignmentStoreRef.current = assignmentStore;
@@ -1587,29 +1832,16 @@ export default function ManagerScheduleScreen() {
         suppressHydrateUndoClearRef.current = false;
         return;
       }
-      let nextStore = rolled.store;
-      let fohChanged = false;
-      if (isManagerLikeRole(role) && scheduleEditable) {
-        const foh = restoreFohTemplateWeekBreaks(
-          nextStore,
-          employees.map(toLite),
-          currentRestaurantId,
-          SCHEDULE_TEMPLATE_WEEK_INDEX
-        );
-        if (foh.changed) {
-          nextStore = foh.store;
-          fohChanged = true;
-        }
-      }
+      const nextStore = rolled.store;
       if (cancelled) return;
       setAssignmentStore(nextStore);
       setRolledDraftRaw(draftOut);
-      if ((rolled.changed || fohChanged) && isManagerLikeRole(role)) {
+      if (rolled.changed && isManagerLikeRole(role)) {
         if (!suppressHydrateUndoClearRef.current) clearUndoStack();
         applyLocalScheduleAssignments(nextStore, draftOut, {
-          markDirty: fohChanged ? true : 'keep',
+          markDirty: 'keep',
         });
-        queuePersist(nextStore, draftOut, { fromHydrate: !fohChanged });
+        queuePersist(nextStore, draftOut, { fromHydrate: true });
       } else if (
         (rolled.draftMetaChanged || rolled.windowRolled) &&
         isManagerLikeRole(role)
@@ -1634,10 +1866,12 @@ export default function ManagerScheduleScreen() {
   ]);
 
   const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
+  const [weekExtrasSlice, setWeekExtrasSlice] = useState<WeekExtrasSlice>({});
 
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) {
       setBorrowByEmpId({});
+      setWeekExtrasSlice({});
       return;
     }
     let cancelled = false;
@@ -1645,6 +1879,7 @@ export default function ManagerScheduleScreen() {
     const bounds = getPayWeekBoundsForMonday(mon);
     void loadWeekExtrasSlice(bounds).then((slice) => {
       if (cancelled) return;
+      setWeekExtrasSlice(slice);
       const next: Record<string, string> = {};
       for (const e of employees) {
         const b = getEmployeeBorrowedRestaurantSync(e.id, slice);
@@ -1708,6 +1943,35 @@ export default function ManagerScheduleScreen() {
     currentRestaurantId,
   ]);
 
+  const leaveFlagByPersonDay = useMemo(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) return new Map<string, string>();
+    try {
+      const bounds = getPayWeekBoundsForMonday(new Date(`${selectedWeekMonday}T12:00:00`));
+      return buildCalendarLeaveFlagMap({
+        visibleDays,
+        weekMeta,
+        employees,
+        employeesLite: lites,
+        extrasSlice: weekExtrasSlice,
+        staffRequests: staffRequests || [],
+        bounds,
+        teamState: (teamState as Record<string, unknown> | null) || null,
+      });
+    } catch (err) {
+      console.warn('buildCalendarLeaveFlagMap', err);
+      return new Map<string, string>();
+    }
+  }, [
+    selectedWeekMonday,
+    visibleDays,
+    weekMeta,
+    employees,
+    lites,
+    weekExtrasSlice,
+    staffRequests,
+    teamState,
+  ]);
+
   const calendarBody = useMemo(() => {
     try {
       const managedScope =
@@ -1728,7 +1992,8 @@ export default function ManagerScheduleScreen() {
         assignmentStore,
         weekIndex,
         otherStoreDayLabels,
-        abbreviateForManagedStoreId
+        abbreviateForManagedStoreId,
+        leaveFlagByPersonDay
       );
     } catch (err) {
       console.warn('buildCalendarBody', err);
@@ -1744,6 +2009,7 @@ export default function ManagerScheduleScreen() {
     assignmentStore,
     weekIndex,
     otherStoreDayLabels,
+    leaveFlagByPersonDay,
     role,
     myEmployee,
   ]);
@@ -2257,6 +2523,8 @@ export default function ManagerScheduleScreen() {
             const bounds = getPayWeekBoundsForMonday(new Date(`${monIso}T12:00:00`));
             try {
               await setEmployeeDayLeave(leaveEmp.id, dayIso, vl, sl, bounds);
+              const slice = await loadWeekExtrasSlice(bounds);
+              setWeekExtrasSlice(slice);
             } catch {
               /* week-extras best-effort */
             }
@@ -2665,23 +2933,12 @@ export default function ManagerScheduleScreen() {
           />
           <View style={styles.toolbarActions}>
             <Pressable
-              onPress={publishSelectedWeek}
-              disabled={publishing || selectedWeekIsPast || !scheduleEditable}
-              style={[
-                styles.publishBtn,
-                (publishing || selectedWeekIsPast || !scheduleEditable) && styles.publishBtnDisabled,
-              ]}
+              onPress={openSchedulePublishHub}
+              disabled={publishing}
+              style={[styles.publishBtn, publishing && styles.publishBtnDisabled]}
             >
               <Text style={styles.publishBtnText}>
-                {publishing
-                  ? t('common.publishing')
-                  : !scheduleEditable
-                    ? t('schedule.viewOnly')
-                    : selectedWeekIsPast
-                      ? t('schedule.pastWeek')
-                      : selectedWeekPublished
-                        ? t('common.notifyAgain')
-                        : t('schedule.publishNotify')}
+                {publishing ? t('common.publishing') : t('schedule.publishHub')}
               </Text>
             </Pressable>
             {isAdminRole(role) ? (
@@ -2742,7 +2999,7 @@ export default function ManagerScheduleScreen() {
               {scheduleRestaurants.map((r) => (
                 <Pressable
                   key={r.id}
-                  onPress={() => setCurrentRestaurantId(r.id)}
+                  onPress={() => selectRestaurant(r.id)}
                   style={[styles.chip, currentRestaurantId === r.id && styles.chipActive]}
                 >
                   <Text style={[styles.chipText, currentRestaurantId === r.id && styles.chipTextActive]}>
@@ -2758,6 +3015,11 @@ export default function ManagerScheduleScreen() {
                 onPress={() => {
                   clearUndoStack();
                   void refetch();
+                  void pullCloudSchedule({
+                    fullWindow: true,
+                    cloudAuthority: true,
+                    ignoreLocalEdit: true,
+                  });
                 }}
                 style={styles.refreshBtn}
               >
@@ -3234,6 +3496,113 @@ export default function ManagerScheduleScreen() {
       />
 
       <CompanyHolidaysSheet visible={holidaysOpen} onClose={() => setHolidaysOpen(false)} />
+
+      <Modal visible={hubOpen} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setHubOpen(false)}>
+          <Pressable
+            style={[styles.modalPanel, styles.hubPanel]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.modalTitle}>{t('schedule.publishHub')}</Text>
+            <Text style={styles.modalSub}>{t('schedule.publishHubHint')}</Text>
+            <View style={styles.hubTabs}>
+              <Pressable
+                style={[styles.hubTab, hubTab === 'pending' && styles.hubTabOn]}
+                onPress={() => setHubTab('pending')}
+              >
+                <Text style={[styles.hubTabText, hubTab === 'pending' && styles.hubTabTextOn]}>
+                  {t('schedule.publishHubPending')}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.hubTab, hubTab === 'published' && styles.hubTabOn]}
+                onPress={() => setHubTab('published')}
+              >
+                <Text style={[styles.hubTabText, hubTab === 'published' && styles.hubTabTextOn]}>
+                  {t('schedule.publishHubPublished')}
+                </Text>
+              </Pressable>
+            </View>
+            {hubTab === 'pending' ? (
+              <ScrollView style={styles.hubList}>
+                {inboxReviewsForViewer(reviewsState, currentRestaurantId, role).length ? (
+                  inboxReviewsForViewer(reviewsState, currentRestaurantId, role).map((rev) => (
+                    <View key={rev.id} style={styles.hubCard}>
+                      <Text style={styles.hubCardTitle}>
+                        {rev.weekMondayIso} · {rev.status.replace('_', ' ')}
+                      </Text>
+                      <Text style={styles.modalSub}>
+                        {rev.lastActor?.name || rev.createdBy?.name || ''}
+                      </Text>
+                      {scheduleEditable ? (
+                        <Pressable
+                          style={styles.publishBtn}
+                          disabled={hubBusy}
+                          onPress={() => void applyReviewToLive(rev)}
+                        >
+                          <Text style={styles.publishBtnText}>{t('schedule.publishHubApply')}</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.modalSub}>{t('schedule.publishHubNoPending')}</Text>
+                )}
+                {scheduleEditable && !selectedWeekIsPast ? (
+                  <Pressable
+                    style={[styles.undoBtn, { marginTop: 12 }]}
+                    disabled={hubBusy}
+                    onPress={() => void sendWeekForApproval()}
+                  >
+                    <Text style={styles.undoBtnText}>{t('schedule.publishHubSend')}</Text>
+                  </Pressable>
+                ) : null}
+              </ScrollView>
+            ) : (
+              <ScrollView style={styles.hubList}>
+                {listPublishedWeekSnapshotsForRestaurant(currentRestaurantId).length ? (
+                  listPublishedWeekSnapshotsForRestaurant(currentRestaurantId).map((snap) => (
+                    <Pressable
+                      key={`${snap.restaurantId}|${snap.weekMondayIso}`}
+                      style={[
+                        styles.hubCard,
+                        hubPreviewSnap?.weekMondayIso === snap.weekMondayIso && styles.hubCardOn,
+                      ]}
+                      onPress={() => setHubPreviewSnap(snap)}
+                    >
+                      <Text style={styles.hubCardTitle}>{snap.weekMondayIso}</Text>
+                      <Text style={styles.modalSub}>
+                        {t('schedule.publishHubPublishedAt', {
+                          when: formatPublishedAtLabel(snap.publishedAt) || snap.publishedAt,
+                          who: snap.publishedBy?.name || '',
+                        })}
+                      </Text>
+                      <Text style={styles.modalSub}>{t('schedule.publishHubReadOnly')}</Text>
+                    </Pressable>
+                  ))
+                ) : (
+                  <Text style={styles.modalSub}>{t('schedule.publishHubNoPublished')}</Text>
+                )}
+              </ScrollView>
+            )}
+            {scheduleEditable && !selectedWeekIsPast ? (
+              <Pressable
+                style={[styles.publishBtn, { marginTop: 10 }]}
+                disabled={publishing || hubBusy}
+                onPress={() => {
+                  setHubOpen(false);
+                  publishSelectedWeek();
+                }}
+              >
+                <Text style={styles.publishBtnText}>{t('schedule.publishHubPublish')}</Text>
+              </Pressable>
+            ) : null}
+            <Pressable style={[styles.undoBtn, { marginTop: 8 }]} onPress={() => setHubOpen(false)}>
+              <Text style={styles.undoBtnText}>{t('common.close')}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={historyOpen} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setHistoryOpen(false)}>
@@ -3851,6 +4220,19 @@ const CalendarCellView = memo(function CalendarCellView({
       </Text>
     </View>
   );
+  const leaveFlagBadge = (label: string, stacked: boolean) => (
+    <View style={[styles.leaveFlagPill, stacked ? styles.leaveFlagPillStacked : null]}>
+      <Text style={styles.leaveFlagPillText} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+  const flagStrip = (leaveFlag?: string, otherStore?: string) => (
+    <>
+      {leaveFlag ? leaveFlagBadge(leaveFlag, !!otherStore) : null}
+      {otherStore ? otherStoreBadge(otherStore) : null}
+    </>
+  );
   if (cell.kind === 'empty') {
     const target: ShiftEditTarget = {
       role: cell.role,
@@ -3869,7 +4251,7 @@ const CalendarCellView = memo(function CalendarCellView({
     const body = (
       <>
         <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
-        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
       </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
@@ -3904,7 +4286,7 @@ const CalendarCellView = memo(function CalendarCellView({
       <>
         <Text style={styles.slotTimeMuted}>{cell.timeLabel}</Text>
         <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
-        {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
       </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
@@ -3941,7 +4323,7 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
       ) : null}
       {cell.hours ? <Text style={styles.slotHours}>{cell.hours}</Text> : null}
-      {cell.otherStoreLabel ? otherStoreBadge(cell.otherStoreLabel) : null}
+      {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
     </>
   );
   if (!editable) return <View style={filledStyle}>{filledBody}</View>;
@@ -4505,6 +4887,28 @@ const styles = StyleSheet.create({
     color: '#9a3412',
     textAlign: 'center',
   },
+  leaveFlagPill: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#dbeafe',
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+  },
+  leaveFlagPillStacked: {
+    bottom: 22,
+  },
+  leaveFlagPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1e40af',
+    textAlign: 'center',
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',
@@ -4518,6 +4922,30 @@ const styles = StyleSheet.create({
     maxHeight: '55%',
   },
   modalPanelTall: { maxHeight: '78%' },
+  hubPanel: { maxHeight: '92%', minHeight: '72%' },
+  hubTabs: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  hubTab: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  hubTabOn: { backgroundColor: '#1e3a5f', borderColor: '#1e3a5f' },
+  hubTabText: { fontWeight: '700', color: '#334155', fontSize: 13 },
+  hubTabTextOn: { color: '#fff' },
+  hubList: { flexGrow: 0, maxHeight: 360 },
+  hubCard: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+    backgroundColor: '#f8fafc',
+  },
+  hubCardOn: { borderColor: '#1e3a5f', backgroundColor: '#eff6ff' },
+  hubCardTitle: { fontWeight: '800', color: '#0f172a', marginBottom: 4 },
   modalTitle: { fontSize: 18, fontWeight: '800', color: '#0f172a' },
   modalSub: { fontSize: 14, color: '#64748b', marginTop: 6, marginBottom: 12 },
   modalList: { maxHeight: 280 },

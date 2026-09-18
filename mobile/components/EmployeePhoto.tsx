@@ -29,20 +29,34 @@ function sourceKey(src: EmployeePhotoSource | undefined): string {
 }
 
 export function EmployeePhoto({ employee, size = 52, style, version = 0 }: Props) {
+  const photoUrl = employee.meta?.photoUrl;
+  const photoUseCustom = employee.meta?.photoUseCustom;
+  const photoHidden = employee.meta?.photoHidden;
   const sources = useMemo(
     () => employeePhotoSources(employee),
-    [employee, employee.meta?.photoUrl, employee.meta?.photoUseCustom, employee.meta?.photoHidden, version]
+    [
+      employee,
+      employee.id,
+      employee.firstName,
+      employee.lastName,
+      employee.displayName,
+      photoUrl,
+      photoUseCustom,
+      photoHidden,
+      version,
+    ]
   );
   const [idx, setIdx] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const current = sources[idx];
   const initials = employeePhotoInitials(employee);
   const radius = size / 2;
+  const firstSourceKey = sourceKey(sources[0]);
 
   useEffect(() => {
     setIdx(0);
     setLoaded(false);
-  }, [employee.id, version, sources.length, sourceKey(sources[0])]);
+  }, [employee.id, version, sources.length, firstSourceKey]);
 
   const imageSource: ImageSourcePropType | null = current
     ? current.kind === 'bundled'

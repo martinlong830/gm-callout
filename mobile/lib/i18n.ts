@@ -9,6 +9,7 @@ const EN: Dict = {
   'common.cancel': 'Cancel',
   'common.save': 'Save',
   'common.close': 'Close',
+  'common.done': 'Done',
   'common.ok': 'OK',
   'common.tryAgain': 'Try again',
   'common.continue': 'Continue',
@@ -201,6 +202,21 @@ const EN: Dict = {
   'account.pushNotAvailable': 'Notifications are not available on this device build.',
 
   'schedule.publishNotify': 'Publish / Notify',
+  'schedule.publishHub': 'Publish & approvals',
+  'schedule.publishHubHint':
+    'Pending manager/admin edits, published copies for this store, and publish for employees.',
+  'schedule.publishHubPending': 'Pending edits',
+  'schedule.publishHubPublished': 'Published schedules',
+  'schedule.publishHubNoPending': 'No pending edits for this store.',
+  'schedule.publishHubNoPublished': 'No published copies saved for this store yet.',
+  'schedule.publishHubPublishedAt': 'Published {when} by {who}',
+  'schedule.publishHubReadOnly': 'Previous published copies cannot be edited.',
+  'schedule.publishHubApply': 'Apply to live schedule',
+  'schedule.publishHubSend': 'Send this week for approval',
+  'schedule.publishHubSent': 'Sent. The other side will see it under Pending edits.',
+  'schedule.publishHubPublish': 'Publish this week',
+  'schedule.publishHubPublishWhenReady':
+    'Applied to the live schedule. Tap Publish this week when you are ready to notify employees.',
   'schedule.publishNotifyAdmins': 'Publish / notify admin accounts',
   'schedule.publishNotifyEmployees': 'Publish / notify employees',
   'schedule.undo': 'Undo',
@@ -215,8 +231,6 @@ const EN: Dict = {
   'schedule.noHolidaysYet': 'No holidays yet.',
   'schedule.holidayInvalid': 'Enter a valid date and name.',
   'schedule.holidayAdded': 'Holiday saved.',
-  'common.done': 'Done',
-  'common.remove': 'Remove',
   'employee.upcomingHolidays': 'Upcoming holidays',
   'employee.noUpcomingHolidays': 'No upcoming holidays.',
   'employee.pastShifts': 'Past shifts',
@@ -422,7 +436,7 @@ const EN: Dict = {
   'schedule.viewOnly': 'View only',
   'schedule.viewOnlyOtherStore': 'Other store — view only',
   'schedule.viewOnlyOtherStoreHint':
-    'Abbreviated view of the other store — only people tied to your store this week. View only.',
+    'Abbreviated view of the other store — only people on single-store payroll. View only.',
   'schedule.publishConfirmNotify':
     'Send another notification that the schedule for {range} is ready?',
   'schedule.publishConfirmPublish':
@@ -497,6 +511,12 @@ const EN: Dict = {
   'team.noEmployeesSupabase': 'No employees in Supabase yet.',
   'team.pin': 'PIN',
   'team.location': 'Location',
+  'team.primaryLocation': 'Primary location',
+  'team.singleStorePayroll': 'Single-store payroll',
+  'team.singleStorePayrollOn': 'On',
+  'team.singleStorePayrollOff': 'Off',
+  'team.singleStorePayrollHint':
+    'On: always paid on the primary store (hours from both locations roll in). Off: paid on the store they work each day.',
   'team.employmentStatus': 'Employment status',
   'team.partTime': 'Part-time',
   'team.fullTime': 'Full-time',
@@ -770,6 +790,7 @@ const ES: Dict = {
   'common.cancel': 'Cancelar',
   'common.save': 'Guardar',
   'common.close': 'Cerrar',
+  'common.done': 'Listo',
   'common.ok': 'OK',
   'common.tryAgain': 'Reintentar',
   'common.continue': 'Continuar',
@@ -968,6 +989,21 @@ const ES: Dict = {
   'account.pushNotAvailable': 'Las notificaciones no están disponibles en este build del dispositivo.',
 
   'schedule.publishNotify': 'Publicar / Avisar',
+  'schedule.publishHub': 'Publicar y aprobaciones',
+  'schedule.publishHubHint':
+    'Ediciones pendientes, copias publicadas de esta tienda y publicar para empleados.',
+  'schedule.publishHubPending': 'Ediciones pendientes',
+  'schedule.publishHubPublished': 'Horarios publicados',
+  'schedule.publishHubNoPending': 'No hay ediciones pendientes para esta tienda.',
+  'schedule.publishHubNoPublished': 'Aún no hay copias publicadas guardadas para esta tienda.',
+  'schedule.publishHubPublishedAt': 'Publicado {when} por {who}',
+  'schedule.publishHubReadOnly': 'Las copias publicadas anteriores no se pueden editar.',
+  'schedule.publishHubApply': 'Aplicar al horario en vivo',
+  'schedule.publishHubSend': 'Enviar esta semana para aprobación',
+  'schedule.publishHubSent': 'Enviado. La otra parte lo verá en Ediciones pendientes.',
+  'schedule.publishHubPublish': 'Publicar esta semana',
+  'schedule.publishHubPublishWhenReady':
+    'Aplicado al horario en vivo. Toca Publicar esta semana cuando quieras avisar a los empleados.',
   'schedule.publishNotifyAdmins': 'Publicar / avisar a cuentas admin',
   'schedule.publishNotifyEmployees': 'Publicar / avisar a empleados',
   'schedule.undo': 'Deshacer',
@@ -982,8 +1018,6 @@ const ES: Dict = {
   'schedule.noHolidaysYet': 'Aún no hay feriados.',
   'schedule.holidayInvalid': 'Ingresa una fecha y un nombre válidos.',
   'schedule.holidayAdded': 'Feriado guardado.',
-  'common.done': 'Listo',
-  'common.remove': 'Quitar',
   'employee.upcomingHolidays': 'Próximos feriados',
   'employee.noUpcomingHolidays': 'No hay feriados próximos.',
   'employee.pastShifts': 'Turnos pasados',
@@ -1189,7 +1223,7 @@ const ES: Dict = {
   'schedule.viewOnly': 'Solo lectura',
   'schedule.viewOnlyOtherStore': 'Otra tienda — solo lectura',
   'schedule.viewOnlyOtherStoreHint':
-    'Vista abreviada de la otra tienda: solo personas vinculadas a tu tienda esta semana. Solo lectura.',
+    'Vista abreviada de la otra tienda: solo personas con nómina de una sola tienda. Solo lectura.',
   'schedule.publishConfirmNotify':
     '¿Enviar otra notificación de que el horario de {range} está listo?',
   'schedule.publishConfirmPublish':
@@ -1264,6 +1298,12 @@ const ES: Dict = {
   'team.noEmployeesSupabase': 'Aún no hay empleados en Supabase.',
   'team.pin': 'PIN',
   'team.location': 'Ubicación',
+  'team.primaryLocation': 'Ubicación principal',
+  'team.singleStorePayroll': 'Nómina de una sola tienda',
+  'team.singleStorePayrollOn': 'Sí',
+  'team.singleStorePayrollOff': 'No',
+  'team.singleStorePayrollHint':
+    'Sí: siempre se paga en la tienda principal (las horas de ambas se suman). No: se paga en la tienda donde trabaja cada día.',
   'team.employmentStatus': 'Estado laboral',
   'team.partTime': 'Medio tiempo',
   'team.fullTime': 'Tiempo completo',

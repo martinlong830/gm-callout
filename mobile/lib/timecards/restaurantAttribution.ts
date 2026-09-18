@@ -1,5 +1,10 @@
 import type { EmployeeRow } from '../employees';
-import { employeeDisplayName, employeePrimaryLocationId } from '../employees';
+import {
+  employeeDisplayName,
+  employeeHasSingleStorePayroll,
+  employeePayrollHomeRestaurantId,
+  employeePrimaryLocationId,
+} from '../employees';
 import type { AssignmentStore, DraftGrid, Restaurant, WeekMeta } from '../schedule/types';
 import {
   buildAllLocationsWorkerShiftRows,
@@ -58,6 +63,11 @@ export function rosterRowVisibleAtLocation(
   borrowedTo?: 'rp-8' | 'rp-9' | null
 ): boolean {
   if (locationFilter === 'all') return true;
+  if (!emp) return false;
+  if (employeeHasSingleStorePayroll(emp)) {
+    const payrollHome = employeePayrollHomeRestaurantId(emp);
+    return !payrollHome || payrollHome === locationFilter;
+  }
   const home = employeeHomeRestaurant(emp);
   if (home === locationFilter) return true;
   if (home === 'both') {
@@ -95,6 +105,14 @@ export function dishwasherTipMatchesLocationFilter(
 function preferRestaurantAmongMatches(emp: EmployeeRow, matches: WorkerShiftRow[]): string | null {
   if (!matches.length) return null;
   if (matches.length === 1) return shiftRestaurantId(matches[0]);
+  if (employeeHasSingleStorePayroll(emp)) {
+    const payrollHome = employeePayrollHomeRestaurantId(emp);
+    if (payrollHome === 'rp-8' || payrollHome === 'rp-9') {
+      for (const m of matches) {
+        if (shiftRestaurantId(m) === payrollHome) return payrollHome;
+      }
+    }
+  }
   const home = employeeHomeRestaurant(emp);
   if (home !== 'both') {
     for (const m of matches) {
@@ -234,6 +252,9 @@ export function punchDayRestaurantId(
     });
     const pick = preferRestaurantAmongMatches(emp, dayShifts);
     if (pick) return pick;
+  }
+  if (employeeHasSingleStorePayroll(emp)) {
+    return employeePayrollHomeRestaurantId(emp) || 'rp-9';
   }
   return 'rp-9';
 }

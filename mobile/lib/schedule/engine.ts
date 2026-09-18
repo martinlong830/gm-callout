@@ -16,7 +16,10 @@ import type {
 } from './types';
 import { compareEmployeesBySeniority } from './rosterOrder';
 import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } from './slotOrder';
-import { normalizeEmployeeStaffType, employeeHomeOrPrimaryRestaurantId } from '../employees';
+import {
+  normalizeEmployeeStaffType,
+  employeeHasSingleStorePayroll,
+} from '../employees';
 
 function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
   return normalizeEmployeeStaffType(emp.staffType);
@@ -333,7 +336,44 @@ export function redPokeBreakAnnotation(trStart: string, trEnd: string, role: str
   return opts[seed % opts.length];
 }
 
-/** Single source of truth: assignment store (with template inherit) then hash placeholder. */
+function scheduleBreakIsHashPlaceholder(
+  shift: { start?: string; end?: string; role?: string; day?: string } | null,
+  breakText: string
+): boolean {
+  if (!shift || !breakText) return false;
+  return (
+    breakText ===
+    redPokeBreakAnnotation(shift.start || '', shift.end || '', shift.role || '', shift.day || '')
+  );
+}
+
+/** Live grid/export break: stored/cloud only. Drop hash-invented NO BREAK only. */
+export function liveScheduleBreakText(
+  shift: { start?: string; end?: string; role?: string; day?: string; redPokeBreak?: string } | null,
+  role?: string,
+  dayStr?: string
+): string {
+  if (!shift) return '';
+  const t = shift.redPokeBreak;
+  if (!t) return '';
+  if (
+    /no break/i.test(t) &&
+    scheduleBreakIsHashPlaceholder(
+      {
+        start: shift.start,
+        end: shift.end,
+        role: role || shift.role,
+        day: dayStr || shift.day,
+      },
+      t
+    )
+  ) {
+    return '';
+  }
+  return t;
+}
+
+/** Single source of truth: assignment store (with template inherit). No hash invent on live. */
 export function resolveScheduleBreakAnnotation(
   stored: Record<string, ScheduleAssignmentEntry>,
   shiftId: string,
@@ -343,13 +383,22 @@ export function resolveScheduleBreakAnnotation(
   dayStr: string
 ): string {
   const entry = lookupScheduleAssignment(stored, shiftId);
-  if (entry?.break) return entry.break;
-  return redPokeBreakAnnotation(start, end, role, dayStr);
+  if (entry?.break) {
+    const br = String(entry.break);
+    if (
+      /no break/i.test(br) &&
+      scheduleBreakIsHashPlaceholder({ start, end, role, day: dayStr }, br)
+    ) {
+      return '';
+    }
+    return entry.break;
+  }
+  return '';
 }
 
 /**
- * Seed FOH (Bartender) template-week breaks to match the Red Poke sheet / web.
- * Only writes when the stored break differs; returns whether anything changed.
+ * Fill missing FOH template-week breaks only. Never overwrite cloud/store
+ * breaks or stamp roster names (that blinked NO BREAK onto live cells).
  */
 export function restoreFohTemplateWeekBreaks(
   store: AssignmentStore,
@@ -373,17 +422,11 @@ export function restoreFohTemplateWeekBreaks(
     weekBreaks.forEach((brk, dayInWeek) => {
       if (!brk) return;
       const shiftId = `shift-${weekStart + dayInWeek}-${BARTENDER_ROLE_IDX}-${trIdx}`;
-      let rosterName =
-        scheduleRowRosterDefault(employees, 'Bartender', trIdx, restaurantId) || 'Unassigned';
-      rosterName =
-        canonicalScheduleWorkerNameLite(employees, rosterName, restaurantId) || rosterName;
-      const entry = normalizeScheduleAssignment(rs[shiftId] || { workers: [rosterName] });
-      if (!scheduleAssignmentHasStaffedWorkers(entry)) entry.workers = [rosterName];
-      if (entry.break !== brk) {
-        entry.break = brk;
-        rs[shiftId] = entry;
-        changed = true;
-      }
+      const entry = normalizeScheduleAssignment(rs[shiftId] || { workers: ['Unassigned'] });
+      if (entry.break) return;
+      entry.break = brk;
+      rs[shiftId] = entry;
+      changed = true;
     });
   });
   return { store: changed ? next : store, changed };
@@ -684,7 +727,7 @@ function scheduleAssignmentWorkersAlignedForBreakInherit(
   if (!pattern) return false;
   const directWorker = scheduleAssignmentPrimaryWorker(direct);
   const patternWorker = scheduleAssignmentPrimaryWorker(pattern);
-  if (!directWorker || !patternWorker) return true;
+  if (!directWorker || !patternWorker) return false;
   return workerNamesMatch(directWorker, patternWorker);
 }
 
@@ -905,44 +948,9 @@ function scheduleWorkerIsOnTeamLite(employees: EmployeeLite[], name: string, res
   });
 }
 
-function refreshPools(employees: EmployeeLite[]): Record<RoleKey, string[]> {
-  return {
-    Kitchen: employees.filter((e) => employeeRoleKey(e) === 'Kitchen').map(employeeDisplayNameLite),
-    Bartender: employees.filter((e) => employeeRoleKey(e) === 'Bartender').map(employeeDisplayNameLite),
-    Server: employees.filter((e) => employeeRoleKey(e) === 'Server').map(employeeDisplayNameLite),
-  };
-}
-
-function namesPoolForScheduleRole(
-  employees: EmployeeLite[],
-  role: RoleKey,
-  restaurantId: string
-): string[] {
-  return employees
-    .filter((e) => {
-      if (employeeRoleKey(e) !== role) return false;
-      const u = e.usualRestaurant || 'both';
-      if (u === 'both') return true;
-      return u === restaurantId;
-    })
-    .map(employeeDisplayNameLite);
-}
-
 function restaurantUsesDefaultUnassignedSchedule(restaurants: Restaurant[], restaurantId: string): boolean {
   const r = restaurants.find((x) => x.id === restaurantId);
   return !!(r && r.defaultUnassignedSchedule);
-}
-
-function uniqueWorkers(pool: string[], seed: number, count: number): string[] {
-  if (!pool.length) return [];
-  const base = seed % pool.length;
-  const workers: string[] = [];
-  for (let i = 0; i < pool.length && workers.length < count; i += 1) {
-    const idx = (base + i) % pool.length;
-    const name = pool[idx];
-    if (workers.indexOf(name) === -1) workers.push(name);
-  }
-  return workers;
 }
 
 function normalizeWorkerKey(name: string): string {
@@ -972,34 +980,6 @@ function teamIncludesLegacyRedPokeRoster(employees: EmployeeLite[]): boolean {
   if (!employees.length) return false;
   const names = new Set(employees.map((e) => normalizeWorkerKey(employeeDisplayNameLite(e))));
   return TEAM_ROSTER_BARTENDER.some((n) => names.has(normalizeWorkerKey(n)));
-}
-
-function workerAllowedOnScheduleRow(name: string, basePool: string[]): boolean {
-  if (!name || name === 'Unassigned') return false;
-  if (!basePool || !basePool.length) return true;
-  const key = normalizeWorkerKey(name);
-  return basePool.some((n) => normalizeWorkerKey(n) === key);
-}
-
-function pickDefaultScheduleWorkers(
-  employees: EmployeeLite[],
-  role: RoleKey,
-  trIdx: number,
-  basePool: string[],
-  usedToday: Record<string, boolean>,
-  seed: number,
-  restaurantId: string
-): string[] {
-  const rowName = scheduleRowRosterDefault(employees, role, trIdx, restaurantId);
-  if (rowName && workerAllowedOnScheduleRow(rowName, basePool) && !usedToday[normalizeWorkerKey(rowName)]) {
-    return [rowName];
-  }
-  const filtered = (basePool || []).filter((name) => {
-    if (!name || name === 'Unassigned') return false;
-    return !usedToday[normalizeWorkerKey(name)];
-  });
-  if (filtered.length) return uniqueWorkers(filtered, seed, 1);
-  return ['Unassigned'];
 }
 
 export function assignmentShell(restaurants: Restaurant[]): AssignmentStore {
@@ -1622,8 +1602,7 @@ function applyScheduleAssignmentsMerge(
   skipWorkers?: boolean
 ) {
   schedule.forEach((s) => {
-    /* Match web `applyScheduleAssignmentsMerge`: direct store row vs pattern inheritance,
-       and only clear pickDefault when a direct assignment exists. */
+    /* Direct store row vs pattern inheritance. Grid seeds Unassigned; never invent roster names. */
     const directEntry =
       stored[s.id] != null ? normalizeScheduleAssignment(stored[s.id]) : null;
     const hasDirectAssignment = stored[s.id] != null;
@@ -1639,13 +1618,24 @@ function applyScheduleAssignmentsMerge(
     s.timeLabel = slotLabel;
     if (!entry) {
       s.redPokeHours = slotHours;
+      s.redPokeBreak = '';
       return;
     }
-    s.redPokeBreak = resolveScheduleBreakAnnotation(
-      stored,
-      s.id,
-      s.start,
-      s.end,
+    s.redPokeBreak = liveScheduleBreakText(
+      {
+        start: s.start,
+        end: s.end,
+        role: s.role,
+        day: s.day,
+        redPokeBreak: resolveScheduleBreakAnnotation(
+          stored,
+          s.id,
+          s.start,
+          s.end,
+          s.role,
+          s.day
+        ),
+      },
       s.role,
       s.day
     );
@@ -1670,7 +1660,7 @@ function applyScheduleAssignmentsMerge(
     }
     if (!list.length) {
       if (hasDirectAssignment) {
-        /* Explicit Unassigned / empty direct row clears pickDefault roster names. */
+        /* Explicit Unassigned / empty direct row stays Unassigned. */
         s.workers = ['Unassigned'];
         s.worker = 'Unassigned';
       }
@@ -1703,7 +1693,6 @@ export function buildSchedule(params: {
     assignmentStore,
     weekIndex: weekOnly,
   } = params;
-  const pools = refreshPools(employees);
   const forceUnassigned = restaurantUsesDefaultUnassignedSchedule(restaurants, currentRestaurantId);
   const schedule: ScheduleRow[] = [];
   const stored = getCurrentRestaurantAssignments(assignmentStore, currentRestaurantId);
@@ -1713,36 +1702,14 @@ export function buildSchedule(params: {
     if (weekOnly != null && weekIdx !== weekOnly) return;
     const wk = weekdayKeyFromScheduleDay(dayStr);
     const weekDraft = draftForWeek(draftScheduleRaw, draftRows, weekIdx, currentRestaurantId);
-    const usedToday: Record<string, boolean> = Object.create(null);
     ROLE_DEFS.forEach((rd, roleIdx) => {
       const n = slotCountForRole(weekDraft, rd.role);
       for (let trIdx = 0; trIdx < n; trIdx += 1) {
         const tr = draftTimeSlotFor(weekDraft, rd.role, wk, trIdx);
         if (!tr) continue;
-        const seed = hashString(
-          `shift|${dayStr}|${rd.role}|${tr.start}|${tr.end}|${currentRestaurantId}`
-        );
-        const pool = namesPoolForScheduleRole(employees, rd.role, currentRestaurantId);
-        const basePool = pool.length ? pool : pools[rd.role];
-        let workers: string[];
-        if (forceUnassigned) {
-          workers = ['Unassigned'];
-        } else {
-          workers = pickDefaultScheduleWorkers(
-            employees,
-            rd.role,
-            trIdx,
-            basePool,
-            usedToday,
-            seed,
-            currentRestaurantId
-          );
-          if (!workers.length) workers = ['Unassigned'];
-          const chosen = workers[0];
-          if (chosen && chosen !== 'Unassigned') {
-            usedToday[normalizeWorkerKey(chosen)] = true;
-          }
-        }
+        /* Always Unassigned; merge applies stored/cloud names. Roster hash-fill
+           cloned Jon onto leftover last slots after Eugene’s cells were tombstoned. */
+        const workers = ['Unassigned'];
         const shiftId = `shift-${globalDayIdx}-${roleIdx}-${trIdx}`;
         schedule.push({
           id: shiftId,
@@ -1755,7 +1722,7 @@ export function buildSchedule(params: {
           end: tr.end,
           slotKey: tr.slotKey,
           timeLabel: redPokeShiftTimeLabel(tr.start, tr.end),
-          redPokeBreak: redPokeBreakAnnotation(tr.start, tr.end, rd.role, dayStr),
+          redPokeBreak: '',
           redPokeHours: redPokeShiftHoursDecimal(tr.start, tr.end),
           workers,
           worker: workers[0],
@@ -1792,7 +1759,14 @@ export function scheduleWorkerNameKey(name: string): string {
 }
 
 export type CalendarCell =
-  | { kind: 'empty'; role: RoleKey; trIdx: number; dayStr: string; otherStoreLabel?: string }
+  | {
+      kind: 'empty';
+      role: RoleKey;
+      trIdx: number;
+      dayStr: string;
+      otherStoreLabel?: string;
+      leaveFlag?: string;
+    }
   | {
       kind: 'dayoff';
       timeLabel: string;
@@ -1801,6 +1775,7 @@ export type CalendarCell =
       role: RoleKey;
       trIdx: number;
       otherStoreLabel?: string;
+      leaveFlag?: string;
     }
   | {
       kind: 'shift';
@@ -1810,6 +1785,7 @@ export type CalendarCell =
       breakText: string;
       hours: string;
       otherStoreLabel?: string;
+      leaveFlag?: string;
     };
 
 /** Map key for same-day other-store schedule labels (`workerKey\\0dayStr`). */
@@ -1880,6 +1856,16 @@ export function buildOtherStoreDayLabelMap(params: {
 }
 
 function otherStoreLabelFromMap(
+  map: Map<string, string> | null | undefined,
+  workerName: string | null | undefined,
+  dayStr: string
+): string | undefined {
+  if (!map || !workerName || workerName === 'Unassigned') return undefined;
+  const label = map.get(otherStoreDayLabelKey(workerName, dayStr));
+  return label || undefined;
+}
+
+function leaveFlagFromMap(
   map: Map<string, string> | null | undefined,
   workerName: string | null | undefined,
   dayStr: string
@@ -2098,11 +2084,13 @@ export function buildCalendarBody(
   assignmentStore?: AssignmentStore | null,
   weekIndex?: number,
   otherStoreDayLabels?: Map<string, string> | null,
-  abbreviateForManagedStoreId?: string | null
+  abbreviateForManagedStoreId?: string | null,
+  leaveFlagByPersonDay?: Map<string, string> | null
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
   const otherMap = otherStoreDayLabels || null;
+  const leaveMap = leaveFlagByPersonDay || null;
   const abbreviate =
     !!abbreviateForManagedStoreId &&
     !!restaurantId &&
@@ -2156,17 +2144,7 @@ export function buildCalendarBody(
   function shouldShowWorker(workerName: string): boolean {
     if (!abbreviate || !abbreviateForManagedStoreId) return true;
     if (!workerName || workerName === 'Unassigned') return false;
-    const emp = liteByName(workerName);
-    const primary = employeeHomeOrPrimaryRestaurantId(emp);
-    if (primary === abbreviateForManagedStoreId) return true;
-    if (
-      primary === restaurantId &&
-      weekIndex != null &&
-      restaurantWeekHasNamedWorker(abbreviateForManagedStoreId, weekIndex, workerName)
-    ) {
-      return true;
-    }
-    return false;
+    return employeeHasSingleStorePayroll(liteByName(workerName));
   }
 
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {
@@ -2234,6 +2212,7 @@ export function buildCalendarBody(
         const shift = schedule.find((s) => s.day === dayStr && s.role === rd.role && s.trIdx === trIdx);
         if (!shift) {
           const otherStoreLabel = otherStoreLabelFromMap(otherMap, rowPerson, dayStr);
+          const leaveFlag = leaveFlagFromMap(leaveMap, rowPerson, dayStr);
           const wkOff = weekdayKeyFromScheduleDay(dayStr);
           const trOff = draftTimeSlotFor(draftRows, rd.role, wkOff, trIdx);
           if (trOff) {
@@ -2246,18 +2225,22 @@ export function buildCalendarBody(
               role: rd.role,
               trIdx,
               otherStoreLabel,
+              leaveFlag,
             };
           }
-          return { kind: 'empty', role: rd.role, trIdx, dayStr, otherStoreLabel };
+          return { kind: 'empty', role: rd.role, trIdx, dayStr, otherStoreLabel, leaveFlag };
         }
         const workers = shift.workers || [shift.worker].filter(Boolean);
         const staffed = workers.filter((n) => n && n !== 'Unassigned');
+        const leavePerson = staffed[0] || rowPerson;
         const otherStoreLabel =
-          otherStoreLabelFromMap(otherMap, staffed[0] || rowPerson, dayStr) ||
+          otherStoreLabelFromMap(otherMap, leavePerson, dayStr) ||
           otherStoreLabelFromMap(otherMap, rowPerson, dayStr);
+        const leaveFlag =
+          leaveFlagFromMap(leaveMap, leavePerson, dayStr) ||
+          leaveFlagFromMap(leaveMap, rowPerson, dayStr);
         const rpTime = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
-        const rpBreak =
-          shift.redPokeBreak || redPokeBreakAnnotation(shift.start, shift.end, rd.role, dayStr);
+        const rpBreak = liveScheduleBreakText(shift, rd.role, dayStr);
         const rpHrs =
           shift.redPokeHours != null
             ? String(shift.redPokeHours)
@@ -2270,6 +2253,7 @@ export function buildCalendarBody(
           breakText: rpBreak,
           hours: rpHrs,
           otherStoreLabel,
+          leaveFlag,
         };
       });
       if (cells.length !== colCount) {
@@ -2630,14 +2614,220 @@ export function normalizeSchedulePublishedMap(raw: unknown): Record<string, true
   return out;
 }
 
+export type PublishedWeekSnapshot = {
+  restaurantId: string;
+  weekMondayIso: string;
+  weekIndexAtPublish: number | null;
+  publishedAt: string;
+  publishedBy: { id: string; name: string; role: string };
+  recoveredFrom?: string;
+  draft: unknown;
+  assignments: AssignmentStore;
+};
+
+function publishedSnapshotKey(restaurantId: string, mondayIso: string): string {
+  return `${String(restaurantId || 'rp-9')}|${String(mondayIso || '').slice(0, 10)}`;
+}
+
+export function inferWeekIndexFromAssignments(assignments: AssignmentStore | null | undefined): number | null {
+  let min = Infinity;
+  const walk = (store: AssignmentStore) => {
+    Object.keys(store || {}).forEach((rid) => {
+      const rs = store[rid];
+      if (!rs) return;
+      Object.keys(rs).forEach((shiftId) => {
+        const m = /^shift-(\d+)-/.exec(shiftId);
+        if (!m) return;
+        const gdi = Number(m[1]);
+        if (Number.isFinite(gdi) && gdi < min) min = gdi;
+      });
+    });
+  };
+  if (assignments && typeof assignments === 'object') walk(assignments);
+  if (!Number.isFinite(min) || min === Infinity) return null;
+  return Math.floor(min / 7);
+}
+
+export function remapWeekAssignmentsToWeekIndex(
+  assignments: AssignmentStore,
+  fromWeekIndex: number,
+  toWeekIndex: number
+): AssignmentStore {
+  if (fromWeekIndex === toWeekIndex) {
+    return JSON.parse(JSON.stringify(assignments || {})) as AssignmentStore;
+  }
+  const delta = (toWeekIndex - fromWeekIndex) * 7;
+  const fromStart = fromWeekIndex * 7;
+  const out: AssignmentStore = {};
+  Object.keys(assignments || {}).forEach((rid) => {
+    const rs = assignments[rid];
+    if (!rs) return;
+    const next: AssignmentStore[string] = {};
+    Object.keys(rs).forEach((shiftId) => {
+      const m = /^shift-(\d+)-(\d+)-(\d+)$/.exec(shiftId);
+      if (!m) {
+        next[shiftId] = rs[shiftId];
+        return;
+      }
+      const gdi = Number(m[1]);
+      if (gdi < fromStart || gdi >= fromStart + 7) return;
+      next[`shift-${gdi + delta}-${m[2]}-${m[3]}`] = JSON.parse(JSON.stringify(rs[shiftId]));
+    });
+    out[rid] = next;
+  });
+  return out;
+}
+
+function sanitizePublishedWeekSnapshot(raw: unknown): PublishedWeekSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rec = raw as Record<string, unknown>;
+  const mon = String(rec.weekMondayIso || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(mon)) return null;
+  const assignments =
+    rec.assignments && typeof rec.assignments === 'object'
+      ? (JSON.parse(JSON.stringify(rec.assignments)) as AssignmentStore)
+      : {};
+  const by = rec.publishedBy && typeof rec.publishedBy === 'object'
+    ? (rec.publishedBy as Record<string, unknown>)
+    : {};
+  return {
+    restaurantId: String(rec.restaurantId || 'rp-9'),
+    weekMondayIso: mon,
+    weekIndexAtPublish:
+      rec.weekIndexAtPublish != null && !Number.isNaN(Number(rec.weekIndexAtPublish))
+        ? Number(rec.weekIndexAtPublish)
+        : inferWeekIndexFromAssignments(assignments),
+    publishedAt: String(rec.publishedAt || ''),
+    publishedBy: {
+      id: String(by.id || ''),
+      name: String(by.name || ''),
+      role: String(by.role || ''),
+    },
+    recoveredFrom: rec.recoveredFrom ? String(rec.recoveredFrom) : '',
+    draft: rec.draft != null ? JSON.parse(JSON.stringify(rec.draft)) : {},
+    assignments,
+  };
+}
+
+let publishedSnapshots: Record<string, PublishedWeekSnapshot> = Object.create(null);
+
+export function ingestPublishedSnapshotsFromRaw(raw: unknown): void {
+  if (!raw || typeof raw !== 'object') return;
+  const src = (raw as { snapshots?: Record<string, unknown> }).snapshots;
+  if (!src || typeof src !== 'object') return;
+  Object.keys(src).forEach((k) => {
+    const snap = sanitizePublishedWeekSnapshot(src[k]);
+    if (!snap) return;
+    const key = publishedSnapshotKey(snap.restaurantId, snap.weekMondayIso);
+    const existing = publishedSnapshots[key];
+    if (existing && existing.publishedAt && snap.publishedAt) {
+      if (String(existing.publishedAt) >= String(snap.publishedAt)) return;
+    }
+    publishedSnapshots[key] = snap;
+  });
+}
+
+export function savePublishedWeekSnapshot(opts: {
+  restaurantId: string;
+  weekMondayIso: string;
+  weekIndex: number;
+  draft: unknown;
+  assignments: AssignmentStore;
+  publishedBy?: { id?: string; name?: string; role?: string };
+}): PublishedWeekSnapshot {
+  const rec: PublishedWeekSnapshot = {
+    restaurantId: opts.restaurantId,
+    weekMondayIso: opts.weekMondayIso,
+    weekIndexAtPublish: opts.weekIndex,
+    publishedAt: new Date().toISOString(),
+    publishedBy: {
+      id: String(opts.publishedBy?.id || ''),
+      name: String(opts.publishedBy?.name || ''),
+      role: String(opts.publishedBy?.role || ''),
+    },
+    recoveredFrom: '',
+    draft: JSON.parse(JSON.stringify(opts.draft ?? {})),
+    assignments: JSON.parse(JSON.stringify(opts.assignments || {})),
+  };
+  publishedSnapshots[publishedSnapshotKey(rec.restaurantId, rec.weekMondayIso)] = rec;
+  return rec;
+}
+
+export function getPublishedWeekSnapshot(
+  restaurantId: string,
+  mondayIso: string
+): PublishedWeekSnapshot | null {
+  return publishedSnapshots[publishedSnapshotKey(restaurantId, mondayIso)] || null;
+}
+
+export function listPublishedWeekSnapshotsForRestaurant(restaurantId: string): PublishedWeekSnapshot[] {
+  const rid = String(restaurantId || '');
+  return Object.keys(publishedSnapshots)
+    .map((k) => publishedSnapshots[k])
+    .filter((s) => s && s.restaurantId === rid)
+    .sort((a, b) => String(b.weekMondayIso).localeCompare(String(a.weekMondayIso)));
+}
+
+export function cloneWeekAssignmentsForRestaurant(
+  store: AssignmentStore,
+  restaurantId: string,
+  weekIndex: number
+): AssignmentStore {
+  const start = weekIndex * 7;
+  const end = start + 7;
+  const src = store[restaurantId] || {};
+  const slice: AssignmentStore[string] = {};
+  Object.keys(src).forEach((shiftId) => {
+    const m = /^shift-(\d+)-/.exec(shiftId);
+    if (!m) return;
+    const gdi = Number(m[1]);
+    if (gdi >= start && gdi < end) slice[shiftId] = JSON.parse(JSON.stringify(src[shiftId]));
+  });
+  return { [restaurantId]: slice };
+}
+
+export function assignmentsForPublishedSnapshotView(
+  snap: PublishedWeekSnapshot,
+  currentWeekIndex: number
+): AssignmentStore {
+  const from =
+    snap.weekIndexAtPublish != null && !Number.isNaN(Number(snap.weekIndexAtPublish))
+      ? Number(snap.weekIndexAtPublish)
+      : inferWeekIndexFromAssignments(snap.assignments);
+  if (from == null) return JSON.parse(JSON.stringify(snap.assignments || {})) as AssignmentStore;
+  return remapWeekAssignmentsToWeekIndex(snap.assignments, from, currentWeekIndex);
+}
+
+export function formatPublishedAtLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
+
 export function schedulePublishedPayload(map: Record<string, true | boolean>): {
+  v: 2;
   weeks: Record<string, true>;
+  snapshots: Record<string, PublishedWeekSnapshot>;
 } {
   const weeks: Record<string, true> = {};
   for (const k of Object.keys(map || {})) {
     if (map[k]) weeks[k] = true;
   }
-  return { weeks };
+  const snapshots: Record<string, PublishedWeekSnapshot> = {};
+  Object.keys(publishedSnapshots).forEach((k) => {
+    if (publishedSnapshots[k]) snapshots[k] = publishedSnapshots[k];
+  });
+  return { v: 2, weeks, snapshots };
 }
 
 /** Seed past + current weeks when empty (parity with web). */
@@ -3178,8 +3368,7 @@ export function computeScheduleDayTotals(
     const shiftHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
     if (shiftHours <= 0) continue;
     const breakText =
-      shift.redPokeBreak ||
-      redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+      liveScheduleBreakText(shift);
     const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
     const paidHours = Math.max(0, shiftHours - breakMin / 60);
     laborItems.push({ shift, worker: String(workers[0]), paidHours });
@@ -3237,8 +3426,7 @@ export function computeScheduleRowWeekTotals(
     const shiftHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
     if (shiftHours <= 0) continue;
     const breakText =
-      shift.redPokeBreak ||
-      redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+      liveScheduleBreakText(shift);
     const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
     hours += shiftHours;
     paidHours += Math.max(0, shiftHours - breakMin / 60);
@@ -3263,9 +3451,7 @@ export function computeScheduleWeekRowLaborTotals(
       const wk = weekdayKeyFromScheduleDay(shift.day);
       const hasDraftShift = !draft || !!draftTimeSlotFor(draft, shift.role, wk, shift.trIdx);
       const grossHours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
-      const breakText =
-        shift.redPokeBreak ||
-        redPokeBreakAnnotation(shift.start, shift.end, shift.role, shift.day);
+      const breakText = liveScheduleBreakText(shift);
       const breakMin = parseBreakMinutesFromScheduleAnnotation(breakText);
       return {
         shift,
