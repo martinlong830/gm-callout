@@ -80,6 +80,8 @@ import {
   parseIsoToDate,
   shiftDateAtMidnight,
 } from '../../../../lib/timecards/punch';
+import { upsertLeaveBalanceEntry } from '../../../../lib/employeeLeave';
+import { saveEmployeeRow } from '../../../../lib/employeeSave';
 import { redPokeShiftTimeLabel } from '../../../../lib/schedule/engine';
 import type { EmployeeLite } from '../../../../lib/schedule/types';
 import type { TimeClockEntry } from '../../../../lib/timecards/types';
@@ -102,6 +104,25 @@ function toLite(e: EmployeeRow): EmployeeLite {
     usualRestaurant: e.usualRestaurant || 'both',
     meta: e.meta,
   };
+}
+
+async function persistDayLeave(
+  emp: EmployeeRow,
+  dayIso: string,
+  vl: number,
+  sl: number,
+  weekBounds: { start: Date; end: Date }
+) {
+  upsertLeaveBalanceEntry(emp, 'vacation', dayIso, vl);
+  upsertLeaveBalanceEntry(emp, 'sick', dayIso, sl);
+  if (supabase) {
+    try {
+      await saveEmployeeRow(supabase, emp);
+    } catch {
+      /* leaveBalance still updated in-memory */
+    }
+  }
+  await setEmployeeDayLeave(emp.id, dayIso, vl, sl, weekBounds);
 }
 
 export default function TimecardsShiftScreen() {
@@ -250,8 +271,11 @@ export default function TimecardsShiftScreen() {
     const open = dayEntries.filter(isEntryOpen);
     const pick = open.length ? open[open.length - 1] : dayEntries[dayEntries.length - 1] ?? null;
     loadEntry(pick);
+  }, [shiftRow, emp, dayEntries, navigation, loadEntry, t]);
+
+  useEffect(() => {
     void loadDayLeave();
-  }, [shiftRow, emp, dayEntries, navigation, loadEntry, loadDayLeave, t]);
+  }, [emp?.id, iso, loadDayLeave]);
 
   const hasPunchTimes = useMemo(() => {
     if (!shiftRow) return false;
@@ -439,7 +463,7 @@ export default function TimecardsShiftScreen() {
           return;
         }
       }
-      await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+      await persistDayLeave(emp, shiftRow.iso, vl, sl, bounds);
       await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
       await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
       if (showDishwasherTip) {
@@ -522,7 +546,7 @@ export default function TimecardsShiftScreen() {
       Alert.alert(t('timecards.saveFailed'), res.message);
       return;
     }
-    await setEmployeeDayLeave(emp.id, shiftRow.iso, vl, sl, bounds);
+    await persistDayLeave(emp, shiftRow.iso, vl, sl, bounds);
     await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, coverage, bounds);
     await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
     if (showDishwasherTip) {
@@ -749,23 +773,30 @@ export default function TimecardsShiftScreen() {
       ) : null}
 
       <Text style={styles.sectionTitle}>VL / SL (this day)</Text>
-      <Text style={styles.hint}>
-        Vacation / sick hours are entered on the Schedule shift editor. Values here are read-only
-        and flow into week grand totals.
-      </Text>
+      <Text style={styles.hint}>{t('timecards.vlSlEditHint')}</Text>
       {suggestedLeave && (suggestedLeave.vl > 0 || suggestedLeave.sl > 0) ? (
         <Text style={styles.hint}>
           Approved time off suggests{' '}
           {suggestedLeave.vl > 0 ? `VL ${suggestedLeave.vl}h` : ''}
           {suggestedLeave.vl > 0 && suggestedLeave.sl > 0 ? ' · ' : ''}
-          {suggestedLeave.sl > 0 ? `SL ${suggestedLeave.sl}h` : ''} for this day (edit on Schedule to
-          save).
+          {suggestedLeave.sl > 0 ? `SL ${suggestedLeave.sl}h` : ''} for this day (not saved until you
+          enter it below).
         </Text>
       ) : null}
-      <Text style={styles.fieldLabel}>VL (hrs)</Text>
-      <Text style={styles.readonlyValue}>{vlText}</Text>
-      <Text style={styles.fieldLabel}>SL (hrs)</Text>
-      <Text style={styles.readonlyValue}>{slText}</Text>
+      <Text style={styles.fieldLabel}>{t('timecards.vlHrs')}</Text>
+      <TextInput
+        style={styles.input}
+        value={vlText}
+        onChangeText={setVlText}
+        keyboardType="decimal-pad"
+      />
+      <Text style={styles.fieldLabel}>{t('timecards.slHrs')}</Text>
+      <TextInput
+        style={styles.input}
+        value={slText}
+        onChangeText={setSlText}
+        keyboardType="decimal-pad"
+      />
       <Text style={styles.fieldLabel}>Missing hours</Text>
       <Text style={styles.hint}>
         Makeup hours from a prior week. Pay uses prior-week OT (hours past 40h at OT rate). Full

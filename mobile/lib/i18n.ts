@@ -292,6 +292,8 @@ const EN: Dict = {
   'schedule.dayOffLabel': 'DAY-OFF',
   'schedule.editStaffing': 'Edit Staffing',
   'schedule.saveShift': 'Save shift',
+  'schedule.ongiFlag': 'Ongi',
+  'schedule.ongiFlagHint': 'Mark if this person is working at an Ongi store not yet in Shiflow.',
   'schedule.callAll': 'Call All',
   'schedule.confirmReplacement': 'Confirm Replacement',
   'schedule.breakOffice': 'Break / office',
@@ -302,7 +304,7 @@ const EN: Dict = {
   'team.search': 'Search team',
   'team.addEmployee': 'Add employee',
   'team.noEmployees': 'No employees yet. Add someone to get started.',
-  'team.noMatch': 'No employees match your filters.',
+  'team.noMatch': 'No employees match your filters. Turn on Show deactivated to include inactive team members.',
 
   'availability.checkAll': 'Check all',
   'availability.save': 'Save availability',
@@ -545,6 +547,15 @@ const EN: Dict = {
   'team.accountTeamMember': 'Team member',
   'team.accountAdmin': 'Admin',
   'team.accountNotLinked': 'No app login',
+  'team.showDeactivated': 'Show deactivated',
+  'team.deactivated': 'Deactivated',
+  'team.deactivate': 'Deactivate employee',
+  'team.reactivate': 'Reactivate employee',
+  'team.deactivateHint':
+    'Hides this person from Team and new schedule assignments. Existing shifts and timecards stay. This is not deletion.',
+  'team.reactivateHint': 'Shows this person on Team and in new schedule assignments again.',
+  'team.deactivateConfirm':
+    'Deactivate "{name}"? They will be hidden from Team until you turn on Show deactivated and reactivate them. Existing shifts and timecards stay.',
 
   'requests.searchEmployee': 'Search employee name',
   'requests.employeeCallout': 'Employee call-out',
@@ -644,6 +655,8 @@ const EN: Dict = {
   'timecards.regular': 'Regular',
   'timecards.ot': 'OT',
   'timecards.vlSl': 'VL / SL',
+  'timecards.vlSlEditHint':
+    'Vacation / sick hours for this day. Same values as the Schedule shift editor — changing either updates tile flags, week totals, and the full report.',
   'timecards.vlHrs': 'VL (hrs)',
   'timecards.slHrs': 'SL (hrs)',
   'timecards.soh': 'SoH',
@@ -1099,6 +1112,8 @@ const ES: Dict = {
   'schedule.dayOffLabel': 'DÍA LIBRE',
   'schedule.editStaffing': 'Editar personal',
   'schedule.saveShift': 'Guardar turno',
+  'schedule.ongiFlag': 'Ongi',
+  'schedule.ongiFlagHint': 'Marca si esta persona trabaja en un local Ongi que aún no está en Shiflow.',
   'schedule.callAll': 'Llamar a todos',
   'schedule.confirmReplacement': 'Confirmar reemplazo',
   'schedule.breakOffice': 'Descanso / oficina',
@@ -1109,7 +1124,7 @@ const ES: Dict = {
   'team.search': 'Buscar equipo',
   'team.addEmployee': 'Agregar empleado',
   'team.noEmployees': 'Aún no hay empleados. Agrega a alguien para empezar.',
-  'team.noMatch': 'Ningún empleado coincide con tus filtros.',
+  'team.noMatch': 'Ningún empleado coincide con tus filtros. Activa Mostrar desactivados para incluir miembros inactivos.',
 
   'availability.checkAll': 'Marcar todos',
   'availability.save': 'Guardar disponibilidad',
@@ -1352,6 +1367,15 @@ const ES: Dict = {
   'team.accountTeamMember': 'Miembro del equipo',
   'team.accountAdmin': 'Administrador',
   'team.accountNotLinked': 'Sin inicio de sesión',
+  'team.showDeactivated': 'Mostrar desactivados',
+  'team.deactivated': 'Desactivado',
+  'team.deactivate': 'Desactivar empleado',
+  'team.reactivate': 'Reactivar empleado',
+  'team.deactivateHint':
+    'Oculta a esta persona del equipo y de asignaciones nuevas. Los turnos y las tarjetas de tiempo existentes se conservan. Esto no es una eliminación.',
+  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo y en las asignaciones nuevas.',
+  'team.deactivateConfirm':
+    '¿Desactivar a "{name}"? Quedará oculta en Equipo hasta que actives Mostrar desactivados y la reactives. Los turnos y las tarjetas de tiempo existentes se conservan.',
 
   'requests.searchEmployee': 'Buscar nombre de empleado',
   'requests.employeeCallout': 'Falta de empleado',
@@ -1452,6 +1476,8 @@ const ES: Dict = {
   'timecards.regular': 'Regular',
   'timecards.ot': 'HE',
   'timecards.vlSl': 'VL / LE',
+  'timecards.vlSlEditHint':
+    'Horas de vacaciones / enfermedad de este día. Los mismos valores que en el editor de turnos del horario: cambiar uno actualiza las banderas, los totales de la semana y el informe completo.',
   'timecards.vlHrs': 'VL (hrs)',
   'timecards.slHrs': 'LE (hrs)',
   'timecards.soh': 'SoH',

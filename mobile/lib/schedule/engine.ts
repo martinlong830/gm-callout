@@ -19,6 +19,7 @@ import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } fr
 import {
   normalizeEmployeeStaffType,
   employeeHasSingleStorePayroll,
+  employeeIsDeactivated,
 } from '../employees';
 
 function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
@@ -1766,6 +1767,7 @@ export type CalendarCell =
       dayStr: string;
       otherStoreLabel?: string;
       leaveFlag?: string;
+      ongiFlag?: boolean;
     }
   | {
       kind: 'dayoff';
@@ -1776,6 +1778,7 @@ export type CalendarCell =
       trIdx: number;
       otherStoreLabel?: string;
       leaveFlag?: string;
+      ongiFlag?: boolean;
     }
   | {
       kind: 'shift';
@@ -1786,6 +1789,7 @@ export type CalendarCell =
       hours: string;
       otherStoreLabel?: string;
       leaveFlag?: string;
+      ongiFlag?: boolean;
     };
 
 /** Map key for same-day other-store schedule labels (`workerKey\\0dayStr`). */
@@ -1888,7 +1892,12 @@ export function namesForScheduleRowPersonPicker(
   const seen: Record<string, boolean> = Object.create(null);
   const out: string[] = [];
   employees
-    .filter((e) => employeeRoleKey(e) === role && employeeMatchesTeamRestaurantLite(e, restaurantId))
+    .filter(
+      (e) =>
+        employeeRoleKey(e) === role &&
+        !employeeIsDeactivated(e) &&
+        employeeMatchesTeamRestaurantLite(e, restaurantId)
+    )
     .sort(compareEmployeesByScheduleOrderLite)
     .forEach((e) => {
       const canon = employeeDisplayNameLite(e);
@@ -1915,6 +1924,7 @@ export function namesForScheduleBorrowPersonPicker(
   employees
     .filter((e) => {
       if (employeeRoleKey(e) !== role) return false;
+      if (employeeIsDeactivated(e)) return false;
       /* Already on this store's normal Team picker (home or both). */
       if (employeeMatchesTeamRestaurantLite(e, restaurantId)) return false;
       const home = e.usualRestaurant || 'both';
@@ -2085,12 +2095,14 @@ export function buildCalendarBody(
   weekIndex?: number,
   otherStoreDayLabels?: Map<string, string> | null,
   abbreviateForManagedStoreId?: string | null,
-  leaveFlagByPersonDay?: Map<string, string> | null
+  leaveFlagByPersonDay?: Map<string, string> | null,
+  ongiFlagByCell?: Set<string> | null
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
   const otherMap = otherStoreDayLabels || null;
   const leaveMap = leaveFlagByPersonDay || null;
+  const ongiSet = ongiFlagByCell || null;
   const abbreviate =
     !!abbreviateForManagedStoreId &&
     !!restaurantId &&
@@ -2145,6 +2157,10 @@ export function buildCalendarBody(
     if (!abbreviate || !abbreviateForManagedStoreId) return true;
     if (!workerName || workerName === 'Unassigned') return false;
     return employeeHasSingleStorePayroll(liteByName(workerName));
+  }
+
+  function cellOngiFlag(role: RoleKey, trIdx: number, dayStr: string): boolean {
+    return !!(ongiSet && ongiSet.has(`${role}|${trIdx}|${dayStr}`));
   }
 
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {
@@ -2226,9 +2242,18 @@ export function buildCalendarBody(
               trIdx,
               otherStoreLabel,
               leaveFlag,
+              ongiFlag: cellOngiFlag(rd.role, trIdx, dayStr),
             };
           }
-          return { kind: 'empty', role: rd.role, trIdx, dayStr, otherStoreLabel, leaveFlag };
+          return {
+            kind: 'empty',
+            role: rd.role,
+            trIdx,
+            dayStr,
+            otherStoreLabel,
+            leaveFlag,
+            ongiFlag: cellOngiFlag(rd.role, trIdx, dayStr),
+          };
         }
         const workers = shift.workers || [shift.worker].filter(Boolean);
         const staffed = workers.filter((n) => n && n !== 'Unassigned');
@@ -2254,6 +2279,7 @@ export function buildCalendarBody(
           hours: rpHrs,
           otherStoreLabel,
           leaveFlag,
+          ongiFlag: cellOngiFlag(rd.role, trIdx, dayStr),
         };
       });
       if (cells.length !== colCount) {

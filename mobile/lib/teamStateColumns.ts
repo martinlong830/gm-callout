@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { readStoredTeamStateId } from './companySession';
 import { mergeDraftScheduleSlotOrderFromRemote } from './schedule/slotOrder';
+import { mergeScheduleTemplateLibraries } from './schedule/templates';
 
 /** Schedule JSON only — largest egress columns. */
 export const TEAM_STATE_SCHEDULE_COLUMNS =
@@ -225,13 +226,18 @@ export function mergeTeamStatePartial(
     if (partial.schedule_reviews != null) {
       next.schedule_reviews = partial.schedule_reviews;
     }
-    if (
-      Array.isArray(prev.schedule_templates) &&
-      prev.schedule_templates.length > 0 &&
-      Array.isArray(partial.schedule_templates) &&
-      partial.schedule_templates.length === 0
-    ) {
-      next.schedule_templates = prev.schedule_templates;
+    if (Object.prototype.hasOwnProperty.call(partial, 'schedule_templates')) {
+      const merged = mergeScheduleTemplateLibraries(
+        prev.schedule_templates,
+        partial.schedule_templates,
+        true
+      );
+      next.schedule_templates =
+        merged.list.length || Array.isArray(prev.schedule_templates)
+          ? merged.list.length
+            ? merged.list
+            : prev.schedule_templates
+          : partial.schedule_templates;
     }
     if (localDirty) next[LOCAL_SCHEDULE_DIRTY_KEY] = true;
     /* Always adopt remote updated_at so freshness probes stay honest. */
@@ -240,17 +246,23 @@ export function mergeTeamStatePartial(
   }
 
   /*
-   * Named templates are independent of the live schedule grid. Never let an empty
-   * remote array wipe a non-empty local library during soft team_state merges.
+   * Named templates are independent of the live schedule grid. Union by id so a
+   * stale/smaller remote list cannot drop templates this device still has.
    */
-  if (
-    Object.prototype.hasOwnProperty.call(partial, 'schedule_templates') &&
-    Array.isArray(partial.schedule_templates) &&
-    partial.schedule_templates.length === 0 &&
-    Array.isArray(prev.schedule_templates) &&
-    prev.schedule_templates.length > 0
-  ) {
-    next.schedule_templates = prev.schedule_templates;
+  if (Object.prototype.hasOwnProperty.call(partial, 'schedule_templates')) {
+    const merged = mergeScheduleTemplateLibraries(
+      prev.schedule_templates,
+      partial.schedule_templates,
+      false
+    );
+    if (merged.list.length) {
+      next.schedule_templates = merged.list;
+    } else if (
+      Array.isArray(prev.schedule_templates) &&
+      prev.schedule_templates.length > 0
+    ) {
+      next.schedule_templates = prev.schedule_templates;
+    }
   }
 
   if (

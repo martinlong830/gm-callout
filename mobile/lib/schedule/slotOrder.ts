@@ -12,6 +12,7 @@ import {
   mergeScheduleNetSalesByWeekMaps,
   readScheduleNetSalesByWeek,
 } from './scheduleNetSales';
+import { mergeOngiFlagsByWeekMaps, readOngiFlagsByWeek } from './ongiFlags';
 
 const ROLE_KEYS: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -262,6 +263,9 @@ export function mergePendingDraftWithHydrated(pending: unknown, hydrated: unknow
   );
   if (Object.keys(mergedSales).length) p.scheduleNetSalesByWeek = mergedSales;
   else delete p.scheduleNetSalesByWeek;
+  const mergedOngi = mergeOngiFlagsByWeekMaps(readOngiFlagsByWeek(p), readOngiFlagsByWeek(h), 'local');
+  if (Object.keys(mergedOngi).length) p.ongiFlagsByWeek = mergedOngi;
+  else delete p.ongiFlagsByWeek;
   const hWin = h.windowMondayIso != null ? String(h.windowMondayIso).slice(0, 10) : '';
   if (hWin) p.windowMondayIso = hWin;
   if (!p.v) p.v = 2;
@@ -301,17 +305,24 @@ export function mergeDraftScheduleSlotOrderFromRemote(
   const mergedGroup = mergeGroupOrderPotentialByWeekMaps(
     readGroupOrderPotentialByWeek(localDraft),
     readGroupOrderPotentialByWeek(remoteDraft),
-    'remote'
+    'local'
   );
   if (Object.keys(mergedGroup).length) merged.groupOrderPotentialByWeek = mergedGroup;
   else delete merged.groupOrderPotentialByWeek;
   const mergedSales = mergeScheduleNetSalesByWeekMaps(
     readScheduleNetSalesByWeek(localDraft),
     readScheduleNetSalesByWeek(remoteDraft),
-    'remote'
+    'local'
   );
   if (Object.keys(mergedSales).length) merged.scheduleNetSalesByWeek = mergedSales;
   else delete merged.scheduleNetSalesByWeek;
+  const mergedOngi = mergeOngiFlagsByWeekMaps(
+    readOngiFlagsByWeek(localDraft),
+    readOngiFlagsByWeek(remoteDraft),
+    'local'
+  );
+  if (Object.keys(mergedOngi).length) merged.ongiFlagsByWeek = mergedOngi;
+  else delete merged.ongiFlagsByWeek;
   return merged;
 }
 

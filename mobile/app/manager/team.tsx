@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ErrorBoundaryProps } from 'expo-router';
+import { useFocusEffect, type ErrorBoundaryProps } from 'expo-router';
 import { EmployeeEditorSheet } from '../../components/EmployeeEditorSheet';
 import { EmployeePhoto } from '../../components/EmployeePhoto';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
@@ -11,6 +11,7 @@ import {
   employeeClockPinLine,
   employeeDisplayName,
   employeeHasSingleStorePayroll,
+  employeeIsDeactivated,
   employeePrimaryLocationLine,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
@@ -63,7 +64,12 @@ const TeamMemberCard = memo(function TeamMemberCard({
       <View style={styles.rowMain}>
         <EmployeePhoto employee={item} size={52} />
         <View style={styles.rowBody}>
-          <Text style={styles.name}>{employeeDisplayName(item)}</Text>
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{employeeDisplayName(item)}</Text>
+            {employeeIsDeactivated(item) ? (
+              <Text style={styles.deactivatedBadge}>{t('team.deactivated')}</Text>
+            ) : null}
+          </View>
           <MetaRow label={t('common.phone')} value={(item.phone || '').trim() || '—'} />
           <MetaRow label={t('team.primaryLocation')} value={employeePrimaryLocationLine(item)} />
           <MetaRow
@@ -135,6 +141,7 @@ export default function ManagerTeam() {
   const [selected, setSelected] = useState<EmployeeRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showDeactivated, setShowDeactivated] = useState(false);
   const [rolesByAuthId, setRolesByAuthId] = useState<Record<string, string>>({});
   const isAdmin = isAdminRole(role);
 
@@ -145,8 +152,12 @@ export default function ManagerTeam() {
 
   const scopedEmployees = useMemo(() => {
     const scope = managerManagedRestaurantId(myEmployee, role);
-    return employees.filter((e) => employeeVisibleInManagerStoreScope(e, scope));
-  }, [employees, myEmployee, role]);
+    return employees.filter((e) => {
+      if (!employeeVisibleInManagerStoreScope(e, scope)) return false;
+      if (!showDeactivated && employeeIsDeactivated(e)) return false;
+      return true;
+    });
+  }, [employees, myEmployee, role, showDeactivated]);
 
   const rows = useMemo(
     () => buildTeamRows(scopedEmployees, staffTypeLabel),
@@ -171,6 +182,22 @@ export default function ManagerTeam() {
   useEffect(() => {
     loadAccountRoles();
   }, [loadAccountRoles, employees.length]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setShowDeactivated(false);
+    }, [])
+  );
+
+  useEffect(() => {
+    if (!selected) return;
+    const next = employees.find((e) => e.id === selected.id);
+    if (!next) {
+      setSelected(null);
+      return;
+    }
+    if (next !== selected) setSelected(next);
+  }, [employees, selected]);
 
   const accountLabelFor = useCallback(
     (emp: EmployeeRow) => {
@@ -215,7 +242,7 @@ export default function ManagerTeam() {
     <View style={styles.screen}>
       {error ? <Text style={styles.err}>{error}</Text> : null}
       <View style={styles.headerRow}>
-        <Text style={styles.header}>{t('team.people', { count: employees.length })}</Text>
+        <Text style={styles.header}>{t('team.people', { count: scopedEmployees.length })}</Text>
         <Pressable
           style={styles.addBtn}
           onPress={() => {
@@ -224,6 +251,16 @@ export default function ManagerTeam() {
           }}
         >
           <Text style={styles.addBtnText}>{t('team.add')}</Text>
+        </Pressable>
+      </View>
+      <View style={styles.toggleRow}>
+        <Pressable
+          style={[styles.toggleChip, showDeactivated && styles.toggleChipOn]}
+          onPress={() => setShowDeactivated((v) => !v)}
+        >
+          <Text style={[styles.toggleChipText, showDeactivated && styles.toggleChipTextOn]}>
+            {t('team.showDeactivated')}
+          </Text>
         </Pressable>
       </View>
       {loading && !employees.length ? (
@@ -238,7 +275,11 @@ export default function ManagerTeam() {
           onRefresh={onRefresh}
           contentContainerStyle={styles.scrollContent}
           ListEmptyComponent={
-            !loading ? <Text style={styles.muted}>{t('team.noEmployeesSupabase')}</Text> : null
+            !loading ? (
+              <Text style={styles.muted}>
+                {employees.length ? t('team.noMatch') : t('team.noEmployeesSupabase')}
+              </Text>
+            ) : null
           }
           keyboardShouldPersistTaps="handled"
         />
@@ -273,6 +314,22 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   header: { fontSize: 14, color: '#666' },
+  toggleRow: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  toggleChip: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#fff',
+  },
+  toggleChipOn: { borderColor: '#c41230', backgroundColor: '#fef2f2' },
+  toggleChipText: { fontSize: 13, color: '#475569', fontWeight: '600' },
+  toggleChipTextOn: { color: '#c41230' },
   addBtn: {
     backgroundColor: '#c41230',
     paddingHorizontal: 14,
@@ -301,7 +358,20 @@ const styles = StyleSheet.create({
   },
   rowMain: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   rowBody: { flex: 1, minWidth: 0 },
-  name: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 6 },
+  nameRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 6 },
+  name: { fontSize: 16, fontWeight: '600', color: '#111' },
+  deactivatedBadge: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: '#64748b',
+    backgroundColor: '#e2e8f0',
+    overflow: 'hidden',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

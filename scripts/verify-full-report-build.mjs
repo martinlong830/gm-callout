@@ -258,7 +258,7 @@ const deps = {
     var body = String(baseText || '');
     var name = String(personName || '').toUpperCase();
     var extra = [];
-    if (name.indexOf('MARK ONG') >= 0) extra.push('VL 8h');
+    if (name.indexOf('MARK ONG') >= 0) extra.push('VL 8h', 'Ongi');
     if (name.indexOf('BALTAZAR') >= 0) extra.push('8th Ave');
     if (!extra.length) return body;
     return (body ? body + '\n' : '') + extra.join('\n');
@@ -268,10 +268,12 @@ const deps = {
     var hasVL = /\bVL\b/.test(t);
     var hasSL = /\bSL\b/.test(t);
     var hasOther = /\b(?:8th|9th)\s+Ave\b/i.test(t);
+    var hasOngi = /\bOngi\b/i.test(t);
     if (hasVL && hasSL) return 'vl-sl';
     if (hasVL) return 'vl';
     if (hasSL) return 'sl';
     if (hasOther) return 'other';
+    if (hasOngi) return 'ongi';
     return '';
   },
   getStaffRequests() {
@@ -521,6 +523,9 @@ if (scheduleText.indexOf('VL 8h') < 0) {
 if (scheduleText.indexOf('8th Ave') < 0) {
   throw new Error('Schedule sheet missing other-store flag lines');
 }
+if (scheduleText.indexOf('Ongi') < 0) {
+  throw new Error('Schedule sheet missing Ongi flag lines');
+}
 function findCellWithText(ws, needle) {
   var keys = Object.keys(ws || {}).filter(function (k) {
     return k.charAt(0) !== '!';
@@ -549,7 +554,7 @@ const calendarFlagDays = [
   { kind: 'work', text: '09:00am-06:00pm\nVL 8h', hours: 8, hoursAfter: 8, flagKind: 'vl' },
   { kind: 'work', text: '09:00am-06:00pm\nSL 8h', hours: 8, hoursAfter: 8, flagKind: 'sl' },
   { kind: 'work', text: '09:00am-06:00pm\n8th Ave', hours: 8, hoursAfter: 8, flagKind: 'other' },
-  { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
+  { kind: 'work', text: '09:00am-06:00pm\nOngi', hours: 8, hoursAfter: 8, flagKind: 'ongi' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
@@ -588,6 +593,7 @@ const calSheet = sandbox.__gmTimecardsTest.buildScheduleWorksheet({ matchCalenda
 const vlFill = cellFillRgb(findCellWithText(calSheet, 'VL 8h'));
 const slFill = cellFillRgb(findCellWithText(calSheet, 'SL 8h'));
 const otherFill = cellFillRgb(findCellWithText(calSheet, '8th Ave'));
+const ongiFill = cellFillRgb(findCellWithText(calSheet, 'Ongi'));
 if (vlFill !== 'C6EFCE') {
   throw new Error('Main-schedule download VL tiles should be green, got ' + vlFill);
 }
@@ -597,11 +603,151 @@ if (slFill !== 'FFC7CE') {
 if (otherFill !== 'F8CBAD') {
   throw new Error('Main-schedule download other-store tiles should be orange, got ' + otherFill);
 }
-if (vlFill === slFill || vlFill === otherFill || slFill === otherFill) {
-  throw new Error('VL, SL, and other-store tile fills must be distinct');
+if (ongiFill !== 'A7F3D0') {
+  throw new Error('Main-schedule download Ongi tiles should be teal, got ' + ongiFill);
+}
+if (
+  vlFill === slFill ||
+  vlFill === otherFill ||
+  slFill === otherFill ||
+  ongiFill === vlFill ||
+  ongiFill === slFill ||
+  ongiFill === otherFill
+) {
+  throw new Error('VL, SL, other-store, and Ongi tile fills must be distinct');
 }
 delete deps.buildScheduleCalendarExportModel;
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
+
+/* Updated schedule: same compact cell copy as Published; yellow = time, green = VL/SL. */
+{
+  function dayMeta() {
+    return deps.WEEK_META.map(function (m) {
+      return {
+        label: m.label,
+        iso: m.iso,
+        dayNameUpper: m.dayNameUpper,
+        dateLabel: '18-May-26',
+      };
+    });
+  }
+  function offCell() {
+    return {
+      kind: 'dayoff',
+      text: 'DAY-OFF',
+      hours: 0,
+      hoursAfter: 0,
+      flagKind: '',
+      start: '',
+      end: '',
+      breakText: '',
+      workers: ['FLAG COLORS'],
+    };
+  }
+  function workCell(start, end, extraText, flagKind) {
+    var text = start + '–' + end + '\n(NO BREAK TIME)\n8.00';
+    if (extraText) text += '\n' + extraText;
+    return {
+      kind: 'work',
+      text: text,
+      hours: 8,
+      hoursAfter: 8,
+      flagKind: flagKind || '',
+      start: start,
+      end: end,
+      breakText: '(NO BREAK TIME)',
+      workers: ['FLAG COLORS'],
+    };
+  }
+  const publishedDays = [
+    workCell('09:00', '17:00'),
+    offCell(),
+    workCell('09:00', '17:00'),
+    offCell(),
+    offCell(),
+    offCell(),
+    offCell(),
+  ];
+  const updatedDays = [
+    workCell('10:00', '18:00'),
+    offCell(),
+    workCell('09:00', '17:00', 'VL 1h', 'vl'),
+    offCell(),
+    offCell(),
+    offCell(),
+    offCell(),
+  ];
+  function modelFor(days) {
+    return {
+      restaurantName: 'Red Poke 598 9th Ave',
+      days: dayMeta(),
+      sections: [
+        {
+          role: 'Bartender',
+          title: 'FRONT OF THE HOUSE',
+          rows: [
+            {
+              personName: 'FLAG COLORS',
+              position: 'STORE MANAGER',
+              trIdx: 0,
+              days: days.map((cell) => JSON.parse(JSON.stringify(cell))),
+              totalHours: 16,
+              totalHoursAfter: 16,
+            },
+          ],
+        },
+      ],
+      groupOrder: [],
+    };
+  }
+  deps.getPublishedWeekSnapshot = function () {
+    return { draft: { present: true } };
+  };
+  deps.buildScheduleCalendarExportModel = function (_wi, _rid, opts) {
+    return opts && opts.snapshot ? modelFor(publishedDays) : modelFor(updatedDays);
+  };
+  sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
+  const updatedWs = sandbox.__gmTimecardsTest.buildScheduleWorksheet({
+    matchCalendar: true,
+    updatedCopy: true,
+  });
+  const publishedWs = sandbox.__gmTimecardsTest.buildScheduleWorksheet({
+    matchCalendar: true,
+    publishedCopy: true,
+  });
+  const updatedText = worksheetText(updatedWs);
+  const publishedText = worksheetText(publishedWs);
+  if (/\bCHANGED\b/.test(updatedText) || /Shift:|Time:|Leave:/.test(updatedText)) {
+    throw new Error('Updated schedule must not dump change prose into cells');
+  }
+  if (/current main schedule/i.test(updatedText)) {
+    throw new Error('Updated schedule title should stay as compact as Published');
+  }
+  if (updatedText.indexOf('10:00–18:00') < 0) {
+    throw new Error('Updated schedule missing new shift time');
+  }
+  if (publishedText.indexOf('09:00–17:00') < 0) {
+    throw new Error('Published schedule missing original shift time');
+  }
+  const timeChanged = findCellWithText(updatedWs, '10:00–18:00');
+  const leaveChanged = findCellWithText(updatedWs, 'VL 1h');
+  if (cellFillRgb(timeChanged) !== 'FFF2CC') {
+    throw new Error('Shift-time changes should be yellow, got ' + cellFillRgb(timeChanged));
+  }
+  if (cellFillRgb(leaveChanged) !== 'C6EFCE') {
+    throw new Error('VL/SL changes should be green, got ' + cellFillRgb(leaveChanged));
+  }
+  const timeLines = String((timeChanged && timeChanged.v) || '').split('\n').length;
+  const pubTime = findCellWithText(publishedWs, '09:00–17:00');
+  const pubLines = String((pubTime && pubTime.v) || '').split('\n').length;
+  if (timeLines > pubLines + 1) {
+    throw new Error('Updated cells have more lines than Published (' + timeLines + ' vs ' + pubLines + ')');
+  }
+  delete deps.buildScheduleCalendarExportModel;
+  delete deps.getPublishedWeekSnapshot;
+  sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
+  console.log('OK: Updated schedule stays compact; time diffs yellow, VL/SL diffs green');
+}
 
 /* forceFresh must rebuild from the live assignment snapshot (not a stale sheet cache). */
 deps.__scheduleSnapshotRows = [

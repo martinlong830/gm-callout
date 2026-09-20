@@ -36,6 +36,7 @@ import {
   employeeDisplayName,
   employeeHasSingleStorePayroll,
   employeeHomeOrPrimaryRestaurantId,
+  employeeIsDeactivated,
   employeePrimaryLocationId,
   isCloudEmployeeId,
   normalizeDeliveryTipRetention,
@@ -448,6 +449,45 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     setStatusMsg('Time clock PIN saved.');
   }
 
+  async function persistDeactivated(deactivated: boolean) {
+    if (isCreate || !employee || !supabase) return;
+    const src = profileEmployee ?? employee;
+    const meta = { ...(src.meta ?? {}) } as Record<string, unknown>;
+    if (deactivated) meta.deactivated = true;
+    else delete meta.deactivated;
+    const updated = { ...src, meta };
+    setBusy(true);
+    const res = await saveEmployeeRow(supabase, updated);
+    setBusy(false);
+    if (!res.ok) {
+      Alert.alert(t('team.deactivate'), res.message);
+      return;
+    }
+    setProfileEmployee(updated);
+    onSaved();
+    if (deactivated) onClose();
+  }
+
+  async function handleToggleDeactivated() {
+    if (isCreate || !employee) return;
+    const src = profileEmployee ?? employee;
+    const nextOff = !employeeIsDeactivated(src);
+    const label = employeeDisplayName(src) || 'this employee';
+    if (nextOff) {
+      Alert.alert(t('team.deactivate'), t('team.deactivateConfirm', { name: label }), [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('team.deactivate'),
+          onPress: () => {
+            void persistDeactivated(true);
+          },
+        },
+      ]);
+      return;
+    }
+    void persistDeactivated(false);
+  }
+
   async function handleDeleteEmployee() {
     if (isCreate || !employee || !supabase) return;
     const label = employeeDisplayName(employee) || 'this employee';
@@ -618,7 +658,7 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
       }
     }
 
-    const meta = { ...(employee?.meta ?? {}) } as Record<string, unknown>;
+    const meta = { ...((profileEmployee ?? employee)?.meta ?? {}) } as Record<string, unknown>;
     meta.breakPolicy = breakPolicy;
     if (emailTrim) meta.email = emailTrim;
     else if ('email' in meta) delete meta.email;
@@ -1188,13 +1228,31 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
                 <Text style={styles.ghostBtnText}>{t('editor.closeWithoutSaving')}</Text>
               </Pressable>
               {!isCreate && employee ? (
-                <Pressable
-                  style={[styles.dangerBtn, busy && styles.btnDisabled]}
-                  onPress={() => void handleDeleteEmployee()}
-                  disabled={busy}
-                >
-                  <Text style={styles.dangerBtnText}>{t('common.delete')} employee</Text>
-                </Pressable>
+                <>
+                  <Pressable
+                    style={[styles.deactivateBtn, busy && styles.btnDisabled]}
+                    onPress={() => void handleToggleDeactivated()}
+                    disabled={busy}
+                  >
+                    <Text style={styles.deactivateBtnText}>
+                      {employeeIsDeactivated(profileEmployee ?? employee)
+                        ? t('team.reactivate')
+                        : t('team.deactivate')}
+                    </Text>
+                  </Pressable>
+                  <Text style={styles.deactivateHint}>
+                    {employeeIsDeactivated(profileEmployee ?? employee)
+                      ? t('team.reactivateHint')
+                      : t('team.deactivateHint')}
+                  </Text>
+                  <Pressable
+                    style={[styles.dangerBtn, busy && styles.btnDisabled]}
+                    onPress={() => void handleDeleteEmployee()}
+                    disabled={busy}
+                  >
+                    <Text style={styles.dangerBtnText}>{t('common.delete')} employee</Text>
+                  </Pressable>
+                </>
               ) : null}
             </View>
           </View>
@@ -1368,6 +1426,17 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   ghostBtn: { paddingVertical: 10, alignItems: 'center' },
   ghostBtnText: { fontSize: 15, color: '#64748b', fontWeight: '600' },
+  deactivateBtn: {
+    marginTop: 4,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  deactivateBtnText: { color: '#334155', fontSize: 15, fontWeight: '700' },
+  deactivateHint: { fontSize: 12, color: '#64748b', lineHeight: 17, marginTop: 4 },
   dangerBtn: {
     marginTop: 4,
     backgroundColor: '#b00020',

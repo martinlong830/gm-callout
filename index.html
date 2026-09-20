@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-312" />
+  <link rel="stylesheet" href="styles.css?v=perf-323" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-312';
+    window.__GM_ASSET_V = 'perf-323';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -1093,6 +1093,12 @@
             <label class="shift-detail-dayoff-label">
               <input type="checkbox" id="shiftDetailDayOff" /> <span data-i18n="common.dayOff">Day off</span>
             </label>
+            <div id="shiftDetailOngiWrap">
+              <label class="shift-detail-dayoff-label">
+                <input type="checkbox" id="shiftDetailOngi" /> <span data-i18n="schedule.ongiFlag">Ongi</span>
+              </label>
+              <p class="calendar-hint" data-i18n="schedule.ongiFlagHint">Mark if this person is working at an Ongi store not yet in Shiflow.</p>
+            </div>
             <div class="shift-detail-times timecards-datetime-row" id="shiftDetailTimesWrap">
               <label class="shift-detail-field form-field-block">
                 <span class="shift-detail-field-label"><span data-i18n="common.start">Start</span></span>
@@ -1208,6 +1214,12 @@
               <button type="button" class="filter-chip" data-role-filter="Bartender"><span data-i18n="staff.bartender">Front of the House</span></button>
               <button type="button" class="filter-chip" data-role-filter="Kitchen"><span data-i18n="staff.kitchen">Back of the House</span></button>
               <button type="button" class="filter-chip" data-role-filter="Server"><span data-i18n="staff.server">Delivery/Dishwasher</span></button>
+            </div>
+          </div>
+          <div class="employee-filter-block">
+            <span class="employee-filter-label" id="employeeDeactivatedFilterLabel" data-i18n="team.deactivatedFilter">Deactivated</span>
+            <div class="employee-filter-chips" role="group" aria-labelledby="employeeDeactivatedFilterLabel">
+              <button type="button" class="filter-chip" id="employeeShowDeactivatedToggle" aria-pressed="false" data-i18n="team.showDeactivated">Show deactivated</button>
             </div>
           </div>
           <div class="employees-toolbar">
@@ -1572,6 +1584,10 @@
             <button type="submit" class="btn btn-primary" id="saveEmployeeBtn" data-i18n="common.save">Save</button>
           </div>
           <div class="emp-form-danger-zone" id="empDeleteZone" hidden>
+            <button type="button" class="btn btn-secondary btn-block" id="deactivateEmployeeBtn" data-i18n="team.deactivate">Deactivate employee</button>
+            <p class="calendar-hint emp-delete-hint" id="deactivateEmployeeHint" data-i18n="team.deactivateHint">
+              Hides this person from Team and new schedule assignments. Existing shifts and timecards stay. This is not deletion.
+            </p>
             <button type="button" class="btn btn-danger btn-block" id="deleteEmployeeBtn">Delete employee</button>
             <p class="calendar-hint emp-delete-hint">
               Removes this person from the roster, schedule, and timecards. Time clock punches are deleted. This cannot be undone.
@@ -2762,7 +2778,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-234"></script>
+  <script src="locales/en.js?v=perf-319"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2774,7 +2790,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-234';
+      s.src = 'locales/es.js?v=perf-319';
       document.head.appendChild(s);
     })();
   </script>
@@ -4678,8 +4694,43 @@
       }
 
       /**
+       * Paint the landing card in the same turn as dropping `authed`.
+       * Waiting for SIGNED_OUT or a hard reload left a blank page, then the
+       * card appeared and recentered as chrome/i18n caught up.
+       */
+      function paintSignedOutLoginGate() {
+        window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+        document.documentElement.classList.remove(
+          'authed',
+          'manager-app',
+          'employee-app',
+          'timeclock-app'
+        );
+        var loginEl = document.getElementById('login-screen');
+        if (loginEl) {
+          loginEl.hidden = false;
+          loginEl.removeAttribute('aria-hidden');
+          loginEl.removeAttribute('inert');
+          try {
+            loginEl.style.removeProperty('pointer-events');
+            loginEl.removeAttribute('style');
+          } catch (_pe) {
+            /* ignore */
+          }
+        }
+        if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+          window.gmCalloutSetLoginGateOpen(true);
+        }
+        if (typeof showLandingPanel === 'function') {
+          showLandingPanel();
+        } else if (typeof window.gmCalloutShowLandingPanel === 'function') {
+          window.gmCalloutShowLandingPanel();
+        }
+      }
+
+      /**
        * Bulletproof sign-out: never await supabase auth (lock can hang forever).
-       * Clear portal + auth storage synchronously, then hard-navigate with cache bust.
+       * Clear portal + auth storage synchronously and show the login card immediately.
        */
       function clearSupabaseAuthStorageSync() {
         try {
@@ -4729,12 +4780,7 @@
         }
         clearCompanySessionStorage();
         clearSupabaseAuthStorageSync();
-        document.documentElement.classList.remove(
-          'authed',
-          'manager-app',
-          'employee-app',
-          'timeclock-app'
-        );
+        paintSignedOutLoginGate();
         (async function () {
           try {
             var flushTeam =
@@ -4776,6 +4822,9 @@
             'employee-app',
             'timeclock-app'
           );
+          if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+            window.gmCalloutSetLoginGateOpen(true);
+          }
           // Fire-and-forget only — never await on the UI critical path after flush.
           try {
             if (window.gmSupabase && window.gmSupabase.auth) {
@@ -4789,12 +4838,6 @@
             }
           } catch (_so) {
             /* ignore */
-          }
-          var bust = String(Date.now());
-          try {
-            location.replace('/app?signedout=' + bust);
-          } catch (_nav) {
-            location.href = '/app?signedout=' + bust;
           }
         })();
       }

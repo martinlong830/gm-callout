@@ -41,6 +41,7 @@ import {
   LOCAL_SCHEDULE_DIRTY_KEY,
   mergeTeamStatePartial,
 } from '../lib/teamStateColumns';
+import { mergeScheduleTemplateLibraries } from '../lib/schedule/templates';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
 import { migrateTimecardLeaveIntoTeamHistory } from '../lib/employeeLeave';
@@ -100,6 +101,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const lastLocalSchedulePushHashRef = useRef<string | null>(null);
   const lastLocalSchedulePushUpdatedAtRef = useRef<string | null>(null);
   const schedulePushInFlightRef = useRef(false);
+  const templatesRepushInFlightRef = useRef(false);
 
   teamStateRef.current = teamState;
 
@@ -189,16 +191,50 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         setEmployees(data.employees);
         setStaffRequests(data.staffRequests);
         const cellsOnly = await writeOnlyCells().catch(() => false);
-        setTeamState((prev) => {
-          const remote = data.teamState;
-          if (!remote) return null;
-          if (!prev) return remote;
-          return mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
-            protectLocalSchedule:
-              cellsOnly ||
-              shouldProtectLocalSchedule(prev, remote as Record<string, unknown>),
+        const remote = data.teamState;
+        const prev = teamStateRef.current;
+        const protectLocal =
+          cellsOnly ||
+          shouldProtectLocalSchedule(prev, remote as Record<string, unknown>);
+        let mergedTeamState = remote;
+        if (remote && prev) {
+          mergedTeamState = mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
+            protectLocalSchedule: protectLocal,
           }) as HydrationResult['teamState'];
-        });
+        }
+        setTeamState(mergedTeamState);
+        if (
+          remote &&
+          prev &&
+          isManagerLikeRole(role) &&
+          !templatesRepushInFlightRef.current &&
+          supabase
+        ) {
+          const tplMerge = mergeScheduleTemplateLibraries(
+            prev.schedule_templates,
+            remote.schedule_templates,
+            protectLocal
+          );
+          if (tplMerge.needRepush && tplMerge.list.length) {
+            templatesRepushInFlightRef.current = true;
+            void (async () => {
+              try {
+                const teamStateId = await readStoredTeamStateId();
+                await supabase.from('team_state').upsert(
+                  {
+                    id: teamStateId,
+                    schedule_templates: JSON.parse(JSON.stringify(tplMerge.list)),
+                  },
+                  { onConflict: 'id' }
+                );
+              } catch (tplRepushErr) {
+                console.warn('schedule_templates cloud repush', tplRepushErr);
+              } finally {
+                templatesRepushInFlightRef.current = false;
+              }
+            })();
+          }
+        }
         /* Flip write-only + flush ops when cells schema is live. */
         void (async () => {
           try {

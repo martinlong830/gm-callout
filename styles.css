@@ -212,11 +212,12 @@ html.authed .login-screen:not([hidden]) {
   min-height: 100vh;
   min-height: 100dvh;
   box-sizing: border-box;
-  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
-    max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  padding: max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+    max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   background: linear-gradient(165deg, #f1f5f9 0%, #e2e8f0 40%, #f8fafc 100%);
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   touch-action: manipulation;
@@ -253,13 +254,16 @@ html:not(.authed) .login-screen:not([hidden]) .landing-secondary-btn {
 }
 
 .login-card {
+  position: relative;
   width: 100%;
   max-width: 22rem;
-  padding: 28px 24px 26px;
+  margin: auto;
+  padding: 52px 24px 26px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
+  overflow-anchor: none;
 }
 
 .login-logo-wrap {
@@ -554,7 +558,7 @@ html:not(.authed) .login-screen:not([hidden]) .landing-secondary-btn {
     width: 100%;
     max-width: 26rem;
     margin-inline: auto;
-    padding-top: 20px;
+    padding-top: 44px;
     padding-bottom: max(22px, env(safe-area-inset-bottom, 0px));
     padding-left: max(16px, env(safe-area-inset-left, 0px));
     padding-right: max(16px, env(safe-area-inset-right, 0px));
@@ -675,9 +679,13 @@ html:not(.authed) .login-screen:not([hidden]) .landing-secondary-btn {
 }
 
 .login-lang-wrap {
+  position: absolute;
+  top: 12px;
+  right: 16px;
   display: flex;
   justify-content: flex-end;
-  margin: 0 0 8px;
+  margin: 0;
+  z-index: 2;
 }
 
 .account-lang-row {
@@ -4905,7 +4913,8 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 /* Pin Ave flags to the same bottom strip on every day cell in the row. */
 .calendar-slot-other-store,
-.calendar-slot-leave-flag {
+.calendar-slot-leave-flag,
+.calendar-slot-ongi-flag {
   position: absolute;
   left: 10px;
   right: 10px;
@@ -4937,6 +4946,32 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   border: 1px solid color-mix(in srgb, #3b82f6 42%, transparent);
 }
 
+.calendar-slot-ongi-flag {
+  color: #065f46;
+  background: color-mix(in srgb, #6ee7b7 38%, var(--surface));
+  border: 1px solid color-mix(in srgb, #10b981 45%, transparent);
+}
+
+.calendar-slot-flags {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.calendar-slot-flags .calendar-slot-other-store,
+.calendar-slot-flags .calendar-slot-leave-flag,
+.calendar-slot-flags .calendar-slot-ongi-flag {
+  position: static;
+  left: auto;
+  right: auto;
+  bottom: auto;
+}
+
 /* Stack leave above borrow when both are present. */
 .calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store) {
   padding-bottom: 2.55rem;
@@ -4945,6 +4980,14 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 .calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store)
   .calendar-slot-leave-flag {
   bottom: 1.55rem;
+}
+
+.calendar-slot-wrap:has(.calendar-slot-flags > :nth-child(2)) {
+  padding-bottom: 2.55rem;
+}
+
+.calendar-slot-wrap:has(.calendar-slot-flags > :nth-child(3)) {
+  padding-bottom: 3.5rem;
 }
 
 .calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) {
@@ -4958,7 +5001,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-other-store,
-.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-leave-flag {
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-leave-flag,
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-ongi-flag,
+.calendar-slot-wrap.calendar-slot-empty:not(.calendar-slot-empty--timed) .calendar-slot-flags {
   left: 10px;
   right: 10px;
 }
@@ -5310,6 +5355,10 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 .emp-form-danger-zone .emp-delete-hint {
   margin: 8px 0 0;
+}
+
+.emp-form-danger-zone .emp-delete-hint + .btn {
+  margin-top: 14px;
 }
 
 .callout-footer-block {
@@ -6129,13 +6178,32 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .employee-card-name {
-  display: block;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 0 0 8px;
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.35;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+.employee-card-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.employee-card.is-deactivated {
+  opacity: 0.78;
 }
 
 .employee-card-meta {
@@ -7061,7 +7129,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   }
 
   .calendar-slot-other-store,
-  .calendar-slot-leave-flag {
+  .calendar-slot-leave-flag,
+  .calendar-slot-ongi-flag,
+  .calendar-slot-flags {
     left: 8px;
     right: 8px;
     bottom: 4px;
@@ -7070,6 +7140,14 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   .calendar-slot-wrap:has(.calendar-slot-leave-flag):has(.calendar-slot-other-store)
     .calendar-slot-leave-flag {
     bottom: 1.4rem;
+  }
+
+  .calendar-slot-wrap:has(.calendar-slot-flags > :nth-child(2)) {
+    padding-bottom: 2.4rem;
+  }
+
+  .calendar-slot-wrap:has(.calendar-slot-flags > :nth-child(3)) {
+    padding-bottom: 3.3rem;
   }
 
   .calendar-slot-pills {

@@ -2867,16 +2867,19 @@
      * Team / schedule when week-extras briefly diverge. Skip when schedule Save already
      * wrote leaveBalance in the same turn (avoid nested single-employee upserts).
      */
+    var emp =
+      d().employees &&
+      d().employees.find(function (e) {
+        return e && e.id === empId;
+      });
     if (
       typeof d().persistEmployeeLeaveBalanceDay === 'function' &&
       !window.__gmLeaveBalanceWriteFromSchedule
     ) {
-      var emp =
-        d().employees &&
-        d().employees.find(function (e) {
-          return e && e.id === empId;
-        });
       if (emp) d().persistEmployeeLeaveBalanceDay(emp, iso, v, s);
+    }
+    if (typeof d().notifyLeaveHoursChanged === 'function') {
+      d().notifyLeaveHoursChanged(emp || null);
     }
   }
 
@@ -3294,7 +3297,21 @@
   }
 
   function readShiftDayLeaveFromForm(emp, iso) {
+    var vlEl = document.getElementById('tcDayVl');
+    var slEl = document.getElementById('tcDaySl');
+    if (vlEl || slEl) {
+      return {
+        vl: Math.max(0, parseFloat(vlEl && vlEl.value) || 0),
+        sl: Math.max(0, parseFloat(slEl && slEl.value) || 0),
+      };
+    }
     return getEffectiveDayLeave(emp || {}, iso);
+  }
+
+  function persistShiftDayLeaveFromForm(emp, shiftRow) {
+    if (!emp || !shiftRow || !shiftRow.iso) return;
+    var dayLeave = readShiftDayLeaveFromForm(emp, shiftRow.iso);
+    setEmployeeDayLeave(emp.id, shiftRow.iso, dayLeave.vl, dayLeave.sl);
   }
 
   function readShiftDishwasherTipFromForm() {
@@ -7520,8 +7537,9 @@
   var SCHED_FILL_SL = { patternType: 'solid', fgColor: { rgb: 'FFC7CE' } };
   var SCHED_FILL_VL_SL = { patternType: 'solid', fgColor: { rgb: 'D9D2E9' } };
   var SCHED_FILL_OTHER_STORE = { patternType: 'solid', fgColor: { rgb: 'F8CBAD' } };
+  var SCHED_FILL_ONGI = { patternType: 'solid', fgColor: { rgb: 'A7F3D0' } };
   var SCHED_FILL_CHANGED = { patternType: 'solid', fgColor: { rgb: 'FFF2CC' } };
-  var SCHED_FILL_CHANGED_LEAVE = { patternType: 'solid', fgColor: { rgb: 'F4B183' } };
+  var SCHED_FILL_CHANGED_LEAVE = { patternType: 'solid', fgColor: { rgb: 'C6EFCE' } };
 
   function scheduleWorkersKey(cell) {
     return ((cell && cell.workers) || [])
@@ -7538,6 +7556,7 @@
     if (kind === 'sl') return 'SL';
     if (kind === 'vl-sl') return 'VL+SL';
     if (kind === 'other') return 'Other store';
+    if (kind === 'ongi') return 'Ongi';
     return '(none)';
   }
 
@@ -7545,6 +7564,18 @@
     if (!cell || cell.kind === 'dayoff' || !cell.start || !cell.end) return 'DAY-OFF';
     if (cell.kind === 'rp2') return 'RP2';
     return String(cell.start) + '–' + String(cell.end);
+  }
+
+  function scheduleLeaveLinesFromCell(cell) {
+    return String((cell && cell.text) || '')
+      .split('\n')
+      .map(function (ln) {
+        return String(ln || '').trim();
+      })
+      .filter(function (ln) {
+        return /\b(?:VL|SL)\b/.test(ln);
+      })
+      .join('\n');
   }
 
   function describeScheduleCellDiffs(prev, next) {
@@ -7565,7 +7596,7 @@
     }
     var aFlag = String(a.flagKind || '');
     var bFlag = String(b.flagKind || '');
-    if (aFlag !== bFlag) {
+    if (aFlag !== bFlag || scheduleLeaveLinesFromCell(a) !== scheduleLeaveLinesFromCell(b)) {
       diffs.push('Leave: ' + scheduleLeaveLabel(aFlag) + ' → ' + scheduleLeaveLabel(bFlag));
     }
     var aWho = scheduleWorkersKey(a);
@@ -7574,6 +7605,25 @@
       diffs.push('Person: ' + (aWho || 'UNASSIGNED') + ' → ' + (bWho || 'UNASSIGNED'));
     }
     return diffs;
+  }
+
+  function classifyScheduleExportChange(diffs) {
+    var lines = Array.isArray(diffs) ? diffs : [];
+    if (
+      lines.some(function (line) {
+        return String(line || '').indexOf('Leave:') === 0;
+      })
+    ) {
+      return 'leave';
+    }
+    if (
+      lines.some(function (line) {
+        return /^(Shift|Time|Break):/.test(String(line || ''));
+      })
+    ) {
+      return 'time';
+    }
+    return lines.length ? 'time' : '';
   }
 
   function applyScheduleExportDiffs(updatedModel, publishedModel) {
@@ -7594,8 +7644,8 @@
           var diffs = describeScheduleCellDiffs(prev, cell);
           if (!diffs.length) return;
           cell.changed = true;
+          cell.changeKind = classifyScheduleExportChange(diffs);
           cell.changeLines = diffs;
-          cell.text = 'CHANGED\n' + diffs.join('\n') + '\n' + String(cell.text || '');
         });
       });
     });
@@ -7607,9 +7657,15 @@
     var style = withScheduleFlagFill(baseStyle, kind);
     if (cell && cell.changed) {
       style = Object.assign({}, style);
-      style.fill = kind && kind !== 'other' ? SCHED_FILL_CHANGED_LEAVE : SCHED_FILL_CHANGED;
       var font = Object.assign({}, style.font || {});
       font.bold = true;
+      if (cell.changeKind === 'leave') {
+        style.fill = SCHED_FILL_CHANGED_LEAVE;
+        font.color = { rgb: '006100' };
+      } else {
+        style.fill = SCHED_FILL_CHANGED;
+        font.color = { rgb: '9C5700' };
+      }
       style.font = font;
     }
     return style;
@@ -7625,10 +7681,12 @@
     var hasVL = /\bVL\b/.test(t);
     var hasSL = /\bSL\b/.test(t);
     var hasOther = /\b(?:8th|9th)\s+Ave\b/i.test(t);
+    var hasOngi = /\bOngi\b/i.test(t);
     if (hasVL && hasSL) return 'vl-sl';
     if (hasVL) return 'vl';
     if (hasSL) return 'sl';
     if (hasOther) return 'other';
+    if (hasOngi) return 'ongi';
     return '';
   }
 
@@ -7648,6 +7706,9 @@
     } else if (kind === 'other') {
       style.fill = SCHED_FILL_OTHER_STORE;
       font.color = { rgb: 'C65911' };
+    } else if (kind === 'ongi') {
+      style.fill = SCHED_FILL_ONGI;
+      font.color = { rgb: '065F46' };
     } else {
       return baseStyle;
     }
@@ -7964,9 +8025,7 @@
           : String(calendarModel.publishedAt);
       if (when) title += '  (' + when + ')';
     }
-    if (opts.updatedCopy) {
-      title += '  (current main schedule)';
-    }
+    /* Updated tab matches Published copy length — color marks diffs, not extra title text. */
     xlSet(ws, r, 0, title, S.title);
     xlMerge(merges, r, 0, r, lastCol);
     rowHeights[r] = { hpt: 22 };
@@ -11493,8 +11552,14 @@
         } else if (field === 'missingHours') {
           setEmployeeDayMissingHours(emp.id, iso, val);
         } else if (field === 'vl' || field === 'sl') {
-          /* VL/SL are edited on Schedule shift editor only. */
-          return;
+          var vlEl = document.getElementById('tcDayVl');
+          var slEl = document.getElementById('tcDaySl');
+          setEmployeeDayLeave(
+            emp.id,
+            iso,
+            Math.max(0, parseFloat(vlEl && vlEl.value) || 0),
+            Math.max(0, parseFloat(slEl && slEl.value) || 0)
+          );
         }
         refreshTimecardGrandTotals(emp);
         if (timecardsEmployeeScreenActive()) {
@@ -11946,6 +12011,7 @@
     var shiftPay = buildShiftDetailRow(emp, shiftRow);
     var offSchedule = isOffScheduleShiftDayRow(shiftRow);
     var suggestedLeave = getSuggestedDayLeaveForDay(emp, shiftRow.iso);
+    var dayLeaveHours = getEffectiveDayLeave(emp, shiftRow.iso);
     var suggestedLeaveHint = '';
     if (suggestedLeave.vl > 0 || suggestedLeave.sl > 0) {
       var parts = [];
@@ -12128,15 +12194,30 @@
       '</dl></section>' +
       '<section class="timecards-detail-card">' +
       '<h3 class="emp-form-subtitle">VL / SL &amp; spread of hours</h3>' +
-      '<p class="calendar-hint">Vacation / sick hours are entered on the Schedule shift editor. Values here are read-only and flow into week grand totals.</p>' +
+      '<p class="calendar-hint">' +
+      d().escapeHtml(
+        tcT('timecards.vlSlEditHint') ||
+          'Vacation / sick hours for this day. Same values as the Schedule shift editor — changing either updates tile flags, week totals, and the full report.'
+      ) +
+      '</p>' +
       suggestedLeaveHint +
       '<dl class="timecards-dl">' +
-      '<div><dt>VL (hrs)</dt><dd id="tcDayVlReadonly">' +
-      d().escapeHtml(String(getEffectiveDayLeave(emp, shiftRow.iso).vl)) +
-      '</dd></div>' +
-      '<div><dt>SL (hrs)</dt><dd id="tcDaySlReadonly">' +
-      d().escapeHtml(String(getEffectiveDayLeave(emp, shiftRow.iso).sl)) +
-      '</dd></div>' +
+      '<div><dt>VL (hrs)</dt><dd>' +
+      '<input type="number" class="timecards-extra-input" id="tcDayVl" data-timecard-extra="vl" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
+      d().escapeHtml(emp.id) +
+      '" min="0" step="0.25" inputmode="decimal" value="' +
+      d().escapeHtml(String(dayLeaveHours.vl)) +
+      '" /></dd></div>' +
+      '<div><dt>SL (hrs)</dt><dd>' +
+      '<input type="number" class="timecards-extra-input" id="tcDaySl" data-timecard-extra="sl" data-timecard-day-iso="' +
+      d().escapeHtml(shiftRow.iso) +
+      '" data-timecard-employee-id="' +
+      d().escapeHtml(emp.id) +
+      '" min="0" step="0.25" inputmode="decimal" value="' +
+      d().escapeHtml(String(dayLeaveHours.sl)) +
+      '" /></dd></div>' +
       '<div><dt>Missing hours</dt><dd>' +
       '<input type="number" class="timecards-extra-input" id="tcDayMissingHours" data-timecard-extra="missingHours" data-timecard-day-iso="' +
       d().escapeHtml(shiftRow.iso) +
@@ -12171,7 +12252,7 @@
       (dayEntries.length > 1 ? ' · ' + dayEntries.length + ' punches' : '') +
       '</p>' +
       '<h3 class="emp-form-subtitle" id="timecardsEditPunchTitle">Edit punch</h3>' +
-      '<p class="calendar-hint">Type date and time in each field, or use the browser picker. Leave VL/SL blank on Schedule if this day is unpaid time off without a punch.</p>' +
+      '<p class="calendar-hint">Type date and time in each field, or use the browser picker. VL/SL can be edited here or on Schedule — they stay in sync.</p>' +
       '<form id="timecardsShiftForm" class="timecards-edit-form" novalidate>' +
       '<input type="hidden" id="tcEditingEntryId" value="" />' +
       renderDateTimeField('Clock in', 'tcClockIn', true) +
@@ -12865,15 +12946,16 @@
     var localEntry = entryFromManagerSave(rpcRes.data, row);
     if (localEntry) upsertLocalWeekEntry(localEntry);
     /*
-     * Navigate first — Save should feel done after the punch RPC. Do not dual-write
-     * VL/SL or flush tip-payroll here (that re-upserted employees + team_state on every
-     * punch and made Save feel multi-second). Tips already debounce via week-extras maps;
-     * VL/SL are edited on Schedule.
+     * Navigate first — Save should feel done after the punch RPC. Tips and VL/SL
+     * persist after navigate (local week-extras + debounced cloud); do not block
+     * the button on employee upserts.
      */
+    var pendingLeave = readShiftDayLeaveFromForm(emp, shiftRow.iso);
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
     persistShiftDayTipsFromForm(emp, shiftRow);
+    setEmployeeDayLeave(emp.id, shiftRow.iso, pendingLeave.vl, pendingLeave.sl);
     /* Background SoT reconcile — do not block the Save button on a full-week refetch. */
     void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     } catch (ex) {
@@ -13169,6 +13251,10 @@
     },
     invalidateScheduleCache: invalidatePayWeekScheduleCache,
     invalidateFullReportSheetsCache: invalidateFullReportSheetsCache,
+    invalidateWeekExtrasSliceCache: invalidateWeekExtrasSliceCache,
+    getEffectiveDayLeave: getEffectiveDayLeave,
+    setEmployeeDayLeave: setEmployeeDayLeave,
+    refreshGrandTotals: refreshTimecardGrandTotals,
     onScheduleChanged: onScheduleChanged,
     clearDayLeaveOverridesInRange: clearDayLeaveOverridesInRange,
     applyRemoteTipPayroll: applyRemoteTipPayroll,

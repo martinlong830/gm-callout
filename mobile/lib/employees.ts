@@ -97,6 +97,13 @@ export function normalizeEmploymentStatus(raw: unknown): 'part-time' | 'full-tim
   return String(raw ?? '').trim().toLowerCase() === 'part-time' ? 'part-time' : 'full-time';
 }
 
+export function employeeIsDeactivated(
+  emp: { meta?: Record<string, unknown> | null } | null | undefined
+): boolean {
+  const v = emp?.meta?.deactivated;
+  return v === true || v === 'true' || v === 1;
+}
+
 export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | null {
   if (!row?.id) return null;
   const urRaw = String(row.usual_restaurant ?? '').trim();

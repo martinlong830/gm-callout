@@ -468,6 +468,53 @@ function emptyState() {
   );
 })();
 
+// 21) Clearing a person via set_worker(null) must stick (Unassigned sync)
+(function () {
+  var slot = sync.uuid();
+  var r1 = sync.applyOpsLocal(emptyState(), [
+    sync.opSetTimes('rp-9', '2026-09-05', 'Bartender', slot, '10:00', '18:00'),
+    sync.opSetWorker('rp-9', '2026-09-05', 'Bartender', slot, 'EUGENE VILLARRUZ', null),
+  ]);
+  var named = r1.state.cells[sync.cellKey('rp-9', '2026-09-05', 'Bartender', slot)];
+  assert(named.worker_name === 'EUGENE VILLARRUZ', 'named worker stamps');
+  var r2 = sync.applyOpsLocal(r1.state, [
+    sync.opSetWorker('rp-9', '2026-09-05', 'Bartender', slot, null, null),
+  ]);
+  var cleared = r2.state.cells[sync.cellKey('rp-9', '2026-09-05', 'Bartender', slot)];
+  assert(cleared.worker_name == null, 'set_worker null clears person');
+  assert(cleared.start_hhmm === '10:00', 'clearing person keeps times');
+})();
+
+// 22) Conscious enqueue gate: mutate ops use op_type (not .type) and drop unless conscious
+(function () {
+  function filterMutateOps(ops, opts) {
+    opts = opts || {};
+    var allowMutate = !!opts.forceFullWeekStamp || !!opts.conscious;
+    if (allowMutate) return ops.slice();
+    return ops.filter(function (dop) {
+      var dType = dop && (dop.op_type || dop.type) ? String(dop.op_type || dop.type) : '';
+      return (
+        dType !== 'set_times' &&
+        dType !== 'set_day_off' &&
+        dType !== 'set_worker' &&
+        dType !== 'clear_worker'
+      );
+    });
+  }
+  var slot = sync.uuid();
+  var mutate = [
+    sync.opAddSlot('rp-9', 'Bartender', slot, 0),
+    sync.opSetTimes('rp-9', '2026-09-05', 'Bartender', slot, '11:00', '19:00'),
+    sync.opSetWorker('rp-9', '2026-09-05', 'Bartender', slot, 'MAEVE WILLIAMS', null),
+  ];
+  var dropped = filterMutateOps(mutate, {});
+  assert(dropped.length === 1 && dropped[0].op_type === 'add_slot', 'unconscious drops mutate ops via op_type');
+  var kept = filterMutateOps(mutate, { conscious: true });
+  assert(kept.length === 3, 'conscious keeps set_times/set_worker');
+  var typedWrong = [{ type: 'set_times', op_type: 'set_times' }, { op_type: 'add_slot' }];
+  assert(filterMutateOps(typedWrong, {}).length === 1, 'reads op_type not only .type');
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

@@ -17,7 +17,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
+import { useLocalSearchParams, type ErrorBoundaryProps, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { ScheduleTemplatesSheet } from '../../components/ScheduleTemplatesSheet';
@@ -164,6 +164,7 @@ import {
 import {
   masterTemplateRowsForRole,
   normalizeScheduleTemplates,
+  weekPatternFromScheduleTemplate,
   type NormalTemplate,
   type ScheduleTemplate,
 } from '../../lib/schedule/templates';
@@ -187,6 +188,7 @@ import {
 } from '../../lib/timecards/weekBorrow';
 import {
   getCustomSlotOrderForRole,
+  mergeDraftScheduleSlotOrderFromRemote,
   mergePendingDraftWithHydrated,
   moveTrIdxInSlotOrder,
   patchSlotOrderAfterAdd,
@@ -206,6 +208,7 @@ import {
   patchScheduleNetSalesInDraft,
   readScheduleNetSalesByWeek,
 } from '../../lib/schedule/scheduleNetSales';
+import { getOngiFlag, patchOngiFlagInDraft, readOngiFlagsByWeek } from '../../lib/schedule/ongiFlags';
 
 function formatScheduleLaborPay(amount: number): string {
   const n = Number(amount) || 0;
@@ -420,6 +423,7 @@ export default function ManagerScheduleScreen() {
   const [editWorker, setEditWorker] = useState('Unassigned');
   const [editVl, setEditVl] = useState('0');
   const [editSl, setEditSl] = useState('0');
+  const [editOngi, setEditOngi] = useState(false);
   const [shiftPersonBorrowMode, setShiftPersonBorrowMode] = useState(false);
   const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
@@ -449,6 +453,22 @@ export default function ManagerScheduleScreen() {
   const pendingStoreRef = useRef<AssignmentStore | null>(null);
   /** True from a manager edit until its save is confirmed — hydrate must not overwrite it. */
   const localEditPendingRef = useRef(false);
+  /**
+   * After an intentional cell write (edit/add/delete/person/template), refuse cloud
+   * cell apply until replica lag settles — same idea as web scheduleLocalAuthority.
+   */
+  const cellWriteProtectUntilRef = useRef(0);
+  const armCellWriteProtect = useCallback((ms = 15000) => {
+    cellWriteProtectUntilRef.current = Math.max(
+      cellWriteProtectUntilRef.current,
+      Date.now() + ms
+    );
+  }, []);
+  const cellWriteProtectActive = useCallback(
+    () => Date.now() < cellWriteProtectUntilRef.current,
+    []
+  );
+  const panelInputFocusedRef = useRef(false);
   const persistCloudRef = useRef<
     ((store: AssignmentStore, draftSchedule?: unknown) => Promise<void>) | null
   >(null);
@@ -496,13 +516,20 @@ export default function ManagerScheduleScreen() {
 
   const applyProjectedStores = useCallback(
     (projected: { assign: AssignmentStore; draft: unknown }) => {
+      if (
+        panelInputFocusedRef.current ||
+        localEditPendingRef.current ||
+        cellWriteProtectActive()
+      ) {
+        return;
+      }
       setAssignmentStore(projected.assign);
       setRolledDraftRaw(projected.draft);
       applyLocalScheduleAssignments(projected.assign, projected.draft, {
         markDirty: false,
       });
     },
-    [applyLocalScheduleAssignments]
+    [applyLocalScheduleAssignments, cellWriteProtectActive]
   );
 
   const pullCloudSchedule = useCallback(
@@ -513,6 +540,8 @@ export default function ManagerScheduleScreen() {
     }) => {
       if (!supabase || !isManagerLikeRole(role)) return;
       if (localEditPendingRef.current && !opts?.ignoreLocalEdit) return;
+      if (cellWriteProtectActive() && !opts?.ignoreLocalEdit) return;
+      if (panelInputFocusedRef.current && !opts?.ignoreLocalEdit) return;
       try {
         const companyId = await readStoredCompanyId();
         if (!companyId) return;
@@ -563,6 +592,7 @@ export default function ManagerScheduleScreen() {
       weekIndex,
       teamState?.draft_schedule,
       applyProjectedStores,
+      cellWriteProtectActive,
     ]
   );
 
@@ -572,7 +602,7 @@ export default function ManagerScheduleScreen() {
     const first = consumeDocumentCloudSoT();
     void pullCloudSchedule({ fullWindow: first, cloudAuthority: first });
     const pollTimer = setInterval(() => {
-      if (cancelled || localEditPendingRef.current) return;
+      if (cancelled || localEditPendingRef.current || panelInputFocusedRef.current) return;
       void pullCloudSchedule({ fullWindow: false });
     }, 5000);
     return () => {
@@ -1082,13 +1112,18 @@ export default function ManagerScheduleScreen() {
             payload.draft_schedule = draftToSave;
             fields.push('draft_schedule');
           }
+        } else if (draftToSave !== undefined) {
+          /* Group-order / net-sales / ↑↓ live in draft_schedule, not cells. */
+          payload.draft_schedule = draftToSave;
+          fields.push('draft_schedule');
         } else if (!fields.length) {
           /* Nothing blob-shaped to push; ops already flushed via syncV2. */
           return;
         }
         const pushedAssignJson = cellsOnly ? null : JSON.stringify(toSave);
-        const pushedDraftJson =
-          !cellsOnly && draftToSave !== undefined ? JSON.stringify(draftToSave) : null;
+        const pushedDraftJson = fields.includes('draft_schedule')
+          ? JSON.stringify(payload.draft_schedule ?? draftToSave ?? null)
+          : null;
         const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
         let up = knownAt
           ? await supabase
@@ -1133,7 +1168,10 @@ export default function ManagerScheduleScreen() {
             ) {
               /* keep remote draft when we were not pushing draft */
             } else if (draftToSave !== undefined) {
-              payload.draft_schedule = draftToSave;
+              payload.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+                draftToSave,
+                remoteRes.data?.draft_schedule
+              );
             }
           } catch (conflictMergeErr) {
             console.warn('schedule conflict merge', conflictMergeErr);
@@ -1340,12 +1378,10 @@ export default function ManagerScheduleScreen() {
   const applyNormalTemplateFromSheet = useCallback(
     (template: NormalTemplate) => {
       if (!scheduleEditable) return;
+      armCellWriteProtect(120000);
       const nextStore = JSON.parse(JSON.stringify(assignmentStoreRef.current)) as AssignmentStore;
       if (!nextStore[currentRestaurantId]) nextStore[currentRestaurantId] = {};
-      const pattern =
-        template.weekPattern && typeof template.weekPattern === 'object'
-          ? (template.weekPattern as Record<string, unknown>)
-          : {};
+      const pattern = weekPatternFromScheduleTemplate(template, currentRestaurantId);
       const weekStart = weekIndex * 7;
       const weekEnd = weekStart + 7;
       /*
@@ -1436,91 +1472,114 @@ export default function ManagerScheduleScreen() {
         const shiftId = `shift-${weekStart + dayIndex}-${roleIndex}-${trIdx}`;
         nextStore[currentRestaurantId][shiftId] = JSON.parse(JSON.stringify(pattern[key]));
       });
+      const breakGrid = template.draftBreakSchedule;
+      if (breakGrid && typeof breakGrid === 'object') {
+        (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIdx) => {
+          const rows = (breakGrid as Record<string, unknown>)[roleKey];
+          if (!Array.isArray(rows)) return;
+          rows.forEach((row, trIdx) => {
+            if (!Array.isArray(row)) return;
+            for (let di = 0; di < 7; di += 1) {
+              const brk = row[di];
+              if (brk == null || brk === '') continue;
+              const shiftId = `shift-${weekStart + di}-${roleIdx}-${trIdx}`;
+              const raw = nextStore[currentRestaurantId][shiftId];
+              const entry =
+                raw && typeof raw === 'object' && !Array.isArray(raw)
+                  ? { ...(raw as Record<string, unknown>) }
+                  : { workers: ['Unassigned'] };
+              entry.break = brk;
+              nextStore[currentRestaurantId][shiftId] = entry;
+            }
+          });
+        });
+      }
       pushUndoSnapshot();
       suppressHydrateUndoClearRef.current = true;
       setAssignmentStore(nextStore);
       setRolledDraftRaw(nextDraft);
       applyLocalScheduleAssignments(nextStore, nextDraft);
       queuePersist(nextStore, nextDraft);
-      /* Sync v2 cells so cloud SoT matches the applied template. */
-      if (supabase) {
-        void (async () => {
-          try {
-            const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
-            const ops: ScheduleOp[] = [];
-            const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
-            const rs = nextStore[currentRestaurantId] || {};
-            const companyId = (await readStoredCompanyId()) || '';
-            const slotsRes = companyId ? await fetchSlots(supabase, companyId) : { data: [] };
-            const knownSlots = (slotsRes.data || []) as {
-              restaurant_id?: string;
-              role?: string;
-              slot_key?: string;
-              sort_order?: number;
-              active?: boolean;
-            }[];
-            for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
-              const roleKey = roles[roleIdx];
-              const n = slotCountForRole(draft, roleKey);
-              for (let trIdx = 0; trIdx < n; trIdx += 1) {
-                const slotKey = await ensureSlotKey(
-                  currentRestaurantId,
-                  roleKey,
-                  trIdx,
-                  knownSlots
-                );
-                ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
-                for (let di = 0; di < 7; di += 1) {
-                  const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
-                  if (!dayIso) continue;
-                  const wk = WEEKDAY_KEYS[di];
-                  const tr = draftTimeSlotFor(draft, roleKey, wk, trIdx);
-                  const shiftId = `shift-${weekStart + di}-${roleIdx}-${trIdx}`;
-                  const raw = rs[shiftId];
-                  const entry = normalizeScheduleAssignment(raw);
-                  const rawOwner =
-                    raw && typeof raw === 'object' && !Array.isArray(raw)
-                      ? String((raw as { rowOwner?: string }).rowOwner || '').trim()
-                      : '';
-                  const worker =
-                    (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
-                    (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
-                  if (!tr?.start || !tr?.end) {
-                    ops.push(
-                      opSetDayOff(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
-                    );
-                  } else {
-                    ops.push(
-                      opSetTimes(
-                        currentRestaurantId,
-                        dayIso,
-                        roleKey,
-                        slotKey,
-                        tr.start,
-                        tr.end,
-                        entry.break || null
-                      )
-                    );
-                    ops.push(
-                      opSetWorker(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
-                    );
-                  }
+      /* Sync v2 cells so cloud SoT matches the applied template on every device. */
+      void (async () => {
+        try {
+          await flushPendingScheduleEdits();
+          if (!supabase) return;
+          const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+          const ops: ScheduleOp[] = [];
+          const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
+          const rs = nextStore[currentRestaurantId] || {};
+          const companyId = (await readStoredCompanyId()) || '';
+          const slotsRes = companyId ? await fetchSlots(supabase, companyId) : { data: [] };
+          const knownSlots = (slotsRes.data || []) as {
+            restaurant_id?: string;
+            role?: string;
+            slot_key?: string;
+            sort_order?: number;
+            active?: boolean;
+          }[];
+          for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
+            const roleKey = roles[roleIdx];
+            const n = slotCountForRole(draft, roleKey);
+            for (let trIdx = 0; trIdx < n; trIdx += 1) {
+              const slotKey = await ensureSlotKey(
+                currentRestaurantId,
+                roleKey,
+                trIdx,
+                knownSlots
+              );
+              ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
+              for (let di = 0; di < 7; di += 1) {
+                const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
+                if (!dayIso) continue;
+                const wk = WEEKDAY_KEYS[di];
+                const tr = draftTimeSlotFor(draft, roleKey, wk, trIdx);
+                const shiftId = `shift-${weekStart + di}-${roleIdx}-${trIdx}`;
+                const raw = rs[shiftId];
+                const entry = normalizeScheduleAssignment(raw);
+                const rawOwner =
+                  raw && typeof raw === 'object' && !Array.isArray(raw)
+                    ? String((raw as { rowOwner?: string }).rowOwner || '').trim()
+                    : '';
+                const worker =
+                  (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
+                  (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
+                if (!tr?.start || !tr?.end) {
+                  ops.push(
+                    opSetDayOff(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                  );
+                } else {
+                  ops.push(
+                    opSetTimes(
+                      currentRestaurantId,
+                      dayIso,
+                      roleKey,
+                      slotKey,
+                      tr.start,
+                      tr.end,
+                      entry.break || null
+                    )
+                  );
+                  ops.push(
+                    opSetWorker(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                  );
                 }
               }
             }
-            for (let i = 0; i < ops.length; i += 40) {
-              await enqueueOps(ops.slice(i, i + 40));
-            }
-            await flushOutboxFully(supabase);
-          } catch (tplV2Err) {
-            console.warn('template apply cell ops', tplV2Err);
           }
-        })();
-      }
+          for (let i = 0; i < ops.length; i += 40) {
+            await enqueueOps(ops.slice(i, i + 40));
+          }
+          await flushOutboxFully(supabase);
+        } catch (tplV2Err) {
+          console.warn('template apply cell ops', tplV2Err);
+        }
+      })();
       Alert.alert(t('schedule.templates'), `${template.name} applied.`);
     },
     [
       applyLocalScheduleAssignments,
+      armCellWriteProtect,
       currentRestaurantId,
       draftScheduleRaw,
       pushUndoSnapshot,
@@ -1544,7 +1603,35 @@ export default function ManagerScheduleScreen() {
     setRolledDraftRaw(snap.draftScheduleRaw);
     applyLocalScheduleAssignments(snap.assignmentStore, snap.draftScheduleRaw);
     queuePersist(snap.assignmentStore, snap.draftScheduleRaw);
-  }, [applyLocalScheduleAssignments, queuePersist]);
+    armCellWriteProtect(120000);
+    if (supabase) {
+      void (async () => {
+        try {
+          const companyId = await readStoredCompanyId();
+          if (!companyId) return;
+          await enqueueRestaurantWeekCellOps({
+            sb: supabase,
+            companyId,
+            restaurantId: currentRestaurantId,
+            weekIndex,
+            weekMeta,
+            draftRaw: snap.draftScheduleRaw,
+            assignmentStore: snap.assignmentStore,
+          });
+        } catch {
+          /* blob persist still queued */
+        }
+      })();
+    }
+  }, [
+    applyLocalScheduleAssignments,
+    armCellWriteProtect,
+    currentRestaurantId,
+    queuePersist,
+    supabase,
+    weekIndex,
+    weekMeta,
+  ]);
 
   const openScheduleHistory = useCallback(async () => {
     const sb = supabase;
@@ -1724,6 +1811,18 @@ export default function ManagerScheduleScreen() {
                   }
                   if (Object.keys(liveSales).length) liveBase.scheduleNetSalesByWeek = liveSales;
                   else delete liveBase.scheduleNetSalesByWeek;
+
+                  const liveOngi = readOngiFlagsByWeek(liveBase);
+                  const revOngi = readOngiFlagsByWeek(revBase);
+                  if (!liveOngi[mon]) liveOngi[mon] = {};
+                  if (revOngi[mon]?.[rid]) {
+                    liveOngi[mon][rid] = JSON.parse(JSON.stringify(revOngi[mon][rid]));
+                  } else {
+                    delete liveOngi[mon][rid];
+                    if (!Object.keys(liveOngi[mon]).length) delete liveOngi[mon];
+                  }
+                  if (Object.keys(liveOngi).length) liveBase.ongiFlagsByWeek = liveOngi;
+                  else delete liveBase.ongiFlagsByWeek;
 
                   const liveSlot = readSlotOrderByWeek(liveBase);
                   const revSlot = readSlotOrderByWeek(revBase);
@@ -1997,6 +2096,23 @@ export default function ManagerScheduleScreen() {
     };
   }, [selectedWeekMonday, employees, teamState?.updated_at]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedWeekMonday)) return;
+      const mon = new Date(`${selectedWeekMonday}T12:00:00`);
+      const bounds = getPayWeekBoundsForMonday(mon);
+      void loadWeekExtrasSlice(bounds).then((slice) => {
+        setWeekExtrasSlice(slice);
+        const next: Record<string, string> = {};
+        for (const e of employees) {
+          const b = getEmployeeBorrowedRestaurantSync(e.id, slice);
+          if (b) next[e.id] = b;
+        }
+        setBorrowByEmpId(next);
+      });
+    }, [selectedWeekMonday, employees])
+  );
+
   const lites = useMemo(
     () =>
       employees.map((e) => {
@@ -2077,6 +2193,24 @@ export default function ManagerScheduleScreen() {
     teamState,
   ]);
 
+  const ongiFlagByCell = useMemo(() => {
+    const out = new Set<string>();
+    const map = readOngiFlagsByWeek(draftScheduleRaw);
+    const mon = selectedWeekMonday;
+    const rid = currentRestaurantId;
+    const rest = mon && rid ? map[mon]?.[rid] || {} : {};
+    Object.keys(rest).forEach((cellKey) => {
+      if (rest[cellKey] !== true) return;
+      const parts = cellKey.split('|');
+      if (parts.length !== 3) return;
+      const dayStr = weekMeta.find(
+        (m) => m.iso && String(m.iso).slice(0, 10) === parts[2]
+      )?.label;
+      if (dayStr) out.add(`${parts[0]}|${parts[1]}|${dayStr}`);
+    });
+    return out;
+  }, [draftScheduleRaw, selectedWeekMonday, currentRestaurantId, weekMeta]);
+
   const calendarBody = useMemo(() => {
     try {
       const managedScope =
@@ -2098,7 +2232,8 @@ export default function ManagerScheduleScreen() {
         weekIndex,
         otherStoreDayLabels,
         abbreviateForManagedStoreId,
-        leaveFlagByPersonDay
+        leaveFlagByPersonDay,
+        ongiFlagByCell
       );
     } catch (err) {
       console.warn('buildCalendarBody', err);
@@ -2115,6 +2250,7 @@ export default function ManagerScheduleScreen() {
     weekIndex,
     otherStoreDayLabels,
     leaveFlagByPersonDay,
+    ongiFlagByCell,
     role,
     myEmployee,
   ]);
@@ -2226,10 +2362,16 @@ export default function ManagerScheduleScreen() {
     isDayOff: boolean;
     breakText: string | null;
     workers?: string[] | null;
+    ongi?: boolean;
   }): boolean {
     const wk = weekdayKeyFromScheduleDay(opts.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
     if (di < 0) return false;
+    const roleIdx = opts.role === 'Kitchen' ? 0 : opts.role === 'Bartender' ? 1 : 2;
+    const shiftId = `shift-${weekIndex * 7 + di}-${roleIdx}-${opts.trIdx}`;
+    const prev = normalizeScheduleAssignment(
+      assignmentStoreRef.current[currentRestaurantId]?.[shiftId]
+    );
     const applied = applyShiftSlotEdit({
       draftRows,
       store: assignmentStoreRef.current,
@@ -2246,17 +2388,72 @@ export default function ManagerScheduleScreen() {
     });
     if (!applied) return false;
     pushUndoSnapshot();
-    const draftPayload = patchDraftScheduleForWeek(
+    let draftPayload = patchDraftScheduleForWeek(
       draftScheduleRawRef.current,
       weekIndex,
       currentRestaurantId,
       applied.draftRows
     );
+    if (typeof opts.ongi === 'boolean') {
+      const dayIso = dayIsoForShiftDayStr(opts.dayStr);
+      const mon = selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
+      if (dayIso && mon) {
+        draftPayload = patchOngiFlagInDraft(
+          draftPayload,
+          mon,
+          currentRestaurantId,
+          opts.role,
+          opts.trIdx,
+          dayIso,
+          opts.ongi
+        );
+      }
+    }
     suppressHydrateUndoClearRef.current = true;
     setAssignmentStore(applied.store);
     setRolledDraftRaw(draftPayload);
     applyLocalScheduleAssignments(applied.store, draftPayload);
     queuePersist(applied.store, draftPayload);
+    armCellWriteProtect(15000);
+    const dayIso = dayIsoForShiftDayStr(opts.dayStr);
+    if (dayIso && supabase) {
+      const workerFromOpts = (opts.workers || []).find((w) => w && w !== 'Unassigned') || null;
+      const dayOffOwner =
+        (prev.workers || []).find((w) => w && w !== 'Unassigned') ||
+        (prev.rowOwner && prev.rowOwner !== 'Unassigned' ? String(prev.rowOwner) : null) ||
+        null;
+      const worker = opts.isDayOff ? workerFromOpts || dayOffOwner : workerFromOpts;
+      void (async () => {
+        try {
+          const slotKey = await ensureSlotKey(currentRestaurantId, opts.role, opts.trIdx);
+          const ops: ScheduleOp[] = [opAddSlot(currentRestaurantId, opts.role, slotKey, opts.trIdx)];
+          if (opts.isDayOff) {
+            ops.push(
+              opSetDayOff(currentRestaurantId, dayIso, opts.role, slotKey, worker)
+            );
+          } else {
+            ops.push(
+              opSetTimes(
+                currentRestaurantId,
+                dayIso,
+                opts.role,
+                slotKey,
+                opts.start,
+                opts.end,
+                opts.breakText
+              )
+            );
+            ops.push(
+              opSetWorker(currentRestaurantId, dayIso, opts.role, slotKey, worker)
+            );
+          }
+          await enqueueOps(ops);
+          await flushOutbox(supabase);
+        } catch {
+          /* local already applied */
+        }
+      })();
+    }
     return true;
   }
 
@@ -2361,6 +2558,22 @@ export default function ManagerScheduleScreen() {
     setEditWorker(nextWorker);
     setEditVl('0');
     setEditSl('0');
+    const dayIso = dayIsoForShiftDayStr(target.dayStr);
+    const mon = selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
+    setEditOngi(
+      !!(
+        dayIso &&
+        mon &&
+        getOngiFlag(
+          draftScheduleRawRef.current,
+          mon,
+          currentRestaurantId,
+          target.role,
+          target.trIdx,
+          dayIso
+        )
+      )
+    );
     setShiftEditor(target);
     void loadShiftEditorLeave(nextWorker, target.dayStr);
   }
@@ -2422,8 +2635,6 @@ export default function ManagerScheduleScreen() {
     captureScheduleScroll();
     const start = target.shift?.start || '10:00';
     const end = target.shift?.end || '18:00';
-    const owner =
-      (target.shift?.workers || []).find((w) => w && w !== 'Unassigned') || null;
     const ok = persistSlotEdit({
       role: target.role,
       trIdx: target.trIdx,
@@ -2437,17 +2648,6 @@ export default function ManagerScheduleScreen() {
     if (!ok) {
       Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
       return;
-    }
-    const dayIso = dayIsoForShiftDayStr(target.dayStr);
-    if (dayIso && supabase) {
-      void (async () => {
-        const slotKey = await ensureSlotKey(currentRestaurantId, target.role, target.trIdx);
-        await enqueueOps([
-          opAddSlot(currentRestaurantId, target.role, slotKey, target.trIdx),
-          opSetDayOff(currentRestaurantId, dayIso, target.role, slotKey, owner),
-        ]);
-        await flushOutbox(supabase);
-      })();
     }
     restoreScheduleScroll();
   }
@@ -2560,54 +2760,11 @@ export default function ManagerScheduleScreen() {
         isDayOff: editDayOff,
         breakText,
         workers: editDayOff ? null : list,
+        ongi: editOngi,
       });
       if (!ok) {
         Alert.alert(t('schedule.couldNotSave'), t('schedule.checkTimes'));
         return;
-      }
-      if (dayIso && supabase) {
-        void (async () => {
-          const slotKey = await ensureSlotKey(
-            currentRestaurantId,
-            shiftEditor.role,
-            shiftEditor.trIdx
-          );
-          const ops = [opAddSlot(currentRestaurantId, shiftEditor.role, slotKey, shiftEditor.trIdx)];
-          if (editDayOff) {
-            ops.push(
-              opSetDayOff(
-                currentRestaurantId,
-                dayIso,
-                shiftEditor.role,
-                slotKey,
-                leavePerson || null
-              )
-            );
-          } else {
-            ops.push(
-              opSetTimes(
-                currentRestaurantId,
-                dayIso,
-                shiftEditor.role,
-                slotKey,
-                start,
-                end,
-                breakText
-              )
-            );
-            ops.push(
-              opSetWorker(
-                currentRestaurantId,
-                dayIso,
-                shiftEditor.role,
-                slotKey,
-                editWorker === 'Unassigned' ? null : editWorker
-              )
-            );
-          }
-          await enqueueOps(ops);
-          await flushOutbox(supabase);
-        })();
       }
       if (leavePerson && dayIso && supabase) {
         const leaveEmp =
@@ -2668,6 +2825,18 @@ export default function ManagerScheduleScreen() {
     setRolledDraftRaw(draftPayload);
     applyLocalScheduleAssignments(assignmentStore, draftPayload);
     queuePersist(assignmentStore, draftPayload);
+    armCellWriteProtect(30000);
+    if (supabase) {
+      void (async () => {
+        try {
+          const slotKey = await ensureSlotKey(currentRestaurantId, roleKey, newTrIdx);
+          await enqueueOps([opAddSlot(currentRestaurantId, roleKey, slotKey, newTrIdx)]);
+          await flushOutbox(supabase);
+        } catch {
+          /* local add already applied */
+        }
+      })();
+    }
   }
 
   function deleteSlotForRole(roleKey: RoleKey, trIdx: number) {
@@ -2717,6 +2886,7 @@ export default function ManagerScheduleScreen() {
         setRolledDraftRaw(draftPayload);
         applyLocalScheduleAssignments(nextStore, draftPayload);
         queuePersist(nextStore, draftPayload);
+        armCellWriteProtect(15000);
         if (slotKey) {
           try {
             await enqueueOps([opDeactivateSlot(currentRestaurantId, roleKey, slotKey)]);
@@ -2847,6 +3017,49 @@ export default function ManagerScheduleScreen() {
     setAssignmentStore(next);
     applyLocalScheduleAssignments(next);
     queuePersist(next);
+    armCellWriteProtect(15000);
+    if (supabase) {
+      void (async () => {
+        try {
+          const slotKey = await ensureSlotKey(currentRestaurantId, target.role, target.trIdx);
+          const draft = loadDraftFromTeamState(
+            draftScheduleRawRef.current,
+            weekIndex,
+            currentRestaurantId
+          );
+          const worker = workerName && workerName !== 'Unassigned' ? workerName : null;
+          const ops: ScheduleOp[] = [
+            opAddSlot(currentRestaurantId, target.role, slotKey, target.trIdx),
+          ];
+          for (let di = 0; di < 7; di += 1) {
+            const dayIso = weekMeta[weekIndex * 7 + di]?.iso
+              ? String(weekMeta[weekIndex * 7 + di].iso).slice(0, 10)
+              : '';
+            if (!dayIso) continue;
+            const wk = WEEKDAY_KEYS[di];
+            const tr = draftTimeSlotFor(draft, target.role, wk, target.trIdx);
+            if (!tr?.start || !tr?.end) {
+              ops.push(
+                opSetDayOff(currentRestaurantId, dayIso, target.role, slotKey, worker)
+              );
+              if (worker) {
+                ops.push(
+                  opSetWorker(currentRestaurantId, dayIso, target.role, slotKey, worker)
+                );
+              }
+            } else {
+              ops.push(
+                opSetWorker(currentRestaurantId, dayIso, target.role, slotKey, worker)
+              );
+            }
+          }
+          await enqueueOps(ops);
+          await flushOutbox(supabase);
+        } catch {
+          /* local person assign already applied */
+        }
+      })();
+    }
     setRowPersonBorrowMode(false);
     setRowPersonPicker(null);
   }
@@ -3436,13 +3649,18 @@ export default function ManagerScheduleScreen() {
                           <View key={`${row.key}-${dayStr}`} style={[styles.panelDayCol, { width: CELL_MIN }]}>
                             {scheduleEditable ? (
                               <TextInput
-                                key={`ns-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${stored}`}
+                                key={`ns-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}`}
                                 style={styles.panelInput}
                                 defaultValue={stored}
                                 placeholder="0"
                                 placeholderTextColor="#94a3b8"
                                 keyboardType="decimal-pad"
-                                selectTextOnFocus
+                                onFocus={() => {
+                                  panelInputFocusedRef.current = true;
+                                }}
+                                onBlur={() => {
+                                  panelInputFocusedRef.current = false;
+                                }}
                                 onEndEditing={(e) => {
                                   const text = e.nativeEvent.text;
                                   if (text === stored) return;
@@ -3540,13 +3758,18 @@ export default function ManagerScheduleScreen() {
                         <View key={`${plat.id}-${dayStr}`} style={[styles.panelDayCol, { width: CELL_MIN }]}>
                           {scheduleEditable ? (
                             <TextInput
-                              key={`${plat.id}-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}-${val}`}
+                              key={`${plat.id}-${dayIso}-${selectedWeekMonday}-${currentRestaurantId}`}
                               style={styles.panelInput}
                               defaultValue={val}
                               placeholder="0"
                               placeholderTextColor="#94a3b8"
                               keyboardType="decimal-pad"
-                              selectTextOnFocus
+                              onFocus={() => {
+                                panelInputFocusedRef.current = true;
+                              }}
+                              onBlur={() => {
+                                panelInputFocusedRef.current = false;
+                              }}
                               onEndEditing={(e) => {
                                 const text = e.nativeEvent.text;
                                 if (text === stored || (text === '0' && stored === '')) return;
@@ -3903,6 +4126,11 @@ export default function ManagerScheduleScreen() {
                   <Text style={styles.editLabel}>{t('schedule.dayOffToggle')}</Text>
                   <Switch value={editDayOff} onValueChange={setEditDayOff} />
                 </View>
+                <View style={styles.editRow}>
+                  <Text style={styles.editLabel}>{t('schedule.ongiFlag')}</Text>
+                  <Switch value={editOngi} onValueChange={setEditOngi} />
+                </View>
+                <Text style={styles.editHint}>{t('schedule.ongiFlagHint')}</Text>
                 {!editDayOff ? (
                   <>
                     <View style={styles.editTimesRow}>
@@ -4389,26 +4617,51 @@ const CalendarCellView = memo(function CalendarCellView({
       breakTime: t('schedule.breakTime'),
       office: t('schedule.office'),
     });
-  const otherStoreBadge = (label: string) => (
-    <View style={styles.otherStorePill}>
+  const otherStoreBadge = (label: string, stacked: boolean) => (
+    <View style={[styles.otherStorePill, stacked ? styles.flagPillStacked : null]}>
       <Text style={styles.otherStorePillText} numberOfLines={1}>
         {label}
       </Text>
     </View>
   );
-  const leaveFlagBadge = (label: string, stacked: boolean) => (
-    <View style={[styles.leaveFlagPill, stacked ? styles.leaveFlagPillStacked : null]}>
+  const leaveFlagBadge = (label: string, stacked: boolean, stacked2?: boolean) => (
+    <View
+      style={[
+        styles.leaveFlagPill,
+        stacked ? styles.flagPillStacked : null,
+        stacked2 ? styles.flagPillStacked2 : null,
+      ]}
+    >
       <Text style={styles.leaveFlagPillText} numberOfLines={1}>
         {label}
       </Text>
     </View>
   );
-  const flagStrip = (leaveFlag?: string, otherStore?: string) => (
-    <>
-      {leaveFlag ? leaveFlagBadge(leaveFlag, !!otherStore) : null}
-      {otherStore ? otherStoreBadge(otherStore) : null}
-    </>
+  const ongiBadge = () => (
+    <View style={styles.ongiFlagPill}>
+      <Text style={styles.ongiFlagPillText} numberOfLines={1}>
+        {t('schedule.ongiFlag')}
+      </Text>
+    </View>
   );
+  const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: boolean) => {
+    const belowLeave = (otherStore ? 1 : 0) + (ongi ? 1 : 0);
+    return (
+      <>
+        {leaveFlag ? leaveFlagBadge(leaveFlag, belowLeave >= 1, belowLeave >= 2) : null}
+        {otherStore ? otherStoreBadge(otherStore, !!ongi) : null}
+        {ongi ? ongiBadge() : null}
+      </>
+    );
+  };
+  const flagCountForCell = (c: CalendarCell) =>
+    (c.leaveFlag ? 1 : 0) + (c.otherStoreLabel ? 1 : 0) + (c.ongiFlag ? 1 : 0);
+  const extraFlagPad = (c: CalendarCell) => {
+    const n = flagCountForCell(c);
+    if (n >= 3) return 36;
+    if (n >= 2) return 18;
+    return 0;
+  };
   if (cell.kind === 'empty') {
     const target: ShiftEditTarget = {
       role: cell.role,
@@ -4416,6 +4669,7 @@ const CalendarCellView = memo(function CalendarCellView({
       dayStr: cell.dayStr,
     };
     const pill = pillForRole(cell.role);
+    const extraPad = extraFlagPad(cell);
     const emptyStyle = [
       styles.cellInnerEmpty,
       {
@@ -4423,11 +4677,12 @@ const CalendarCellView = memo(function CalendarCellView({
         borderColor: pill.border,
         borderLeftColor: pill.fg,
       },
+      extraPad ? { paddingBottom: 22 + extraPad } : null,
     ];
     const body = (
       <>
         <Text style={styles.dayoffSmall}>{dayOffLbl}</Text>
-        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
       </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
@@ -4449,6 +4704,7 @@ const CalendarCellView = memo(function CalendarCellView({
       dayStr: cell.dayStr,
     };
     const pill = pillForRole(cell.role);
+    const extraPad = extraFlagPad(cell);
     const emptyStyle = [
       styles.cellInnerEmpty,
       styles.cellInnerEmptyTimed,
@@ -4457,12 +4713,13 @@ const CalendarCellView = memo(function CalendarCellView({
         borderColor: pill.border,
         borderLeftColor: pill.fg,
       },
+      extraPad ? { paddingBottom: 22 + extraPad } : null,
     ];
     const body = (
       <>
         <Text style={styles.slotTimeMuted}>{cell.timeLabel}</Text>
         <Text style={styles.dayoffLabel}>{dayOffLbl}</Text>
-        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
       </>
     );
     if (!editable) return <View style={emptyStyle}>{body}</View>;
@@ -4484,6 +4741,7 @@ const CalendarCellView = memo(function CalendarCellView({
     shift: cell.shift,
   };
   const rd = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-kitchen'];
+  const extraPad = extraFlagPad(cell);
   const filledStyle = [
     styles.cellInner,
     {
@@ -4491,6 +4749,7 @@ const CalendarCellView = memo(function CalendarCellView({
       borderColor: rd.border,
       borderLeftColor: rd.fg,
     },
+    extraPad ? { paddingBottom: 22 + extraPad } : null,
   ];
   const filledBody = (
     <>
@@ -4499,7 +4758,7 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.slotBreak}>{breakDisplay(cell.breakText)}</Text>
       ) : null}
       {cell.hours ? <Text style={styles.slotHours}>{cell.hours}</Text> : null}
-      {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+      {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
     </>
   );
   if (!editable) return <View style={filledStyle}>{filledBody}</View>;
@@ -5098,13 +5357,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#93c5fd',
   },
-  leaveFlagPillStacked: {
+  flagPillStacked: {
     bottom: 22,
+  },
+  flagPillStacked2: {
+    bottom: 40,
   },
   leaveFlagPillText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#1e40af',
+    textAlign: 'center',
+  },
+  ongiFlagPill: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#d1fae5',
+    borderWidth: 1,
+    borderColor: '#6ee7b7',
+  },
+  ongiFlagPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#065f46',
     textAlign: 'center',
   },
   modalBackdrop: {
@@ -5160,6 +5441,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   editLabel: { fontSize: 15, fontWeight: '600', color: '#0f172a' },
+  editHint: { fontSize: 12, color: '#64748b', marginTop: -4, marginBottom: 8, lineHeight: 16 },
   editTimesRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',

@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -323,6 +323,24 @@ export default function TimecardsRosterScreen() {
       cancelled = true;
     };
   }, [bounds, boundsKey, teamState?.updated_at]);
+
+  useFocusEffect(
+    useCallback(() => {
+      weekSlicesCache.delete(boundsKey);
+      let cancelled = false;
+      void Promise.all([loadWeekExtrasSlice(bounds), loadDishwasherTipsSlice(bounds)]).then(
+        ([extras, dishwasherTips]) => {
+          if (cancelled) return;
+          const next = { key: boundsKey, extras, dishwasherTips };
+          cacheWeekSlices(next);
+          setWeekSlices(next);
+        }
+      );
+      return () => {
+        cancelled = true;
+      };
+    }, [bounds, boundsKey])
+  );
 
   const slicesReady = !!weekSlices && weekSlices.key === boundsKey;
   const dataReady = weekReady && locationReady && slicesReady;
