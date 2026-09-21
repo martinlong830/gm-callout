@@ -4072,16 +4072,19 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   text-align: center;
   background: #fff;
   color: var(--text, #0f172a);
+  outline: none;
+  transition: none;
 }
 
 .schedule-panel-input:hover {
-  border-color: #94a3b8;
+  border-color: #cbd5e1;
 }
 
 .schedule-panel-input:focus {
-  outline: 2px solid #93c5fd;
-  outline-offset: 1px;
+  outline: none;
   border-color: #60a5fa;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.28);
 }
 
 @media print {
@@ -4134,8 +4137,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
   text-align: center;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  outline: none;
+  box-shadow: none;
+  transition: none;
 }
 
 .calendar-group-order-input::placeholder {
@@ -4144,14 +4148,14 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .calendar-group-order-input:hover {
-  border-color: #94a3b8;
+  border-color: var(--border, #cbd5e1);
 }
 
 .calendar-group-order-input:focus {
   outline: none;
-  border-color: #64748b;
-  background: #f8fafc;
-  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.18);
+  border-color: #60a5fa;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.28);
 }
 
 .calendar-group-order-readonly {

@@ -597,6 +597,16 @@
     );
   }
 
+  function scheduleBelowPanelFocusLive() {
+    var host = document.getElementById('scheduleBelowCalendar');
+    var ae = document.activeElement;
+    return !!(
+      scheduleBelowPanelEditing ||
+      scheduleBelowPanelInputIsActive(ae) ||
+      (host && ae && host.contains(ae) && scheduleBelowPanelInputIsActive(ae))
+    );
+  }
+
   function clearScheduleBelowPanelEditingSoon() {
     if (scheduleBelowPanelEditingClearTimer) clearTimeout(scheduleBelowPanelEditingClearTimer);
     scheduleBelowPanelEditingClearTimer = setTimeout(function () {
@@ -12896,7 +12906,15 @@
          * Only attach panels once the matrix is present.
          */
         if (!calendarGrid || !calendarGrid.querySelector('.calendar-matrix')) return;
-        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
+        var weekMonChrome = mondayIsoForScheduleWeekIndex(w);
+        var belowHost = document.getElementById('scheduleBelowCalendar');
+        var panelsAlreadyOnWeek =
+          belowHost &&
+          belowHost.querySelector('.schedule-panel-matrix') &&
+          belowHost.getAttribute('data-panel-week') === String(weekMonChrome || '');
+        if (!panelsAlreadyOnWeek && !scheduleBelowPanelFocusLive()) {
+          renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnly, readOnly);
+        }
         if (scheduleBody) renderSchedule();
         updateSchedulePublishNotifyButton();
         updateScheduleDownloadWeekButton();
@@ -29795,6 +29813,33 @@
     return '<div class="calendar-slot-flags">' + inner + '</div>';
   }
 
+  /**
+   * Swap only the schedule <table>. Wiping #calendarGrid.innerHTML used to detach
+   * #scheduleBelowCalendar, which blurred group-order / net-sales inputs (unselect)
+   * and flashed their grey hover/focus borders.
+   */
+  function mountCalendarMatrixHtml(targetEl, html) {
+    if (!targetEl) return;
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    var next = wrap.querySelector('table.calendar-matrix') || wrap.firstElementChild;
+    if (!next) return;
+    var prev = targetEl.querySelector('table.calendar-matrix');
+    var loading = targetEl.querySelector('[data-gm-schedule-cloud-loading]');
+    if (loading) loading.remove();
+    if (prev) {
+      prev.replaceWith(next);
+      return;
+    }
+    var below =
+      targetEl === calendarGrid ? document.getElementById('scheduleBelowCalendar') : null;
+    var keep = below && below.parentNode === targetEl ? below : null;
+    if (keep) keep.parentNode.removeChild(keep);
+    targetEl.innerHTML = '';
+    targetEl.appendChild(next);
+    if (keep) targetEl.appendChild(keep);
+  }
+
   function renderCalendarInto(targetEl, opts) {
     opts = opts || {};
     var readOnly = !!opts.readOnly;
@@ -29873,16 +29918,26 @@
         return;
       }
       targetEl.removeAttribute('aria-busy');
-      var preservedBelowEmpty = null;
-      if (targetEl === calendarGrid) {
-        preservedBelowEmpty = document.getElementById('scheduleBelowCalendar');
-        if (preservedBelowEmpty && preservedBelowEmpty.parentNode) {
-          preservedBelowEmpty.parentNode.removeChild(preservedBelowEmpty);
+      var emptyHint =
+        '<p class="calendar-hint">' + escapeHtml(gmT('schedule.noShifts')) + '</p>';
+      var prevMatrix = targetEl.querySelector('table.calendar-matrix');
+      if (prevMatrix) {
+        var hintWrap = document.createElement('div');
+        hintWrap.innerHTML = emptyHint;
+        var hintEl = hintWrap.firstElementChild;
+        if (hintEl) prevMatrix.replaceWith(hintEl);
+      } else {
+        var preservedBelowEmpty = null;
+        if (targetEl === calendarGrid) {
+          preservedBelowEmpty = document.getElementById('scheduleBelowCalendar');
+          if (preservedBelowEmpty && preservedBelowEmpty.parentNode === targetEl) {
+            preservedBelowEmpty.parentNode.removeChild(preservedBelowEmpty);
+          }
         }
-      }
-      targetEl.innerHTML = '<p class="calendar-hint">' + escapeHtml(gmT('schedule.noShifts')) + '</p>';
-      if (preservedBelowEmpty && targetEl === calendarGrid) {
-        targetEl.appendChild(preservedBelowEmpty);
+        targetEl.innerHTML = emptyHint;
+        if (preservedBelowEmpty && targetEl === calendarGrid) {
+          targetEl.appendChild(preservedBelowEmpty);
+        }
       }
       if (!readOnly && !opts.skipMainCalendarSideEffects && !calendarScheduleUiBlocksRender()) {
         flushDeferredCalendarRemoteRefresh();
@@ -30317,28 +30372,18 @@
       }
     });
 
-    var preservedBelow = null;
-    if (targetEl === calendarGrid) {
-      preservedBelow = document.getElementById('scheduleBelowCalendar');
-      if (preservedBelow && preservedBelow.parentNode) {
-        preservedBelow.parentNode.removeChild(preservedBelow);
-      }
-    }
-
-    targetEl.innerHTML =
+    mountCalendarMatrixHtml(
+      targetEl,
       '<table class="calendar-matrix calendar-matrix--redpoke' +
-      (readOnly ? ' calendar-matrix--readonly' : '') +
-      (showPersonTotals ? ' calendar-matrix--person-totals' : '') +
-      '">' +
-      headerHtml +
-      '<tbody>' +
-      bodyRows.join('') +
-      '</tbody>' +
-      '</table>';
-
-    if (preservedBelow && targetEl === calendarGrid) {
-      targetEl.appendChild(preservedBelow);
-    }
+        (readOnly ? ' calendar-matrix--readonly' : '') +
+        (showPersonTotals ? ' calendar-matrix--person-totals' : '') +
+        '">' +
+        headerHtml +
+        '<tbody>' +
+        bodyRows.join('') +
+        '</tbody>' +
+        '</table>'
+    );
 
     if (!readOnly) {
       if (!opts.skipMainCalendarSideEffects) {
@@ -30405,11 +30450,7 @@
       return;
     }
     var ae = document.activeElement;
-    if (
-      scheduleBelowPanelEditing ||
-      scheduleBelowPanelInputIsActive(ae) ||
-      (ae && host.contains(ae) && scheduleBelowPanelInputIsActive(ae))
-    ) {
+    if (scheduleBelowPanelFocusLive()) {
       /* Rebuild would wipe in-progress typing / steal focus from the cell. */
       return;
     }
@@ -30671,6 +30712,8 @@
       '</tbody></table></div></div></div>';
 
     ensureScheduleBelowCalendarInteraction();
+    host.setAttribute('data-panel-week', weekMon || '');
+    host.setAttribute('data-panel-rid', currentRestaurantId || '');
     syncSchedulePanelColumnAlignment();
   }
 
@@ -30680,6 +30723,7 @@
    */
   function syncSchedulePanelColumnAlignment() {
     if (!calendarGrid) return;
+    if (scheduleBelowPanelFocusLive()) return;
     var matrix = calendarGrid.querySelector('table.calendar-matrix');
     var host = document.getElementById('scheduleBelowCalendar');
     if (!matrix || !host || host.hidden) return;
@@ -30814,14 +30858,15 @@
         if (!salesDayIso || !weekMon) return;
         setScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso, salesInp.value);
         salesInp.value = getScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso);
-        /* Refresh labor % without rebuilding the full calendar matrix. */
-        var readOnlySales =
-          document.documentElement.classList.contains('manager-app') &&
-          !managerCanEditCurrentRestaurant();
-        renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnlySales, readOnlySales);
-        requestAnimationFrame(function () {
-          syncSchedulePanelColumnAlignment();
-        });
+        if (!scheduleBelowPanelFocusLive()) {
+          var readOnlySales =
+            document.documentElement.classList.contains('manager-app') &&
+            !managerCanEditCurrentRestaurant();
+          renderScheduleManagerBelowPanels(getVisibleWeekDays(), !readOnlySales, readOnlySales);
+          requestAnimationFrame(function () {
+            syncSchedulePanelColumnAlignment();
+          });
+        }
       }
     });
 
@@ -30831,6 +30876,7 @@
       if (!weekMon) return;
       var groupInp = e.target && e.target.closest ? e.target.closest('.calendar-group-order-input') : null;
       if (groupInp) {
+        armScheduleBelowPanelEditing();
         var platformId = groupInp.getAttribute('data-group-order-platform');
         var dayIso = groupInp.getAttribute('data-group-order-day-iso');
         if (!platformId || !dayIso) return;
@@ -30845,6 +30891,7 @@
       }
       var salesInp = e.target && e.target.closest ? e.target.closest('.schedule-net-sales-input') : null;
       if (salesInp) {
+        armScheduleBelowPanelEditing();
         var salesDayIso = salesInp.getAttribute('data-net-sales-day-iso');
         if (!salesDayIso) return;
         setScheduleNetSalesCell(currentRestaurantId, weekMon, salesDayIso, salesInp.value);
