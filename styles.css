@@ -2106,6 +2106,35 @@ html.authed .header-signout-btn {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Template editor: keep Apply reachable. Shared sheet stack is overflow:hidden
+   (review hub pins its own actions); the 72vh preview was clipping Apply. */
+#scheduleTemplateModal .availability-modal-panel.schedule-sheet-panel > .schedule-sheet-stack {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#scheduleTemplateModal .schedule-sheet-stack > .schedule-template-section:first-of-type {
+  flex: 0 0 auto;
+}
+
+#scheduleTemplateModal .schedule-template-preview-stage {
+  max-height: min(48vh, 520px);
+}
+
+#scheduleTemplateModal .schedule-template-preview-mount {
+  max-height: min(48vh, 520px);
+}
+
+#scheduleTemplateModal #scheduleTemplateApplyActions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin-top: 0;
+  padding: 10px 0 8px;
+  background: var(--surface);
+  box-shadow: 0 -10px 18px -12px color-mix(in srgb, var(--text) 22%, transparent);
+}
+
 #scheduleReviewModal .schedule-template-section {
   flex: 1 1 auto;
   min-height: 0;
@@ -2323,6 +2352,18 @@ html.authed .header-signout-btn {
   font-weight: 600;
   color: var(--text);
   cursor: pointer;
+}
+
+#shiftDetailOngiWrap {
+  margin: 0 0 8px;
+}
+
+#shiftDetailOngiWrap .shift-detail-field {
+  flex: 1 1 auto;
+}
+
+#shiftDetailOngiWrap .calendar-hint {
+  margin: 4px 0 0;
 }
 
 .shift-detail-times,
@@ -4956,6 +4997,18 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   border: 1px solid color-mix(in srgb, #10b981 45%, transparent);
 }
 
+.calendar-slot-ongi-flag[data-ongi="2"] {
+  color: #0f766e;
+  background: color-mix(in srgb, #5eead4 42%, var(--surface));
+  border: 1px solid color-mix(in srgb, #14b8a6 50%, transparent);
+}
+
+.calendar-slot-ongi-flag[data-ongi="3"] {
+  color: #115e59;
+  background: color-mix(in srgb, #2dd4bf 36%, var(--surface));
+  border: 1px solid color-mix(in srgb, #0d9488 48%, transparent);
+}
+
 .calendar-slot-flags {
   position: absolute;
   left: 10px;
@@ -5946,6 +5999,38 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0;
+}
+
+.mgr-file-request {
+  margin: 0 0 16px;
+  padding: 0 14px 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.mgr-file-request-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.mgr-file-request-summary::-webkit-details-marker {
+  display: none;
+}
+
+.mgr-file-request-hint {
+  margin: 0 0 12px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.mgr-file-request .emp-request-form {
+  margin-top: 4px;
 }
 
 .requests-list {
@@ -8385,6 +8470,7 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: textfield;
+  transition: none;
 }
 
 .timecards-tip-input::-webkit-outer-spin-button,
@@ -8394,9 +8480,9 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .timecards-tip-input:focus {
-  outline: 2px solid #93c5fd;
-  outline-offset: 1px;
-  border-color: #93c5fd;
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.28);
 }
 
 .timecards-tip-pool-summary {

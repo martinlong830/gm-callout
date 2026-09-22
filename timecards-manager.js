@@ -1935,8 +1935,32 @@
     var grossCents = Math.round(g * 100);
     if (grossCents <= 0) return 0;
     var pctHundredths = Math.round(tipTakehomePctForDishwasher(emp, restaurantId) * 100);
+    if (pctHundredths <= 0) return 0;
     var netCents = Math.floor((grossCents * pctHundredths + 5000) / 10000);
     return netCents / 100;
+  }
+
+  /**
+   * Inverse of netTipAmount so the shift editor can show/edit net pay.
+   * Nudges cents until forward net matches (avoids 80.00 ↔ 84.21 ↔ 79.99 drift).
+   */
+  function grossFromNetTip(net, restaurantId, emp) {
+    var n = normalizeDishwasherTipAmount(net);
+    if (n <= 0) return 0;
+    var pctHundredths = Math.round(tipTakehomePctForDishwasher(emp, restaurantId) * 100);
+    if (pctHundredths <= 0) return n;
+    var netCents = Math.round(n * 100);
+    var grossCents = Math.round((netCents * 10000) / pctHundredths);
+    var guard = 0;
+    while (guard < 24) {
+      var got = Math.floor((grossCents * pctHundredths + 5000) / 10000);
+      if (got === netCents) break;
+      if (got < netCents) grossCents += 1;
+      else grossCents -= 1;
+      guard += 1;
+    }
+    if (grossCents < 0) grossCents = 0;
+    return grossCents / 100;
   }
 
   /** Apply take-home % once per restaurant on summed gross (avoids penny drift from daily nets). */
@@ -2046,10 +2070,18 @@
     var rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
     var key = dishwasherTipStorageKey(empId, iso, rid);
     var val = normalizeDishwasherTipAmount(amount);
+    Object.keys(slice).forEach(function (k) {
+      if (k === key) return;
+      var parsed = parseDishwasherTipStorageKey(k);
+      if (parsed && parsed.empId === empId && parsed.iso === iso) delete slice[k];
+    });
+    delete slice[empId + '@' + iso];
     if (val <= 0) delete slice[key];
     else slice[key] = val;
-    if (rid === 'rp-9') delete slice[empId + '@' + iso];
     saveDishwasherTipsMap(bounds, slice);
+    if (d().markTimecardDishwasherTipPendingAck) {
+      d().markTimecardDishwasherTipPendingAck(weekExtrasStorageKey(bounds), key);
+    }
   }
 
   function dayHasBackingShiftForDishwasherTips(empId, iso) {
@@ -2454,6 +2486,9 @@
       });
       localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(all));
       invalidateWeekTipPoolCache();
+      if (d().markTimecardTipPoolPendingAck) {
+        d().markTimecardTipPoolPendingAck(weekTipPoolStorageKey(bounds, locationFilter));
+      }
       if (d().scheduleTimecardPayrollDebouncedSync) d().scheduleTimecardPayrollDebouncedSync();
     } catch (_e) {
       /* ignore */
@@ -2461,6 +2496,10 @@
   }
 
   function persistTipPoolFromInputs() {
+    if (tipPoolPersistTimer) {
+      clearTimeout(tipPoolPersistTimer);
+      tipPoolPersistTimer = null;
+    }
     var cashEl = document.getElementById('tcTipCash');
     var squareEl = document.getElementById('tcTipSquareInHouse');
     var pickupEl = document.getElementById('tcTipSquarePickup');
@@ -2483,14 +2522,6 @@
       manual: true,
     });
     updateTipPoolSummaryText();
-  }
-
-  function schedulePersistTipPoolFromInputs() {
-    if (tipPoolPersistTimer) clearTimeout(tipPoolPersistTimer);
-    tipPoolPersistTimer = setTimeout(function () {
-      tipPoolPersistTimer = null;
-      persistTipPoolFromInputs();
-    }, 500);
   }
 
   function readTipPoolFromInputs() {
@@ -2554,7 +2585,9 @@
       );
     }
     return (
-      '<div class="timecards-grand-totals-tips">' +
+      '<div class="timecards-grand-totals-tips" data-tip-pool-key="' +
+      d().escapeHtml(weekTipPoolStorageKey(payWeekBounds())) +
+      '">' +
       '<h4 class="timecards-grand-totals-tips-title">Tip pool (full payroll report)</h4>' +
       '<p class="calendar-hint">Enter gross tips per platform. Net amounts auto-calculate for payroll.</p>' +
       '<div class="timecards-grand-totals-tips-grid">' +
@@ -2571,16 +2604,87 @@
     );
   }
 
+  function timecardsTipPoolInputIsActive() {
+    var ae = document.activeElement;
+    return !!(ae && ae.classList && ae.classList.contains('timecards-tip-input'));
+  }
+
+  function applyTipPoolInputsFromStore() {
+    var squareEl = document.getElementById('tcTipSquareInHouse');
+    var cashEl = document.getElementById('tcTipCash');
+    var pickupEl = document.getElementById('tcTipSquarePickup');
+    var ddEl = document.getElementById('tcTipDoordash');
+    var uberEl = document.getElementById('tcTipUber');
+    if (!squareEl || !cashEl || !pickupEl || !ddEl || !uberEl) return;
+    var pool = getPayrollTipPoolInputs();
+    var ae = document.activeElement;
+    function setIfIdle(el, val) {
+      if (!el || ae === el) return;
+      var next = String(val);
+      if (el.value !== next) el.value = next;
+    }
+    setIfIdle(squareEl, pool.squareTips);
+    setIfIdle(cashEl, pool.cashTip);
+    setIfIdle(pickupEl, pool.squarePickup || 0);
+    setIfIdle(ddEl, pool.doordash || 0);
+    setIfIdle(uberEl, pool.uber || 0);
+    updateTipPoolSummaryText();
+  }
+
+  function mountTimecardsTipPool(wrap, preservedTips) {
+    if (!wrap) return;
+    var key = weekTipPoolStorageKey(payWeekBounds());
+    var tips = preservedTips || wrap.querySelector('.timecards-grand-totals-tips');
+    var gt = wrap.querySelector('.timecards-grand-totals');
+    var tableWrap = wrap.querySelector('.timecards-table-wrap');
+    function insertTipsNode(node) {
+      if (gt) gt.insertAdjacentElement('afterend', node);
+      else if (tableWrap) tableWrap.insertAdjacentElement('beforebegin', node);
+    }
+    function insertTipsHtml(html) {
+      if (gt) gt.insertAdjacentHTML('afterend', html);
+      else if (tableWrap) tableWrap.insertAdjacentHTML('beforebegin', html);
+    }
+    if (tips && tips.getAttribute('data-tip-pool-key') === key) {
+      if (!tips.isConnected) insertTipsNode(tips);
+      if (!timecardsTipPoolInputIsActive()) applyTipPoolInputsFromStore();
+      return;
+    }
+    insertTipsHtml(renderGrandTotalsTipPoolHtml());
+    wireGrandTotalsTipInputs(wrap);
+  }
+
+  /** Replace totals cards without destroying live Square/GH/etc inputs (keeps focus). */
+  function mountTimecardsGrandTotals(wrap, totals) {
+    if (!wrap) return;
+    var tips = wrap.querySelector('.timecards-grand-totals-tips');
+    if (tips && tips.parentNode) tips.parentNode.removeChild(tips);
+    var html = renderGrandTotalsHtml(totals);
+    var existing = wrap.querySelector('.timecards-grand-totals');
+    if (existing) existing.outerHTML = html;
+    else {
+      var tableWrap = wrap.querySelector('.timecards-table-wrap');
+      if (tableWrap) tableWrap.insertAdjacentHTML('beforebegin', html);
+    }
+    mountTimecardsTipPool(wrap, tips);
+  }
+
   function wireGrandTotalsTipInputs(wrap) {
     if (!wrap) return;
     wrap.querySelectorAll('.timecards-tip-input').forEach(function (inp) {
+      if (inp.getAttribute('data-tip-wired') === '1') return;
+      inp.setAttribute('data-tip-wired', '1');
       inp.addEventListener('click', function (ev) {
         ev.stopPropagation();
       });
+      inp.addEventListener('pointerdown', function (ev) {
+        ev.stopPropagation();
+      });
       inp.addEventListener('change', persistTipPoolFromInputs);
+      inp.addEventListener('blur', persistTipPoolFromInputs);
       inp.addEventListener('input', function () {
         updateTipPoolSummaryText();
-        schedulePersistTipPoolFromInputs();
+        persistTipPoolFromInputs();
       });
     });
   }
@@ -3319,21 +3423,22 @@
     return el ? normalizeDishwasherTipAmount(el.value) : 0;
   }
 
+  function readShiftDishwasherTipGrossFromForm(emp, restaurantId) {
+    return grossFromNetTip(readShiftDishwasherTipFromForm(), restaurantId, emp);
+  }
+
   function syncShiftDishwasherTipNetDisplay() {
-    var netEl = document.getElementById('tcDishwasherTipNet');
-    if (!netEl) return;
+    var hintEl = document.getElementById('tcDishwasherTipNetHint');
     var tipEl = document.getElementById('tcDishwasherTip');
-    var rid =
-      (tipEl && tipEl.getAttribute('data-timecard-restaurant-id')) || RP2_DELIVERY_TIP_LOCATION;
-    var empId = tipEl && tipEl.getAttribute('data-timecard-employee-id');
+    if (!hintEl || !tipEl) return;
+    var rid = tipEl.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
+    var empId = tipEl.getAttribute('data-timecard-employee-id');
     var emp = findEmployeeByIdLocal(empId);
     var pct = tipTakehomePctForDishwasher(emp, rid);
-    var net = netTipAmount(readShiftDishwasherTipFromForm(), rid, emp);
-    netEl.innerHTML =
-      d().escapeHtml(formatPayAmount(net)) +
-      ' <span class="timecards-tip-takehome-hint">(× ' +
-      d().escapeHtml(String(pct)) +
-      '% take-home)</span>';
+    hintEl.textContent =
+      'Net amount paid this day (× ' +
+      String(pct) +
+      '% take-home already applied). Same figure as week totals and the full report.';
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -3351,12 +3456,13 @@
     setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, readShiftAdditionalCashTipFromForm());
     setEmployeeDayMissingHours(emp.id, shiftRow.iso, readShiftMissingHoursFromForm());
     if (isDeliveryDishwasherStaff(emp)) {
+      var tipRest = dishwasherTipRestaurantForShiftRow(shiftRow, emp);
       setEmployeeDayDishwasherTip(
         emp.id,
         shiftRow.iso,
-        readShiftDishwasherTipFromForm(),
+        readShiftDishwasherTipGrossFromForm(emp, tipRest),
         undefined,
-        dishwasherTipRestaurantForShiftRow(shiftRow, emp)
+        tipRest
       );
     }
   }
@@ -3812,7 +3918,7 @@
 
   function renderGrandTotalsHtml(totals, opts) {
     opts = opts || {};
-    var includeTipPool = opts.includeTipPool !== false;
+    /* Tip pool mounts as a sibling so roster refreshes do not replace live Square/GH inputs. */
     var metaText =
       opts.metaText != null
         ? opts.metaText
@@ -3907,7 +4013,6 @@
       d().escapeHtml(payTotal) +
       '</span></div>' +
       '</div>' +
-      (includeTipPool ? renderGrandTotalsTipPoolHtml() : '') +
       '</section>'
     );
   }
@@ -6855,6 +6960,39 @@
     return byShiftKey;
   }
 
+  /** Clock columns on the payslip: 12-hour labels from live schedule HH:MM (not punch ISO). */
+  function formatShiftClockHhmm(hhmm) {
+    var n = normalizeShiftDayHHMM(hhmm);
+    if (!n) return '';
+    var parts = n.split(':');
+    var h = parseInt(parts[0], 10);
+    var mi = parseInt(parts[1], 10);
+    if (Number.isNaN(h) || Number.isNaN(mi)) return '';
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    var h12 = h % 12;
+    if (h12 === 0) h12 = 12;
+    return h12 + ':' + (mi < 10 ? '0' : '') + mi + ' ' + ampm;
+  }
+
+  /**
+   * Payslip Clockin / Clockout follow the live website shift, not stored punches.
+   * Punches can lag after a schedule time change; hours still use recorded minutes.
+   */
+  function payslipClockTimesFromShiftRow(shiftRow, entry) {
+    var offSchedule = isOffScheduleShiftDayRow(shiftRow);
+    var start = !offSchedule && shiftRow && shiftRow.shift ? shiftRow.shift.start : '';
+    var end = !offSchedule && shiftRow && shiftRow.shift ? shiftRow.shift.end : '';
+    var inLabel = formatShiftClockHhmm(start);
+    var outLabel = formatShiftClockHhmm(end);
+    if (inLabel || outLabel) {
+      return { clockIn: inLabel, clockOut: outLabel };
+    }
+    return {
+      clockIn: entry && entry.clock_in_at ? formatPunchClock(entry.clock_in_at) : '',
+      clockOut: entry && entry.clock_out_at ? formatPunchClock(entry.clock_out_at) : '',
+    };
+  }
+
   function buildShiftStubRow(emp, shiftRow, breakHeader, stubSplits) {
     var names = splitEmployeeName(emp);
     var entry = findEntryForShift(
@@ -6873,12 +7011,13 @@
     var split = (stubSplits && stubSplits[shiftKey]) || { regMins: 0, otMins: 0, totalMins: 0 };
     var pay = payFromRegOtMinutes(emp, split.regMins, split.otMins);
     var breakLabel = breakHeader || breakColumnLabelForShift(shiftRow.shift, entry, emp);
+    var clocks = payslipClockTimesFromShiftRow(shiftRow, entry);
     return [
       names.first,
       names.last,
       formatShortDateIso(shiftRow.iso),
-      entry ? formatPunchClock(entry.clock_in_at) : '',
-      entry && entry.clock_out_at ? formatPunchClock(entry.clock_out_at) : '',
+      clocks.clockIn,
+      clocks.clockOut,
       breakLabel,
       decimalHoursFromMinutes(split.regMins),
       decimalHoursFromMinutes(split.otMins),
@@ -7652,6 +7791,212 @@
     return updatedModel;
   }
 
+  function findEmployeeByScheduleExportName(name) {
+    var key = d().normNameKey ? d().normNameKey(name) : String(name || '').trim().toLowerCase();
+    if (!key) return null;
+    var list = d().employees || [];
+    for (var i = 0; i < list.length; i += 1) {
+      var emp = list[i];
+      var display = d().employeeDisplayName ? d().employeeDisplayName(emp) : '';
+      if ((d().normNameKey ? d().normNameKey(display) : String(display).trim().toLowerCase()) === key) {
+        return emp;
+      }
+      if (emp && emp.meta && Array.isArray(emp.meta.scheduleAliases)) {
+        for (var a = 0; a < emp.meta.scheduleAliases.length; a += 1) {
+          var alias = emp.meta.scheduleAliases[a];
+          if ((d().normNameKey ? d().normNameKey(alias) : String(alias || '').trim().toLowerCase()) === key) {
+            return emp;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function formatUpdatedScheduleTimeLabel(startHhmm, endHhmm) {
+    if (typeof d().redPokeShiftTimeLabel === 'function') {
+      var label = d().redPokeShiftTimeLabel(startHhmm, endHhmm);
+      if (label && label !== '—') return label;
+    }
+    function fmt(hhmm) {
+      var n = normalizeShiftDayHHMM(hhmm);
+      if (!n) return '';
+      var p = n.split(':');
+      var h = parseInt(p[0], 10);
+      var m = parseInt(p[1], 10);
+      var pm = h >= 12;
+      var h12 = h % 12;
+      if (h12 === 0) h12 = 12;
+      return String(h12).padStart(2, '0') + ':' + String(m).padStart(2, '0') + (pm ? 'pm' : 'am');
+    }
+    var a = fmt(startHhmm);
+    var b = fmt(endHhmm);
+    if (!a || !b) return a || b || '';
+    return a + '-' + b;
+  }
+
+  function formatBreakClockFromIso(iso) {
+    var hhmm = isoToTimeInputValue(iso);
+    var n = normalizeShiftDayHHMM(hhmm);
+    if (!n) return '';
+    var p = n.split(':');
+    var h = parseInt(p[0], 10);
+    var m = parseInt(p[1], 10);
+    var ap = h >= 12 ? 'PM' : 'AM';
+    var h12 = h % 12;
+    if (h12 === 0) h12 = 12;
+    return h12 + ':' + String(m).padStart(2, '0') + ap;
+  }
+
+  function formatUpdatedSchedulePunchBreakLabel(punch) {
+    if (!punch) return '(NO BREAK TIME)';
+    var startIso = punch.breakStart;
+    var endIso = punch.breakEnd;
+    if (!startIso) return '(NO BREAK TIME)';
+    var startLabel = formatBreakClockFromIso(startIso);
+    if (!startLabel) return '(NO BREAK TIME)';
+    if (!endIso) return '(' + startLabel + ' BREAK TIME)';
+    var endLabel = formatBreakClockFromIso(endIso);
+    if (!endLabel) return '(' + startLabel + ' BREAK TIME)';
+    return '(' + startLabel + '-' + endLabel + ' BREAK TIME)';
+  }
+
+  function hoursDecimalFromHhmmRange(startHhmm, endHhmm) {
+    var start = normalizeShiftDayHHMM(startHhmm);
+    var end = normalizeShiftDayHHMM(endHhmm);
+    if (!start || !end) return 0;
+    var sp = start.split(':');
+    var ep = end.split(':');
+    var startMins = parseInt(sp[0], 10) * 60 + parseInt(sp[1], 10);
+    var endMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1], 10);
+    if (endMins <= startMins) endMins += 24 * 60;
+    var h = (endMins - startMins) / 60;
+    if (Number.isInteger(h)) return h;
+    return Math.round(h * 10) / 10;
+  }
+
+  function hoursLabelFromDecimal(hours) {
+    if (hours == null || Number.isNaN(hours) || hours <= 0) return '';
+    if (Number.isInteger(hours)) return String(hours);
+    return hours.toFixed(1);
+  }
+
+  function scheduleExportFlagLinesFromCell(cell) {
+    return String((cell && cell.text) || '')
+      .split('\n')
+      .map(function (ln) {
+        return String(ln || '').trim();
+      })
+      .filter(function (ln) {
+        return /\b(?:VL|SL)\b/.test(ln) || /\bOngi\b/i.test(ln) || /\b(?:8th|9th)\s+Ave\b/i.test(ln);
+      });
+  }
+
+  function summarizeDayPunchesForScheduleExport(emp, dayIso, restaurantId) {
+    if (!emp || !dayIso) return null;
+    var entries = findEntriesForDay(emp.id, dayIso).filter(function (e) {
+      if (!entryHasMeaningfulPunch(e, dayIso)) return false;
+      if (restaurantId && entryRestaurantId(emp, e) !== restaurantId) return false;
+      return true;
+    });
+    if (!entries.length) return null;
+    var clockIn = null;
+    var clockOut = null;
+    var breakStart = null;
+    var breakEnd = null;
+    entries.forEach(function (e) {
+      if (e.clock_in_at && (!clockIn || String(e.clock_in_at) < String(clockIn))) {
+        clockIn = e.clock_in_at;
+      }
+      if (e.clock_out_at && (!clockOut || String(e.clock_out_at) > String(clockOut))) {
+        clockOut = e.clock_out_at;
+      }
+      if (Array.isArray(e.break_segments)) {
+        e.break_segments.forEach(function (seg) {
+          if (!seg || !seg.start) return;
+          if (!breakStart || String(seg.start) < String(breakStart)) breakStart = seg.start;
+          if (seg.end && (!breakEnd || String(seg.end) > String(breakEnd))) breakEnd = seg.end;
+        });
+      }
+      if (e.break_start_at && (!breakStart || String(e.break_start_at) < String(breakStart))) {
+        breakStart = e.break_start_at;
+      }
+      if (e.break_end_at && (!breakEnd || String(e.break_end_at) > String(breakEnd))) {
+        breakEnd = e.break_end_at;
+      }
+    });
+    if (!clockIn) return null;
+    return { clockIn: clockIn, clockOut: clockOut, breakStart: breakStart, breakEnd: breakEnd };
+  }
+
+  /**
+   * Updated schedule tab: show actual clock-in / clock-out and break start/end.
+   * Punch vs published differences are not color-coded as schedule changes.
+   */
+  function applyActualPunchesToUpdatedScheduleModel(model) {
+    if (!model || !model.sections) return model;
+    var restaurantId = model.restaurantId || '';
+    (model.sections || []).forEach(function (sec) {
+      (sec.rows || []).forEach(function (row) {
+        var totalH = 0;
+        var totalAfter = 0;
+        (row.days || []).forEach(function (cell, di) {
+          if (!cell) return;
+          var dayMeta = (model.days || [])[di] || {};
+          var dayIso = dayMeta.iso ? String(dayMeta.iso).slice(0, 10) : '';
+          var person =
+            (cell.workers && cell.workers[0]) ||
+            row.personName ||
+            '';
+          var emp = findEmployeeByScheduleExportName(person);
+          var punch = emp ? summarizeDayPunchesForScheduleExport(emp, dayIso, restaurantId) : null;
+          if (!punch) {
+            if (cell.kind === 'work') {
+              totalH += Number(cell.hours) || 0;
+              totalAfter += Number(cell.hoursAfter) || 0;
+            }
+            return;
+          }
+          var startHhmm = isoToTimeInputValue(punch.clockIn);
+          var endHhmm = punch.clockOut ? isoToTimeInputValue(punch.clockOut) : '';
+          if (!endHhmm) endHhmm = normalizeShiftDayHHMM(cell.end) || '';
+          if (!startHhmm || !endHhmm) {
+            if (cell.kind === 'work') {
+              totalH += Number(cell.hours) || 0;
+              totalAfter += Number(cell.hoursAfter) || 0;
+            }
+            return;
+          }
+          var flags = scheduleExportFlagLinesFromCell(cell);
+          var timeLabel = formatUpdatedScheduleTimeLabel(startHhmm, endHhmm);
+          var breakText = formatUpdatedSchedulePunchBreakLabel(punch);
+          var hours = hoursDecimalFromHhmmRange(startHhmm, endHhmm);
+          var breakMin = punch.breakStart ? 30 : 0;
+          if (punch.breakStart && punch.breakEnd) {
+            var br = breakMinutesFromRange(punch.breakStart, punch.breakEnd, punch.clockOut);
+            if (br > 0) breakMin = br;
+          }
+          var hoursAfter = Math.max(0, Math.round((hours - breakMin / 60) * 100) / 100);
+          cell.kind = 'work';
+          cell.start = startHhmm;
+          cell.end = endHhmm;
+          cell.breakText = breakText;
+          cell.hours = hours;
+          cell.hoursAfter = hoursAfter;
+          cell.changed = false;
+          cell.changeKind = '';
+          cell.changeLines = [];
+          cell.text = [timeLabel, breakText, hoursLabelFromDecimal(hours)].concat(flags).join('\n');
+          totalH += hours;
+          totalAfter += hoursAfter;
+        });
+        row.totalHours = totalH;
+        row.totalHoursAfter = totalAfter;
+      });
+    });
+    return model;
+  }
+
   function withScheduleExportCellStyle(baseStyle, cell) {
     var kind = scheduleFlagKindFromCell(cell);
     var style = withScheduleFlagFill(baseStyle, kind);
@@ -7979,14 +8324,8 @@
         });
       } else {
         calendarModel = d().buildScheduleCalendarExportModel(loc.weekIdx, loc.rid);
-        if (opts.updatedCopy && typeof d().getPublishedWeekSnapshot === 'function') {
-          var publishedSnap = d().getPublishedWeekSnapshot(loc.rid, loc.weekIso);
-          if (publishedSnap && publishedSnap.draft) {
-            var publishedModel = d().buildScheduleCalendarExportModel(loc.weekIdx, loc.rid, {
-              snapshot: publishedSnap,
-            });
-            applyScheduleExportDiffs(calendarModel, publishedModel);
-          }
+        if (opts.updatedCopy) {
+          applyActualPunchesToUpdatedScheduleModel(calendarModel);
         }
       }
     }
@@ -8025,7 +8364,7 @@
           : String(calendarModel.publishedAt);
       if (when) title += '  (' + when + ')';
     }
-    /* Updated tab matches Published copy length — color marks diffs, not extra title text. */
+    /* Updated tab matches Published copy length; cells show actual punches, not change prose. */
     xlSet(ws, r, 0, title, S.title);
     xlMerge(merges, r, 0, r, lastCol);
     rowHeights[r] = { hpt: 22 };
@@ -9916,18 +10255,9 @@
     var paint = function () {
       rosterGrandTotalsPaintScheduled = false;
       if (!wrap.isConnected || !rosterCache) return;
-    var sorted = sortedRosterRows(rosterCache.rows);
-    var totals = computeRosterTotals(sorted);
-      var existing = wrap.querySelector('.timecards-grand-totals');
-      if (existing) {
-        existing.outerHTML = renderGrandTotalsHtml(totals);
-      } else {
-        var tableWrap = wrap.querySelector('.timecards-table-wrap');
-        if (tableWrap) {
-          tableWrap.insertAdjacentHTML('beforebegin', renderGrandTotalsHtml(totals));
-        }
-      }
-      wireGrandTotalsTipInputs(wrap);
+      var sorted = sortedRosterRows(rosterCache.rows);
+      var totals = computeRosterTotals(sorted);
+      mountTimecardsGrandTotals(wrap, totals);
     };
     if (typeof global.requestIdleCallback === 'function') {
       global.requestIdleCallback(paint, { timeout: 500 });
@@ -9959,12 +10289,8 @@
       return;
     }
     var totals = computeRosterTotals(sorted);
-    var gt = wrap.querySelector('.timecards-grand-totals');
-    if (gt) {
-      gt.outerHTML = renderGrandTotalsHtml(totals);
-    }
+    mountTimecardsGrandTotals(wrap, totals);
     wireRosterTableRows(wrap);
-    wireGrandTotalsTipInputs(wrap);
   }
 
   function paintRosterTable(wrap, opts) {
@@ -9983,7 +10309,9 @@
       d().escapeHtml(tcT('timecards.download')) +
       '</button>' +
       '</div></div>' +
-      (opts.deferGrandTotals ? '' : renderGrandTotalsHtml(computeRosterTotals(sorted))) +
+      (opts.deferGrandTotals
+        ? ''
+        : renderGrandTotalsHtml(computeRosterTotals(sorted)) + renderGrandTotalsTipPoolHtml()) +
       '<div class="timecards-table-wrap"><table class="timecards-table timecards-table--roster timecards-table--wide">' +
       '<thead><tr>' +
       rosterSortHeader('name', tcT('timecards.name')) +
@@ -11539,12 +11867,18 @@
             if (val > 0 && !dayHasBackingShiftForDishwasherTips(emp.id, iso)) {
               alert(DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
               inp.value = String(
-                getEmployeeDayDishwasherTip(emp, iso, undefined, rid) || '0'
+                getEmployeeDayDishwasherTipNet(emp, iso, undefined, rid) || '0'
               );
               syncShiftDishwasherTipNetDisplay();
               return;
             }
-            setEmployeeDayDishwasherTip(emp.id, iso, val, undefined, rid);
+            setEmployeeDayDishwasherTip(
+              emp.id,
+              iso,
+              grossFromNetTip(val, rid, emp),
+              undefined,
+              rid
+            );
             syncShiftDishwasherTipNetDisplay();
           }
         } else if (field === 'additionalCashTip') {
@@ -12159,8 +12493,16 @@
               undefined,
               tipRest
             );
+            var netTip;
+            if (grossTip > 0) {
+              netTip = netTipAmount(grossTip, tipRest, emp);
+            } else {
+              netTip = getEmployeeDayDishwasherTipNet(emp, shiftRow.iso);
+            }
             return (
-              '<div><dt>Dishwasher tip ($)</dt><dd>' +
+              '<div><dt>' +
+              d().escapeHtml(tcT('timecards.netDeliveryTip')) +
+              '</dt><dd>' +
               '<input type="number" class="timecards-extra-input timecards-extra-input--money" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
               d().escapeHtml(shiftRow.iso) +
               '" data-timecard-restaurant-id="' +
@@ -12168,13 +12510,15 @@
               '" data-timecard-employee-id="' +
               d().escapeHtml(emp.id) +
               '" min="0" step="0.01" inputmode="decimal" value="' +
-              d().escapeHtml(String(grossTip)) +
-              '" /></dd></div>' +
-              '<div><dt>Net dishwasher tips</dt><dd id="tcDishwasherTipNet">' +
-              d().escapeHtml(formatPayAmount(netTipAmount(grossTip, tipRest, emp))) +
-              ' <span class="timecards-tip-takehome-hint">(× ' +
-              d().escapeHtml(String(tipTakehomePctForDishwasher(emp, tipRest))) +
-              '% take-home)</span></dd></div>'
+              d().escapeHtml(String(netTip)) +
+              '" />' +
+              '<p class="calendar-hint timecards-tip-takehome-hint" id="tcDishwasherTipNetHint">' +
+              d().escapeHtml(
+                'Net amount paid this day (× ' +
+                  String(tipTakehomePctForDishwasher(emp, tipRest)) +
+                  '% take-home already applied). Same figure as week totals and the full report.'
+              ) +
+              '</p></dd></div>'
             );
           })()
         : '') +
@@ -12945,17 +13289,19 @@
     }
     var localEntry = entryFromManagerSave(rpcRes.data, row);
     if (localEntry) upsertLocalWeekEntry(localEntry);
-    /*
-     * Navigate first — Save should feel done after the punch RPC. Tips and VL/SL
-     * persist after navigate (local week-extras + debounced cloud); do not block
-     * the button on employee upserts.
-     */
     var pendingLeave = readShiftDayLeaveFromForm(emp, shiftRow.iso);
+    persistShiftDayTipsFromForm(emp, shiftRow);
+    setEmployeeDayLeave(emp.id, shiftRow.iso, pendingLeave.vl, pendingLeave.sl);
+    if (typeof d().flushTimecardPayrollSync === 'function') {
+      d().flushTimecardPayrollSync();
+    }
+    /*
+     * Persist tips/VL/SL before leaving the form so the week list and a later
+     * cloud poll cannot snapshot the previous net delivery tip.
+     */
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
-    persistShiftDayTipsFromForm(emp, shiftRow);
-    setEmployeeDayLeave(emp.id, shiftRow.iso, pendingLeave.vl, pendingLeave.sl);
     /* Background SoT reconcile — do not block the Save button on a full-week refetch. */
     void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
     } catch (ex) {
@@ -13113,20 +13459,8 @@
     invalidateDishwasherTipsSliceCache();
     invalidateWeekExtrasSliceCache();
     invalidatePayrollTipDistCache();
-    var squareEl = document.getElementById('tcTipSquareInHouse');
-    var cashEl = document.getElementById('tcTipCash');
-    var pickupEl = document.getElementById('tcTipSquarePickup');
-    var ddEl = document.getElementById('tcTipDoordash');
-    var uberEl = document.getElementById('tcTipUber');
-    if (squareEl && cashEl && pickupEl && ddEl && uberEl) {
-      var pool = getPayrollTipPoolInputs();
-      squareEl.value = String(pool.squareTips);
-      cashEl.value = String(pool.cashTip);
-      pickupEl.value = String(pool.squarePickup || 0);
-      ddEl.value = String(pool.doordash || 0);
-      uberEl.value = String(pool.uber || 0);
-      updateTipPoolSummaryText();
-    }
+    applyTipPoolInputsFromStore();
+    if (timecardsTipPoolInputIsActive()) return;
     refreshRosterFromEmployees();
   }
 
@@ -13258,6 +13592,7 @@
     onScheduleChanged: onScheduleChanged,
     clearDayLeaveOverridesInRange: clearDayLeaveOverridesInRange,
     applyRemoteTipPayroll: applyRemoteTipPayroll,
+    flushTipPoolInputsToStore: persistTipPoolFromInputs,
     applyRemoteTimeClockEntries: applyRemoteTimeClockEntries,
     onTipTakehomePctChanged: onTipTakehomePctChanged,
     refreshForLocaleChange: refreshForLocaleChange,
@@ -13304,6 +13639,12 @@
       rosterRowHasPayableActivity: rosterRowHasPayableActivity,
       fullReportRosterRows: fullReportRosterRows,
       payslipShiftRowHasPayableActivity: payslipShiftRowHasPayableActivity,
+      applyActualPunchesToUpdatedScheduleModel: applyActualPunchesToUpdatedScheduleModel,
+      formatUpdatedSchedulePunchBreakLabel: formatUpdatedSchedulePunchBreakLabel,
+      formatUpdatedScheduleTimeLabel: formatUpdatedScheduleTimeLabel,
+      buildShiftStubRow: buildShiftStubRow,
+      payslipClockTimesFromShiftRow: payslipClockTimesFromShiftRow,
+      formatShiftClockHhmm: formatShiftClockHhmm,
       invalidatePayWeekScheduleCache: invalidatePayWeekScheduleCache,
       buildEmployeeInfoWorksheet: buildEmployeeInfoWorksheet,
       buildScheduleWorksheet: buildScheduleWorksheet,

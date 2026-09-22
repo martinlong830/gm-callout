@@ -95,6 +95,8 @@ export function GrandTotalsSection({
   const [tipSummary, setTipSummary] = useState('');
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const focusedRef = useRef(false);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateSummary = useCallback(
     (pool: TipPoolInputs) => {
@@ -135,14 +137,35 @@ export function GrandTotalsSection({
     [bounds, locationFilter, updateSummary]
   );
 
+  const flushPersistTips = useCallback(() => {
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    void persistTips(draftRef.current);
+  }, [persistTips]);
+
   useEffect(() => {
-    if (showTipPool) void loadTips();
+    if (!showTipPool) return;
+    if (focusedRef.current) return;
+    void loadTips();
   }, [loadTips, showTipPool, teamState?.updated_at]);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    };
+  }, []);
 
   const onChangeField = (key: keyof TipDraft, value: string) => {
     setDraft((prev) => {
       const next = { ...prev, [key]: value };
       updateSummary(draftToPool(next));
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        void persistTips(next);
+      }, 250);
       return next;
     });
   };
@@ -223,7 +246,13 @@ export function GrandTotalsSection({
                 style={styles.input}
                 value={draft[field.key]}
                 onChangeText={(v) => onChangeField(field.key, v)}
-                onEndEditing={() => void persistTips(draftRef.current)}
+                onFocus={() => {
+                  focusedRef.current = true;
+                }}
+                onBlur={() => {
+                  focusedRef.current = false;
+                }}
+                onEndEditing={flushPersistTips}
                 keyboardType="decimal-pad"
               />
             </View>

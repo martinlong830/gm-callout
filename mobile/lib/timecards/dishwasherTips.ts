@@ -4,6 +4,7 @@ import { entryHasMeaningfulPunch } from './offScheduleShift';
 import { isoFromDate, weekBoundsStorageKey } from './payWeek';
 import {
   queueTipPayrollPushToSupabase,
+  markTimecardDishwasherTipPendingAck,
   TIMECARD_DISHWASHER_TIPS_KEY,
 } from './tipPayrollSync';
 import { getEmployeeDayLeaveSync, type WeekExtrasSlice } from './weekExtras';
@@ -15,7 +16,7 @@ import {
   type EmployeeRow,
 } from '../employees';
 
-export { netTipAmount, tipTakehomePctForRestaurant, tipTakehomeFactor } from './tipTakehome';
+export { netTipAmount, grossFromNetTip, tipTakehomePctForRestaurant, tipTakehomeFactor } from './tipTakehome';
 export { tipTakehomePctForDishwasherEmployee };
 
 const RP2_DELIVERY_TIP_LOCATION = 'rp-8';
@@ -218,9 +219,14 @@ export async function setEmployeeDayDishwasherTip(
   const rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
   const key = dayDishwasherTipStorageKey(empId, iso, rid);
   const val = normalizeTipAmount(amount);
+  for (const k of Object.keys(slice)) {
+    if (k === key) continue;
+    const parsed = parseDishwasherTipStorageKey(k);
+    if (parsed && parsed.empId === empId && parsed.iso === iso) delete slice[k];
+  }
+  delete slice[`${empId}@${iso}`];
   if (val <= 0) delete slice[key];
   else slice[key] = val;
-  if (rid === 'rp-9') delete slice[`${empId}@${iso}`];
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
@@ -228,6 +234,7 @@ export async function setEmployeeDayDishwasherTip(
     await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(next));
     cachedDishwasherTipsKey = weekBoundsStorageKey(bounds);
     cachedDishwasherTipsSlice = slice;
+    markTimecardDishwasherTipPendingAck(weekBoundsStorageKey(bounds), key);
     if (isSupabaseConfigured && supabase) {
       queueTipPayrollPushToSupabase(supabase);
     }

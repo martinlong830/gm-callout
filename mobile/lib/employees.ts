@@ -17,6 +17,8 @@ export type EmployeeRow = {
   clockPin?: string;
   weeklyGrid: Record<string, unknown>;
   meta?: Record<string, unknown>;
+  /** Roster tenant. Omit on upsert unless known — wrong company_id fails employees RLS. */
+  companyId?: string;
 };
 
 const UUID_RE =
@@ -184,6 +186,7 @@ export function mapEmployeeFromDb(row: Record<string, unknown>): EmployeeRow | n
     clockPin: clockPin || undefined,
     weeklyGrid: (row.weekly_grid as Record<string, unknown>) ?? {},
     meta,
+    companyId: row.company_id ? String(row.company_id) : undefined,
   };
   applySingleStorePayrollDefaultIfMissing(mapped);
   return mapped;

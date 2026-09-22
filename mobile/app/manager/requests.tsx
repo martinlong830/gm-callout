@@ -15,6 +15,7 @@ import { useAppData } from '../../contexts/AppDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/LocaleContext';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
+import { ManagerFileStaffRequest } from '../../components/ManagerFileStaffRequest';
 import {
   employeeDisplayName,
   employeeVisibleInManagerStoreScope,
@@ -558,6 +559,18 @@ export default function ManagerRequests() {
           ))}
         </View>
       </View>
+      <ManagerFileStaffRequest
+        employees={employees}
+        myEmployee={myEmployee}
+        role={role}
+        teamState={teamState}
+        onApplied={({ store, draftSchedule }) => {
+          if (store) {
+            applyLocalScheduleAssignments(store, draftSchedule, { markDirty: false });
+          }
+          void refetch({ silent: true });
+        }}
+      />
       {loading && !staffRequests.length ? (
         <ActivityIndicator style={{ marginTop: 24 }} />
       ) : (

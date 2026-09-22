@@ -270,6 +270,7 @@ export async function applyApprovedSwapToSchedule(
         : undefined;
 
   let draftChanged = false;
+  let destSid = shift.shiftId;
 
   const moveOntoCoverTr = (targetTr: number) => {
     ensureDraftRoleRow(draftRows, coverRole, targetTr);
@@ -277,6 +278,7 @@ export async function applyApprovedSwapToSchedule(
     ensureDraftRoleRow(draftRows, offeredRole, parts.trIdx);
     draftRows[offeredRole][parts.trIdx][dayInWeek] = null;
     const coverSid = `shift-${parts.globalDayIdx}-${coverRoleIdx}-${targetTr}`;
+    destSid = coverSid;
     rs[coverSid] = {
       workers: [cover],
       break: breakText,
@@ -296,6 +298,7 @@ export async function applyApprovedSwapToSchedule(
     if ((!start || !end) && coverDayHasTimes) {
       /* Idempotent retry after a prior move. */
       const placedSid = `shift-${parts.globalDayIdx}-${coverRoleIdx}-${existingTr}`;
+      destSid = placedSid;
       const prior = normalizeScheduleAssignment(rs[placedSid]);
       rs[placedSid] = {
         workers: [cover],
@@ -370,6 +373,21 @@ export async function applyApprovedSwapToSchedule(
     await broadcastTeamStateChanged(sb, teamStateId, [...cols]);
   } catch {
     /* non-blocking */
+  }
+
+  try {
+    const { enqueueCellOpsForShiftTargets } = await import('./schedule/weekCellOps');
+    await enqueueCellOpsForShiftTargets({
+      sb,
+      assignmentStore: nextStore,
+      draftRaw: draftChanged ? draftRaw : opts?.draftScheduleRaw,
+      targets: [
+        { restaurantId: rid, shiftId: shift.shiftId },
+        { restaurantId: rid, shiftId: destSid },
+      ],
+    });
+  } catch {
+    /* assignment blob already saved */
   }
 
   return {

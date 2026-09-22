@@ -4,9 +4,14 @@ import {
   draftTimeSlotFor,
   loadDraftFromTeamState,
   normalizeScheduleAssignment,
+  parseShiftIdParts,
   ROLE_DEFS,
   WEEKDAY_KEYS,
+  buildWeeksFromMonday,
+  getScheduleAnchorMondayDate,
+  SCHEDULE_VIEW_WEEK_COUNT,
 } from './engine';
+import { readStoredCompanyId } from '../companySession';
 import {
   enqueueOps,
   ensureSlotKey,
@@ -90,4 +95,38 @@ export async function enqueueRestaurantWeekCellOps(opts: {
     await enqueueOps(ops.slice(i, i + 40));
   }
   await flushOutboxFully(sb);
+}
+
+/**
+ * Stamp schedule_cells for every restaurant-week touched by the given shift ids
+ * (time-off / callout / swap approvals). Cloud cells are the main-schedule SoT.
+ */
+export async function enqueueCellOpsForShiftTargets(opts: {
+  sb: SupabaseClient;
+  assignmentStore: AssignmentStore;
+  draftRaw: unknown;
+  targets: { restaurantId: string; shiftId: string }[];
+}): Promise<void> {
+  const companyId = (await readStoredCompanyId()) || '';
+  if (!companyId) return;
+  const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
+  const seen = new Set<string>();
+  for (const t of opts.targets || []) {
+    if (!t?.restaurantId || !t.shiftId) continue;
+    const p = parseShiftIdParts(t.shiftId);
+    if (!p) continue;
+    const wi = Math.floor(p.globalDayIdx / 7);
+    const key = `${t.restaurantId}|${wi}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await enqueueRestaurantWeekCellOps({
+      sb: opts.sb,
+      companyId,
+      restaurantId: t.restaurantId,
+      weekIndex: wi,
+      weekMeta,
+      draftRaw: opts.draftRaw,
+      assignmentStore: opts.assignmentStore,
+    });
+  }
 }

@@ -208,7 +208,7 @@ import {
   patchScheduleNetSalesInDraft,
   readScheduleNetSalesByWeek,
 } from '../../lib/schedule/scheduleNetSales';
-import { getOngiFlag, patchOngiFlagInDraft, readOngiFlagsByWeek } from '../../lib/schedule/ongiFlags';
+import { getOngiFlag, ongiStoreLabel, parseOngiStoreValue, patchOngiFlagInDraft, readOngiFlagsByWeek } from '../../lib/schedule/ongiFlags';
 
 function formatScheduleLaborPay(amount: number): string {
   const n = Number(amount) || 0;
@@ -423,7 +423,7 @@ export default function ManagerScheduleScreen() {
   const [editWorker, setEditWorker] = useState('Unassigned');
   const [editVl, setEditVl] = useState('0');
   const [editSl, setEditSl] = useState('0');
-  const [editOngi, setEditOngi] = useState(false);
+  const [editOngi, setEditOngi] = useState<0 | 1 | 2 | 3>(0);
   const [shiftPersonBorrowMode, setShiftPersonBorrowMode] = useState(false);
   const [copyTimesClip, setCopyTimesClip] = useState<CopyTimesClip | null>(null);
   const [rowPersonPicker, setRowPersonPicker] = useState<RowPersonTarget | null>(null);
@@ -2194,19 +2194,20 @@ export default function ManagerScheduleScreen() {
   ]);
 
   const ongiFlagByCell = useMemo(() => {
-    const out = new Set<string>();
+    const out = new Map<string, number>();
     const map = readOngiFlagsByWeek(draftScheduleRaw);
     const mon = selectedWeekMonday;
     const rid = currentRestaurantId;
     const rest = mon && rid ? map[mon]?.[rid] || {} : {};
     Object.keys(rest).forEach((cellKey) => {
-      if (rest[cellKey] !== true) return;
+      const store = parseOngiStoreValue(rest[cellKey]);
+      if (store !== 1 && store !== 2 && store !== 3) return;
       const parts = cellKey.split('|');
       if (parts.length !== 3) return;
       const dayStr = weekMeta.find(
         (m) => m.iso && String(m.iso).slice(0, 10) === parts[2]
       )?.label;
-      if (dayStr) out.add(`${parts[0]}|${parts[1]}|${dayStr}`);
+      if (dayStr) out.set(`${parts[0]}|${parts[1]}|${dayStr}`, store);
     });
     return out;
   }, [draftScheduleRaw, selectedWeekMonday, currentRestaurantId, weekMeta]);
@@ -2362,7 +2363,7 @@ export default function ManagerScheduleScreen() {
     isDayOff: boolean;
     breakText: string | null;
     workers?: string[] | null;
-    ongi?: boolean;
+    ongi?: number | boolean;
   }): boolean {
     const wk = weekdayKeyFromScheduleDay(opts.dayStr);
     const di = WEEKDAY_KEYS.indexOf(wk);
@@ -2394,7 +2395,7 @@ export default function ManagerScheduleScreen() {
       currentRestaurantId,
       applied.draftRows
     );
-    if (typeof opts.ongi === 'boolean') {
+    if (typeof opts.ongi === 'number' || typeof opts.ongi === 'boolean') {
       const dayIso = dayIsoForShiftDayStr(opts.dayStr);
       const mon = selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
       if (dayIso && mon) {
@@ -2561,18 +2562,16 @@ export default function ManagerScheduleScreen() {
     const dayIso = dayIsoForShiftDayStr(target.dayStr);
     const mon = selectedWeekMonday || weekStartMondayIsoFromDayIso(dayIso) || dayIso;
     setEditOngi(
-      !!(
-        dayIso &&
-        mon &&
-        getOngiFlag(
-          draftScheduleRawRef.current,
-          mon,
-          currentRestaurantId,
-          target.role,
-          target.trIdx,
-          dayIso
-        )
-      )
+      dayIso && mon
+        ? getOngiFlag(
+            draftScheduleRawRef.current,
+            mon,
+            currentRestaurantId,
+            target.role,
+            target.trIdx,
+            dayIso
+          )
+        : 0
     );
     setShiftEditor(target);
     void loadShiftEditorLeave(nextWorker, target.dayStr);
@@ -4126,9 +4125,32 @@ export default function ManagerScheduleScreen() {
                   <Text style={styles.editLabel}>{t('schedule.dayOffToggle')}</Text>
                   <Switch value={editDayOff} onValueChange={setEditDayOff} />
                 </View>
-                <View style={styles.editRow}>
+                <View style={{ marginBottom: 8 }}>
                   <Text style={styles.editLabel}>{t('schedule.ongiFlag')}</Text>
-                  <Switch value={editOngi} onValueChange={setEditOngi} />
+                  <View style={styles.chipWrap}>
+                    {([0, 1, 2, 3] as const).map((n) => (
+                      <Pressable
+                        key={n}
+                        onPress={() => setEditOngi(n)}
+                        style={[styles.editChip, editOngi === n && styles.editChipActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.editChipText,
+                            editOngi === n && styles.editChipTextActive,
+                          ]}
+                        >
+                          {n === 0
+                            ? t('schedule.ongiFlagNone')
+                            : n === 1
+                              ? t('schedule.ongiFlag1')
+                              : n === 2
+                                ? t('schedule.ongiFlag2')
+                                : t('schedule.ongiFlag3')}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
                 </View>
                 <Text style={styles.editHint}>{t('schedule.ongiFlagHint')}</Text>
                 {!editDayOff ? (
@@ -4637,20 +4659,29 @@ const CalendarCellView = memo(function CalendarCellView({
       </Text>
     </View>
   );
-  const ongiBadge = () => (
-    <View style={styles.ongiFlagPill}>
-      <Text style={styles.ongiFlagPillText} numberOfLines={1}>
-        {t('schedule.ongiFlag')}
-      </Text>
-    </View>
-  );
-  const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: boolean) => {
+  const ongiBadge = (store: number) => {
+    const label = ongiStoreLabel(store, t('schedule.ongiFlag')) || t('schedule.ongiFlag');
+    return (
+      <View
+        style={[
+          styles.ongiFlagPill,
+          store === 2 ? styles.ongiFlagPill2 : null,
+          store === 3 ? styles.ongiFlagPill3 : null,
+        ]}
+      >
+        <Text style={styles.ongiFlagPillText} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    );
+  };
+  const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: number) => {
     const belowLeave = (otherStore ? 1 : 0) + (ongi ? 1 : 0);
     return (
       <>
         {leaveFlag ? leaveFlagBadge(leaveFlag, belowLeave >= 1, belowLeave >= 2) : null}
         {otherStore ? otherStoreBadge(otherStore, !!ongi) : null}
-        {ongi ? ongiBadge() : null}
+        {ongi ? ongiBadge(ongi) : null}
       </>
     );
   };
@@ -5381,6 +5412,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#d1fae5',
     borderWidth: 1,
     borderColor: '#6ee7b7',
+  },
+  ongiFlagPill2: {
+    backgroundColor: '#ccfbf1',
+    borderColor: '#5eead4',
+  },
+  ongiFlagPill3: {
+    backgroundColor: '#99f6e4',
+    borderColor: '#2dd4bf',
   },
   ongiFlagPillText: {
     fontSize: 10,

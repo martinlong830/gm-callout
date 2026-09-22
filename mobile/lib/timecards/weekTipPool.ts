@@ -3,6 +3,7 @@ import { isSupabaseConfigured, supabase } from '../supabase';
 import { weekBoundsStorageKey } from './payWeek';
 import {
   queueTipPayrollPushToSupabase,
+  markTimecardTipPoolPendingAck,
   TIMECARD_WEEK_TIP_POOL_KEY,
 } from './tipPayrollSync';
 import type { LocationFilter } from './restaurantAttribution';
@@ -149,6 +150,7 @@ export async function saveWeekTipPoolSlice(
       sqGhDd: totals.sqGhDd,
     };
     await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(next));
+    markTimecardTipPoolPendingAck(tipPoolStorageKey(bounds, locationFilter));
     if (isSupabaseConfigured && supabase) {
       queueTipPayrollPushToSupabase(supabase);
     }

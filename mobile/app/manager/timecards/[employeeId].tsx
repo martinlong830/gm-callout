@@ -436,9 +436,18 @@ function ShiftRowCard({
   );
   const showDishwasherTips = isDeliveryDishwasherStaff(emp);
   const tipRest = dishwasherTipRestaurantForShiftRow(row);
-  const dayDishwasherTipNet = showDishwasherTips
+  let dayDishwasherTipNet = showDishwasherTips
     ? getEmployeeDayDishwasherTipNetSync(empId, row.iso, dishwasherTipsSlice, tipRest, emp)
     : 0;
+  if (showDishwasherTips && dayDishwasherTipNet <= 0) {
+    dayDishwasherTipNet = getEmployeeDayDishwasherTipNetSync(
+      empId,
+      row.iso,
+      dishwasherTipsSlice,
+      undefined,
+      emp
+    );
+  }
   const dayCoverage = getEmployeeDayAdditionalCashTipSync(empId, row.iso, extrasSlice);
 
   const confirmRemove = () => {

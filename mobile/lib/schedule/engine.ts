@@ -1767,7 +1767,7 @@ export type CalendarCell =
       dayStr: string;
       otherStoreLabel?: string;
       leaveFlag?: string;
-      ongiFlag?: boolean;
+      ongiFlag?: number;
     }
   | {
       kind: 'dayoff';
@@ -1778,7 +1778,7 @@ export type CalendarCell =
       trIdx: number;
       otherStoreLabel?: string;
       leaveFlag?: string;
-      ongiFlag?: boolean;
+      ongiFlag?: number;
     }
   | {
       kind: 'shift';
@@ -1789,7 +1789,7 @@ export type CalendarCell =
       hours: string;
       otherStoreLabel?: string;
       leaveFlag?: string;
-      ongiFlag?: boolean;
+      ongiFlag?: number;
     };
 
 /** Map key for same-day other-store schedule labels (`workerKey\\0dayStr`). */
@@ -2096,13 +2096,13 @@ export function buildCalendarBody(
   otherStoreDayLabels?: Map<string, string> | null,
   abbreviateForManagedStoreId?: string | null,
   leaveFlagByPersonDay?: Map<string, string> | null,
-  ongiFlagByCell?: Set<string> | null
+  ongiFlagByCell?: Map<string, number> | null
 ): CalendarBodyRow[] {
   const bodyRows: CalendarBodyRow[] = [];
   const colCount = visibleDays.length;
   const otherMap = otherStoreDayLabels || null;
   const leaveMap = leaveFlagByPersonDay || null;
-  const ongiSet = ongiFlagByCell || null;
+  const ongiMap = ongiFlagByCell || null;
   const abbreviate =
     !!abbreviateForManagedStoreId &&
     !!restaurantId &&
@@ -2159,8 +2159,9 @@ export function buildCalendarBody(
     return employeeHasSingleStorePayroll(liteByName(workerName));
   }
 
-  function cellOngiFlag(role: RoleKey, trIdx: number, dayStr: string): boolean {
-    return !!(ongiSet && ongiSet.has(`${role}|${trIdx}|${dayStr}`));
+  function cellOngiFlag(role: RoleKey, trIdx: number, dayStr: string): number | undefined {
+    const v = ongiMap?.get(`${role}|${trIdx}|${dayStr}`);
+    return v === 1 || v === 2 || v === 3 ? v : undefined;
   }
 
   SCHEDULE_GRID_ROLE_ORDER.forEach((roleKey) => {

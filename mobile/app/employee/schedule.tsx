@@ -47,6 +47,7 @@ import {
   type CalendarCell,
 } from '../../lib/schedule/engine';
 import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
+import { ongiStoreLabel, parseOngiStoreValue, readOngiFlagsByWeek } from '../../lib/schedule/ongiFlags';
 import { getPayWeekBoundsForMonday } from '../../lib/timecards/payWeek';
 import { restaurantShortLabelForId } from '../../lib/timecards/restaurantAttribution';
 import { loadWeekExtrasSlice, type WeekExtrasSlice } from '../../lib/timecards/weekExtras';
@@ -446,6 +447,25 @@ export default function EmployeeScheduleScreen() {
     teamState,
   ]);
 
+  const ongiFlagByCell = useMemo(() => {
+    const out = new Map<string, number>();
+    const map = readOngiFlagsByWeek(draftScheduleRaw);
+    const mon = selectedWeekMonday;
+    const rid = currentRestaurantId;
+    const rest = mon && rid ? map[mon]?.[rid] || {} : {};
+    Object.keys(rest).forEach((cellKey) => {
+      const store = parseOngiStoreValue(rest[cellKey]);
+      if (store !== 1 && store !== 2 && store !== 3) return;
+      const parts = cellKey.split('|');
+      if (parts.length !== 3) return;
+      const dayStr = weekMeta.find(
+        (m) => m.iso && String(m.iso).slice(0, 10) === parts[2]
+      )?.label;
+      if (dayStr) out.set(`${parts[0]}|${parts[1]}|${dayStr}`, store);
+    });
+    return out;
+  }, [draftScheduleRaw, selectedWeekMonday, currentRestaurantId, weekMeta]);
+
   const calendarBody = useMemo(() => {
     try {
       return buildCalendarBody(
@@ -462,7 +482,8 @@ export default function EmployeeScheduleScreen() {
         weekIndex,
         otherStoreDayLabels,
         null,
-        leaveFlagByPersonDay
+        leaveFlagByPersonDay,
+        ongiFlagByCell
       );
     } catch (err) {
       console.warn('buildCalendarBody', err);
@@ -480,6 +501,7 @@ export default function EmployeeScheduleScreen() {
     assignmentStore,
     otherStoreDayLabels,
     leaveFlagByPersonDay,
+    ongiFlagByCell,
   ]);
 
   const daysWidth = visibleDays.length * CELL_MIN;
@@ -835,26 +857,51 @@ const CalendarCellView = memo(function CalendarCellView({
   dayOffLabel: string;
 }) {
   const { t } = useI18n();
-  const otherStoreBadge = (label: string) => (
-    <View style={styles.otherStorePill}>
-      <Text style={styles.otherStorePillText} numberOfLines={1}>
-        {label}
-      </Text>
-    </View>
-  );
-  const leaveFlagBadge = (label: string, stacked: boolean) => (
-    <View style={[styles.leaveFlagPill, stacked ? styles.leaveFlagPillStacked : null]}>
+  const leaveFlagBadge = (label: string, stacked: boolean, stacked2?: boolean) => (
+    <View
+      style={[
+        styles.leaveFlagPill,
+        stacked ? styles.leaveFlagPillStacked : null,
+        stacked2 ? styles.leaveFlagPillStacked2 : null,
+      ]}
+    >
       <Text style={styles.leaveFlagPillText} numberOfLines={1}>
         {label}
       </Text>
     </View>
   );
-  const flagStrip = (leaveFlag?: string, otherStore?: string) => (
-    <>
-      {leaveFlag ? leaveFlagBadge(leaveFlag, !!otherStore) : null}
-      {otherStore ? otherStoreBadge(otherStore) : null}
-    </>
-  );
+  const ongiBadge = (store: number) => {
+    const label = ongiStoreLabel(store, t('schedule.ongiFlag')) || t('schedule.ongiFlag');
+    return (
+      <View
+        style={[
+          styles.ongiFlagPill,
+          store === 2 ? styles.ongiFlagPill2 : null,
+          store === 3 ? styles.ongiFlagPill3 : null,
+        ]}
+      >
+        <Text style={styles.ongiFlagPillText} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    );
+  };
+  const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: number) => {
+    const belowLeave = (otherStore ? 1 : 0) + (ongi ? 1 : 0);
+    return (
+      <>
+        {leaveFlag ? leaveFlagBadge(leaveFlag, belowLeave >= 1, belowLeave >= 2) : null}
+        {otherStore ? (
+          <View style={[styles.otherStorePill, ongi ? styles.otherStorePillStacked : null]}>
+            <Text style={styles.otherStorePillText} numberOfLines={1}>
+              {otherStore}
+            </Text>
+          </View>
+        ) : null}
+        {ongi ? ongiBadge(ongi) : null}
+      </>
+    );
+  };
   if (cell.kind === 'empty') {
     const pill = pillForRole(cell.role);
     return (
@@ -869,7 +916,7 @@ const CalendarCellView = memo(function CalendarCellView({
         ]}
       >
         <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
       </View>
     );
   }
@@ -891,7 +938,7 @@ const CalendarCellView = memo(function CalendarCellView({
           {cell.timeLabel}
         </Text>
         <Text style={styles.cellDayoffLabel}>{dayOffLabel}</Text>
-        {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+        {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
       </View>
     );
   }
@@ -921,7 +968,7 @@ const CalendarCellView = memo(function CalendarCellView({
           {cell.hours}
         </Text>
       ) : null}
-      {flagStrip(cell.leaveFlag, cell.otherStoreLabel)}
+      {flagStrip(cell.leaveFlag, cell.otherStoreLabel, cell.ongiFlag)}
     </View>
   );
 });
@@ -1174,10 +1221,43 @@ const styles = StyleSheet.create({
   leaveFlagPillStacked: {
     bottom: 22,
   },
+  leaveFlagPillStacked2: {
+    bottom: 40,
+  },
   leaveFlagPillText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#1e40af',
+    textAlign: 'center',
+  },
+  otherStorePillStacked: {
+    bottom: 22,
+  },
+  ongiFlagPill: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 4,
+    marginTop: 0,
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 4,
+    backgroundColor: '#d1fae5',
+    borderWidth: 1,
+    borderColor: '#6ee7b7',
+  },
+  ongiFlagPill2: {
+    backgroundColor: '#ccfbf1',
+    borderColor: '#5eead4',
+  },
+  ongiFlagPill3: {
+    backgroundColor: '#99f6e4',
+    borderColor: '#2dd4bf',
+  },
+  ongiFlagPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#065f46',
     textAlign: 'center',
   },
   cellBreak: { fontSize: 10, color: '#64748b', marginTop: 2 },

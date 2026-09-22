@@ -27,7 +27,9 @@ import {
 } from '../lib/schedule/syncV2';
 import {
   hashScheduleBundle,
+  insertScheduleRevision,
   SCHEDULE_CONTENT_GUARD_MS,
+  SCHEDULE_REVISION_AUTOSAVE_MS,
 } from '../lib/schedule/scheduleRevisions';
 import {
   applyTipPayrollFromTeamState,
@@ -544,6 +546,71 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     },
     []
   );
+
+  const lastHistoryAutoHashRef = useRef<string | null>(null);
+  const lastHistoryAutoAtRef = useRef(0);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !session?.user || !isManagerLikeRole(role)) return;
+    const sb = supabase;
+    const userId = session.user.id;
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      const ts = teamStateRef.current;
+      if (!ts) return;
+      const assignments = ts.schedule_assignments ?? {};
+      const draft = ts.draft_schedule ?? {};
+      const hash = hashScheduleBundle(assignments, draft);
+      if (lastHistoryAutoHashRef.current === null) {
+        lastHistoryAutoHashRef.current = hash;
+        return;
+      }
+      if (lastHistoryAutoHashRef.current === hash) return;
+      if (
+        lastHistoryAutoAtRef.current &&
+        Date.now() - lastHistoryAutoAtRef.current < SCHEDULE_REVISION_AUTOSAVE_MS
+      ) {
+        return;
+      }
+      try {
+        const teamStateId = await readStoredTeamStateId();
+        const res = await insertScheduleRevision(sb, {
+          teamStateId,
+          userId,
+          source: 'auto',
+          assignments,
+          draft,
+          published: ts.schedule_published ?? null,
+          dedupe: true,
+        });
+        if (res.ok) {
+          lastHistoryAutoHashRef.current = hash;
+          lastHistoryAutoAtRef.current = Date.now();
+        }
+      } catch (e) {
+        console.warn('schedule history autosave', e);
+      }
+    };
+    const interval = setInterval(() => {
+      void tick();
+    }, SCHEDULE_REVISION_AUTOSAVE_MS);
+    const onApp = (state: AppStateStatus) => {
+      if (state !== 'active') return;
+      if (
+        lastHistoryAutoAtRef.current &&
+        Date.now() - lastHistoryAutoAtRef.current >= SCHEDULE_REVISION_AUTOSAVE_MS
+      ) {
+        void tick();
+      }
+    };
+    const sub = AppState.addEventListener('change', onApp);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [session?.user?.id, role]);
 
   const myEmployee = useMemo(() => {
     if (!session?.user?.id || (role !== 'employee' && !isManagerLikeRole(role))) return null;

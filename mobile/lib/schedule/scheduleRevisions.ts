@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 export type ScheduleRevisionSource =
   | 'persist'
+  | 'auto'
   | 'publish'
   | 'hard_revert'
   | 'manual'
@@ -21,6 +22,8 @@ export type ScheduleRevisionRow = {
 };
 
 export const SCHEDULE_REVISION_RETENTION = 60;
+/** History auto-save interval (ms) — snapshot when the live schedule changed. */
+export const SCHEDULE_REVISION_AUTOSAVE_MS = 30 * 60 * 1000;
 /** Refuse remote schedule apply that differs from last successful push for this long. */
 export const SCHEDULE_CONTENT_GUARD_MS = 90_000;
 

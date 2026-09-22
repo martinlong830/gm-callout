@@ -18,9 +18,10 @@ import { employeeDisplayName, type EmployeeRow } from '../../../../lib/employees
 import {
   DISHWASHER_TIP_REQUIRES_SHIFT_MSG,
   dishwasherTipRestaurantForShiftRow,
-  getEmployeeDayDishwasherTip,
+  getEmployeeDayDishwasherTipNetSync,
+  grossFromNetTip,
   isDeliveryDishwasherStaff,
-  netTipAmount,
+  loadDishwasherTipsSlice,
   setEmployeeDayDishwasherTip,
   tipTakehomePctForDishwasherEmployee,
   tipTakehomePctForRestaurant,
@@ -232,8 +233,12 @@ export default function TimecardsShiftScreen() {
     }
     if (isDeliveryDishwasherStaff(emp)) {
       const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
-      const tip = await getEmployeeDayDishwasherTip(emp.id, iso, bounds, tipRest);
-      setDishwasherTipText(String(tip));
+      const slice = await loadDishwasherTipsSlice(bounds);
+      let net = getEmployeeDayDishwasherTipNetSync(emp.id, iso, slice, tipRest, emp);
+      if (net <= 0) {
+        net = getEmployeeDayDishwasherTipNetSync(emp.id, iso, slice, undefined, emp);
+      }
+      setDishwasherTipText(String(net));
     }
   }, [emp, iso, bounds, teamState, lites, staffRequests, shiftRow]);
 
@@ -412,7 +417,7 @@ export default function TimecardsShiftScreen() {
     if (!emp || !shiftRow || !supabase) return;
     const vl = Math.max(0, parseFloat(vlText) || 0);
     const sl = Math.max(0, parseFloat(slText) || 0);
-    const dishwasherTip = showDishwasherTip ? Math.max(0, parseFloat(dishwasherTipText) || 0) : 0;
+    const dishwasherTipNet = showDishwasherTip ? Math.max(0, parseFloat(dishwasherTipText) || 0) : 0;
     const coverage = Math.max(0, parseFloat(coverageText) || 0);
     const missingHours = Math.max(0, parseFloat(missingHoursText) || 0);
     let inIso = dateToIso(clockInDate);
@@ -437,12 +442,12 @@ export default function TimecardsShiftScreen() {
     if (!hasPunchTimes) {
       const removingDay =
         punchesCleared ||
-        (vl <= 0 && sl <= 0 && dishwasherTip <= 0 && coverage <= 0 && missingHours <= 0);
+        (vl <= 0 && sl <= 0 && dishwasherTipNet <= 0 && coverage <= 0 && missingHours <= 0);
       if (removingDay) {
         await finishClearedDaySave(0, 0, 0);
         return;
       }
-      if (showDishwasherTip && dishwasherTip > 0 && vl <= 0 && sl <= 0) {
+      if (showDishwasherTip && dishwasherTipNet > 0 && vl <= 0 && sl <= 0) {
         Alert.alert(t('timecards.title'), DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
         return;
       }
@@ -468,7 +473,18 @@ export default function TimecardsShiftScreen() {
       await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
       if (showDishwasherTip) {
         const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
-        await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
+        const pct = tipTakehomePctForDishwasherEmployee(
+          emp,
+          tipRest,
+          tipTakehomePctForRestaurant(tipRest)
+        );
+        await setEmployeeDayDishwasherTip(
+          emp.id,
+          shiftRow.iso,
+          grossFromNetTip(dishwasherTipNet, tipRest, pct),
+          bounds,
+          tipRest
+        );
       }
       setBusy(false);
       await refresh();
@@ -551,7 +567,18 @@ export default function TimecardsShiftScreen() {
     await setEmployeeDayMissingHours(emp.id, shiftRow.iso, missingHours, bounds);
     if (showDishwasherTip) {
       const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
-      await setEmployeeDayDishwasherTip(emp.id, shiftRow.iso, dishwasherTip, bounds, tipRest);
+      const pct = tipTakehomePctForDishwasherEmployee(
+        emp,
+        tipRest,
+        tipTakehomePctForRestaurant(tipRest)
+      );
+      await setEmployeeDayDishwasherTip(
+        emp.id,
+        shiftRow.iso,
+        grossFromNetTip(dishwasherTipNet, tipRest, pct),
+        bounds,
+        tipRest
+      );
     }
     await refresh();
     router.back();
@@ -820,36 +847,23 @@ export default function TimecardsShiftScreen() {
 
       {showDishwasherTip ? (
         <>
-          <Text style={styles.sectionTitle}>Dishwasher tip (this day)</Text>
-          <Text style={styles.hint}>Cash tips for delivery/dishwasher shifts (saved per day).</Text>
-          <Text style={styles.fieldLabel}>Tip ($)</Text>
+          <Text style={styles.sectionTitle}>{t('timecards.netDeliveryTip')}</Text>
+          <Text style={styles.hint}>
+            Net amount paid this day (×{' '}
+            {tipTakehomePctForDishwasherEmployee(
+              emp,
+              dishwasherTipRestaurantForShiftRow(shiftRow),
+              tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))
+            )}
+            % take-home already applied). Same figure as week totals and the full report.
+          </Text>
+          <Text style={styles.fieldLabel}>{t('timecards.netDeliveryTip')} ($)</Text>
           <TextInput
             style={styles.input}
             value={dishwasherTipText}
             onChangeText={setDishwasherTipText}
             keyboardType="decimal-pad"
           />
-          <Text style={styles.fieldLabel}>Net dishwasher tips</Text>
-          <Text style={styles.hint}>
-            {formatPayAmount(
-              netTipAmount(
-                Math.max(0, parseFloat(dishwasherTipText) || 0),
-                dishwasherTipRestaurantForShiftRow(shiftRow),
-                tipTakehomePctForDishwasherEmployee(
-                  emp,
-                  dishwasherTipRestaurantForShiftRow(shiftRow),
-                  tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))
-                )
-              )
-            )}{' '}
-            (tip ×{' '}
-            {tipTakehomePctForDishwasherEmployee(
-              emp,
-              dishwasherTipRestaurantForShiftRow(shiftRow),
-              tipTakehomePctForRestaurant(dishwasherTipRestaurantForShiftRow(shiftRow))
-            )}
-            % take-home)
-          </Text>
         </>
       ) : null}
 

@@ -554,7 +554,7 @@ const calendarFlagDays = [
   { kind: 'work', text: '09:00am-06:00pm\nVL 8h', hours: 8, hoursAfter: 8, flagKind: 'vl' },
   { kind: 'work', text: '09:00am-06:00pm\nSL 8h', hours: 8, hoursAfter: 8, flagKind: 'sl' },
   { kind: 'work', text: '09:00am-06:00pm\n8th Ave', hours: 8, hoursAfter: 8, flagKind: 'other' },
-  { kind: 'work', text: '09:00am-06:00pm\nOngi', hours: 8, hoursAfter: 8, flagKind: 'ongi' },
+  { kind: 'work', text: '09:00am-06:00pm\nOngi 1', hours: 8, hoursAfter: 8, flagKind: 'ongi' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
   { kind: 'dayoff', text: 'DAY-OFF', hours: 0, hoursAfter: 0, flagKind: '' },
@@ -619,7 +619,7 @@ if (
 delete deps.buildScheduleCalendarExportModel;
 sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
 
-/* Updated schedule: same compact cell copy as Published; yellow = time, green = VL/SL. */
+/* Updated schedule: compact like Published; punch/schedule deviations are not color-coded as changes. */
 {
   function dayMeta() {
     return deps.WEEK_META.map(function (m) {
@@ -731,11 +731,11 @@ sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
   }
   const timeChanged = findCellWithText(updatedWs, '10:00–18:00');
   const leaveChanged = findCellWithText(updatedWs, 'VL 1h');
-  if (cellFillRgb(timeChanged) !== 'FFF2CC') {
-    throw new Error('Shift-time changes should be yellow, got ' + cellFillRgb(timeChanged));
+  if (cellFillRgb(timeChanged) === 'FFF2CC') {
+    throw new Error('Punch/schedule time differences must not be yellow vs published');
   }
   if (cellFillRgb(leaveChanged) !== 'C6EFCE') {
-    throw new Error('VL/SL changes should be green, got ' + cellFillRgb(leaveChanged));
+    throw new Error('VL/SL flags should stay green, got ' + cellFillRgb(leaveChanged));
   }
   const timeLines = String((timeChanged && timeChanged.v) || '').split('\n').length;
   const pubTime = findCellWithText(publishedWs, '09:00–17:00');
@@ -746,7 +746,80 @@ sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
   delete deps.buildScheduleCalendarExportModel;
   delete deps.getPublishedWeekSnapshot;
   sandbox.__gmTimecardsTest.invalidateFullReportSheetsCache();
-  console.log('OK: Updated schedule stays compact; time diffs yellow, VL/SL diffs green');
+  console.log('OK: Updated schedule stays compact; punch/time diffs are not color-coded as changes');
+}
+
+/* Updated schedule cells use actual punch clock-in/out and break start/end. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  const emp = mockEmployees[0];
+  T.setWeekEntriesForTest([
+    {
+      id: 'punch-updated-sched',
+      employee_id: emp.id,
+      clock_in_at: new Date(2026, 4, 18, 7, 30, 0).toISOString(),
+      clock_out_at: new Date(2026, 4, 18, 22, 0, 0).toISOString(),
+      break_start_at: new Date(2026, 4, 18, 15, 0, 0).toISOString(),
+      break_end_at: new Date(2026, 4, 18, 15, 30, 0).toISOString(),
+      clock_restaurant_id: 'rp-9',
+      break_minutes: 30,
+    },
+  ]);
+  const model = {
+    restaurantId: 'rp-9',
+    days: deps.WEEK_META.map(function (m) {
+      return { label: m.label, iso: m.iso };
+    }),
+    sections: [
+      {
+        role: 'Bartender',
+        rows: [
+          {
+            personName: 'MARK ONG',
+            trIdx: 0,
+            days: [
+              {
+                kind: 'work',
+                text: '08:00am-10:00pm\n(3:00PM BREAK TIME)\n14',
+                hours: 14,
+                hoursAfter: 13.5,
+                start: '08:00',
+                end: '22:00',
+                breakText: '(3:00PM BREAK TIME)',
+                workers: ['MARK ONG'],
+              },
+              {
+                kind: 'dayoff',
+                text: 'DAY-OFF',
+                hours: 0,
+                hoursAfter: 0,
+                start: '',
+                end: '',
+                workers: ['MARK ONG'],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  T.applyActualPunchesToUpdatedScheduleModel(model);
+  const cell = model.sections[0].rows[0].days[0];
+  const timeLabel = T.formatUpdatedScheduleTimeLabel('07:30', '22:00');
+  if (String(cell.text || '').indexOf(timeLabel) < 0) {
+    throw new Error('Updated schedule should show punch 7:30–10pm, got ' + cell.text);
+  }
+  if (String(cell.text || '').indexOf('08:00am-10:00pm') >= 0) {
+    throw new Error('Updated schedule still shows scheduled times instead of punches');
+  }
+  if (String(cell.breakText || '').indexOf('3:00PM') < 0 || String(cell.breakText || '').indexOf('3:30PM') < 0) {
+    throw new Error('Updated schedule should show actual break start and end, got ' + cell.breakText);
+  }
+  if (cell.changed) {
+    throw new Error('Punch vs published must not be marked as a schedule change');
+  }
+  T.setWeekEntriesForTest([]);
+  console.log('OK: Updated schedule uses actual punch clock-in/out and break times');
 }
 
 /* forceFresh must rebuild from the live assignment snapshot (not a stale sheet cache). */
@@ -832,6 +905,62 @@ console.log('OK: full report excludes zero-work roster-only; includes payable of
     throw new Error('Scheduled day with no punches/pay should be omitted from payslip');
   }
   console.log('OK: payslip omits empty day-off / unworked shift rows');
+}
+
+/* Payslip Clockin/Clockout follow the live website shift, not stored punches. */
+{
+  const T = sandbox.__gmTimecardsTest;
+  if (T.formatShiftClockHhmm('10:00') !== '10:00 AM' || T.formatShiftClockHhmm('18:00') !== '6:00 PM') {
+    throw new Error(
+      'formatShiftClockHhmm should use 12-hour clock: ' +
+        T.formatShiftClockHhmm('10:00') +
+        ' / ' +
+        T.formatShiftClockHhmm('18:00')
+    );
+  }
+  const emp = mockEmployees[0];
+  T.setWeekEntriesForTest([
+    {
+      id: 'punch-stale-times',
+      employee_id: emp.id,
+      clock_in_at: new Date(2026, 4, 18, 11, 0, 0).toISOString(),
+      clock_out_at: new Date(2026, 4, 18, 21, 0, 0).toISOString(),
+      schedule_shift_id: 'shift-0-0-0',
+      clock_restaurant_id: 'rp-9',
+      break_minutes: 0,
+    },
+  ]);
+  const shiftRow = {
+    iso: '2026-05-18',
+    shift: {
+      id: 'shift-0-0-0',
+      start: '10:00',
+      end: '18:00',
+      restaurantId: 'rp-9',
+      day: 'Mon May 18',
+    },
+  };
+  const line = T.buildShiftStubRow(emp, shiftRow, 'Unpaid break', {});
+  if (line[3] !== '10:00 AM' || line[4] !== '6:00 PM') {
+    throw new Error(
+      'Payslip clock times must follow live schedule, not punches: ' + line[3] + '–' + line[4]
+    );
+  }
+  const offClocks = T.payslipClockTimesFromShiftRow(
+    {
+      iso: '2026-05-18',
+      shift: { id: 'off-schedule:2026-05-18', start: '', end: '' },
+    },
+    {
+      clock_in_at: new Date(2026, 4, 18, 12, 0, 0).toISOString(),
+      clock_out_at: new Date(2026, 4, 18, 20, 0, 0).toISOString(),
+    }
+  );
+  if (!offClocks.clockIn || !offClocks.clockOut) {
+    throw new Error('Off-schedule payslip rows should still show punch clock times');
+  }
+  T.setWeekEntriesForTest([]);
+  console.log('OK: payslip clock times follow live schedule over stale punches');
 }
 
 /* Restore multi-location schedule for location-scoping checks below. */

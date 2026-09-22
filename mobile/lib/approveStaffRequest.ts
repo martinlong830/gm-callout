@@ -115,7 +115,7 @@ export async function approveStaffRequest(
     if (!effects.ok) return effects;
     const statusRes = await updateStaffRequestStatus(sb, request.id, 'approved');
     if (!statusRes.ok) return statusRes;
-    return { ok: true, store: effects.store };
+    return { ok: true, store: effects.store, draftSchedule: effects.draftSchedule };
   }
 
   if (isCalloutRequest(request)) {

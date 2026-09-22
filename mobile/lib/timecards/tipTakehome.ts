@@ -82,6 +82,32 @@ export function netTipAmount(
   return netCents / 100;
 }
 
+/** Inverse of netTipAmount so editors can show/edit net pay without round-trip drift. */
+export function grossFromNetTip(
+  net: number,
+  restaurantId?: string | null,
+  takehomePctOverride?: number | null
+): number {
+  if (net == null || Number.isNaN(net) || net <= 0) return 0;
+  const netCents = Math.round(Number(net) * 100);
+  if (netCents <= 0) return 0;
+  const pct =
+    takehomePctOverride != null && Number.isFinite(takehomePctOverride)
+      ? takehomePctOverride
+      : tipTakehomePctForRestaurant(restaurantId);
+  const pctHundredths = Math.round(pct * 100);
+  if (pctHundredths <= 0) return netCents / 100;
+  let grossCents = Math.round((netCents * 10000) / pctHundredths);
+  for (let i = 0; i < 24; i += 1) {
+    const got = Math.floor((grossCents * pctHundredths + 5000) / 10000);
+    if (got === netCents) break;
+    if (got < netCents) grossCents += 1;
+    else grossCents -= 1;
+  }
+  if (grossCents < 0) grossCents = 0;
+  return grossCents / 100;
+}
+
 export function applyTipTakehomePctMap(raw: unknown): Record<string, number> {
   tipTakehomePctByRestaurant = normalizeTipTakehomeMap(raw);
   return getTipTakehomePctMap();

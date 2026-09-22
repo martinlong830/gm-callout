@@ -7,8 +7,10 @@ function normalizeMondayIso(iso: unknown): string {
 
 const ROLE_KEYS: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
-/** mondayIso → restaurantId → "role|trIdx|dayIso" → true/false (false is an uncheck tombstone). */
-export type OngiFlagsByWeek = Record<string, Record<string, Record<string, boolean>>>;
+export type OngiStoreId = 1 | 2 | 3;
+/** mondayIso → restaurantId → "role|trIdx|dayIso" → store id or false (uncheck tombstone). */
+export type OngiCellValue = OngiStoreId | false;
+export type OngiFlagsByWeek = Record<string, Record<string, Record<string, OngiCellValue>>>;
 
 export function ongiFlagCellKey(role: string, trIdx: number, dayIso: string): string {
   return `${role}|${Number(trIdx)}|${String(dayIso || '').slice(0, 10)}`;
@@ -22,10 +24,27 @@ function parseOngiFlagCellKey(
   return { role: m[1] as RoleKey, trIdx: Number(m[2]), dayIso: m[3] };
 }
 
-function parseOngiBool(val: unknown): boolean | null {
-  if (val === true || val === 1 || val === '1' || val === 'true') return true;
-  if (val === false || val === 0 || val === '0' || val === 'false') return false;
+/** Parse stored/UI value. Legacy `true` becomes Ongi 1. `false` is an explicit off tombstone. */
+export function parseOngiStoreValue(val: unknown): OngiCellValue | null {
+  if (val === false || val === 0 || val === '0' || val === 'false' || val === 'none' || val === '') {
+    return false;
+  }
+  if (val === true || val === 'true') return 1;
+  const n = Number(val);
+  if (n === 1 || n === 2 || n === 3) return n;
+  const s = String(val || '')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  if (s === 'ongi1' || s === 'ongi-1') return 1;
+  if (s === 'ongi2' || s === 'ongi-2') return 2;
+  if (s === 'ongi3' || s === 'ongi-3') return 3;
   return null;
+}
+
+export function ongiStoreLabel(store: unknown, prefix = 'Ongi'): string {
+  const n = parseOngiStoreValue(store);
+  if (n !== 1 && n !== 2 && n !== 3) return '';
+  return `${prefix} ${n}`;
 }
 
 export function sanitizeOngiFlagsByWeek(raw: unknown): OngiFlagsByWeek {
@@ -40,11 +59,11 @@ export function sanitizeOngiFlagsByWeek(raw: unknown): OngiFlagsByWeek {
     Object.keys(byRest as Record<string, unknown>).forEach((rid) => {
       const cells = (byRest as Record<string, unknown>)[rid];
       if (!cells || typeof cells !== 'object') return;
-      const cellOut: Record<string, boolean> = {};
+      const cellOut: Record<string, OngiCellValue> = {};
       Object.keys(cells as Record<string, unknown>).forEach((cellKey) => {
         const parsed = parseOngiFlagCellKey(cellKey);
         if (!parsed) return;
-        const flag = parseOngiBool((cells as Record<string, unknown>)[cellKey]);
+        const flag = parseOngiStoreValue((cells as Record<string, unknown>)[cellKey]);
         if (flag == null) return;
         cellOut[ongiFlagCellKey(parsed.role, parsed.trIdx, parsed.dayIso)] = flag;
       });
@@ -60,6 +79,7 @@ export function readOngiFlagsByWeek(draftRaw: unknown): OngiFlagsByWeek {
   return sanitizeOngiFlagsByWeek((draftRaw as { ongiFlagsByWeek?: unknown }).ongiFlagsByWeek);
 }
 
+/** Active Ongi store (1–3), or 0 if unset. */
 export function getOngiFlag(
   draftRaw: unknown,
   mondayIso: string,
@@ -67,14 +87,15 @@ export function getOngiFlag(
   role: string,
   trIdx: number,
   dayIso: string
-): boolean {
+): 0 | OngiStoreId {
   const mon = normalizeMondayIso(mondayIso);
   const rid = String(restaurantId || '');
   const iso = String(dayIso || '').slice(0, 10);
-  if (!mon || !rid || !ROLE_KEYS.includes(role as RoleKey) || !iso) return false;
+  if (!mon || !rid || !ROLE_KEYS.includes(role as RoleKey) || !iso) return 0;
   const week = readOngiFlagsByWeek(draftRaw)[mon];
   const rest = week?.[rid];
-  return rest?.[ongiFlagCellKey(role, trIdx, iso)] === true;
+  const parsed = parseOngiStoreValue(rest?.[ongiFlagCellKey(role, trIdx, iso)]);
+  return parsed === 1 || parsed === 2 || parsed === 3 ? parsed : 0;
 }
 
 export function mergeOngiFlagsByWeekMaps(
@@ -94,7 +115,7 @@ export function mergeOngiFlagsByWeekMaps(
     rids.forEach((rid) => {
       const lCells = lRest[rid] || {};
       const rCells = rRest[rid] || {};
-      const cellOut: Record<string, boolean> = {};
+      const cellOut: Record<string, OngiCellValue> = {};
       const keys = new Set([...Object.keys(lCells), ...Object.keys(rCells)]);
       keys.forEach((cellKey) => {
         const lv = Object.prototype.hasOwnProperty.call(lCells, cellKey) ? lCells[cellKey] : null;
@@ -115,7 +136,7 @@ function writeOngiMap(base: Record<string, unknown>, map: OngiFlagsByWeek): void
   else delete base.ongiFlagsByWeek;
 }
 
-/** Set one cell flag and return a new draft_schedule payload. */
+/** Set one cell store (1–3) or clear with 0/false. Returns a new draft_schedule payload. */
 export function patchOngiFlagInDraft(
   draftRaw: unknown,
   mondayIso: string,
@@ -123,7 +144,7 @@ export function patchOngiFlagInDraft(
   role: string,
   trIdx: number,
   dayIso: string,
-  on: boolean
+  store: unknown
 ): unknown {
   const mon = normalizeMondayIso(mondayIso);
   const rid = String(restaurantId || '');
@@ -138,7 +159,8 @@ export function patchOngiFlagInDraft(
   const map = readOngiFlagsByWeek(base);
   if (!map[mon]) map[mon] = {};
   if (!map[mon][rid]) map[mon][rid] = {};
-  map[mon][rid][ongiFlagCellKey(role, trIdx, iso)] = !!on;
+  const parsed = parseOngiStoreValue(store);
+  map[mon][rid][ongiFlagCellKey(role, trIdx, iso)] = parsed == null ? false : parsed;
   writeOngiMap(base, sanitizeOngiFlagsByWeek(map));
   if (!base.v) base.v = 2;
   return base;

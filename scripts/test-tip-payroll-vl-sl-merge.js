@@ -357,6 +357,87 @@ assert(
   'cloud authority still honors pending-ack local overlay'
 );
 
+var TIP_PAYROLL_POOL_ACK_KEY = '_pool';
+
+function restoreTipPayrollPendingAckTipPool(mergedStore, localStore, pendingMap) {
+  if (!pendingMap || !mergedStore || !localStore) return mergedStore;
+  Object.keys(pendingMap).forEach(function (weekKey) {
+    var pendingSlice = pendingMap[weekKey];
+    if (!pendingSlice || !pendingSlice[TIP_PAYROLL_POOL_ACK_KEY]) return;
+    var localWeek =
+      localStore[weekKey] && typeof localStore[weekKey] === 'object' ? localStore[weekKey] : null;
+    if (!localWeek) return;
+    mergedStore[weekKey] = JSON.parse(JSON.stringify(localWeek));
+  });
+  return mergedStore;
+}
+
+function clearTipPayrollPendingAckTipPool(pendingMap, remoteStore, localStore) {
+  if (!pendingMap) return;
+  localStore = localStore && typeof localStore === 'object' ? localStore : {};
+  remoteStore = remoteStore && typeof remoteStore === 'object' ? remoteStore : {};
+  Object.keys(pendingMap).forEach(function (weekKey) {
+    if (!pendingMap[weekKey] || !pendingMap[weekKey][TIP_PAYROLL_POOL_ACK_KEY]) return;
+    if (tipPayrollSliceJson(localStore[weekKey]) === tipPayrollSliceJson(remoteStore[weekKey])) {
+      delete pendingMap[weekKey];
+    }
+  });
+}
+
+var tipWeek = '2026-09-15_2026-09-21|rp-9';
+var localTips = {};
+localTips[tipWeek] = { squareTips: 500, squarePickup: 40, doordash: 10, uber: 0, cashTip: 0, manual: true };
+var staleTips = {};
+staleTips[tipWeek] = { squareTips: 0, squarePickup: 0, doordash: 0, uber: 0, cashTip: 0, manual: true };
+var pendingTips = {};
+pendingTips[tipWeek] = {};
+pendingTips[tipWeek][TIP_PAYROLL_POOL_ACK_KEY] = true;
+var forcedTips = JSON.parse(JSON.stringify(staleTips));
+restoreTipPayrollPendingAckTipPool(forcedTips, localTips, pendingTips);
+assert(
+  forcedTips[tipWeek] && forcedTips[tipWeek].squareTips === 500,
+  'cloud authority keeps pending Square/GH tip pool over stale remote 0'
+);
+clearTipPayrollPendingAckTipPool(pendingTips, staleTips, localTips);
+assert(
+  pendingTips[tipWeek] && pendingTips[tipWeek][TIP_PAYROLL_POOL_ACK_KEY],
+  'tip pool pending-ack stays until remote echoes the local slice'
+);
+clearTipPayrollPendingAckTipPool(pendingTips, localTips, localTips);
+assert(!pendingTips[tipWeek], 'tip pool pending-ack clears when remote matches local');
+
+function netTipAmountTest(gross, pct) {
+  var grossCents = Math.round(gross * 100);
+  if (grossCents <= 0) return 0;
+  var pctHundredths = Math.round(pct * 100);
+  return Math.floor((grossCents * pctHundredths + 5000) / 10000) / 100;
+}
+function grossFromNetTipTest(net, pct) {
+  var netCents = Math.round(net * 100);
+  if (netCents <= 0) return 0;
+  var pctHundredths = Math.round(pct * 100);
+  if (pctHundredths <= 0) return net;
+  var grossCents = Math.round((netCents * 10000) / pctHundredths);
+  var guard = 0;
+  while (guard < 24) {
+    var got = Math.floor((grossCents * pctHundredths + 5000) / 10000);
+    if (got === netCents) break;
+    if (got < netCents) grossCents += 1;
+    else grossCents -= 1;
+    guard += 1;
+  }
+  return grossCents / 100;
+}
+[0.3, 1, 10, 50, 80, 95, 100, 123.45].forEach(function (net) {
+  [80, 95].forEach(function (pct) {
+    var gross = grossFromNetTipTest(net, pct);
+    assert(
+      netTipAmountTest(gross, pct) === net,
+      'net ' + net + ' at ' + pct + '% round-trips through stored gross'
+    );
+  });
+});
+
 assert(isTipPayrollLeaveDayKey(leaveKey), 'leave key helper matches empId@date');
 assert(!isTipPayrollLeaveDayKey('tipDay'), 'leave key helper rejects non-leave keys');
 assert(isTipPayrollLeaveZeroRow(zeroRow), 'zero row helper');

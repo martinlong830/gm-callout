@@ -239,9 +239,9 @@ const EN: Dict = {
   'employee.pastShifts': 'Past shifts',
   'employee.noPastShifts': 'No past shifts in this window.',
   'schedule.historyHint':
-    'Saved schedule versions (edits and publishes). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
+    'Saved schedule versions (auto-saves every 30 minutes when the schedule changed, plus publish/revert). Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone. Manual save points are not auto-deleted.',
   'schedule.historyEmpty':
-    'No saved versions yet. Edits and publishes are snapshotted after they sync.',
+    'No saved versions yet. Edit the schedule — auto-saves appear every 30 minutes, or tap Save point.',
   'schedule.historyFailed': 'Could not load schedule history',
   'schedule.savePoint': 'Save point',
   'schedule.savePointPrompt':
@@ -293,7 +293,11 @@ const EN: Dict = {
   'schedule.editStaffing': 'Edit Staffing',
   'schedule.saveShift': 'Save shift',
   'schedule.ongiFlag': 'Ongi',
-  'schedule.ongiFlagHint': 'Mark if this person is working at an Ongi store not yet in Shiflow.',
+  'schedule.ongiFlagNone': 'None',
+  'schedule.ongiFlag1': 'Ongi 1',
+  'schedule.ongiFlag2': 'Ongi 2',
+  'schedule.ongiFlag3': 'Ongi 3',
+  'schedule.ongiFlagHint': 'Which Ongi store this person is working at (not in Shiflow yet).',
   'schedule.callAll': 'Call All',
   'schedule.confirmReplacement': 'Confirm Replacement',
   'schedule.breakOffice': 'Break / office',
@@ -586,6 +590,20 @@ const EN: Dict = {
   'requests.notInSupabase': 'This request is not stored in Supabase yet.',
   'requests.updateFailed': 'Update failed',
   'requests.locationLabel': 'Location',
+  'requests.fileForEmployee': 'File a request for an employee',
+  'requests.fileForEmployeeHint':
+    'Pick a person, then post a swap in their name, or file time off / a callout (those apply to the main schedule immediately).',
+  'requests.employee': 'Employee',
+  'requests.chooseEmployeeFirst': 'Choose an employee first.',
+  'requests.autoApproved': 'Approved and applied to the main schedule.',
+  'requests.swapPosted': 'Swap offer posted. Other employees can accept it, then you approve.',
+  'requests.timeoffAutoHint': 'Time off is approved immediately and marked as a day off on the main schedule.',
+  'requests.swapOfferHint':
+    'Posts an offer in this person’s name. Other employees can accept; you still approve after someone covers.',
+  'requests.calloutAutoHint':
+    'Callouts are approved immediately and the selected shift is unassigned on the main schedule.',
+  'requests.approveTimeOff': 'Approve time off',
+  'requests.approveCallout': 'Approve callout',
 
   'availability.employee': 'Employee',
   'availability.rosterNotLinked': 'Your roster profile is not linked yet.',
@@ -1059,9 +1077,9 @@ const ES: Dict = {
   'employee.pastShifts': 'Turnos pasados',
   'employee.noPastShifts': 'No hay turnos pasados en esta ventana.',
   'schedule.historyHint':
-    'Versiones guardadas (ediciones y publicaciones). Usa «Punto de guardado» para un checkpoint con nombre. La reversión restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
+    'Versiones guardadas (autoguardado cada 30 minutos si el horario cambió, más publicar/revertir). Usa «Punto de guardado» para un checkpoint con nombre. La reversión restaura asignaciones y horarios para todos. Los puntos manuales no se borran solos.',
   'schedule.historyEmpty':
-    'Aún no hay versiones. Las ediciones y publicaciones se guardan después de sincronizar.',
+    'Aún no hay versiones. Edita el horario: el autoguardado aparece cada 30 minutos, o toca Punto de guardado.',
   'schedule.historyFailed': 'No se pudo cargar el historial',
   'schedule.savePoint': 'Punto de guardado',
   'schedule.savePointPrompt':
@@ -1113,7 +1131,11 @@ const ES: Dict = {
   'schedule.editStaffing': 'Editar personal',
   'schedule.saveShift': 'Guardar turno',
   'schedule.ongiFlag': 'Ongi',
-  'schedule.ongiFlagHint': 'Marca si esta persona trabaja en un local Ongi que aún no está en Shiflow.',
+  'schedule.ongiFlagNone': 'Ninguno',
+  'schedule.ongiFlag1': 'Ongi 1',
+  'schedule.ongiFlag2': 'Ongi 2',
+  'schedule.ongiFlag3': 'Ongi 3',
+  'schedule.ongiFlagHint': 'En qué local Ongi trabaja esta persona (aún no está en Shiflow).',
   'schedule.callAll': 'Llamar a todos',
   'schedule.confirmReplacement': 'Confirmar reemplazo',
   'schedule.breakOffice': 'Descanso / oficina',
@@ -1407,6 +1429,21 @@ const ES: Dict = {
   'requests.notInSupabase': 'Esta solicitud aún no está en Supabase.',
   'requests.updateFailed': 'Error al actualizar',
   'requests.locationLabel': 'Ubicación',
+  'requests.fileForEmployee': 'Registrar una solicitud para un empleado',
+  'requests.fileForEmployeeHint':
+    'Elige a una persona y publica un cambio a su nombre, o registra tiempo libre / una falta (eso se aplica al horario de inmediato).',
+  'requests.employee': 'Empleado',
+  'requests.chooseEmployeeFirst': 'Elige un empleado primero.',
+  'requests.autoApproved': 'Aprobado y aplicado al horario principal.',
+  'requests.swapPosted': 'Oferta de cambio publicada. Otros empleados pueden aceptarla y luego tú apruebas.',
+  'requests.timeoffAutoHint':
+    'El tiempo libre se aprueba de inmediato y se marca como día libre en el horario principal.',
+  'requests.swapOfferHint':
+    'Publica una oferta a nombre de esta persona. Otros empleados pueden aceptar; tú apruebas después de que alguien cubra.',
+  'requests.calloutAutoHint':
+    'Las faltas se aprueban de inmediato y el turno seleccionado queda sin asignar en el horario principal.',
+  'requests.approveTimeOff': 'Aprobar tiempo libre',
+  'requests.approveCallout': 'Aprobar falta',
 
   'availability.employee': 'Empleado',
   'availability.rosterNotLinked': 'Tu perfil aún no está vinculado a la lista.',

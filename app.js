@@ -824,10 +824,33 @@
     return { role: m[1], trIdx: Number(m[2]), dayIso: m[3] };
   }
 
-  function parseOngiFlagBool(val) {
-    if (val === true || val === 1 || val === '1' || val === 'true') return true;
-    if (val === false || val === 0 || val === '0' || val === 'false') return false;
+  function parseOngiStoreValue(val) {
+    if (
+      val === false ||
+      val === 0 ||
+      val === '0' ||
+      val === 'false' ||
+      val === 'none' ||
+      val === ''
+    ) {
+      return false;
+    }
+    if (val === true || val === 'true') return 1;
+    var n = Number(val);
+    if (n === 1 || n === 2 || n === 3) return n;
+    var s = String(val || '')
+      .toLowerCase()
+      .replace(/\s+/g, '');
+    if (s === 'ongi1' || s === 'ongi-1') return 1;
+    if (s === 'ongi2' || s === 'ongi-2') return 2;
+    if (s === 'ongi3' || s === 'ongi-3') return 3;
     return null;
+  }
+
+  function ongiStoreLabel(store) {
+    var n = parseOngiStoreValue(store);
+    if (n !== 1 && n !== 2 && n !== 3) return '';
+    return (gmT('schedule.ongiFlag') || 'Ongi') + ' ' + n;
   }
 
   function sanitizeOngiFlagsByWeek(raw) {
@@ -846,7 +869,7 @@
         Object.keys(cells).forEach(function (cellKey) {
           var parsed = parseOngiFlagCellKey(cellKey);
           if (!parsed) return;
-          var flag = parseOngiFlagBool(cells[cellKey]);
+          var flag = parseOngiStoreValue(cells[cellKey]);
           if (flag == null) return;
           cellOut[ongiFlagCellKey(parsed.role, parsed.trIdx, parsed.dayIso)] = flag;
         });
@@ -909,20 +932,23 @@
     var mon = normalizeSlotOrderMondayIso(mondayIso);
     var rid = restaurantId || currentRestaurantId;
     var iso = String(dayIso || '').slice(0, 10);
-    if (!mon || !rid || !ONGI_FLAG_ROLES[role] || !iso) return false;
+    if (!mon || !rid || !ONGI_FLAG_ROLES[role] || !iso) return 0;
     var week = ongiFlagsByWeekStore[mon];
     var rest = week && week[rid];
-    return !!(rest && rest[ongiFlagCellKey(role, trIdx, iso)] === true);
+    var parsed = parseOngiStoreValue(rest && rest[ongiFlagCellKey(role, trIdx, iso)]);
+    return parsed === 1 || parsed === 2 || parsed === 3 ? parsed : 0;
   }
 
-  function setOngiFlag(restaurantId, mondayIso, role, trIdx, dayIso, on) {
+  function setOngiFlag(restaurantId, mondayIso, role, trIdx, dayIso, store) {
     var mon = normalizeSlotOrderMondayIso(mondayIso);
     var rid = restaurantId || currentRestaurantId;
     var iso = String(dayIso || '').slice(0, 10);
     if (!mon || !rid || !ONGI_FLAG_ROLES[role] || !iso) return;
     if (!ongiFlagsByWeekStore[mon]) ongiFlagsByWeekStore[mon] = {};
     if (!ongiFlagsByWeekStore[mon][rid]) ongiFlagsByWeekStore[mon][rid] = {};
-    ongiFlagsByWeekStore[mon][rid][ongiFlagCellKey(role, trIdx, iso)] = !!on;
+    var parsed = parseOngiStoreValue(store);
+    ongiFlagsByWeekStore[mon][rid][ongiFlagCellKey(role, trIdx, iso)] =
+      parsed == null ? false : parsed;
     ongiFlagsByWeekStore = sanitizeOngiFlagsByWeek(ongiFlagsByWeekStore);
     persistOngiFlagsStore();
   }
@@ -1878,9 +1904,9 @@
   }
 
   var EMPLOYEE_SELECT_COLS_WITH_EMAIL =
-    'id, auth_user_id, first_name, last_name, display_name, phone, email, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+    'id, auth_user_id, company_id, first_name, last_name, display_name, phone, email, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
   var EMPLOYEE_SELECT_COLS_NO_EMAIL =
-    'id, auth_user_id, first_name, last_name, display_name, phone, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
+    'id, auth_user_id, company_id, first_name, last_name, display_name, phone, staff_type, employment_status, usual_restaurant, hourly_rate, clock_pin, meta, weekly_grid';
 
   async function employeesSelectWithEmailFallback(sb) {
     var preferEmail = gmEmployeesEmailColumnAvailable !== false;
@@ -6545,12 +6571,13 @@
     };
     /* Only set auth_user_id when known — writing null on upsert wipes portal links. */
     if (emp.authUserId) row.auth_user_id = emp.authUserId;
+    /* Keep the row's company. Stamping the session company on upsert fails RLS when
+       sessionStorage still has a previous tenant (exact: "new row violates row-level security policy"). */
+    if (emp.companyId) row.company_id = emp.companyId;
     /* Omit email until the column exists (avoids upsert failures + stale-name sync loops). */
     if (gmEmployeesEmailColumnAvailable !== false) {
       row.email = emailVal;
     }
-    var companyId = emp.companyId || gmCalloutCompanyId();
-    if (companyId) row.company_id = companyId;
     if (emp.clockPin) row.clock_pin = String(emp.clockPin);
     if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
       row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
@@ -6857,6 +6884,8 @@
       (origEntry && origEntry.hours) ||
       (start && end ? redPokeShiftHoursDecimal(start, end) : null);
 
+    var v2Applied = null;
+
     function moveOfferedDayOntoCoverTr(targetTr) {
       ensureDraftRoleRow(draft, coverRole, targetTr);
       draft[coverRole][targetTr][dayInWeek] = [start, end];
@@ -6872,6 +6901,15 @@
       rs[sid] = { workers: ['Unassigned'] };
       saveDraftScheduleRowsForWeek(wi, draft, rid);
       saveScheduleAssignmentsStore(store);
+      v2Applied = {
+        destRole: coverRole,
+        destTr: targetTr,
+        sourceDayOff: true,
+        destStart: start,
+        destEnd: end,
+        destBreak: breakText,
+        destWorker: canon,
+      };
     }
 
     if (existingTr >= 0) {
@@ -6897,6 +6935,19 @@
         };
         rs[sid] = { workers: ['Unassigned'] };
         saveScheduleAssignmentsStore(store);
+        v2Applied = {
+          destRole: coverRole,
+          destTr: existingTr,
+          sourceDayOff: true,
+          destStart:
+            start ||
+            (coverDayCell && coverDayCell[0] ? normalizeHHMM(coverDayCell[0]) : ''),
+          destEnd:
+            end ||
+            (coverDayCell && coverDayCell[1] ? normalizeHHMM(coverDayCell[1]) : ''),
+          destBreak: breakText,
+          destWorker: canon,
+        };
       } else if (start && end && (coverRole !== offeredRole || !coverDayHasTimes)) {
         /* Place on cover's person row (cross-role, or same-role empty day). */
         moveOfferedDayOntoCoverTr(existingTr);
@@ -6905,6 +6956,15 @@
         origEntry.workers = clampScheduleWorkersToSingle([canon]);
         rs[sid] = origEntry;
         saveScheduleAssignmentsStore(store);
+        v2Applied = {
+          destRole: offeredRole,
+          destTr: parts.trIdx,
+          sourceDayOff: false,
+          destStart: start,
+          destEnd: end,
+          destBreak: breakText,
+          destWorker: canon,
+        };
       }
     } else {
       /* Add a new person row for the cover and move the offered day's shift onto it. */
@@ -6952,6 +7012,35 @@
       scheduleTeamStateDebouncedSync();
     }
     notifyTimecardsScheduleChanged();
+    if (v2Applied) {
+      var swapCellEdits = [];
+      if (v2Applied.sourceDayOff) {
+        swapCellEdits.push({
+          restaurantId: rid,
+          weekIndex: wi,
+          role: offeredRole,
+          trIdx: parts.trIdx,
+          dayInWeek: dayInWeek,
+          isDayOff: true,
+          workerName: String((offerReq && offerReq.employeeName) || '').trim() || null,
+        });
+      }
+      if (v2Applied.destStart && v2Applied.destEnd) {
+        swapCellEdits.push({
+          restaurantId: rid,
+          weekIndex: wi,
+          role: v2Applied.destRole,
+          trIdx: v2Applied.destTr,
+          dayInWeek: dayInWeek,
+          isDayOff: false,
+          workerName: v2Applied.destWorker,
+          start: v2Applied.destStart,
+          end: v2Applied.destEnd,
+          breakText: v2Applied.destBreak || '',
+        });
+      }
+      if (swapCellEdits.length) void enqueueV2EditsGrouped(swapCellEdits);
+    }
     return { ok: true };
   }
 
@@ -7011,12 +7100,16 @@
   /**
    * Unassign worker from resolved schedule rows (includes pattern-inherited staffing).
    * Writes explicit Unassigned onto each matching shift id so future weeks don't keep the pattern.
+   * opts.asDayOff — also clear draft times and stamp DAY-OFF on schedule_cells (time-off).
    */
-  function clearWorkerFromResolvedSchedule(workerName, isoPredicate) {
+  function clearWorkerFromResolvedSchedule(workerName, isoPredicate, opts) {
+    opts = opts || {};
+    var asDayOff = !!opts.asDayOff;
     var snapshot = buildAllLocationScheduleSnapshot();
     var store = loadScheduleAssignmentsStore();
     var changed = false;
     var hoursByIso = {};
+    var v2Edits = [];
     snapshot.forEach(function (s) {
       if (!shiftRowIncludesWorker(s, workerName)) return;
       var meta = WEEK_META.find(function (m) {
@@ -7032,8 +7125,33 @@
       var entry =
         existing != null ? cloneScheduleAssignment(existing) : { workers: ['Unassigned'] };
       entry.workers = ['Unassigned'];
+      if (asDayOff) {
+        delete entry.timeLabel;
+        delete entry.hours;
+        delete entry.break;
+        if (workerName && workerName !== 'Unassigned') entry.rowOwner = workerName;
+      }
       store[rid][sid] = entry;
       changed = true;
+      var p = parseShiftIdParts(sid);
+      if (asDayOff && p) {
+        var wi = Math.floor(p.globalDayIdx / 7);
+        var roleDef = ROLE_DEFS[p.roleIdx];
+        var role = roleDef && roleDef.role;
+        var di = p.globalDayIdx % 7;
+        if (role) {
+          var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+          if (layers[role] && layers[role][p.trIdx]) {
+            layers[role][p.trIdx][di] = null;
+            saveDraftScheduleRowsForWeek(wi, layers, rid);
+          }
+        }
+      }
+      var v2ed = v2EditFromSnapshotShift(s, {
+        isDayOff: asDayOff,
+        workerName: asDayOff ? workerName : null,
+      });
+      if (v2ed) v2Edits.push(v2ed);
       var h =
         s.redPokeHours != null && s.redPokeHours !== ''
           ? parseFloat(s.redPokeHours)
@@ -7048,6 +7166,7 @@
       rebuildSchedule();
       renderCalendar();
       if (scheduleBody) renderSchedule();
+      void enqueueV2EditsGrouped(v2Edits);
     }
     return { changed: changed, hoursByIso: hoursByIso };
   }
@@ -7082,7 +7201,7 @@
     var workerName = employeeDisplayName(emp);
     var cleared = clearWorkerFromResolvedSchedule(workerName, function (iso) {
       return !!iso && iso >= range.start && iso <= range.end;
-    });
+    }, { asDayOff: true });
     var hoursByIso = cleared.hoursByIso || {};
     var L = typeof gmLeave === 'function' ? gmLeave() : window.gmEmployeeLeave;
     var defaultH = (L && L.HOURS_PER_DAY) || 8;
@@ -7107,6 +7226,7 @@
       L.appendLeaveBalanceEntries(emp, range.leaveType, entries);
       saveEmployees({ singleEmployee: emp });
     }
+    notifyLeaveHoursChanged(emp);
     if (window.gmCalloutTimecards) {
       if (typeof window.gmCalloutTimecards.clearDayLeaveOverridesInRange === 'function') {
         window.gmCalloutTimecards.clearDayLeaveOverridesInRange(emp.id, range.start, range.end);
@@ -7157,6 +7277,50 @@
         renderCalendar();
         if (scheduleBody) renderSchedule();
       }
+      var p = parseShiftIdParts(sid);
+      if (p) {
+        var roleDef = ROLE_DEFS[p.roleIdx];
+        var role = roleDef && roleDef.role;
+        var wi = Math.floor(p.globalDayIdx / 7);
+        var di = p.globalDayIdx % 7;
+        var start = '';
+        var end = '';
+        var breakText = (existing && existing.break) || '';
+        if (role) {
+          var layers = getDraftScheduleRowsForWeek(wi, rid);
+          var cell =
+            layers[role] && layers[role][p.trIdx] ? layers[role][p.trIdx][di] : null;
+          if (cell && cell[0] && cell[1]) {
+            start = normalizeHHMM(cell[0]);
+            end = normalizeHHMM(cell[1]);
+          }
+        }
+        if (!start || !end) {
+          var parsedLabel = parseRedPokeTimeLabel(
+            (existing && existing.timeLabel) || shift.timeLabel || ''
+          );
+          if (parsedLabel) {
+            start = parsedLabel.start;
+            end = parsedLabel.end;
+          }
+        }
+        if (role && start && end) {
+          void enqueueV2EditsGrouped([
+            {
+              restaurantId: rid,
+              weekIndex: wi,
+              role: role,
+              trIdx: p.trIdx,
+              dayInWeek: di,
+              isDayOff: false,
+              workerName: null,
+              start: start,
+              end: end,
+              breakText: breakText,
+            },
+          ]);
+        }
+      }
       return { ok: true };
     }
     var iso = shift && shift.iso ? String(shift.iso).slice(0, 10) : '';
@@ -7165,6 +7329,54 @@
         return dayIso === iso;
       });
     }
+    return { ok: true };
+  }
+
+  /** Approve a pending staff request and apply schedule / leave side effects. */
+  function approvePendingStaffRequest(req) {
+    if (!req || req.status !== 'pending') {
+      return { ok: false, message: 'This request is not pending.' };
+    }
+    if (req.type === 'swap') {
+      if (!swapRequestCanManagerApprove(req)) {
+        return { ok: false, message: gmT('employee.swapNeedsCover') };
+      }
+      var swapRes = approveSwapAcceptanceRequest(req);
+      if (!swapRes.ok) return swapRes;
+      persistStaffRequestStatuses();
+      return { ok: true };
+    }
+    if (req.type === 'timeoff') {
+      var timeoffRes = applyTimeoffApprovalEffects(req);
+      if (!timeoffRes.ok) return timeoffRes;
+    }
+    if (req.type === 'callout_request' || req.type === 'callout') {
+      applyCalloutApprovalEffects(req);
+    }
+    if (req.type === 'availability' && req.submittedGrid) {
+      var availEmp = employeeByDisplayName(req.employeeName);
+      if (availEmp) {
+        var availWi =
+          req.submittedWeekIndex != null ? Number(req.submittedWeekIndex) : SCHEDULE_TEMPLATE_WEEK_INDEX;
+        setEmployeeAvailabilityWeekEntry(
+          availEmp,
+          availWi,
+          {
+            grid: req.submittedGrid,
+            status: 'approved',
+            submittedAt: req.submittedAt || localTodayISO(),
+          },
+          { syncWeeklyGrid: true }
+        );
+        saveEmployees({ singleEmployee: availEmp });
+        if (currentScreen === 13) renderManagerAvailabilityScreen();
+      }
+    }
+    req.status = 'approved';
+    if (GM_SUPABASE_DATA && isUuidCloudId(req.id)) {
+      updateStaffRequestStatusRemote(req.id, 'approved');
+    }
+    persistStaffRequestStatuses();
     return { ok: true };
   }
 
@@ -7313,6 +7525,7 @@
     return migrateEmployeeRecord({
       id: row.id,
       authUserId: row.auth_user_id || undefined,
+      companyId: row.company_id || undefined,
       firstName: row.first_name,
       lastName: row.last_name,
       displayName: row.display_name || undefined,
@@ -8564,13 +8777,17 @@
    * of a move (or neither), so Refresh on other devices never showed the moved shift.
    * edits: [{ role, trIdx, dayInWeek, start, end, breakText, isDayOff, workerName }]
    */
-  function enqueueAndFlushV2SlotEdits(edits) {
+  function enqueueAndFlushV2SlotEdits(edits, opts) {
     var v2 = gmScheduleV2();
     if (!scheduleSyncV2Enabled() || !v2 || !edits || !edits.length) {
       return Promise.resolve({ ok: false, skipped: true });
     }
-    var rid = currentRestaurantId;
-    var wi = scheduleCalendarWeekIndex;
+    opts = opts || {};
+    var rid = opts.restaurantId || currentRestaurantId;
+    var wi =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex)
+        : scheduleCalendarWeekIndex;
     markScheduleInteractiveEdit();
     scheduleHardRevertGuardUntil = Math.max(
       scheduleHardRevertGuardUntil || 0,
@@ -8643,6 +8860,57 @@
         armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
         return { ok: false, error: err };
       });
+  }
+
+  /** Group cell edits by restaurant+week and flush schedule_cells (cloud SoT). */
+  function enqueueV2EditsGrouped(edits) {
+    var groups = Object.create(null);
+    (edits || []).forEach(function (ed) {
+      if (!ed || !ed.role) return;
+      var rid = ed.restaurantId || currentRestaurantId;
+      var wi =
+        ed.weekIndex != null && !isNaN(Number(ed.weekIndex))
+          ? Number(ed.weekIndex)
+          : scheduleCalendarWeekIndex;
+      var key = String(rid) + '|' + String(wi);
+      if (!groups[key]) groups[key] = { restaurantId: rid, weekIndex: wi, edits: [] };
+      groups[key].edits.push(ed);
+    });
+    var keys = Object.keys(groups);
+    var chain = Promise.resolve({ ok: true });
+    keys.forEach(function (k) {
+      var g = groups[k];
+      chain = chain.then(function () {
+        return enqueueAndFlushV2SlotEdits(g.edits, {
+          restaurantId: g.restaurantId,
+          weekIndex: g.weekIndex,
+        });
+      });
+    });
+    return chain;
+  }
+
+  function v2EditFromSnapshotShift(s, opts) {
+    opts = opts || {};
+    if (!s || !s.id) return null;
+    var p = parseShiftIdParts(s.id);
+    if (!p) return null;
+    var roleDef = ROLE_DEFS[p.roleIdx];
+    var role = roleDef && roleDef.role;
+    if (!role) return null;
+    var wi = Math.floor(p.globalDayIdx / 7);
+    return {
+      restaurantId: String(s.restaurantId || currentRestaurantId),
+      weekIndex: wi,
+      role: role,
+      trIdx: p.trIdx,
+      dayInWeek: p.globalDayIdx % 7,
+      isDayOff: !!opts.isDayOff,
+      workerName: opts.workerName != null ? opts.workerName : null,
+      start: opts.start != null ? opts.start : s.start,
+      end: opts.end != null ? opts.end : s.end,
+      breakText: opts.breakText != null ? opts.breakText : s.redPokeBreak || '',
+    };
   }
 
   /**
@@ -11782,9 +12050,9 @@
   var teamStateAuthAccessToken = null;
   var SCHEDULE_REVISION_RETENTION = 150;
   var SCHEDULE_REVISION_LIST_LIMIT = 100;
-  /** Wait for editing to settle before writing an auto-save checkpoint. */
-  var SCHEDULE_REVISION_AUTOSAVE_QUIET_MS = 30 * 60 * 1000;
-  /** Minimum gap between auto-save checkpoints (publish/revert always save). */
+  /** History auto-save interval: snapshot when the live schedule changed. */
+  var SCHEDULE_REVISION_AUTOSAVE_MS = 30 * 60 * 1000;
+  /** Minimum gap between auto-save checkpoints (publish/revert/manual always save). */
   var SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS = 30 * 60 * 1000;
   var scheduleRevisionInsertTimer = null;
   var scheduleRevisionPending = null;
@@ -11840,6 +12108,11 @@
     armScheduleConsciousCloudWrite(SCHEDULE_CONSCIOUS_CLOUD_WRITE_MS);
     /* Hold soft poll for the full settle window (edits, deletes, template, revert). */
     armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+    try {
+      queueScheduleRevisionInsert({ source: 'auto' });
+    } catch (_revArm) {
+      /* ignore */
+    }
   }
 
   /**
@@ -13510,6 +13783,8 @@
    */
   var tipPayrollPendingAckExtras = Object.create(null);
   var tipPayrollPendingAckDishwasher = Object.create(null);
+  var tipPayrollPendingAckTipPool = Object.create(null);
+  var TIP_PAYROLL_POOL_ACK_KEY = '_pool';
   var TIP_PAYROLL_PUSH_MAX_ATTEMPTS = 3;
   /** In-memory SoT when Safari localStorage quota/private mode fails to persist. */
   var tipPayrollWeekExtrasMemory = null;
@@ -13528,6 +13803,87 @@
 
   function markTipPayrollPendingWeekExtra(weekKey, dayKey) {
     markTipPayrollPendingAckMap(tipPayrollPendingAckExtras, weekKey, dayKey);
+  }
+
+  function markTimecardTipPoolPendingAck(weekKey) {
+    if (!weekKey) return;
+    markTipPayrollPendingAckMap(tipPayrollPendingAckTipPool, weekKey, TIP_PAYROLL_POOL_ACK_KEY);
+    try {
+      var raw = localStorage.getItem(TIMECARD_WEEK_TIP_POOL_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o === 'object') tipPayrollTipPoolMemory = o;
+      }
+    } catch (_tpAck) {
+      /* ignore */
+    }
+  }
+
+  function markTimecardDishwasherTipPendingAck(weekKey, dayKey) {
+    if (!weekKey || !dayKey) return;
+    markTipPayrollPendingAckMap(tipPayrollPendingAckDishwasher, weekKey, dayKey);
+    try {
+      var raw = localStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o === 'object') tipPayrollDishwasherMemory = o;
+      }
+    } catch (_dwAck) {
+      /* ignore */
+    }
+  }
+
+  /** Overlay whole tip-pool week slices this tab wrote until cloud echoes them. */
+  function restoreTipPayrollPendingAckTipPool(mergedStore, localStore, pendingMap) {
+    if (!pendingMap || !mergedStore || !localStore) return mergedStore;
+    Object.keys(pendingMap).forEach(function (weekKey) {
+      var pendingSlice = pendingMap[weekKey];
+      if (!pendingSlice || !pendingSlice[TIP_PAYROLL_POOL_ACK_KEY]) return;
+      var localWeek =
+        localStore[weekKey] && typeof localStore[weekKey] === 'object' ? localStore[weekKey] : null;
+      if (!localWeek) return;
+      try {
+        mergedStore[weekKey] = JSON.parse(JSON.stringify(localWeek));
+      } catch (_cloneTip) {
+        mergedStore[weekKey] = localWeek;
+      }
+    });
+    return mergedStore;
+  }
+
+  function clearTipPayrollPendingAckTipPool(pendingMap, remoteStore, localStore) {
+    if (!pendingMap) return;
+    localStore = localStore && typeof localStore === 'object' ? localStore : {};
+    remoteStore = remoteStore && typeof remoteStore === 'object' ? remoteStore : {};
+    Object.keys(pendingMap).forEach(function (weekKey) {
+      var pendingSlice = pendingMap[weekKey];
+      if (!pendingSlice || !pendingSlice[TIP_PAYROLL_POOL_ACK_KEY]) return;
+      if (tipPayrollSliceJson(localStore[weekKey]) === tipPayrollSliceJson(remoteStore[weekKey])) {
+        delete pendingMap[weekKey];
+      }
+    });
+  }
+
+  function markPendingAckTipPoolDiffsFromBaseline(localStore, baselineStore, pendingMap) {
+    localStore = localStore && typeof localStore === 'object' ? localStore : {};
+    baselineStore = baselineStore && typeof baselineStore === 'object' ? baselineStore : {};
+    Object.keys(localStore).forEach(function (weekKey) {
+      if (tipPayrollSliceJson(localStore[weekKey]) === tipPayrollSliceJson(baselineStore[weekKey])) return;
+      markTipPayrollPendingAckMap(pendingMap, weekKey, TIP_PAYROLL_POOL_ACK_KEY);
+    });
+  }
+
+  function flushLiveTimecardTipPoolInputs() {
+    if (
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.flushTipPoolInputsToStore === 'function'
+    ) {
+      try {
+        window.gmCalloutTimecards.flushTipPoolInputsToStore();
+      } catch (_flushTips) {
+        /* ignore */
+      }
+    }
   }
 
   function tipPayrollPendingAckNonEmpty(pendingMap) {
@@ -13658,6 +14014,7 @@
     if (!sessRes.data || !sessRes.data.session) return;
     var prof = await sb.from('profiles').select('role').eq('id', sessRes.data.session.user.id).maybeSingle();
     if (prof.error || !prof.data || !roleIsManagerLike(prof.data.role)) return;
+    flushLiveTimecardTipPoolInputs();
     tipPayrollPushInFlight = true;
     try {
       var baseExtrasBefore =
@@ -13668,10 +14025,16 @@
         tipPayrollRemoteBaseline.dishwasher && typeof tipPayrollRemoteBaseline.dishwasher === 'object'
           ? tipPayrollRemoteBaseline.dishwasher
           : {};
+      var baseTipBefore =
+        tipPayrollRemoteBaseline.tipPool && typeof tipPayrollRemoteBaseline.tipPool === 'object'
+          ? tipPayrollRemoteBaseline.tipPool
+          : {};
       var localExtrasPush = loadTimecardWeekExtrasStore();
       var localDwPush = loadTimecardDishwasherTipsStore();
+      var localTipPush = loadTimecardWeekTipPoolStore();
       markPendingAckDiffsFromBaseline(localExtrasPush, baseExtrasBefore, tipPayrollPendingAckExtras);
       markPendingAckDiffsFromBaseline(localDwPush, baseDwBefore, tipPayrollPendingAckDishwasher);
+      markPendingAckTipPoolDiffsFromBaseline(localTipPush, baseTipBefore, tipPayrollPendingAckTipPool);
 
       var merged = null;
       var res = null;
@@ -13680,8 +14043,9 @@
         var remote = await fetchRemoteTipPayrollStores(sb);
         localExtrasPush = loadTimecardWeekExtrasStore();
         localDwPush = loadTimecardDishwasherTipsStore();
+        localTipPush = loadTimecardWeekTipPoolStore();
         merged = mergeTipPayrollStoresForPush(
-          loadTimecardWeekTipPoolStore(),
+          localTipPush,
           localDwPush,
           remote.tipPool,
           remote.dishwasher,
@@ -13695,6 +14059,7 @@
           localDwPush,
           tipPayrollPendingAckDishwasher
         );
+        restoreTipPayrollPendingAckTipPool(merged.tipPool, localTipPush, tipPayrollPendingAckTipPool);
         persistTimecardWeekTipPoolStore(merged.tipPool);
         persistTimecardDishwasherTipsStore(merged.dishwasher);
         persistTimecardWeekExtrasStore(merged.weekExtras);
@@ -13737,7 +14102,8 @@
         if (
           attempt < TIP_PAYROLL_PUSH_MAX_ATTEMPTS - 1 &&
           (tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
-            tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher))
+            tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher) ||
+            tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool))
         ) {
           var verify = await fetchRemoteTipPayrollStores(sb);
           clearTipPayrollPendingAckConfirmed(
@@ -13750,9 +14116,15 @@
             verify.dishwasher,
             localDwPush
           );
+          clearTipPayrollPendingAckTipPool(
+            tipPayrollPendingAckTipPool,
+            verify.tipPool,
+            localTipPush
+          );
           if (
             !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) &&
-            !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+            !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher) &&
+            !tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool)
           ) {
             tipPayrollRemoteBaseline = {
               tipPool: verify.tipPool,
@@ -13797,6 +14169,11 @@
           postVerify.dishwasher,
           loadTimecardDishwasherTipsStore()
         );
+        clearTipPayrollPendingAckTipPool(
+          tipPayrollPendingAckTipPool,
+          postVerify.tipPool,
+          loadTimecardWeekTipPoolStore()
+        );
         tipPayrollRemoteBaseline = {
           tipPool: postVerify.tipPool,
           dishwasher: postVerify.dishwasher,
@@ -13813,7 +14190,8 @@
         /* If cloud still missing our VL/SL, queue another push after peers settle. */
         if (
           tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
-          tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+          tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher) ||
+          tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool)
         ) {
           scheduleTipPayrollDebouncedSync();
         }
@@ -14137,6 +14515,10 @@
     var nextTip = hasTipPool ? remoteTip || {} : localTip0;
     var nextDw = hasDishwasher ? remoteDw || {} : localDw0;
     var nextExtras = hasWeekExtras ? remoteExtras || {} : localExtras0;
+    if (hasTipPool) {
+      nextTip = JSON.parse(JSON.stringify(nextTip || {}));
+      restoreTipPayrollPendingAckTipPool(nextTip, localTip0, tipPayrollPendingAckTipPool);
+    }
     if (hasWeekExtras) {
       nextExtras = JSON.parse(JSON.stringify(nextExtras || {}));
       restoreTipPayrollPendingAckKeys(nextExtras, localExtras0, tipPayrollPendingAckExtras);
@@ -14166,7 +14548,8 @@
     tipPayrollBaselineReady = true;
     if (
       tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
-      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher) ||
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool)
     ) {
       scheduleTipPayrollDebouncedSync();
     }
@@ -14226,6 +14609,13 @@
         loadTimecardDishwasherTipsStore()
       );
     }
+    if (remoteTip) {
+      clearTipPayrollPendingAckTipPool(
+        tipPayrollPendingAckTipPool,
+        remoteTip,
+        loadTimecardWeekTipPoolStore()
+      );
+    }
 
     /*
      * First hydrate + force (Refresh / tile): cloud is SoT.
@@ -14262,10 +14652,15 @@
     );
     restoreTipPayrollPendingAckKeys(merged.weekExtras, localExtras, tipPayrollPendingAckExtras);
     restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
+    restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
     var changed = false;
     if (hasTipPool && remoteTip && Object.keys(remoteTip).length > 0) {
       persistTimecardWeekTipPoolStore(merged.tipPool);
       nextBaseline.tipPool = remoteTip;
+      changed = true;
+    } else if (hasTipPool && tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool)) {
+      persistTimecardWeekTipPoolStore(merged.tipPool);
+      nextBaseline.tipPool = remoteTip || {};
       changed = true;
     }
     if (hasDishwasher && remoteDw && Object.keys(remoteDw).length > 0) {
@@ -14293,9 +14688,10 @@
     tipPayrollRemoteBaseline = nextBaseline;
     if (
       tipPayrollPendingAckNonEmpty(tipPayrollPendingAckExtras) ||
-      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher) ||
+      tipPayrollPendingAckNonEmpty(tipPayrollPendingAckTipPool)
     ) {
-      /* Stale remote applied — keep local VL/SL and push again until cloud echoes. */
+      /* Stale remote applied — keep local VL/SL / tips and push again until cloud echoes. */
       scheduleTipPayrollDebouncedSync();
     }
     if (changed) notifyTipPayrollStoresChanged();
@@ -15521,6 +15917,58 @@
     scheduleRevisionPending = null;
   }
 
+  function liveScheduleRevisionSnapshot() {
+    return {
+      source: 'auto',
+      assignments: loadScheduleAssignmentsStore(),
+      draft: draftSchedulePayloadFromStore(draftScheduleByWeekStore),
+      published: schedulePublishedPayload(),
+    };
+  }
+
+  function liveScheduleRevisionHash() {
+    var snap = liveScheduleRevisionSnapshot();
+    return hashScheduleBundle(snap.assignments, snap.draft);
+  }
+
+  function scheduleRevisionAutosaveWaitMs() {
+    if (!scheduleRevisionLastAutoSaveAt) return SCHEDULE_REVISION_AUTOSAVE_MS;
+    var elapsed = Date.now() - scheduleRevisionLastAutoSaveAt;
+    return Math.max(1000, SCHEDULE_REVISION_AUTOSAVE_MS - elapsed);
+  }
+
+  function managerCanWriteScheduleRevisions() {
+    return !!(gmCalloutSessionIsManager || gmCalloutSessionIsAdmin);
+  }
+
+  /** Arm a 30-minute checkpoint timer. Later edits must not reset it. */
+  function armScheduleRevisionAutosaveTimer() {
+    if (scheduleRevisionInsertTimer) return;
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!managerCanWriteScheduleRevisions()) return;
+    scheduleRevisionInsertTimer = setTimeout(function () {
+      scheduleRevisionInsertTimer = null;
+      void flushScheduleRevisionAutosave();
+    }, scheduleRevisionAutosaveWaitMs());
+  }
+
+  async function flushScheduleRevisionAutosave() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!managerCanWriteScheduleRevisions()) return;
+    var snap = liveScheduleRevisionSnapshot();
+    var hash = hashScheduleBundle(snap.assignments, snap.draft);
+    if (scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === hash) {
+      scheduleRevisionPending = null;
+      return;
+    }
+    scheduleRevisionPending = null;
+    await insertScheduleRevisionRow(snap);
+    var nowHash = liveScheduleRevisionHash();
+    if (!scheduleRevisionLastAutoSaveHash || scheduleRevisionLastAutoSaveHash !== nowHash) {
+      armScheduleRevisionAutosaveTimer();
+    }
+  }
+
   /**
    * Drop consecutive duplicate auto/persist rows (same content_hash) and same-second
    * twin inserts so History does not show identical timestamps stacked.
@@ -15557,53 +16005,26 @@
     var source = opts.source || 'auto';
     /* Publish / hard-revert / manual insert themselves — never queue those as autosaves. */
     if (!isScheduleRevisionAutoSource(source)) return;
-    source = 'auto';
-    opts = Object.assign({}, opts, { source: source });
-    var pendingHash = hashScheduleBundle(
-      opts.assignments != null ? opts.assignments : loadScheduleAssignmentsStore(),
-      opts.draft != null ? opts.draft : draftSchedulePayloadFromStore(draftScheduleByWeekStore)
-    );
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (!managerCanWriteScheduleRevisions()) return;
+    var snap = {
+      source: 'auto',
+      assignments:
+        opts.assignments != null ? opts.assignments : loadScheduleAssignmentsStore(),
+      draft:
+        opts.draft != null
+          ? opts.draft
+          : draftSchedulePayloadFromStore(draftScheduleByWeekStore),
+      published: opts.published != null ? opts.published : schedulePublishedPayload(),
+    };
+    var pendingHash = hashScheduleBundle(snap.assignments, snap.draft);
     /* No schedule changes since last auto-save — do not arm a 30‑minute timer. */
     if (scheduleRevisionLastAutoSaveHash && scheduleRevisionLastAutoSaveHash === pendingHash) {
       return;
     }
-    /* Still inside the 30‑minute auto-save gap — retry once the gap elapses. */
-    if (
-      scheduleRevisionLastAutoSaveAt &&
-      Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
-    ) {
-      scheduleRevisionPending = opts;
-      scheduleRevisionRetryAfterGap(
-        opts,
-        SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
-          (Date.now() - scheduleRevisionLastAutoSaveAt) +
-          250
-      );
-      return;
-    }
-    scheduleRevisionPending = opts;
-    if (scheduleRevisionInsertTimer) clearTimeout(scheduleRevisionInsertTimer);
-    if (scheduleRevisionRetryTimer) {
-      clearTimeout(scheduleRevisionRetryTimer);
-      scheduleRevisionRetryTimer = null;
-    }
-    /* Quiet period: only write after edits settle for 30 minutes. */
-    scheduleRevisionInsertTimer = setTimeout(function () {
-      scheduleRevisionInsertTimer = null;
-      var pending = scheduleRevisionPending;
-      scheduleRevisionPending = null;
-      if (pending) void insertScheduleRevisionRow(pending);
-    }, SCHEDULE_REVISION_AUTOSAVE_QUIET_MS);
-  }
-
-  function scheduleRevisionRetryAfterGap(opts, waitMs) {
-    if (scheduleRevisionRetryTimer) clearTimeout(scheduleRevisionRetryTimer);
-    scheduleRevisionRetryTimer = setTimeout(function () {
-      scheduleRevisionRetryTimer = null;
-      var next = opts || scheduleRevisionPending || {};
-      if (!isScheduleRevisionAutoSource(next.source)) return;
-      void insertScheduleRevisionRow(Object.assign({}, next, { source: 'auto' }));
-    }, Math.max(1000, waitMs || SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS));
+    scheduleRevisionPending = snap;
+    /* Keep the existing 30-minute clock. Continuous edits used to reset it forever. */
+    armScheduleRevisionAutosaveTimer();
   }
 
   async function insertScheduleRevisionRow(opts) {
@@ -15627,18 +16048,7 @@
       scheduleRevisionLastAutoSaveAt &&
       Date.now() - scheduleRevisionLastAutoSaveAt < SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS
     ) {
-      scheduleRevisionRetryAfterGap(
-        {
-          source: 'auto',
-          assignments: assignments,
-          draft: draft,
-          published: opts.published,
-          label: opts.label,
-        },
-        SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS -
-          (Date.now() - scheduleRevisionLastAutoSaveAt) +
-          250
-      );
+      armScheduleRevisionAutosaveTimer();
       return { ok: true, skipped: 'too_soon' };
     }
     if (scheduleRevisionInsertInFlight) {
@@ -15686,16 +16096,8 @@
             var gapLeft =
               SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS - (Date.now() - latestAt);
             if (!isNaN(latestAt) && gapLeft > 0 && isScheduleRevisionAutoSource(latest.data.source)) {
-              scheduleRevisionRetryAfterGap(
-                {
-                  source: 'auto',
-                  assignments: assignments,
-                  draft: draft,
-                  published: opts.published,
-                  label: opts.label,
-                },
-                gapLeft + 250
-              );
+              scheduleRevisionLastAutoSaveAt = latestAt;
+              armScheduleRevisionAutosaveTimer();
               return { ok: true, skipped: 'too_soon' };
             }
           }
@@ -15708,19 +16110,26 @@
       } catch (_s) {
         uid = null;
       }
-      var ins = await sb.from('team_state_schedule_revisions').insert({
-        team_state_id: teamStateId,
-        created_by: uid,
-        source: source,
-        label: opts.label || formatScheduleRevisionLabel(source),
-        content_hash: contentHash,
-        schedule_assignments: assignments || {},
-        draft_schedule: draft || {},
-        schedule_published: opts.published != null ? opts.published : null,
-      });
+      var ins = await sb
+        .from('team_state_schedule_revisions')
+        .insert({
+          team_state_id: teamStateId,
+          created_by: uid,
+          source: source,
+          label: opts.label || formatScheduleRevisionLabel(source),
+          content_hash: contentHash,
+          schedule_assignments: assignments || {},
+          draft_schedule: draft || {},
+          schedule_published: opts.published != null ? opts.published : null,
+        })
+        .select('id')
+        .maybeSingle();
       if (ins.error) {
         console.warn('gm-callout: schedule revision insert', ins.error);
         return { ok: false, error: ins.error.message };
+      }
+      if (!ins.data || !ins.data.id) {
+        return { ok: false, error: 'Insert returned no id.' };
       }
       scheduleRevisionLastAutoSaveHash = contentHash;
       if (isAuto) {
@@ -15733,7 +16142,7 @@
       return { ok: true, contentHash: contentHash };
     } catch (e) {
       console.warn('gm-callout: schedule revision insert', e);
-      return { ok: false };
+      return { ok: false, error: e && e.message ? e.message : 'insert failed' };
     } finally {
       scheduleRevisionInsertInFlight = false;
       if (scheduleRevisionPending && isScheduleRevisionAutoSource(scheduleRevisionPending.source)) {
@@ -16357,18 +16766,18 @@
               persistSchedulePushGuard();
             }
             clearScheduleSyncConflictState();
-            /*
-             * Autosave only — publish already inserts its own revision row.
-             * Queueing source "publish" here used to create duplicate same-second History entries.
-             */
-            if (!pushedPublished) {
-              queueScheduleRevisionInsert({
-                source: 'auto',
-                assignments: guardAssign,
-                draft: guardDraft,
-                published: schedulePublishedPayload(),
-              });
-            }
+          }
+          /*
+           * Autosave only — publish already inserts its own revision row.
+           * Queue even if more edits landed during the push (do not require clean flags).
+           */
+          if (!pushedPublished) {
+            queueScheduleRevisionInsert({
+              source: 'auto',
+              assignments: guardAssign,
+              draft: guardDraft,
+              published: schedulePublishedPayload(),
+            });
           }
         } else {
           persistSchedulePushGuard();
@@ -17900,13 +18309,9 @@
     var mon =
       mondayIsoForScheduleWeekIndex(scheduleCalendarWeekIndex) ||
       (typeof viewedScheduleWeekMondayIso === 'function' ? viewedScheduleWeekMondayIso() : '');
-    if (
-      typeof getOngiFlag !== 'function' ||
-      !getOngiFlag(currentRestaurantId, mon, role, Number(trIdx), dayIso)
-    ) {
-      return '';
-    }
-    return gmT('schedule.ongiFlag') || 'Ongi';
+    if (typeof getOngiFlag !== 'function') return '';
+    var store = getOngiFlag(currentRestaurantId, mon, role, Number(trIdx), dayIso);
+    return store ? ongiStoreLabel(store) : '';
   }
 
   function scheduleCalendarCellFlagLines(personName, dayStr, otherStoreDayLabels, slotCtx) {
@@ -18031,6 +18436,12 @@
   /** Schedule rows for a pay week, all locations (matches manager calendar + timecards). */
   function buildScheduleSnapshotForPayWeek(weekIndex, opts) {
     opts = opts || {};
+    /* Never snapshot template-scratch times into payroll / payslip. */
+    if (schedulePreferLiveDataDepth === 0) {
+      return withLiveScheduleData(function () {
+        return buildScheduleSnapshotForPayWeek(weekIndex, opts);
+      });
+    }
     var skipUiRefresh = !!opts.skipUiRefresh;
     var prevRest = currentRestaurantId;
     var prevWeek = scheduleCalendarWeekIndex;
@@ -18138,6 +18549,12 @@
           recoveredFrom: opts.snapshot.recoveredFrom || '',
           scheduleCopyKind: 'published',
         });
+      });
+    }
+    /* Live/updated copy: website draft, never template-scratch times. */
+    if (!opts._snapshotApplied && schedulePreferLiveDataDepth === 0) {
+      return withLiveScheduleData(function () {
+        return buildScheduleCalendarExportModel(weekIndex, restaurantId, opts);
       });
     }
     var wi =
@@ -18824,6 +19241,41 @@
 
   var pendingEmployeePhotoFile = null;
 
+  function employeePhotoStorageContentType(file, ext) {
+    var t = String((file && file.type) || '')
+      .toLowerCase()
+      .trim();
+    if (t === 'image/jpg' || t === 'image/pjpeg' || t === 'image/heic' || t === 'image/heif') {
+      return 'image/jpeg';
+    }
+    if (t.indexOf('image/') === 0) return t;
+    var e = String(ext || '').toLowerCase();
+    if (e === 'png') return 'image/png';
+    if (e === 'webp') return 'image/webp';
+    if (e === 'gif') return 'image/gif';
+    return 'image/jpeg';
+  }
+
+  async function persistEmployeePhotoMeta(emp) {
+    if (!emp || !emp.id) return { ok: false, message: 'No employee selected.' };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
+    } catch (_ls) {
+      /* ignore */
+    }
+    if (!(GM_SUPABASE_DATA && window.gmSupabase && isUuidCloudId(emp.id))) {
+      return { ok: true };
+    }
+    var metaRes = await window.gmSupabase
+      .from('employees')
+      .update({ meta: emp.meta && typeof emp.meta === 'object' ? emp.meta : {} })
+      .eq('id', emp.id);
+    if (metaRes.error) {
+      return { ok: false, message: metaRes.error.message || String(metaRes.error) };
+    }
+    return { ok: true };
+  }
+
   async function uploadEmployeePhotoFile(emp, file) {
     if (!emp || !file) return { ok: false, message: 'No file selected.' };
     if (!file.type || file.type.indexOf('image/') !== 0) {
@@ -18836,10 +19288,11 @@
     if (GM_SUPABASE_DATA && window.gmSupabase && isUuidCloudId(emp.id)) {
       var sb = window.gmSupabase;
       var ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+      if (ext === 'heic' || ext === 'heif' || ext === 'jpeg') ext = 'jpg';
       var path = emp.id + '.' + ext;
       var up = await sb.storage.from('employee-photos').upload(path, file, {
         upsert: true,
-        contentType: file.type || 'image/jpeg',
+        contentType: employeePhotoStorageContentType(file, ext),
       });
       if (up.error) {
         return { ok: false, message: up.error.message || String(up.error) };
@@ -18848,7 +19301,8 @@
       emp.meta.photoUrl = pub.data.publicUrl + '?v=' + Date.now();
       emp.meta.photoUseCustom = true;
       delete emp.meta.photoHidden;
-      saveEmployees();
+      var saved = await persistEmployeePhotoMeta(emp);
+      if (!saved.ok) return saved;
       return { ok: true, url: emp.meta.photoUrl };
     }
     return new Promise(function (resolve) {
@@ -18873,7 +19327,7 @@
     delete emp.meta.photoUrl;
     delete emp.meta.photoUseCustom;
     emp.meta.photoHidden = true;
-    saveEmployees();
+    void persistEmployeePhotoMeta(emp);
   }
 
   async function removeEmployeePhotoStorageObjects(empId) {
@@ -19446,6 +19900,7 @@
       usualRestaurant: usualOk ? ur : 'both',
     };
     if (e.authUserId) out.authUserId = e.authUserId;
+    if (e.companyId) out.companyId = String(e.companyId);
     if (e.displayName) out.displayName = String(e.displayName);
     if (e.meta && typeof e.meta === 'object') {
       out.meta = e.meta;
@@ -19763,7 +20218,7 @@
     flushTipPayrollPushToSupabase();
   }
 
-  /** Refresh schedule VL/SL flags + Timecards totals / full-report cache after a leave edit. */
+  /** Refresh schedule VL/SL flags + Team remaining hours + Timecards / full-report cache. */
   function notifyLeaveHoursChanged(emp) {
     if (currentScreen === 1 && typeof renderCalendar === 'function') {
       try {
@@ -19773,18 +20228,38 @@
       }
     }
     var tc = window.gmCalloutTimecards;
-    if (!tc) return;
+    if (tc) {
+      try {
+        if (typeof tc.invalidateWeekExtrasSliceCache === 'function') {
+          tc.invalidateWeekExtrasSliceCache();
+        }
+        if (typeof tc.invalidateFullReportSheetsCache === 'function') {
+          tc.invalidateFullReportSheetsCache();
+        }
+        if (typeof tc.markRosterCacheRowsDirty === 'function') {
+          tc.markRosterCacheRowsDirty();
+        }
+        if (emp && typeof tc.refreshGrandTotals === 'function') {
+          tc.refreshGrandTotals(emp);
+        }
+      } catch (_tcLeave) {
+        /* ignore */
+      }
+    }
     try {
-      if (typeof tc.invalidateWeekExtrasSliceCache === 'function') {
-        tc.invalidateWeekExtrasSliceCache();
+      if (currentScreen === 5 && typeof renderEmployeeList === 'function') {
+        renderEmployeeList();
       }
-      if (typeof tc.markRosterCacheRowsDirty === 'function') {
-        tc.markRosterCacheRowsDirty();
+      if (
+        currentScreen === 6 &&
+        emp &&
+        editingEmployeeId &&
+        String(editingEmployeeId) === String(emp.id) &&
+        typeof renderEmployeeLeaveEditor === 'function'
+      ) {
+        renderEmployeeLeaveEditor(emp);
       }
-      if (emp && typeof tc.refreshGrandTotals === 'function') {
-        tc.refreshGrandTotals(emp);
-      }
-    } catch (_tcLeave) {
+    } catch (_teamLeave) {
       /* ignore */
     }
   }
@@ -29783,20 +30258,19 @@
 
   function calendarOngiFlagHtml(role, trIdx, dayStr) {
     var dayIso = isoForShiftEditDay(dayStr);
-    if (
-      !getOngiFlag(
-        currentRestaurantId,
-        viewedScheduleWeekMondayIso(),
-        role,
-        trIdx,
-        dayIso
-      )
-    ) {
-      return '';
-    }
-    var label = gmT('schedule.ongiFlag') || 'Ongi';
+    var store = getOngiFlag(
+      currentRestaurantId,
+      viewedScheduleWeekMondayIso(),
+      role,
+      trIdx,
+      dayIso
+    );
+    if (!store) return '';
+    var label = ongiStoreLabel(store);
     return (
-      '<div class="calendar-slot-ongi-flag" title="' +
+      '<div class="calendar-slot-ongi-flag" data-ongi="' +
+      store +
+      '" title="' +
       escapeHtml(label) +
       '">' +
       escapeHtml(label) +
@@ -33206,6 +33680,46 @@
     };
   }
 
+  function employeeTeamLeaveRemainingLine(emp) {
+    if (!emp) return '';
+    var bal = null;
+    var tc = window.gmCalloutTimecards;
+    if (tc && typeof tc.ptoBalanceForEmployee === 'function') {
+      try {
+        bal = tc.ptoBalanceForEmployee(emp);
+      } catch (_ptoBal) {
+        bal = null;
+      }
+    }
+    if (!bal) {
+      var L0 = gmLeave();
+      if (L0 && emp.meta && emp.meta.leaveBalance && typeof L0.computeBalance === 'function') {
+        try {
+          bal = L0.computeBalance(emp.meta.leaveBalance);
+        } catch (_lb) {
+          bal = null;
+        }
+      }
+    }
+    if (!bal) return '';
+    var Lfmt =
+      window.gmEmployeeLeave && typeof window.gmEmployeeLeave.formatHours === 'function'
+        ? window.gmEmployeeLeave.formatHours
+        : function (h) {
+            var n = Number(h);
+            if (!isFinite(n)) return '0';
+            return String(Math.round(n * 100) / 100);
+          };
+    var parts = [];
+    if (bal.vacation && bal.vacation.remainingHours != null) {
+      parts.push('VL ' + Lfmt(bal.vacation.remainingHours) + ' hrs');
+    }
+    if (bal.sick && bal.sick.remainingHours != null) {
+      parts.push('SL ' + Lfmt(bal.sick.remainingHours) + ' hrs');
+    }
+    return parts.join(' · ');
+  }
+
   function portalAccountRoleLabel(role) {
     if (role === 'admin') return gmT('team.accountAdmin') || 'Admin';
     if (role === 'manager') return gmT('team.accountManager') || 'Manager';
@@ -33310,6 +33824,17 @@
             '<span class="employee-card-label">PIN</span>' +
             '<span class="employee-card-value employee-card-value--pin">' +
             pinLine +
+            '</span></div>';
+        }
+        var leaveRemain = employeeTeamLeaveRemainingLine(emp);
+        if (leaveRemain) {
+          metaRows +=
+            '<div class="employee-card-meta-row">' +
+            '<span class="employee-card-label">' +
+            escapeHtml(gmT('team.leaveRemaining') || 'VL / SL remaining') +
+            '</span>' +
+            '<span class="employee-card-value">' +
+            escapeHtml(leaveRemain) +
             '</span></div>';
         }
         if (gmCalloutSessionIsAdmin) {
@@ -33787,6 +34312,7 @@
 
   function renderRequestsList() {
     mergeEmployeeSubmittedFromStorage();
+    populateMgrFileRequestPanel();
     if (!requestsList) return;
     if (requestsTypeFilter === 'callout') {
       renderCalloutsRequestsList();
@@ -34623,17 +35149,17 @@
         !scheduleTemplateScratchActive && shiftDetailSlotTarget
           ? isoForShiftEditDay(shiftDetailSlotTarget.day)
           : '';
-      shiftDetailOngi.checked = !!(
-        ongiDayIso &&
-        shiftDetailSlotTarget &&
-        getOngiFlag(
-          currentRestaurantId,
-          viewedScheduleWeekMondayIso(),
-          shiftDetailSlotTarget.role,
-          shiftDetailSlotTarget.trIdx,
-          ongiDayIso
-        )
-      );
+      var ongiStore =
+        ongiDayIso && shiftDetailSlotTarget
+          ? getOngiFlag(
+              currentRestaurantId,
+              viewedScheduleWeekMondayIso(),
+              shiftDetailSlotTarget.role,
+              shiftDetailSlotTarget.trIdx,
+              ongiDayIso
+            )
+          : 0;
+      shiftDetailOngi.value = String(ongiStore || 0);
     }
     if (shiftDetailStart) shiftDetailStart.value = isDayOff ? '' : start;
     if (shiftDetailEnd) shiftDetailEnd.value = isDayOff ? '' : end;
@@ -35004,7 +35530,7 @@
         target.role,
         target.trIdx,
         dayIso,
-        !!(shiftDetailOngi && shiftDetailOngi.checked)
+        shiftDetailOngi ? parseInt(shiftDetailOngi.value, 10) || 0 : 0
       );
     }
     var personName = assignedPersonForShiftSlot(target.role, target.trIdx, di);
@@ -35391,38 +35917,30 @@
         return r.id === id;
       });
       if (!req || req.status !== 'pending') return;
-      if (action === 'approve' && req.type === 'swap') {
-        if (!swapRequestCanManagerApprove(req)) {
-          window.alert(gmT('employee.swapNeedsCover'));
-          return;
-        }
-        var swapRes = approveSwapAcceptanceRequest(req);
-        if (!swapRes.ok) {
-          window.alert(swapRes.message || gmT('employee.swapNeedsCover'));
+      if (action === 'approve') {
+        var appr = approvePendingStaffRequest(req);
+        if (!appr.ok) {
+          window.alert(appr.message || 'Could not apply approval.');
           return;
         }
         persistStaffRequestStatuses();
         renderRequestsList();
+        if (
+          (req.type === 'timeoff' ||
+            req.type === 'callout_request' ||
+            req.type === 'callout') &&
+          timecardsScreenActive() &&
+          window.gmCalloutTimecards
+        ) {
+          window.gmCalloutTimecards.renderRoster();
+        }
         return;
       }
-      if (action === 'approve' && req.type === 'timeoff') {
-        var timeoffRes = applyTimeoffApprovalEffects(req);
-        if (!timeoffRes.ok) {
-          window.alert(timeoffRes.message || 'Could not apply time-off approval.');
-          return;
-        }
-      }
-      if (
-        action === 'approve' &&
-        (req.type === 'callout_request' || req.type === 'callout')
-      ) {
-        applyCalloutApprovalEffects(req);
-      }
-      req.status = action === 'approve' ? 'approved' : 'declined';
+      req.status = 'declined';
       if (GM_SUPABASE_DATA && isUuidCloudId(id)) {
         updateStaffRequestStatusRemote(id, req.status);
       }
-      if (action === 'decline' && req.type === 'swap' && !req.swapOfferId) {
+      if (req.type === 'swap' && !req.swapOfferId) {
         staffRequests.forEach(function (r) {
           if (
             r.type === 'swap' &&
@@ -35436,38 +35954,431 @@
           }
         });
       }
-      if (req.type === 'availability' && req.submittedGrid) {
-        var availEmp = employeeByDisplayName(req.employeeName);
-        if (availEmp) {
-          var availWi =
-            req.submittedWeekIndex != null ? Number(req.submittedWeekIndex) : SCHEDULE_TEMPLATE_WEEK_INDEX;
-          setEmployeeAvailabilityWeekEntry(
-            availEmp,
-            availWi,
-            {
-              grid: req.submittedGrid,
-              status: req.status === 'approved' ? 'approved' : 'declined',
-              submittedAt: req.submittedAt || localTodayISO(),
-            },
-            { syncWeeklyGrid: req.status === 'approved' }
-          );
-          saveEmployees({ singleEmployee: availEmp });
-          if (currentScreen === 13) renderManagerAvailabilityScreen();
-        }
-      }
       persistStaffRequestStatuses();
       renderRequestsList();
-      if (
-        (req.type === 'timeoff' ||
-          req.type === 'callout_request' ||
-          req.type === 'callout') &&
-        timecardsScreenActive() &&
-        window.gmCalloutTimecards
-      ) {
-        window.gmCalloutTimecards.renderRoster();
+    });
+  }
+
+  var mgrFileFormKind = 'timeoff';
+
+  function mgrFileActiveEmployees() {
+    var scope = currentManagerStoreScope();
+    return employees
+      .filter(function (e) {
+        if (!e) return false;
+        if (employeeIsDeactivated(e)) return false;
+        if (scope && !employeeVisibleInManagerStoreScope(e, scope)) return false;
+        return !!String(employeeDisplayName(e) || '').trim();
+      })
+      .sort(compareEmployeesByDisplayName);
+  }
+
+  function mgrFileSelectedEmployee() {
+    var sel = document.getElementById('mgrFileEmployeeSelect');
+    var id = sel ? String(sel.value || '').trim() : '';
+    if (!id) return null;
+    return (
+      employees.find(function (e) {
+        return e && e.id === id;
+      }) || null
+    );
+  }
+
+  function mgrFileWorkerShifts(workerName) {
+    var all = buildAllLocationScheduleSnapshot();
+    var todayIso = localTodayISO();
+    var out = [];
+    all.forEach(function (s) {
+      if (!shiftRowIncludesWorker(s, workerName)) return;
+      var meta = WEEK_META.find(function (m) {
+        return m.label === s.day;
+      });
+      var iso = meta ? meta.iso : isoFromScheduleShiftId(s.id);
+      if (!iso || iso < todayIso) return;
+      out.push({
+        id: s.id,
+        restaurantId: s.restaurantId,
+        restaurantName: s.restaurantName,
+        day: s.day,
+        iso: iso,
+        role: s.role,
+        timeLabel: s.timeLabel,
+        start: s.start,
+        end: s.end,
+      });
+    });
+    out.sort(function (a, b) {
+      if (a.iso !== b.iso) return String(a.iso).localeCompare(String(b.iso));
+      return String(a.start || '').localeCompare(String(b.start || ''));
+    });
+    return out;
+  }
+
+  function mgrFileShiftOptionValue(s) {
+    return [
+      s.restaurantId || '',
+      s.id || '',
+      encodeURIComponent(s.day || ''),
+      encodeURIComponent(s.timeLabel || ''),
+      s.iso || '',
+    ].join('|');
+  }
+
+  function mgrFileParseShiftValue(val) {
+    var parts = String(val || '').split('|');
+    var day = '';
+    var timeLabel = '';
+    try {
+      day = parts[2] ? decodeURIComponent(parts[2]) : '';
+      timeLabel = parts[3] ? decodeURIComponent(parts[3]) : '';
+    } catch (_e) {
+      day = parts[2] || '';
+      timeLabel = parts[3] || '';
+    }
+    return {
+      restaurantId: parts[0] || '',
+      shiftId: parts[1] || '',
+      day: day,
+      timeLabel: timeLabel,
+      iso: parts[4] || '',
+    };
+  }
+
+  function mgrFileShiftLabel(s) {
+    return (
+      (s.day || '') +
+      ' · ' +
+      (s.timeLabel || ((s.start || '') + (s.end ? '–' + s.end : ''))) +
+      (s.restaurantName ? ' · ' + s.restaurantName : '')
+    );
+  }
+
+  function populateMgrFileShiftSelects() {
+    var emp = mgrFileSelectedEmployee();
+    var name = emp ? employeeDisplayName(emp) : '';
+    var shifts = name ? mgrFileWorkerShifts(name) : [];
+    ['mgrFileSwapShift', 'mgrFileCalloutShift'].forEach(function (id) {
+      var sel = document.getElementById(id);
+      if (!sel) return;
+      var prev = sel.value;
+      if (!shifts.length) {
+        sel.innerHTML = '<option value="">No upcoming shifts</option>';
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
+      sel.innerHTML = shifts
+        .map(function (s) {
+          return (
+            '<option value="' +
+            escapeHtml(mgrFileShiftOptionValue(s)) +
+            '">' +
+            escapeHtml(mgrFileShiftLabel(s)) +
+            '</option>'
+          );
+        })
+        .join('');
+      if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) {
+        sel.value = prev;
       }
     });
   }
+
+  function populateMgrFileSwapTargets() {
+    var sel = document.getElementById('mgrFileSwapTarget');
+    if (!sel) return;
+    var emp = mgrFileSelectedEmployee();
+    var selfId = emp && emp.id;
+    var prev = sel.value;
+    var opts =
+      '<option value="">Everyone</option>' +
+      mgrFileActiveEmployees()
+        .filter(function (e) {
+          return !selfId || e.id !== selfId;
+        })
+        .map(function (e) {
+          return (
+            '<option value="' +
+            escapeHtml(e.id) +
+            '">' +
+            escapeHtml(employeeDisplayName(e)) +
+            '</option>'
+          );
+        })
+        .join('');
+    sel.innerHTML = opts;
+    if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) {
+      sel.value = prev;
+    }
+  }
+
+  function populateMgrFileRequestPanel() {
+    var empSel = document.getElementById('mgrFileEmployeeSelect');
+    if (!empSel) return;
+    var prev = empSel.value;
+    var list = mgrFileActiveEmployees();
+    empSel.innerHTML =
+      '<option value="">Select…</option>' +
+      list
+        .map(function (e) {
+          return (
+            '<option value="' +
+            escapeHtml(e.id) +
+            '">' +
+            escapeHtml(employeeDisplayName(e)) +
+            '</option>'
+          );
+        })
+        .join('');
+    if (prev && Array.prototype.some.call(empSel.options, function (o) { return o.value === prev; })) {
+      empSel.value = prev;
+    }
+    populateMgrFileShiftSelects();
+    populateMgrFileSwapTargets();
+  }
+
+  function showMgrFileFeedback(msg) {
+    var el = document.getElementById('mgrFileRequestFeedback');
+    if (!el) return;
+    var text = String(msg || '').trim();
+    el.hidden = !text;
+    el.textContent = text;
+  }
+
+  function setMgrFileFormKind(kind) {
+    mgrFileFormKind = kind === 'swap' || kind === 'callout_request' ? kind : 'timeoff';
+    var timeoff = document.getElementById('mgrFileFormTimeoff');
+    var swap = document.getElementById('mgrFileFormSwap');
+    var callout = document.getElementById('mgrFileFormCallout');
+    if (timeoff) timeoff.hidden = mgrFileFormKind !== 'timeoff';
+    if (swap) swap.hidden = mgrFileFormKind !== 'swap';
+    if (callout) callout.hidden = mgrFileFormKind !== 'callout_request';
+    document.querySelectorAll('[data-mgr-file-form]').forEach(function (chip) {
+      chip.classList.toggle('active', chip.getAttribute('data-mgr-file-form') === mgrFileFormKind);
+    });
+  }
+
+  (function wireMgrFileRequestPanel() {
+    var panel = document.getElementById('mgrFileRequestPanel');
+    if (!panel || panel.getAttribute('data-wired') === '1') return;
+    panel.setAttribute('data-wired', '1');
+    var empSel = document.getElementById('mgrFileEmployeeSelect');
+    if (empSel) {
+      empSel.addEventListener('change', function () {
+        populateMgrFileShiftSelects();
+        populateMgrFileSwapTargets();
+        showMgrFileFeedback('');
+      });
+    }
+    panel.addEventListener('click', function (e) {
+      var chip = e.target.closest('[data-mgr-file-form]');
+      if (!chip || !panel.contains(chip)) return;
+      setMgrFileFormKind(chip.getAttribute('data-mgr-file-form'));
+    });
+
+    function selectedNameAndRole() {
+      var emp = mgrFileSelectedEmployee();
+      if (!emp) {
+        showMgrFileFeedback('Choose an employee first.');
+        return null;
+      }
+      return {
+        emp: emp,
+        name: employeeDisplayName(emp),
+        role: emp.staffType || 'Kitchen',
+      };
+    }
+
+    var timeoffForm = document.getElementById('mgrFileFormTimeoff');
+    if (timeoffForm) {
+      timeoffForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var who = selectedNameAndRole();
+        if (!who) return;
+        var startEl = document.getElementById('mgrFileTimeoffStartDate');
+        var endEl = document.getElementById('mgrFileTimeoffEndDate');
+        var typeEl = document.getElementById('mgrFileTimeoffLeaveType');
+        var noteEl = document.getElementById('mgrFileTimeoffNote');
+        var start = startEl ? String(startEl.value || '') : '';
+        var end = endEl ? String(endEl.value || '') : '';
+        var leaveType = typeEl && typeEl.value === 'sick' ? 'sick' : 'vacation';
+        var note = noteEl ? String(noteEl.value || '').trim() : '';
+        if (!start || !end) {
+          showMgrFileFeedback('Choose start and end dates.');
+          return;
+        }
+        if (end < start) {
+          showMgrFileFeedback('End date must be on or after start date.');
+          return;
+        }
+        var typeLabel = leaveType === 'sick' ? 'Sick leave' : 'Vacation leave';
+        var btn = timeoffForm.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        Promise.resolve(
+          window.gmCalloutBridge.submitEmployeeRequest(
+            {
+              type: 'timeoff',
+              employeeName: who.name,
+              role: who.role,
+              leaveType: leaveType,
+              timeoffStart: start,
+              timeoffEnd: end,
+              summary:
+                typeLabel +
+                ': ' +
+                start +
+                ' to ' +
+                end +
+                (note ? '. Notes: ' + note : '') +
+                ' (filed by manager)',
+            },
+            { autoApprove: true }
+          )
+        )
+          .then(function (res) {
+            if (!res || !res.ok) {
+              showMgrFileFeedback((res && res.message) || 'Could not file time off.');
+              return;
+            }
+            if (startEl) startEl.value = '';
+            if (endEl) endEl.value = '';
+            if (noteEl) noteEl.value = '';
+            showMgrFileFeedback('Approved and applied to the main schedule.');
+            renderRequestsList();
+          })
+          .finally(function () {
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+
+    var swapForm = document.getElementById('mgrFileFormSwap');
+    if (swapForm) {
+      swapForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var who = selectedNameAndRole();
+        if (!who) return;
+        var shiftSel = document.getElementById('mgrFileSwapShift');
+        var targetSel = document.getElementById('mgrFileSwapTarget');
+        var noteEl = document.getElementById('mgrFileSwapNote');
+        if (!shiftSel || shiftSel.disabled || !shiftSel.value) {
+          showMgrFileFeedback('Choose one of this person’s upcoming shifts.');
+          return;
+        }
+        var parsed = mgrFileParseShiftValue(shiftSel.value);
+        var opt = shiftSel.options[shiftSel.selectedIndex];
+        var shiftLabel = opt ? String(opt.textContent || '').trim() : '';
+        var targetId = targetSel ? String(targetSel.value || '').trim() : '';
+        var targetName = '';
+        if (targetId && targetSel) {
+          var tOpt = targetSel.options[targetSel.selectedIndex];
+          targetName = tOpt ? String(tOpt.textContent || '').trim() : '';
+        }
+        var note = noteEl ? String(noteEl.value || '').trim() : '';
+        var payload = {
+          type: 'swap',
+          employeeName: who.name,
+          role: who.role,
+          offeredShiftLabel: shiftLabel,
+          offeredShift: {
+            restaurantId: parsed.restaurantId,
+            shiftId: parsed.shiftId,
+            day: parsed.day,
+            timeLabel: parsed.timeLabel,
+            iso: parsed.iso,
+          },
+          summary:
+            'Shift Swap Offer: ' +
+            shiftLabel +
+            (targetName ? '. Requested cover: ' + targetName : '. Send to everyone') +
+            (note ? '. Notes: ' + note : '') +
+            ' (filed by manager)',
+        };
+        if (targetId) {
+          payload.swapTargetEmployeeId = targetId;
+          payload.swapTargetEmployeeName = targetName;
+        } else {
+          payload.swapTargetEmployeeId = null;
+          payload.swapTargetEmployeeName = null;
+        }
+        var btn = swapForm.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        Promise.resolve(window.gmCalloutBridge.submitEmployeeRequest(payload))
+          .then(function (res) {
+            if (!res || !res.ok) {
+              showMgrFileFeedback((res && res.message) || 'Could not post swap offer.');
+              return;
+            }
+            if (noteEl) noteEl.value = '';
+            showMgrFileFeedback(
+              'Swap offer posted in ' +
+                who.name +
+                '’s name. Other employees can accept it, then you approve.'
+            );
+            renderRequestsList();
+          })
+          .finally(function () {
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+
+    var calloutForm = document.getElementById('mgrFileFormCallout');
+    if (calloutForm) {
+      calloutForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var who = selectedNameAndRole();
+        if (!who) return;
+        var shiftSel = document.getElementById('mgrFileCalloutShift');
+        var noteEl = document.getElementById('mgrFileCalloutReason');
+        if (!shiftSel || shiftSel.disabled || !shiftSel.value) {
+          showMgrFileFeedback('Choose the shift they can’t cover.');
+          return;
+        }
+        var reason = noteEl ? String(noteEl.value || '').trim() : '';
+        if (!reason) {
+          showMgrFileFeedback('Add a note for the callout.');
+          return;
+        }
+        var parsed = mgrFileParseShiftValue(shiftSel.value);
+        var opt = shiftSel.options[shiftSel.selectedIndex];
+        var shiftLabel = opt ? String(opt.textContent || '').trim() : '';
+        var btn = calloutForm.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        Promise.resolve(
+          window.gmCalloutBridge.submitEmployeeRequest(
+            {
+              type: 'callout_request',
+              employeeName: who.name,
+              role: who.role,
+              offeredShiftLabel: shiftLabel,
+              offeredShift: {
+                restaurantId: parsed.restaurantId,
+                shiftId: parsed.shiftId,
+                day: parsed.day,
+                timeLabel: parsed.timeLabel,
+                iso: parsed.iso,
+              },
+              summary: 'Callout: ' + shiftLabel + '. ' + reason + ' (filed by manager)',
+            },
+            { autoApprove: true }
+          )
+        )
+          .then(function (res) {
+            if (!res || !res.ok) {
+              showMgrFileFeedback((res && res.message) || 'Could not file callout.');
+              return;
+            }
+            if (noteEl) noteEl.value = '';
+            showMgrFileFeedback('Approved and the shift was unassigned on the main schedule.');
+            renderRequestsList();
+          })
+          .finally(function () {
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+  })();
 
   if (availabilityModalBackdrop) {
     availabilityModalBackdrop.addEventListener('click', function () {
@@ -36227,12 +37138,29 @@
       btn.disabled = true;
       btn.textContent = gmT('schedule.savePointSaving') || 'Saving…';
     }
+    function settleSavePointUi() {
+      scheduleSavePointBusy = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = gmT('schedule.savePoint') || 'Save point';
+      }
+    }
+    function withTimeout(promise, ms) {
+      return Promise.race([
+        Promise.resolve(promise),
+        new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve({ timedOut: true });
+          }, ms);
+        }),
+      ]);
+    }
     /* Do not let a pending autosave land as a twin of this checkpoint. */
     cancelPendingScheduleRevisionAutosave();
-    /* Flush live edits first so the snapshot matches what you see. */
+    /* Flush live edits first so the snapshot matches what you see. Don't hang the button. */
     try {
-      await flushTeamStateSyncNow();
-      await flushScheduleV2Outbox();
+      await withTimeout(flushTeamStateSyncNow(), 8000);
+      await withTimeout(flushScheduleV2Outbox(), 8000);
     } catch (_flushSp) {
       /* still snapshot local SoT */
     }
@@ -36248,13 +37176,9 @@
       });
     } catch (spErr) {
       console.warn('gm-callout: save point', spErr);
-      res = { ok: false };
+      res = { ok: false, error: spErr && spErr.message ? spErr.message : '' };
     }
-    scheduleSavePointBusy = false;
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = gmT('schedule.savePoint') || 'Save point';
-    }
+    settleSavePointUi();
     if (!res || !res.ok) {
       showScheduleNotice(
         (res && res.error) ||
@@ -36268,9 +37192,7 @@
       gmT('schedule.savePointDone') || 'Save point stored. You can hard-revert to it later from History.',
       true
     );
-    if (scheduleHistoryModal && !scheduleHistoryModal.hidden) {
-      void openScheduleHistoryModal();
-    }
+    void openScheduleHistoryModal();
   }
   if (scheduleHistoryBtn) {
     scheduleHistoryBtn.addEventListener('click', function () {
@@ -36294,6 +37216,23 @@
   if (scheduleSavePointBtn) {
     scheduleSavePointBtn.addEventListener('click', function () {
       void saveScheduleManualSavePoint();
+    });
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!managerCanWriteScheduleRevisions()) return;
+      if (!scheduleRevisionLastAutoSaveAt && !scheduleRevisionInsertTimer) return;
+      if (
+        scheduleRevisionLastAutoSaveAt &&
+        Date.now() - scheduleRevisionLastAutoSaveAt >= SCHEDULE_REVISION_AUTOSAVE_MS
+      ) {
+        if (scheduleRevisionInsertTimer) {
+          clearTimeout(scheduleRevisionInsertTimer);
+          scheduleRevisionInsertTimer = null;
+        }
+        void flushScheduleRevisionAutosave();
+      }
     });
   }
   var schedulePublishNotifyBtn = document.getElementById('schedulePublishNotifyBtn');
@@ -38278,8 +39217,9 @@
     renderAvailabilityGridEditor: function (grid, staffType, weekIndex) {
       return renderEmployeeAvailabilityGrid(grid, staffType, weekIndex);
     },
-    submitEmployeeRequest: function (row) {
+    submitEmployeeRequest: function (row, opts) {
       mergeEmployeeSubmittedFromStorage();
+      opts = opts || {};
       var full = {
         type: row.type,
         employeeName: row.employeeName,
@@ -38317,13 +39257,38 @@
         notifyStaffRequestsUiRefresh();
       }
 
-      if (!GM_SUPABASE_DATA || !window.gmSupabase) {
-        pushLocalWithId(
-          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
-        );
-        return;
+      function maybeAutoApprove(id) {
+        var auto = !!opts.autoApprove;
+        var kind = String(full.type || '');
+        if (
+          !auto ||
+          (kind !== 'timeoff' && kind !== 'callout_request' && kind !== 'callout')
+        ) {
+          return { ok: true, id: id };
+        }
+        var req = staffRequests.find(function (r) {
+          return r.id === id;
+        });
+        if (!req) return { ok: true, id: id };
+        var res = approvePendingStaffRequest(req);
+        notifyStaffRequestsUiRefresh();
+        if (!res || !res.ok) {
+          return {
+            ok: false,
+            id: id,
+            message: (res && res.message) || 'Could not auto-approve.',
+          };
+        }
+        return { ok: true, id: id, autoApproved: true };
       }
-      (async function () {
+
+      if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+        var localId =
+          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+        pushLocalWithId(localId);
+        return Promise.resolve(maybeAutoApprove(localId));
+      }
+      return (async function () {
         var remote = await insertStaffRequestRemote(full);
         if (remote.ok && remote.id) {
           pushLocalWithId(remote.id);
@@ -38369,12 +39334,13 @@
               /* non-blocking */
             }
           }
-          return;
+          return maybeAutoApprove(remote.id);
         }
-        pushLocalWithId(
-          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
-        );
+        var fallbackId =
+          'req-emp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+        pushLocalWithId(fallbackId);
         if (remote.message) console.warn('gm-callout: submitEmployeeRequest fallback', remote.message);
+        return maybeAutoApprove(fallbackId);
       })();
     },
     formatShiftTimeRedPoke: redPokeShiftTimeLabel,
@@ -39281,6 +40247,8 @@
       defaultDeliveryTipRetentionForEmployee: defaultDeliveryTipRetentionForEmployee,
       scheduleTimecardPayrollDebouncedSync: scheduleTipPayrollDebouncedSync,
       flushTimecardPayrollSync: flushTipPayrollPushToSupabase,
+      markTimecardTipPoolPendingAck: markTimecardTipPoolPendingAck,
+      markTimecardDishwasherTipPendingAck: markTimecardDishwasherTipPendingAck,
       persistEmployeeLeaveBalanceDay: persistEmployeeLeaveBalanceDay,
       notifyLeaveHoursChanged: notifyLeaveHoursChanged,
       markTimecardLeavePendingAck: markTimecardLeavePendingAck,

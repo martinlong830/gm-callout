@@ -13,15 +13,20 @@ import {
   buildWeeksFromMonday,
   defaultRestaurants,
   getScheduleAnchorMondayDate,
+  loadDraftFromTeamState,
+  parseShiftIdParts,
+  patchDraftScheduleForWeek,
+  ROLE_DEFS,
   SCHEDULE_VIEW_WEEK_COUNT,
   type WorkerShiftRow,
 } from './schedule/engine';
-import type { AssignmentStore, DraftGrid, EmployeeLite } from './schedule/types';
+import type { AssignmentStore, DraftGrid, EmployeeLite, RoleKey } from './schedule/types';
 import { reassignShiftWorkerInStore } from './shiftSwap';
 import type { OfferedShiftRef, StaffRequestUi } from './staffRequests';
 import { broadcastTeamStateChanged } from './teamStateSync';
 import { scheduledPaidMinutes } from './timecards/engine';
 import { clearDayLeaveOverridesInRange, parseTimeoffRequest } from './timecards/weekExtras';
+import { enqueueCellOpsForShiftTargets } from './schedule/weekCellOps';
 
 const LEAVE_DEFAULT_DAY_HOURS = LEAVE_HOURS_PER_DAY;
 
@@ -67,32 +72,37 @@ export function resolveOfferedShiftRef(
 
 export async function persistAssignmentStore(
   sb: SupabaseClient,
-  store: AssignmentStore
+  store: AssignmentStore,
+  draftSchedule?: unknown
 ): Promise<
-  | { ok: true; store: AssignmentStore; updatedAt?: string }
+  | { ok: true; store: AssignmentStore; draftSchedule?: unknown; updatedAt?: string }
   | { ok: false; message: string }
 > {
   const teamStateId = await readStoredTeamStateId();
+  const payload: Record<string, unknown> = {
+    id: teamStateId,
+    schedule_assignments: store,
+  };
+  if (draftSchedule !== undefined) payload.draft_schedule = draftSchedule;
   const up = await sb
     .from('team_state')
-    .upsert(
-      {
-        id: teamStateId,
-        schedule_assignments: store,
-      },
-      { onConflict: 'id' }
-    )
+    .upsert(payload, { onConflict: 'id' })
     .select('id, updated_at')
     .single();
   if (up.error) return { ok: false, message: up.error.message };
   try {
-    await broadcastTeamStateChanged(sb, teamStateId, ['schedule_assignments']);
+    const cols =
+      draftSchedule !== undefined
+        ? (['schedule_assignments', 'draft_schedule'] as const)
+        : (['schedule_assignments'] as const);
+    await broadcastTeamStateChanged(sb, teamStateId, [...cols]);
   } catch {
     /* non-blocking */
   }
   return {
     ok: true,
     store,
+    draftSchedule,
     updatedAt: up.data?.updated_at != null ? String(up.data.updated_at) : undefined,
   };
 }
@@ -139,6 +149,41 @@ function hoursByIsoFromShifts(shifts: WorkerShiftRow[], emp: EmployeeRow | null)
   return map;
 }
 
+function nullDraftCellsForTargets(
+  draftRaw: unknown,
+  targets: { restaurantId: string; shiftId: string }[]
+): unknown {
+  let next = draftRaw;
+  const groups = new Map<string, { wi: number; rid: string; rows: DraftGrid }>();
+  for (const t of targets) {
+    const p = parseShiftIdParts(t.shiftId);
+    if (!p || !t.restaurantId) continue;
+    const wi = Math.floor(p.globalDayIdx / 7);
+    const key = `${t.restaurantId}|${wi}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        wi,
+        rid: t.restaurantId,
+        rows: loadDraftFromTeamState(next, wi, t.restaurantId),
+      };
+      groups.set(key, g);
+    }
+    const role = ROLE_DEFS[p.roleIdx]?.role as RoleKey | undefined;
+    if (!role) continue;
+    if (!g.rows[role]) g.rows[role] = [];
+    while (g.rows[role].length <= p.trIdx) {
+      g.rows[role].push([null, null, null, null, null, null, null]);
+    }
+    const row = g.rows[role][p.trIdx];
+    if (row) row[p.globalDayIdx % 7] = null;
+  }
+  for (const g of groups.values()) {
+    next = patchDraftScheduleForWeek(next, g.wi, g.rid, g.rows);
+  }
+  return next;
+}
+
 /**
  * Clear the employee from every scheduled shift on [start, end] (inclusive).
  * Returns the next assignment store (may be unchanged).
@@ -152,7 +197,14 @@ export function clearWorkerScheduleOnDateRange(params: {
   assignmentStore: AssignmentStore;
   draftRows: DraftGrid;
   draftScheduleRaw?: unknown;
-}): { store: AssignmentStore; clearedShiftIds: string[]; hoursByIso: Record<string, number> } {
+  asDayOff?: boolean;
+}): {
+  store: AssignmentStore;
+  draftRaw: unknown;
+  clearedShiftIds: string[];
+  targets: { restaurantId: string; shiftId: string }[];
+  hoursByIso: Record<string, number>;
+} {
   const all = collectWorkerShifts(params);
   const inRange = all.filter(
     (s) => s.iso && s.iso >= params.startIso && s.iso <= params.endIso
@@ -160,9 +212,15 @@ export function clearWorkerScheduleOnDateRange(params: {
   const hoursByIso = hoursByIsoFromShifts(inRange, params.emp ?? null);
   const targets = inRange.map((s) => ({ restaurantId: s.restaurantId, shiftId: s.id }));
   const store = unassignShiftsInStore(params.assignmentStore, targets);
+  let draftRaw = params.draftScheduleRaw;
+  if (params.asDayOff && targets.length) {
+    draftRaw = nullDraftCellsForTargets(draftRaw, targets);
+  }
   return {
     store,
+    draftRaw,
     clearedShiftIds: targets.map((t) => t.shiftId),
+    targets,
     hoursByIso,
   };
 }
@@ -204,7 +262,7 @@ export async function applyTimeoffApprovalEffects(
     employees: EmployeeRow[];
   }
 ): Promise<
-  | { ok: true; store?: AssignmentStore }
+  | { ok: true; store?: AssignmentStore; draftSchedule?: unknown }
   | { ok: false; message: string }
 > {
   const range = parseTimeoffRequest(request);
@@ -221,6 +279,7 @@ export async function applyTimeoffApprovalEffects(
     assignmentStore: params.assignmentStore || {},
     draftRows: params.draftRows,
     draftScheduleRaw: params.draftScheduleRaw,
+    asDayOff: true,
   });
 
   const leaveEntries = buildLeaveEntriesForTimeoff(range.start, range.end, cleared.hoursByIso);
@@ -237,11 +296,21 @@ export async function applyTimeoffApprovalEffects(
   }
 
   if (cleared.clearedShiftIds.length) {
-    const persisted = await persistAssignmentStore(sb, cleared.store);
+    const persisted = await persistAssignmentStore(sb, cleared.store, cleared.draftRaw);
     if (!persisted.ok) return persisted;
-    return { ok: true, store: persisted.store };
+    try {
+      await enqueueCellOpsForShiftTargets({
+        sb,
+        assignmentStore: persisted.store,
+        draftRaw: cleared.draftRaw,
+        targets: cleared.targets,
+      });
+    } catch {
+      /* assignment blob already saved — manager can Refresh if cells lag */
+    }
+    return { ok: true, store: persisted.store, draftSchedule: cleared.draftRaw };
   }
-  return { ok: true, store: cleared.store };
+  return { ok: true, store: cleared.store, draftSchedule: cleared.draftRaw };
 }
 
 export async function applyCalloutApprovalEffects(
@@ -261,10 +330,12 @@ export async function applyCalloutApprovalEffects(
   const offered = resolveOfferedShiftRef(request);
   let nextStore = params.assignmentStore || {};
   let cleared = false;
+  let targets: { restaurantId: string; shiftId: string }[] = [];
 
   if (offered) {
     nextStore = clearOfferedShiftFromStore(nextStore, offered);
     cleared = true;
+    targets = [{ restaurantId: offered.restaurantId, shiftId: offered.shiftId }];
   } else if (emp || request.employeeName) {
     /* Legacy callouts without offeredShift: clear that worker's shifts on the iso day if known. */
     const iso = String(request.offeredShift?.iso || '').slice(0, 10);
@@ -280,6 +351,7 @@ export async function applyCalloutApprovalEffects(
         draftScheduleRaw: params.draftScheduleRaw,
       });
       nextStore = result.store;
+      targets = result.targets;
       cleared = result.clearedShiftIds.length > 0;
     }
   }
@@ -287,6 +359,18 @@ export async function applyCalloutApprovalEffects(
   if (cleared) {
     const persisted = await persistAssignmentStore(sb, nextStore);
     if (!persisted.ok) return persisted;
+    if (targets.length) {
+      try {
+        await enqueueCellOpsForShiftTargets({
+          sb,
+          assignmentStore: persisted.store,
+          draftRaw: params.draftScheduleRaw,
+          targets,
+        });
+      } catch {
+        /* assignment blob already saved */
+      }
+    }
     return { ok: true, store: persisted.store };
   }
   /* Still approve even if we could not locate a shift — manager can unassign manually. */

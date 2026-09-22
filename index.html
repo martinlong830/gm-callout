@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-324" />
+  <link rel="stylesheet" href="styles.css?v=perf-333" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-324';
+    window.__GM_ASSET_V = 'perf-333';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -1094,10 +1094,16 @@
               <input type="checkbox" id="shiftDetailDayOff" /> <span data-i18n="common.dayOff">Day off</span>
             </label>
             <div id="shiftDetailOngiWrap">
-              <label class="shift-detail-dayoff-label">
-                <input type="checkbox" id="shiftDetailOngi" /> <span data-i18n="schedule.ongiFlag">Ongi</span>
+              <label class="shift-detail-field form-field-block">
+                <span class="shift-detail-field-label"><span data-i18n="schedule.ongiFlag">Ongi</span></span>
+                <select id="shiftDetailOngi" class="timecards-input" data-i18n-aria="schedule.ongiFlag" aria-label="Ongi">
+                  <option value="0" data-i18n="schedule.ongiFlagNone">None</option>
+                  <option value="1" data-i18n="schedule.ongiFlag1">Ongi 1</option>
+                  <option value="2" data-i18n="schedule.ongiFlag2">Ongi 2</option>
+                  <option value="3" data-i18n="schedule.ongiFlag3">Ongi 3</option>
+                </select>
               </label>
-              <p class="calendar-hint" data-i18n="schedule.ongiFlagHint">Mark if this person is working at an Ongi store not yet in Shiflow.</p>
+              <p class="calendar-hint" data-i18n="schedule.ongiFlagHint">Which Ongi store this person is working at (not in Shiflow yet).</p>
             </div>
             <div class="shift-detail-times timecards-datetime-row" id="shiftDetailTimesWrap">
               <label class="shift-detail-field form-field-block">
@@ -1304,6 +1310,79 @@
             </div>
           </div>
         </div>
+        <details class="mgr-file-request" id="mgrFileRequestPanel">
+          <summary class="mgr-file-request-summary">File a request for an employee</summary>
+          <p class="mgr-file-request-hint">
+            Pick a person, then post a swap in their name for others to accept, or file time off / a callout (those apply to the main schedule immediately).
+          </p>
+          <label class="form-field form-field-block">
+            <span class="form-label">Employee</span>
+            <select id="mgrFileEmployeeSelect" required>
+              <option value="">Select…</option>
+            </select>
+          </label>
+          <div class="emp-request-type-chips" role="tablist" aria-label="Request type">
+            <button type="button" class="filter-chip active" data-mgr-file-form="timeoff">Time Off</button>
+            <button type="button" class="filter-chip" data-mgr-file-form="swap">Shift Swap</button>
+            <button type="button" class="filter-chip" data-mgr-file-form="callout_request">Callout</button>
+          </div>
+          <form class="emp-request-form" id="mgrFileFormTimeoff">
+            <p class="emp-hint">Time off is approved immediately and marked as a day off on the main schedule.</p>
+            <label class="form-field form-field-block">
+              <span class="form-label">Type</span>
+              <select id="mgrFileTimeoffLeaveType" required>
+                <option value="vacation">Vacation leave</option>
+                <option value="sick">Sick leave</option>
+              </select>
+            </label>
+            <div class="form-row">
+              <label class="form-field">
+                <span class="form-label">Start date</span>
+                <input type="date" id="mgrFileTimeoffStartDate" required />
+              </label>
+              <label class="form-field">
+                <span class="form-label">End date</span>
+                <input type="date" id="mgrFileTimeoffEndDate" required />
+              </label>
+            </div>
+            <label class="form-field form-field-block">
+              <span class="form-label">Notes (optional)</span>
+              <textarea id="mgrFileTimeoffNote" rows="2" placeholder="Reason or context…"></textarea>
+            </label>
+            <button type="submit" class="btn btn-primary btn-block">Approve time off</button>
+          </form>
+          <form class="emp-request-form emp-form-swap" id="mgrFileFormSwap" hidden>
+            <p class="emp-hint">Posts an offer in this person’s name. Other employees can accept; you still approve the swap after someone covers.</p>
+            <label class="form-field form-field-block">
+              <span class="form-label">Their shift</span>
+              <select id="mgrFileSwapShift" required></select>
+            </label>
+            <label class="form-field form-field-block">
+              <span class="form-label">Send request to</span>
+              <select id="mgrFileSwapTarget">
+                <option value="">Everyone</option>
+              </select>
+            </label>
+            <label class="form-field form-field-block">
+              <span class="form-label">Notes (optional)</span>
+              <textarea id="mgrFileSwapNote" rows="2" placeholder="Preferences or notes…"></textarea>
+            </label>
+            <button type="submit" class="btn btn-primary btn-block">Post swap offer</button>
+          </form>
+          <form class="emp-request-form" id="mgrFileFormCallout" hidden>
+            <p class="emp-hint">Callouts are approved immediately and the selected shift is unassigned on the main schedule.</p>
+            <label class="form-field form-field-block">
+              <span class="form-label">Shift they can’t cover</span>
+              <select id="mgrFileCalloutShift" required></select>
+            </label>
+            <label class="form-field form-field-block">
+              <span class="form-label">Notes</span>
+              <textarea id="mgrFileCalloutReason" rows="2" required placeholder="Why coverage is needed…"></textarea>
+            </label>
+            <button type="submit" class="btn btn-primary btn-block">Approve callout</button>
+          </form>
+          <p class="emp-form-feedback" id="mgrFileRequestFeedback" role="status" hidden></p>
+        </details>
         <ul class="history-list requests-list" id="requestsList" aria-label="Staff actions"></ul>
       </section>
 
@@ -2237,7 +2316,7 @@
               </div>
             </div>
           </div>
-          <div class="schedule-template-actions">
+          <div class="schedule-template-actions" id="scheduleTemplateApplyActions">
             <button type="button" class="btn btn-primary" id="applyScheduleTemplateBtn">Apply preview to schedule</button>
             <button type="button" class="btn btn-secondary" id="deleteScheduleTemplateBtn" disabled>Delete saved template</button>
           </div>
@@ -2557,8 +2636,9 @@
         </button>
       </div>
       <p class="calendar-hint" data-i18n="schedule.historyHint">
-        Saved schedule versions. Hard revert restores assignments and shift times for everyone.
-        Manual save points are kept until you delete them (they are not auto-pruned).
+        Saved schedule versions (auto-saves every 30 minutes when the schedule changed, plus publish/revert).
+        Use Save point for a named checkpoint. Hard revert restores assignments and shift times for everyone.
+        Manual save points are not auto-deleted.
       </p>
       <div class="screen-actions" style="margin-bottom: 12px">
         <button type="button" class="btn btn-primary btn-block" id="scheduleSavePointBtn" data-i18n="schedule.savePoint">
@@ -2778,7 +2858,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-319"></script>
+  <script src="locales/en.js?v=perf-331"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2790,7 +2870,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-319';
+      s.src = 'locales/es.js?v=perf-331';
       document.head.appendChild(s);
     })();
   </script>

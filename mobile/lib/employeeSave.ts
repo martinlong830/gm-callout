@@ -1,5 +1,4 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { resolveCompanyIdForEmployees } from './companySession';
 import {
   employeeDisplayName,
   isCloudEmployeeId,
@@ -62,7 +61,9 @@ export function employeeToDbRow(
   };
   /* Only set auth_user_id when known — writing null on upsert wipes portal links. */
   if (emp.authUserId) row.auth_user_id = emp.authUserId;
-  if (companyId) row.company_id = companyId;
+  /* Prefer the row's own company. Session company can be stale after switching tenants. */
+  if (emp.companyId) row.company_id = emp.companyId;
+  else if (companyId) row.company_id = companyId;
   if (emp.clockPin) row.clock_pin = String(emp.clockPin);
   if (emp.hourlyRate != null && !Number.isNaN(Number(emp.hourlyRate))) {
     row.hourly_rate = Math.round(Number(emp.hourlyRate) * 100) / 100;
@@ -74,8 +75,7 @@ export async function saveEmployeeRow(
   sb: SupabaseClient,
   emp: EmployeeRow
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const companyId = await resolveCompanyIdForEmployees();
-  const row = employeeToDbRow(emp, companyId || undefined);
+  const row = employeeToDbRow(emp, emp.companyId || undefined);
   let { error } = await sb.from('employees').upsert(row, { onConflict: 'id' });
   if (error && /email/i.test(error.message || '') && 'email' in row) {
     const { email: _drop, ...withoutEmail } = row;
