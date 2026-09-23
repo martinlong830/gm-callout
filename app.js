@@ -12136,6 +12136,13 @@
   var SCHEDULE_REVISION_AUTOSAVE_MS = 30 * 60 * 1000;
   /** Minimum gap between auto-save checkpoints (publish/revert/manual always save). */
   var SCHEDULE_REVISION_AUTOSAVE_MIN_GAP_MS = 30 * 60 * 1000;
+  var SCHEDULE_HISTORY_CACHE_MS = 45000;
+  var scheduleHistoryListCache = { at: 0, teamKey: '', rows: null };
+  var scheduleHistoryFetchPromise = null;
+
+  function invalidateScheduleHistoryListCache() {
+    scheduleHistoryListCache = { at: 0, teamKey: '', rows: null };
+  }
   var scheduleRevisionInsertTimer = null;
   var scheduleRevisionPending = null;
   var scheduleRevisionLastAutoSaveAt = 0;
@@ -16213,6 +16220,7 @@
       if (!ins.data || !ins.data.id) {
         return { ok: false, error: 'Insert returned no id.' };
       }
+      invalidateScheduleHistoryListCache();
       scheduleRevisionLastAutoSaveHash = contentHash;
       if (isAuto) {
         scheduleRevisionLastAutoSaveAt = Date.now();
@@ -36818,6 +36826,127 @@
   function closeScheduleHistoryModal() {
     if (scheduleHistoryModal) scheduleHistoryModal.hidden = true;
   }
+
+  function paintScheduleHistoryList(rows) {
+    if (!scheduleHistoryList) return;
+    if (!rows || !rows.length) {
+      scheduleHistoryList.innerHTML =
+        '<p class="calendar-hint">' +
+        escapeHtml(gmT('schedule.historyEmpty') || 'No saved versions yet.') +
+        '</p>';
+      return;
+    }
+    scheduleHistoryList.innerHTML = rows
+      .map(function (r) {
+        var when = formatScheduleRevisionWhen(r.created_at);
+        var kind = scheduleRevisionSourceLabel(r.source);
+        var secondary = when ? kind : r.label || kind;
+        var isManual = String(r.source || '') === 'manual';
+        return (
+          '<div class="schedule-history-row' +
+          (isManual ? ' schedule-history-row-manual' : '') +
+          '" role="listitem" data-revision-id="' +
+          escapeHtml(r.id) +
+          '">' +
+          '<div class="schedule-history-row-meta">' +
+          '<div class="schedule-history-row-label">' +
+          escapeHtml(r.label || when || kind) +
+          '</div>' +
+          '<div class="schedule-history-row-source">' +
+          escapeHtml(secondary) +
+          '</div>' +
+          '</div>' +
+          '<button type="button" class="btn btn-secondary" data-hard-revert="' +
+          escapeHtml(r.id) +
+          '">' +
+          escapeHtml(gmT('schedule.hardRevert') || 'Hard revert') +
+          '</button>' +
+          '</div>'
+        );
+      })
+      .join('');
+  }
+
+  function normalizeScheduleHistoryRows(rows) {
+    var list = Array.isArray(rows) ? rows.slice() : [];
+    list.sort(function (a, b) {
+      return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    });
+    var seen = Object.create(null);
+    list = list.filter(function (r) {
+      if (!r || !r.id || seen[r.id]) return false;
+      seen[r.id] = true;
+      return true;
+    });
+    return collapseScheduleHistoryRows(list).slice(0, SCHEDULE_REVISION_LIST_LIMIT);
+  }
+
+  /**
+   * Metadata-only list (no assignment/draft blobs). Opening History used to
+   * await refreshSession() then query each team_state id in series.
+   */
+  function fetchScheduleHistoryMetaRows() {
+    if (scheduleHistoryFetchPromise) return scheduleHistoryFetchPromise;
+    scheduleHistoryFetchPromise = (async function () {
+      var teamIds = scheduleRevisionLookupTeamStateIds();
+      var teamKey = teamIds.join('|');
+      if (
+        scheduleHistoryListCache.rows &&
+        scheduleHistoryListCache.teamKey === teamKey &&
+        Date.now() - scheduleHistoryListCache.at < SCHEDULE_HISTORY_CACHE_MS
+      ) {
+        return { ok: true, rows: scheduleHistoryListCache.rows, cached: true };
+      }
+      if (!GM_SUPABASE_DATA || !window.gmSupabase) {
+        return { ok: false, error: { message: 'no_supabase' } };
+      }
+      var res = await gmCalloutWithTimeout(
+        window.gmSupabase
+          .from('team_state_schedule_revisions')
+          .select('id, created_at, source, label, content_hash, team_state_id')
+          .in('team_state_id', teamIds)
+          .order('created_at', { ascending: false })
+          .limit(SCHEDULE_REVISION_LIST_LIMIT),
+        8000,
+        { data: null, error: { message: 'history_timeout' } }
+      );
+      if (!res || res.error) {
+        return {
+          ok: false,
+          error: (res && res.error) || { message: 'Could not load history.' },
+        };
+      }
+      var rows = normalizeScheduleHistoryRows(res.data || []);
+      scheduleHistoryListCache = { at: Date.now(), teamKey: teamKey, rows: rows };
+      return { ok: true, rows: rows };
+    })().then(
+      function (out) {
+        scheduleHistoryFetchPromise = null;
+        return out;
+      },
+      function (err) {
+        scheduleHistoryFetchPromise = null;
+        throw err;
+      }
+    );
+    return scheduleHistoryFetchPromise;
+  }
+
+  function prefetchScheduleHistoryList() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    try {
+      if (!document.documentElement.classList.contains('manager-app')) return;
+      if (typeof gmCalloutIsTimeclockKiosk === 'function' && gmCalloutIsTimeclockKiosk()) {
+        return;
+      }
+    } catch (_pre) {
+      return;
+    }
+    void fetchScheduleHistoryMetaRows().catch(function (_e) {
+      /* ignore — History click will retry */
+    });
+  }
+
   async function openScheduleHistoryModal() {
     if (!scheduleHistoryModal) return;
     if (!managerCanEditCurrentRestaurant()) {
@@ -36828,7 +36957,13 @@
       return;
     }
     scheduleHistoryModal.hidden = false;
-    if (scheduleHistoryList) {
+    var cachedRows =
+      scheduleHistoryListCache && Array.isArray(scheduleHistoryListCache.rows)
+        ? scheduleHistoryListCache.rows
+        : null;
+    if (cachedRows && cachedRows.length) {
+      paintScheduleHistoryList(cachedRows);
+    } else if (scheduleHistoryList) {
       scheduleHistoryList.innerHTML =
         '<p class="calendar-hint">' + escapeHtml(gmT('common.loading') || 'Loading…') + '</p>';
     }
@@ -36842,93 +36977,24 @@
       return;
     }
     try {
-      var sb = window.gmSupabase;
-      try {
-        await sb.auth.getSession();
-        await sb.auth.refreshSession();
-      } catch (_authHist) {
-        /* continue with current session */
-      }
-      var teamIds = scheduleRevisionLookupTeamStateIds();
-      var rows = [];
-      var lastErr = null;
-      for (var ti = 0; ti < teamIds.length; ti += 1) {
-        var res = await sb
-          .from('team_state_schedule_revisions')
-          .select('id, created_at, source, label, content_hash, team_state_id')
-          .eq('team_state_id', teamIds[ti])
-          .order('created_at', { ascending: false })
-          .limit(SCHEDULE_REVISION_LIST_LIMIT);
-        if (res.error) {
-          lastErr = res.error;
-          console.warn('gm-callout: schedule history', teamIds[ti], res.error);
-          continue;
-        }
-        rows = rows.concat(res.data || []);
-      }
-      if (!rows.length && lastErr) {
+      var fetched = await fetchScheduleHistoryMetaRows();
+      if (!fetched || !fetched.ok) {
+        if (cachedRows && cachedRows.length) return;
+        var err = fetched && fetched.error;
         if (scheduleHistoryList) {
           scheduleHistoryList.innerHTML =
             '<p class="calendar-hint">' +
             escapeHtml(
-              lastErr.message || gmT('schedule.historyFailed') || 'Could not load history.'
+              (err && err.message) || gmT('schedule.historyFailed') || 'Could not load history.'
             ) +
             '</p>';
         }
         return;
       }
-      rows.sort(function (a, b) {
-        return String(b.created_at || '').localeCompare(String(a.created_at || ''));
-      });
-      var seen = Object.create(null);
-      rows = rows.filter(function (r) {
-        if (!r || !r.id || seen[r.id]) return false;
-        seen[r.id] = true;
-        return true;
-      });
-      rows = collapseScheduleHistoryRows(rows).slice(0, SCHEDULE_REVISION_LIST_LIMIT);
-      if (!rows.length) {
-        if (scheduleHistoryList) {
-          scheduleHistoryList.innerHTML =
-            '<p class="calendar-hint">' +
-            escapeHtml(gmT('schedule.historyEmpty') || 'No saved versions yet.') +
-            '</p>';
-        }
-        return;
-      }
-      if (scheduleHistoryList) {
-        scheduleHistoryList.innerHTML = rows
-          .map(function (r) {
-            var when = formatScheduleRevisionWhen(r.created_at);
-            var kind = scheduleRevisionSourceLabel(r.source);
-            var secondary = when ? kind : r.label || kind;
-            var isManual = String(r.source || '') === 'manual';
-            return (
-              '<div class="schedule-history-row' +
-              (isManual ? ' schedule-history-row-manual' : '') +
-              '" role="listitem" data-revision-id="' +
-              escapeHtml(r.id) +
-              '">' +
-              '<div class="schedule-history-row-meta">' +
-              '<div class="schedule-history-row-label">' +
-              escapeHtml(r.label || when || kind) +
-              '</div>' +
-              '<div class="schedule-history-row-source">' +
-              escapeHtml(secondary) +
-              '</div>' +
-              '</div>' +
-              '<button type="button" class="btn btn-secondary" data-hard-revert="' +
-              escapeHtml(r.id) +
-              '">' +
-              escapeHtml(gmT('schedule.hardRevert') || 'Hard revert') +
-              '</button>' +
-              '</div>'
-            );
-          })
-          .join('');
-      }
+      paintScheduleHistoryList(fetched.rows || []);
     } catch (histErr) {
       console.warn('gm-callout: schedule history', histErr);
+      if (cachedRows && cachedRows.length) return;
       if (scheduleHistoryList) {
         scheduleHistoryList.innerHTML =
           '<p class="calendar-hint">' +
@@ -40117,7 +40183,7 @@
   function gmCalloutRunPostRemoteHydrate() {
     syncRealtimeSubscriptionsForVisibility();
     setupEmployeeChatRealtimeSubscription();
-    if (document.documentElement.classList.contains('manager-app')) {
+      if (document.documentElement.classList.contains('manager-app')) {
       if (typeof window.gmCalloutManagerMessagingBootstrap === 'function') {
         window.gmCalloutManagerMessagingBootstrap();
       } else if (typeof window.gmCalloutEnsureManagerMessaging === 'function') {
@@ -40137,6 +40203,9 @@
           }
         });
       }
+      setTimeout(function () {
+        if (typeof prefetchScheduleHistoryList === 'function') prefetchScheduleHistoryList();
+      }, 1800);
       return;
     }
     if (document.documentElement.classList.contains('employee-app')) {
