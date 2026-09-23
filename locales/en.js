@@ -29,6 +29,7 @@ window.GM_I18N_EN = {
   'common.prevWeek': 'Prev week',
   'common.nextWeek': 'Next week',
   'common.thisWeek': 'This week',
+  'common.today': "Today's shifts",
   'common.week': 'Week',
   'common.weekOf': 'Week of {date}',
   'common.all': 'All',

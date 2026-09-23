@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-333" />
+  <link rel="stylesheet" href="styles.css?v=perf-334" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-333';
+    window.__GM_ASSET_V = 'perf-334';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -213,6 +213,7 @@
         sessionStorage.removeItem('gm-callout-employee-display-name');
         sessionStorage.removeItem('gm-callout-auth-session-backup');
         localStorage.removeItem('gm-callout-auth-session-backup');
+        sessionStorage.removeItem('gm-callout-timeclock-kiosk');
       } catch (_clr) {
         /* ignore */
       }
@@ -813,7 +814,7 @@
       <section class="screen" id="screen-manager-home" data-screen="14">
         <div class="emp-card" id="mgrHomeWelcomeCard"></div>
         <div class="emp-section">
-          <h2 class="emp-section-title" data-i18n="common.today">Today’s shifts</h2>
+          <h2 class="emp-section-title" data-i18n="employee.todaysShifts">Today’s shifts</h2>
           <ul class="emp-shift-list" id="mgrShiftsToday"></ul>
         </div>
         <div class="emp-section">
@@ -1975,7 +1976,7 @@
       <section class="emp-screen active" data-emp-screen="home" id="empScreenHome">
         <div class="emp-card" id="empWelcomeCard"></div>
         <div class="emp-section">
-          <h2 class="emp-section-title">Today’s shifts</h2>
+          <h2 class="emp-section-title" data-i18n="employee.todaysShifts">Today’s shifts</h2>
           <ul class="emp-shift-list" id="empShiftsToday"></ul>
         </div>
         <div class="emp-section">
@@ -2858,7 +2859,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-331"></script>
+  <script src="locales/en.js?v=perf-334"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2870,7 +2871,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-331';
+      s.src = 'locales/es.js?v=perf-334';
       document.head.appendChild(s);
     })();
   </script>
@@ -2921,10 +2922,31 @@
         var role = (sessionStorage.getItem('gm-callout-session') || '').trim();
         var root = document.documentElement;
         root.classList.add('authed');
-        root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
-        if (role === 'employee') root.classList.add('employee-app');
-        else if (role === 'timeclock') root.classList.add('timeclock-app');
-        else root.classList.add('manager-app');
+        if (role === 'employee') {
+          try {
+            sessionStorage.removeItem('gm-callout-timeclock-kiosk');
+          } catch (_clrTc) {
+            /* ignore */
+          }
+          root.classList.add('employee-app');
+          root.classList.remove('manager-app', 'timeclock-app');
+        } else if (role === 'timeclock') {
+          try {
+            sessionStorage.setItem('gm-callout-timeclock-kiosk', '1');
+          } catch (_pinTc) {
+            /* ignore */
+          }
+          root.classList.add('timeclock-app');
+          root.classList.remove('manager-app', 'employee-app');
+        } else {
+          try {
+            sessionStorage.removeItem('gm-callout-timeclock-kiosk');
+          } catch (_clrMgr) {
+            /* ignore */
+          }
+          root.classList.add('manager-app');
+          root.classList.remove('employee-app', 'timeclock-app');
+        }
         /* Home is store-manager only — reveal early from session hint; admin stays hidden. */
         var homeNavEarly = document.querySelector('.top-nav .nav-item[data-goto="14"]');
         if (homeNavEarly) homeNavEarly.hidden = role !== 'manager';
@@ -3478,10 +3500,31 @@
       function applyAuthedShell(role) {
         var root = document.documentElement;
         root.classList.add('authed');
-        root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
-        if (role === 'employee') root.classList.add('employee-app');
-        else if (role === 'timeclock') root.classList.add('timeclock-app');
-        else root.classList.add('manager-app');
+        if (role === 'employee') {
+          try {
+            sessionStorage.removeItem('gm-callout-timeclock-kiosk');
+          } catch (_clrEmp) {
+            /* ignore */
+          }
+          root.classList.add('employee-app');
+          root.classList.remove('manager-app', 'timeclock-app');
+        } else if (role === 'timeclock') {
+          try {
+            sessionStorage.setItem('gm-callout-timeclock-kiosk', '1');
+          } catch (_pinTc) {
+            /* ignore */
+          }
+          root.classList.add('timeclock-app');
+          root.classList.remove('manager-app', 'employee-app');
+        } else {
+          try {
+            sessionStorage.removeItem('gm-callout-timeclock-kiosk');
+          } catch (_clrMgr) {
+            /* ignore */
+          }
+          root.classList.add('manager-app');
+          root.classList.remove('employee-app', 'timeclock-app');
+        }
         var homeNav = document.querySelector('.top-nav .nav-item[data-goto="14"]');
         if (homeNav) homeNav.hidden = role !== 'manager';
         if (!root.classList.contains('authed')) {
@@ -4855,6 +4898,7 @@
         try {
           sessionStorage.removeItem(SESSION_KEY);
           sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+          sessionStorage.removeItem('gm-callout-timeclock-kiosk');
         } catch (_ssEarly) {
           /* ignore */
         }
@@ -4891,6 +4935,7 @@
             sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
             sessionStorage.removeItem('gm-callout-auth-session-backup');
             localStorage.removeItem('gm-callout-auth-session-backup');
+            sessionStorage.removeItem('gm-callout-timeclock-kiosk');
           } catch (_ss) {
             /* ignore */
           }
@@ -5052,7 +5097,7 @@
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
   <script defer src="portal-auth-client.js?v=perf-281"></script>
-  <script defer src="login-timeclock.js?v=perf-63"></script>
+  <script defer src="login-timeclock.js?v=perf-64"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;

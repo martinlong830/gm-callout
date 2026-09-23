@@ -259,6 +259,12 @@
 
   function applyTimeclockShell() {
     var root = document.documentElement;
+    try {
+      sessionStorage.setItem('gm-callout-timeclock-kiosk', '1');
+      sessionStorage.setItem(SESSION_KEY, 'timeclock');
+    } catch (_e) {
+      /* ignore */
+    }
     root.classList.add('authed', 'timeclock-app');
     root.classList.remove('manager-app', 'employee-app');
     if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
@@ -434,39 +440,39 @@
   (async function restoreTimeclockSession() {
     try {
       if (sessionStorage.getItem(SESSION_KEY) !== 'timeclock') return;
+      /* Paint the PIN pad immediately — do not wait on a profile fetch. */
+      applyTimeclockShell();
       if (!window.gmSupabase || !window.gmSupabaseEnabled) return;
       var data = await window.gmSupabase.auth.getSession();
       if (!data.data || !data.data.session) return;
-      var prof = await window.gmSupabase
-        .from('profiles')
-        .select('role')
-        .eq('id', data.data.session.user.id)
-        .maybeSingle();
-      if (prof.data && prof.data.role === 'timeclock') {
-        applyTimeclockShell();
-        var rid = selectedTimeclockRestaurantId();
-        persistTimeclockRestaurantId(rid);
-        if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
-          void window
-            .gmCalloutEnsureTimeclockApp()
-            .then(function () {
-              persistTimeclockRestaurantId(rid);
-              if (typeof window.gmCalloutTimeclockSetRestaurant === 'function') {
-                window.gmCalloutTimeclockSetRestaurant(rid);
-              }
-            })
-            .catch(function (ex) {
-              console.warn('timeclock restore ensure', ex);
-            });
-        } else if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
-          window.gmCalloutTimeclockBootstrap();
-          if (typeof window.gmCalloutTimeclockSetRestaurant === 'function') {
-            window.gmCalloutTimeclockSetRestaurant(rid);
-          }
+      applyTimeclockShell();
+      var rid = selectedTimeclockRestaurantId();
+      persistTimeclockRestaurantId(rid);
+      if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+        void window
+          .gmCalloutEnsureTimeclockApp()
+          .then(function () {
+            applyTimeclockShell();
+            persistTimeclockRestaurantId(rid);
+            if (typeof window.gmCalloutTimeclockSetRestaurant === 'function') {
+              window.gmCalloutTimeclockSetRestaurant(rid);
+            }
+          })
+          .catch(function (ex) {
+            console.warn('timeclock restore ensure', ex);
+          });
+      } else if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
+        window.gmCalloutTimeclockBootstrap();
+        if (typeof window.gmCalloutTimeclockSetRestaurant === 'function') {
+          window.gmCalloutTimeclockSetRestaurant(rid);
         }
       }
     } catch (_ex) {
-      /* ignore */
+      try {
+        if (sessionStorage.getItem(SESSION_KEY) === 'timeclock') applyTimeclockShell();
+      } catch (_keep) {
+        /* ignore */
+      }
     }
   })();
 

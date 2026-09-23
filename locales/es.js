@@ -28,6 +28,7 @@ window.GM_I18N_ES = {
   'common.prevWeek': 'Semana ant.',
   'common.nextWeek': 'Semana sig.',
   'common.thisWeek': 'Esta semana',
+  'common.today': 'Turnos de hoy',
   'common.week': 'Semana',
   'common.weekOf': 'Semana del {date}',
   'common.all': 'Todos',

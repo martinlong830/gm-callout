@@ -260,9 +260,21 @@
     hiddenInputEl.blur();
   }
 
+  function pinKioskShell() {
+    if (window.__GM_INTENTIONAL_SIGN_OUT__) return;
+    if (typeof window.gmCalloutPinTimeclockShell === 'function') {
+      window.gmCalloutPinTimeclockShell();
+      return;
+    }
+    var root = document.documentElement;
+    root.classList.add('authed', 'timeclock-app');
+    root.classList.remove('manager-app', 'employee-app');
+  }
+
   function startWatchdog() {
     if (watchdogTimer) return;
     watchdogTimer = setInterval(function () {
+      pinKioskShell();
       var app = document.getElementById('appTimeclock');
       if (!app || app.hidden) return;
       unlockIfStuck(t('timeclock.connectionTimeout'));
@@ -652,6 +664,7 @@
     if (!focusBound) {
       focusBound = true;
       document.addEventListener('visibilitychange', function () {
+        pinKioskShell();
         var app = document.getElementById('appTimeclock');
         if (!app || app.hidden) return;
         if (document.visibilityState === 'visible') {
@@ -707,6 +720,7 @@
   };
 
   window.gmCalloutTimeclockBootstrap = function () {
+    pinKioskShell();
     refreshDeviceRestaurantId();
     if (resetTimer) clearTimeout(resetTimer);
     pinBuffer = '';

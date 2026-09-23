@@ -110,6 +110,13 @@ html.authed.timeclock-app .app-timeclock {
   min-height: 100dvh;
 }
 
+/* Mid-swap: authed with no role class used to flash the manager schedule
+   over the timeclock PIN pad. Hide manager chrome until a role is set. */
+html.authed:not(.manager-app):not(.employee-app):not(.timeclock-app) .app,
+html.authed:not(.manager-app):not(.employee-app):not(.timeclock-app) .app-employee {
+  display: none !important;
+}
+
 /*
  * Employee portal app shell: lock to the viewport so nested panes
  * (Messages inbox, Schedule matrix) get a definite height and can scroll.

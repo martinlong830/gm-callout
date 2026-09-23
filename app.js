@@ -1994,9 +1994,91 @@
     }
   }
 
-  function gmCalloutIsTimeclockKiosk() {
-    return gmCalloutCurrentSessionRole() === 'timeclock';
+  var TIMECLOCK_KIOSK_PIN_KEY = 'gm-callout-timeclock-kiosk';
+
+  function gmCalloutPathIsTimeclockKiosk() {
+    try {
+      var path = String(
+        (typeof window !== 'undefined' && window.location && window.location.pathname) || ''
+      )
+        .toLowerCase()
+        .replace(/\/+$/, '');
+      return (
+        path === '/timeclock' ||
+        path === '/timeclock-9th' ||
+        path === '/timeclock-8th' ||
+        path.endsWith('/timeclock') ||
+        path.endsWith('/timeclock-9th') ||
+        path.endsWith('/timeclock-8th')
+      );
+    } catch (_p) {
+      return false;
+    }
   }
+
+  function gmCalloutMarkTimeclockKiosk() {
+    try {
+      sessionStorage.setItem(TIMECLOCK_KIOSK_PIN_KEY, '1');
+    } catch (_m) {
+      /* ignore */
+    }
+  }
+
+  function gmCalloutClearTimeclockKiosk() {
+    try {
+      sessionStorage.removeItem(TIMECLOCK_KIOSK_PIN_KEY);
+    } catch (_c) {
+      /* ignore */
+    }
+  }
+
+  function gmCalloutIsTimeclockKiosk() {
+    if (window.__GM_INTENTIONAL_SIGN_OUT__) return false;
+    try {
+      if (sessionStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
+      if (localStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
+    } catch (_iso) {
+      /* ignore */
+    }
+    try {
+      if (document.documentElement.classList.contains('timeclock-app')) return true;
+      if (sessionStorage.getItem(TIMECLOCK_KIOSK_PIN_KEY) === '1') return true;
+      if (gmCalloutCurrentSessionRole() === 'timeclock') return true;
+    } catch (_k) {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function gmCalloutPinTimeclockShell() {
+    if (window.__GM_INTENTIONAL_SIGN_OUT__) return false;
+    try {
+      if (sessionStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
+    } catch (_isoPin) {
+      /* ignore */
+    }
+    if (!gmCalloutIsTimeclockKiosk()) return false;
+    var root = document.documentElement;
+    root.classList.add('authed', 'timeclock-app');
+    root.classList.remove('manager-app', 'employee-app');
+    try {
+      sessionStorage.setItem('gm-callout-session', 'timeclock');
+    } catch (_s) {
+      /* ignore */
+    }
+    gmCalloutMarkTimeclockKiosk();
+    if (typeof gmCalloutKeepAuthedShellPainted === 'function') {
+      gmCalloutKeepAuthedShellPainted();
+    } else if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
+      window.gmCalloutSetLoginGateOpen(false);
+    }
+    return true;
+  }
+
+  window.gmCalloutMarkTimeclockKiosk = gmCalloutMarkTimeclockKiosk;
+  window.gmCalloutClearTimeclockKiosk = gmCalloutClearTimeclockKiosk;
+  window.gmCalloutIsTimeclockKiosk = gmCalloutIsTimeclockKiosk;
+  window.gmCalloutPinTimeclockShell = gmCalloutPinTimeclockShell;
 
   var KNOWN_RESTAURANT_IDS = { 'rp-9': true, 'rp-8': true };
 
@@ -28366,6 +28448,10 @@
   }
 
   function showScreen(num) {
+    if (typeof gmCalloutIsTimeclockKiosk === 'function' && gmCalloutIsTimeclockKiosk()) {
+      if (typeof gmCalloutPinTimeclockShell === 'function') gmCalloutPinTimeclockShell();
+      return;
+    }
     if (num === 14 && gmCalloutSessionIsAdmin) {
       num = 1;
     }
@@ -39494,6 +39580,7 @@
     } catch (_eLogin) {
       /* ignore */
     }
+    gmCalloutClearTimeclockKiosk();
     root.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
     gmManagerShellBootstrapped = false;
     gmCalloutSetLoginGateOpen(true);
@@ -39512,6 +39599,10 @@
     if (next !== 'manager' && next !== 'admin' && next !== 'employee' && next !== 'timeclock') {
       next = 'employee';
     }
+    if (gmCalloutIsTimeclockKiosk() && next !== 'timeclock') {
+      gmCalloutPinTimeclockShell();
+      return false;
+    }
     try {
       sessionStorage.setItem('gm-callout-session', next);
     } catch (_eStore) {
@@ -39519,12 +39610,13 @@
     }
     var root = document.documentElement;
     root.classList.add('authed');
-    root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
     gmCalloutSessionIsManager = roleIsManagerLike(next);
     gmCalloutSessionIsAdmin = roleIsAdmin(next);
     syncAdminManagerHomeNav();
     if (next === 'employee') {
+      gmCalloutClearTimeclockKiosk();
       root.classList.add('employee-app');
+      root.classList.remove('manager-app', 'timeclock-app');
       teardownEmployeesRealtimeSubscription();
       if (typeof window.gmCalloutEnsureEmployeeApp === 'function') {
         try {
@@ -39540,13 +39632,17 @@
       return true;
     }
     if (next === 'timeclock') {
+      gmCalloutMarkTimeclockKiosk();
       root.classList.add('timeclock-app');
+      root.classList.remove('manager-app', 'employee-app');
       if (typeof window.gmCalloutApplySupabaseRole === 'function') {
         window.gmCalloutApplySupabaseRole('timeclock');
       }
       return true;
     }
+    gmCalloutClearTimeclockKiosk();
     root.classList.add('manager-app');
+    root.classList.remove('employee-app', 'timeclock-app');
     setupEmployeesRealtimeSubscription();
     setupSelfProfileRoleWatch();
     if (typeof window.gmCalloutManagerBootstrap === 'function') {
@@ -39580,9 +39676,23 @@
       8000,
       { data: null, error: { message: 'profile_timeout' } }
     );
-    var role = (profRes.data && profRes.data.role) || 'manager';
-    if (role !== 'manager' && role !== 'admin' && role !== 'employee' && role !== 'timeclock') {
-      role = 'employee';
+    var fetchedRole = (profRes.data && profRes.data.role) || '';
+    var role;
+    if (gmCalloutIsTimeclockKiosk()) {
+      /* Never dump a kiosk onto Schedule because a profile read timed out. */
+      role = 'timeclock';
+    } else if (
+      fetchedRole === 'manager' ||
+      fetchedRole === 'admin' ||
+      fetchedRole === 'employee' ||
+      fetchedRole === 'timeclock'
+    ) {
+      role = fetchedRole;
+    } else {
+      role = gmCalloutCurrentSessionRole() || 'manager';
+      if (role !== 'manager' && role !== 'admin' && role !== 'employee' && role !== 'timeclock') {
+        role = 'employee';
+      }
     }
     if (profRes.data && profRes.data.company_id) {
       try {
@@ -39645,13 +39755,18 @@
     }
     var root = document.documentElement;
     root.classList.add('authed');
-    root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
     if (role === 'employee') {
+      gmCalloutClearTimeclockKiosk();
       root.classList.add('employee-app');
+      root.classList.remove('manager-app', 'timeclock-app');
     } else if (role === 'timeclock') {
+      gmCalloutMarkTimeclockKiosk();
       root.classList.add('timeclock-app');
+      root.classList.remove('manager-app', 'employee-app');
     } else {
+      gmCalloutClearTimeclockKiosk();
       root.classList.add('manager-app');
+      root.classList.remove('employee-app', 'timeclock-app');
     }
     try {
       gmCalloutSessionUserId = session.user.id;
@@ -40059,6 +40174,10 @@
   window.gmCalloutTeardownEmployeesRealtime = teardownEmployeesRealtimeSubscription;
   window.gmCalloutManagerBootstrap = function (opts) {
     opts = opts || {};
+    if (typeof gmCalloutIsTimeclockKiosk === 'function' && gmCalloutIsTimeclockKiosk()) {
+      if (typeof gmCalloutPinTimeclockShell === 'function') gmCalloutPinTimeclockShell();
+      return;
+    }
     syncManagerSessionFlagsFromShell();
     applyPendingManagerRestaurantSelection();
     gmCalloutEnsureEmployeeDataReady();
@@ -40289,6 +40408,7 @@
     } catch (_set) {
       /* ignore */
     }
+    gmCalloutClearTimeclockKiosk();
   }
 
   function gmCalloutClearIntentionalSignOut() {
@@ -40387,12 +40507,21 @@
             try {
               var roleHint = (sessionStorage.getItem('gm-callout-session') || '').trim();
               var rootKeep = document.documentElement;
-              if (!rootKeep.classList.contains('authed')) {
+              if (gmCalloutPinTimeclockShell()) {
+                /* stay on PIN pad */
+              } else if (!rootKeep.classList.contains('authed')) {
                 rootKeep.classList.add('authed');
-                rootKeep.classList.remove('manager-app', 'employee-app', 'timeclock-app');
-                if (roleHint === 'employee') rootKeep.classList.add('employee-app');
-                else if (roleHint === 'timeclock') rootKeep.classList.add('timeclock-app');
-                else rootKeep.classList.add('manager-app');
+                if (roleHint === 'employee') {
+                  rootKeep.classList.add('employee-app');
+                  rootKeep.classList.remove('manager-app', 'timeclock-app');
+                } else if (roleHint === 'timeclock') {
+                  gmCalloutMarkTimeclockKiosk();
+                  rootKeep.classList.add('timeclock-app');
+                  rootKeep.classList.remove('manager-app', 'employee-app');
+                } else {
+                  rootKeep.classList.add('manager-app');
+                  rootKeep.classList.remove('employee-app', 'timeclock-app');
+                }
               }
             } catch (_keepShell) {
               /* ignore */
@@ -40496,6 +40625,15 @@
         }
       } else if (!document.documentElement.classList.contains('manager-app')) {
         showScreen(1);
+      }
+    }
+    if (gmCalloutIsTimeclockKiosk() && !gmCalloutIsIntentionalSignOut()) {
+      gmCalloutPinTimeclockShell();
+      if (!window.__GM_TIMECLOCK_SHELL_PIN_TIMER__) {
+        window.__GM_TIMECLOCK_SHELL_PIN_TIMER__ = setInterval(function () {
+          if (gmCalloutIsIntentionalSignOut()) return;
+          if (gmCalloutIsTimeclockKiosk()) gmCalloutPinTimeclockShell();
+        }, 2500);
       }
     }
   })();
@@ -40765,14 +40903,22 @@
               }
               function repaintProvisionalAuthedShell() {
                 try {
+                  if (gmCalloutPinTimeclockShell()) return;
                   var roleHint = (sessionStorage.getItem('gm-callout-session') || '').trim();
                   if (!roleHint && !hadBackup) return;
                   var root = document.documentElement;
                   root.classList.add('authed');
-                  root.classList.remove('manager-app', 'employee-app', 'timeclock-app');
-                  if (roleHint === 'employee') root.classList.add('employee-app');
-                  else if (roleHint === 'timeclock') root.classList.add('timeclock-app');
-                  else root.classList.add('manager-app');
+                  if (roleHint === 'employee') {
+                    root.classList.add('employee-app');
+                    root.classList.remove('manager-app', 'timeclock-app');
+                  } else if (roleHint === 'timeclock') {
+                    gmCalloutMarkTimeclockKiosk();
+                    root.classList.add('timeclock-app');
+                    root.classList.remove('manager-app', 'employee-app');
+                  } else {
+                    root.classList.add('manager-app');
+                    root.classList.remove('employee-app', 'timeclock-app');
+                  }
                   gmCalloutKeepAuthedShellPainted();
                 } catch (_repaint) {
                   /* ignore */
@@ -40925,6 +41071,9 @@
         return;
       }
       if (document.visibilityState === 'visible') {
+        if (gmCalloutIsTimeclockKiosk()) {
+          gmCalloutPinTimeclockShell();
+        }
         ensureRollingFutureScheduleWeeks();
         if (document.documentElement.classList.contains('authed')) {
           gmCalloutKeepAuthedShellPainted();
