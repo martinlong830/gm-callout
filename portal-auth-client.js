@@ -996,6 +996,14 @@
       var name = String(loginName || "").trim();
       var pw = String(password || "");
       var cid = companyId ? String(companyId).trim() : "";
+      if (!cid) {
+        try {
+          cid = String(sessionStorage.getItem("gm-callout-company-id") || "").trim();
+        } catch (_cidSs) {
+          cid = "";
+        }
+      }
+      if (!cid) cid = RED_POKE_COMPANY_ID;
       if (!name || !pw) {
         return { ok: false, message: mapPortalMessage("Name and password are required.") };
       }

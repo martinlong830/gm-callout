@@ -1679,6 +1679,10 @@ function createPortalAuthRouter({
         const co = await findCompanyByAccessCode(admin, accessCode);
         if (co.company) companyId = co.company.id;
       }
+      /* Time clock / older clients omit companyId. Default to Red Poke. */
+      if (!companyId && !accessCode) {
+        companyId = RED_POKE_COMPANY_ID;
+      }
       if (!companyId) {
         return res.status(400).json({
           ok: false,

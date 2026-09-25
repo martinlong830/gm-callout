@@ -316,6 +316,16 @@
     return window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled();
   }
 
+  function timeclockCompanyId() {
+    try {
+      var stored = String(sessionStorage.getItem('gm-callout-company-id') || '').trim();
+      if (stored) return stored;
+    } catch (_cid) {
+      /* ignore */
+    }
+    return 'a0000000-0000-4000-8000-000000000001';
+  }
+
   function clearIntentionalSignOutForLogin() {
     try {
       window.__GM_INTENTIONAL_SIGN_OUT__ = false;
@@ -353,7 +363,8 @@
         try {
           var res = await window.gmPortalAuth.signIn(
             nameEl && nameEl.value,
-            pw && pw.value
+            pw && pw.value,
+            timeclockCompanyId()
           );
           if (!res.ok) {
             showTcLoginError(res.message || 'Sign in failed.');
