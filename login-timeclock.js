@@ -258,6 +258,7 @@
   }
 
   function applyTimeclockShell() {
+    clearIntentionalSignOutForLogin();
     var root = document.documentElement;
     try {
       sessionStorage.setItem('gm-callout-timeclock-kiosk', '1');
@@ -311,6 +312,16 @@
     return window.gmPortalAuth && window.gmPortalAuth.enabled && window.gmPortalAuth.enabled();
   }
 
+  function clearIntentionalSignOutForLogin() {
+    try {
+      window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+      sessionStorage.removeItem('gm-callout-intentional-sign-out');
+      localStorage.removeItem('gm-callout-intentional-sign-out');
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
   var showTcLoginBtn = document.getElementById('showTimeclockLoginPanelBtn');
   if (showTcLoginBtn) showTcLoginBtn.addEventListener('click', showTimeclockLoginPanel);
   bindTimeclockLocationToggles();
@@ -333,22 +344,29 @@
       var pw = document.getElementById('timeclockLoginPassword');
       showTcLoginError('');
       (async function () {
-        var res = await window.gmPortalAuth.signIn(
-          nameEl && nameEl.value,
-          pw && pw.value
-        );
-        if (!res.ok) {
-          showTcLoginError(res.message || 'Sign in failed.');
-          return;
-        }
-        if (res.role !== 'timeclock') {
-          showTcLoginError('This account is not a time clock device.');
-          if (window.gmSupabase && window.gmSupabase.auth) {
-            await window.gmSupabase.auth.signOut();
+        window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
+        clearIntentionalSignOutForLogin();
+        try {
+          var res = await window.gmPortalAuth.signIn(
+            nameEl && nameEl.value,
+            pw && pw.value
+          );
+          if (!res.ok) {
+            showTcLoginError(res.message || 'Sign in failed.');
+            return;
           }
-          return;
+          if (res.role !== 'timeclock') {
+            showTcLoginError('This account is not a time clock device.');
+            if (window.gmSupabase && window.gmSupabase.auth) {
+              await window.gmSupabase.auth.signOut();
+            }
+            return;
+          }
+          clearIntentionalSignOutForLogin();
+          await finishTimeclockSignIn();
+        } finally {
+          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
         }
-        await finishTimeclockSignIn();
       })();
     });
   }
@@ -388,6 +406,8 @@
         tcRegSubmitBtn.textContent = 'Creating…';
       }
       (async function () {
+        window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
+        clearIntentionalSignOutForLogin();
         try {
           var up = await window.gmPortalAuth.signUp({
             loginName: deviceName,
@@ -420,6 +440,7 @@
         } catch (ex) {
           showTcRegisterError((ex && ex.message) || 'Registration failed.');
         } finally {
+          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
           if (tcRegSubmitBtn) {
             tcRegSubmitBtn.disabled = false;
             tcRegSubmitBtn.textContent = 'Create device account';

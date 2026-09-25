@@ -41072,7 +41072,7 @@
         return;
       }
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-        if (gmCalloutIsIntentionalSignOut()) {
+        if (gmCalloutIsIntentionalSignOut() && !window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
           /*
            * User clicked Sign Out — never restore shell from a leftover token /
            * backup setSession. Force local sign-out again.
