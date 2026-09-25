@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-345';
+    window.__GM_ASSET_V = 'perf-346';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -3659,13 +3659,12 @@
             return;
           }
         } finally {
-          if (role === 'timeclock') {
-            setTimeout(function () {
+          setTimeout(
+            function () {
               window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
-            }, 4000);
-          } else {
-            window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
-          }
+            },
+            role === 'timeclock' ? 4000 : 2000
+          );
         }
       }
 
@@ -4951,6 +4950,14 @@
               if (p && typeof p.then === 'function') {
                 p.then(
                   function () {
+                    var roleNow = '';
+                    try {
+                      roleNow = (sessionStorage.getItem('gm-callout-session') || '').trim();
+                    } catch (_roleNow) {
+                      roleNow = '';
+                    }
+                    /* Only a newer time-clock login may undo this sign-out. */
+                    if (roleNow !== 'timeclock') return;
                     if ((window.__GM_AUTH_GEN__ || 0) === signOutGen) return;
                     var keep = window.__GM_LAST_PORTAL_SESSION__;
                     if (
@@ -5105,8 +5112,8 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="portal-auth-client.js?v=perf-345"></script>
-  <script defer src="login-timeclock.js?v=perf-345"></script>
+  <script defer src="portal-auth-client.js?v=perf-346"></script>
+  <script defer src="login-timeclock.js?v=perf-346"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;

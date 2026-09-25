@@ -2032,11 +2032,33 @@
     }
   }
 
+  function gmCalloutSessionIsPeopleRole(role) {
+    var r = role || gmCalloutCurrentSessionRole();
+    return r === 'manager' || r === 'admin' || r === 'employee';
+  }
+
   function gmCalloutIsTimeclockKiosk() {
+    if (gmCalloutSessionIsPeopleRole()) return false;
     try {
-      if (document.documentElement.classList.contains('timeclock-app')) return true;
-      if (sessionStorage.getItem(TIMECLOCK_KIOSK_PIN_KEY) === '1') return true;
+      if (document.documentElement.classList.contains('manager-app')) return false;
+      if (document.documentElement.classList.contains('employee-app')) return false;
+    } catch (_people) {
+      /* ignore */
+    }
+    try {
       if (gmCalloutCurrentSessionRole() === 'timeclock') return true;
+      if (
+        document.documentElement.classList.contains('authed') &&
+        document.documentElement.classList.contains('timeclock-app')
+      ) {
+        return true;
+      }
+      if (
+        document.documentElement.classList.contains('authed') &&
+        sessionStorage.getItem(TIMECLOCK_KIOSK_PIN_KEY) === '1'
+      ) {
+        return true;
+      }
     } catch (_k) {
       /* ignore */
     }
@@ -2044,6 +2066,13 @@
   }
 
   function gmCalloutPinTimeclockShell() {
+    if (gmCalloutSessionIsPeopleRole()) return false;
+    try {
+      if (document.documentElement.classList.contains('manager-app')) return false;
+      if (document.documentElement.classList.contains('employee-app')) return false;
+    } catch (_peoplePin) {
+      /* ignore */
+    }
     var liveSession = gmCalloutCurrentSessionRole() === 'timeclock';
     var loginInFlight = !!window.__GM_PORTAL_LOGIN_IN_FLIGHT__;
     if (!gmCalloutIsTimeclockKiosk() && !liveSession) {
@@ -40527,7 +40556,7 @@
       }
       return;
     }
-    if (gmCalloutIsIntentionalSignOut()) {
+    if (gmCalloutIsIntentionalSignOut() && !window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
       gmCalloutMarkIntentionalSignOut();
       gmCalloutClearAuthSessionBackup();
       gmCalloutStopSessionKeepAlive();
@@ -40952,12 +40981,16 @@
              * sign-out must still tear down. Transient refresh blips must never paint
              * the grey login gate over a live session.
              */
-            if (
-              gmCalloutIsTimeclockKiosk() ||
-              gmCalloutCurrentSessionRole() === 'timeclock' ||
-              window.__GM_PORTAL_LOGIN_IN_FLIGHT__
-            ) {
-              gmCalloutClearIntentionalSignOut();
+            var liveKiosk =
+              gmCalloutCurrentSessionRole() === 'timeclock' || gmCalloutIsTimeclockKiosk();
+            if (window.__GM_PORTAL_LOGIN_IN_FLIGHT__ && !gmCalloutIsIntentionalSignOut()) {
+              if (liveKiosk) {
+                gmCalloutClearIntentionalSignOut();
+                gmCalloutPinTimeclockShell();
+              }
+              return;
+            }
+            if (liveKiosk && !gmCalloutIsIntentionalSignOut()) {
               gmCalloutPinTimeclockShell();
               var keepTc = window.__GM_LAST_PORTAL_SESSION__;
               if (
@@ -41115,7 +41148,10 @@
         return;
       }
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-        if (gmCalloutIsTimeclockKiosk() || window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+        if (
+          gmCalloutCurrentSessionRole() === 'timeclock' ||
+          gmCalloutIsTimeclockKiosk()
+        ) {
           gmCalloutClearIntentionalSignOut();
           gmCalloutPinTimeclockShell();
           if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
@@ -41123,10 +41159,12 @@
           }
           return;
         }
+        if (window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+          gmCalloutClearIntentionalSignOut();
+        }
         if (
           gmCalloutIsIntentionalSignOut() &&
-          !window.__GM_PORTAL_LOGIN_IN_FLIGHT__ &&
-          !gmCalloutIsTimeclockKiosk()
+          !window.__GM_PORTAL_LOGIN_IN_FLIGHT__
         ) {
           /*
            * User clicked Sign Out — never restore shell from a leftover token /
