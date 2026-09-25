@@ -619,7 +619,7 @@ window.GM_I18N_EN = {
   'timecards.shift': 'Shift',
   'timecards.autoClockOut': 'Auto clock-out time',
   'timecards.autoClockOutHint':
-    'Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.',
+    'Open punches are automatically clocked out at this time each day (Eastern). Default is midnight.',
   'timecards.backToRoster': '← Back to timecards',
   'timecards.backToShifts': '← Back to shifts',
   'timecards.downloadTitle': 'Download timecards',

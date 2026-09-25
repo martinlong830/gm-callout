@@ -622,7 +622,7 @@ window.GM_I18N_ES = {
   'timecards.shift': 'Turno',
   'timecards.autoClockOut': 'Hora de cierre automático',
   'timecards.autoClockOutHint':
-    'Las checadas abiertas se cierran automáticamente a esta hora cada día (Pacífico). Por defecto es medianoche.',
+    'Las checadas abiertas se cierran automáticamente a esta hora cada día (Este). Por defecto es medianoche.',
   'timecards.backToRoster': '← Volver a tarjetas',
   'timecards.backToShifts': '← Volver a turnos',
   'timecards.downloadTitle': 'Descargar tarjetas de tiempo',

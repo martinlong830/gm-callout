@@ -810,7 +810,7 @@
       d().escapeHtml(currentAutoClockOutTime()) +
       '" step="60" />' +
       '</label>' +
-      '<p class="calendar-hint">Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.</p>' +
+      '<p class="calendar-hint">Open punches are automatically clocked out at this time each day (Eastern). Default is midnight.</p>' +
       '</div>'
     );
   }
