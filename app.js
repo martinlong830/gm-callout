@@ -2033,13 +2033,6 @@
   }
 
   function gmCalloutIsTimeclockKiosk() {
-    if (window.__GM_INTENTIONAL_SIGN_OUT__) return false;
-    try {
-      if (sessionStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
-      if (localStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
-    } catch (_iso) {
-      /* ignore */
-    }
     try {
       if (document.documentElement.classList.contains('timeclock-app')) return true;
       if (sessionStorage.getItem(TIMECLOCK_KIOSK_PIN_KEY) === '1') return true;
@@ -2051,13 +2044,32 @@
   }
 
   function gmCalloutPinTimeclockShell() {
-    if (window.__GM_INTENTIONAL_SIGN_OUT__) return false;
+    var liveSession = gmCalloutCurrentSessionRole() === 'timeclock';
+    var loginInFlight = !!window.__GM_PORTAL_LOGIN_IN_FLIGHT__;
+    if (!gmCalloutIsTimeclockKiosk() && !liveSession) {
+      return false;
+    }
+    var signingOut = !!window.__GM_INTENTIONAL_SIGN_OUT__;
     try {
-      if (sessionStorage.getItem('gm-callout-intentional-sign-out') === '1') return false;
+      if (sessionStorage.getItem('gm-callout-intentional-sign-out') === '1') signingOut = true;
+      if (localStorage.getItem('gm-callout-intentional-sign-out') === '1') signingOut = true;
     } catch (_isoPin) {
       /* ignore */
     }
-    if (!gmCalloutIsTimeclockKiosk()) return false;
+    if (signingOut && !liveSession && !loginInFlight) {
+      return false;
+    }
+    if (typeof gmCalloutClearIntentionalSignOut === 'function') {
+      gmCalloutClearIntentionalSignOut();
+    } else {
+      window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+      try {
+        sessionStorage.removeItem('gm-callout-intentional-sign-out');
+        localStorage.removeItem('gm-callout-intentional-sign-out');
+      } catch (_clrPin) {
+        /* ignore */
+      }
+    }
     var root = document.documentElement;
     root.classList.add('authed', 'timeclock-app');
     root.classList.remove('manager-app', 'employee-app');
@@ -40507,6 +40519,14 @@
   }
 
   (async function () {
+    if (gmCalloutIsTimeclockKiosk()) {
+      gmCalloutClearIntentionalSignOut();
+      gmCalloutPinTimeclockShell();
+      if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+        void window.gmCalloutEnsureTimeclockApp();
+      }
+      return;
+    }
     if (gmCalloutIsIntentionalSignOut()) {
       gmCalloutMarkIntentionalSignOut();
       gmCalloutClearAuthSessionBackup();
@@ -40932,6 +40952,29 @@
              * sign-out must still tear down. Transient refresh blips must never paint
              * the grey login gate over a live session.
              */
+            if (
+              gmCalloutIsTimeclockKiosk() ||
+              gmCalloutCurrentSessionRole() === 'timeclock' ||
+              window.__GM_PORTAL_LOGIN_IN_FLIGHT__
+            ) {
+              gmCalloutClearIntentionalSignOut();
+              gmCalloutPinTimeclockShell();
+              var keepTc = window.__GM_LAST_PORTAL_SESSION__;
+              if (
+                keepTc &&
+                keepTc.access_token &&
+                keepTc.refresh_token &&
+                window.gmSupabase &&
+                window.gmSupabase.auth &&
+                typeof window.gmSupabase.auth.setSession === 'function'
+              ) {
+                void window.gmSupabase.auth.setSession({
+                  access_token: keepTc.access_token,
+                  refresh_token: keepTc.refresh_token
+                });
+              }
+              return;
+            }
             var intentional = gmCalloutIsIntentionalSignOut();
 
             async function recoverTransientSignOut() {
@@ -41072,7 +41115,19 @@
         return;
       }
       if (session && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-        if (gmCalloutIsIntentionalSignOut() && !window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+        if (gmCalloutIsTimeclockKiosk() || window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
+          gmCalloutClearIntentionalSignOut();
+          gmCalloutPinTimeclockShell();
+          if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+            void window.gmCalloutEnsureTimeclockApp();
+          }
+          return;
+        }
+        if (
+          gmCalloutIsIntentionalSignOut() &&
+          !window.__GM_PORTAL_LOGIN_IN_FLIGHT__ &&
+          !gmCalloutIsTimeclockKiosk()
+        ) {
           /*
            * User clicked Sign Out — never restore shell from a leftover token /
            * backup setSession. Force local sign-out again.

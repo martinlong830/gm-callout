@@ -566,8 +566,18 @@
     }
   }
 
+  function rememberPortalSession(tokenData) {
+    if (!tokenData || !tokenData.access_token || !tokenData.refresh_token) return;
+    window.__GM_AUTH_GEN__ = (window.__GM_AUTH_GEN__ || 0) + 1;
+    window.__GM_LAST_PORTAL_SESSION__ = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token
+    };
+  }
+
   function stashSupabaseSessionLocally(tokenData) {
     if (!tokenData || !tokenData.access_token) return;
+    rememberPortalSession(tokenData);
     var base =
       typeof window.__GM_SUPABASE_URL__ === "string" ? window.__GM_SUPABASE_URL__.trim() : "";
     var ref = "";
@@ -637,6 +647,7 @@
       stashSupabaseSessionLocally(tokens);
       return { ok: true, deferred: true };
     }
+    rememberPortalSession(tokens);
     return { ok: true };
   }
 
@@ -1161,7 +1172,7 @@
       }
 
       function finishOk(role, displayName, companyFields) {
-        if (typeof window.gmEnsureManagerAppLoaded === "function") {
+        if (role !== "timeclock" && typeof window.gmEnsureManagerAppLoaded === "function") {
           void window.gmEnsureManagerAppLoaded();
         }
         return packOk(role, displayName, companyFields);

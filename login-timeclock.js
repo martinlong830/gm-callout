@@ -271,6 +271,10 @@
     if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
       window.gmCalloutSetLoginGateOpen(false);
     }
+    ['timeclockLoginPanel', 'timeclockRegisterPanel'].forEach(function (id) {
+      var panel = document.getElementById(id);
+      if (panel) panel.hidden = true;
+    });
   }
 
   async function finishTimeclockSignIn() {
@@ -365,7 +369,9 @@
           clearIntentionalSignOutForLogin();
           await finishTimeclockSignIn();
         } finally {
-          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          setTimeout(function () {
+            window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          }, 4000);
         }
       })();
     });
@@ -440,7 +446,9 @@
         } catch (ex) {
           showTcRegisterError((ex && ex.message) || 'Registration failed.');
         } finally {
-          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          setTimeout(function () {
+            window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          }, 4000);
           if (tcRegSubmitBtn) {
             tcRegSubmitBtn.disabled = false;
             tcRegSubmitBtn.textContent = 'Create device account';

@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-344';
+    window.__GM_ASSET_V = 'perf-345';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -3537,8 +3537,9 @@
 
       async function finishPortalLogin(role, displayName, companyPayload) {
         window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = true;
-        /* Start app download as soon as tokens exist — never before Auth. */
-        if (typeof window.gmEnsureManagerAppLoaded === 'function') {
+        /* Start app download as soon as tokens exist — never before Auth.
+         * Time clock kiosk must not load app.js (it tears the PIN pad back to login). */
+        if (role !== 'timeclock' && typeof window.gmEnsureManagerAppLoaded === 'function') {
           void window.gmEnsureManagerAppLoaded();
         }
         try {
@@ -3652,19 +3653,19 @@
             applyAuthedShell('timeclock');
             if (typeof window.gmCalloutApplySupabaseRole === 'function') {
               window.gmCalloutApplySupabaseRole(role, displayName);
+            } else if (typeof window.gmCalloutEnsureTimeclockApp === 'function') {
+              void window.gmCalloutEnsureTimeclockApp();
             }
-            void whenManagerAppReady()
-              .then(function () {
-                if (typeof window.gmCalloutTimeclockBootstrap === 'function') {
-                  window.gmCalloutTimeclockBootstrap();
-                }
-              })
-              .catch(function (_tc) {
-                /* ignore */
-              });
+            return;
           }
         } finally {
-          window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          if (role === 'timeclock') {
+            setTimeout(function () {
+              window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+            }, 4000);
+          } else {
+            window.__GM_PORTAL_LOGIN_IN_FLIGHT__ = false;
+          }
         }
       }
 
@@ -4945,10 +4946,26 @@
           // Fire-and-forget only — never await on the UI critical path after flush.
           try {
             if (window.gmSupabase && window.gmSupabase.auth) {
+              var signOutGen = window.__GM_AUTH_GEN__ || 0;
               var p = window.gmSupabase.auth.signOut({ scope: 'local' });
               if (p && typeof p.then === 'function') {
                 p.then(
-                  function () {},
+                  function () {
+                    if ((window.__GM_AUTH_GEN__ || 0) === signOutGen) return;
+                    var keep = window.__GM_LAST_PORTAL_SESSION__;
+                    if (
+                      !keep ||
+                      !keep.access_token ||
+                      !window.gmSupabase ||
+                      !window.gmSupabase.auth
+                    ) {
+                      return;
+                    }
+                    void window.gmSupabase.auth.setSession({
+                      access_token: keep.access_token,
+                      refresh_token: keep.refresh_token
+                    });
+                  },
                   function () {}
                 );
               }
@@ -5088,8 +5105,8 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="portal-auth-client.js?v=perf-281"></script>
-  <script defer src="login-timeclock.js?v=perf-344"></script>
+  <script defer src="portal-auth-client.js?v=perf-345"></script>
+  <script defer src="login-timeclock.js?v=perf-345"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;

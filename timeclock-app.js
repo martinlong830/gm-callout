@@ -261,7 +261,6 @@
   }
 
   function pinKioskShell() {
-    if (window.__GM_INTENTIONAL_SIGN_OUT__) return;
     if (typeof window.gmCalloutPinTimeclockShell === 'function') {
       window.gmCalloutPinTimeclockShell();
       return;
