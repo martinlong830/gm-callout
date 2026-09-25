@@ -297,9 +297,9 @@ export function mergeDraftScheduleSlotOrderFromRemote(
   if (!localDraft || typeof localDraft !== 'object') {
     return JSON.parse(JSON.stringify(remoteDraft));
   }
-  const merged = JSON.parse(
-    JSON.stringify(keepLocalByWeek ? localDraft : remoteDraft)
-  ) as Record<string, unknown>;
+  const merged = keepLocalByWeek
+    ? ({ ...(localDraft as Record<string, unknown>) } as Record<string, unknown>)
+    : (JSON.parse(JSON.stringify(remoteDraft)) as Record<string, unknown>);
   writeSlotOrderByWeekMap(
     merged,
     mergeSlotOrderByWeekMaps(

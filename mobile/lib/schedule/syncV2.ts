@@ -8,7 +8,6 @@ import { readStoredCompanyId } from '../companySession';
 import { fetchDraftScheduleRowOrderMeta } from '../teamStateColumns';
 import {
   loadDraftFromTeamState,
-  patchDraftScheduleForWeek,
 } from './engine';
 import { isoAddDaysLocal, isoDaySpanInclusive } from './isoDate';
 import { overlayRemoteDraftRowOrderMeta } from './slotOrder';
@@ -284,6 +283,30 @@ function trIdxForBoundSlotKey(
   return Number(so) || 0;
 }
 
+function writeWeekRestaurantLayers(
+  draft: Record<string, unknown>,
+  weekIndex: number,
+  restaurantId: string,
+  layers: Record<string, unknown>
+): void {
+  if (!draft.byWeek || typeof draft.byWeek !== 'object') draft.byWeek = {};
+  const byWeek = draft.byWeek as Record<string, unknown>;
+  const key = String(weekIndex);
+  const weekEntry = byWeek[key];
+  if (!weekEntry || typeof weekEntry !== 'object') {
+    byWeek[key] = { [restaurantId]: layers };
+    return;
+  }
+  const rec = weekEntry as Record<string, unknown>;
+  const shared =
+    Array.isArray(rec.Bartender) || Array.isArray(rec.Kitchen) || Array.isArray(rec.Server);
+  if (shared) {
+    byWeek[key] = { [restaurantId]: layers };
+    return;
+  }
+  rec[restaurantId] = layers;
+}
+
 function padDraftWeeksFromActiveSlots(
   liveDraft: unknown,
   slots: ScheduleSlotRow[],
@@ -302,29 +325,52 @@ function padDraftWeeksFromActiveSlots(
     if (prev == null || n > prev) maxBy.set(k, n);
   });
   if (!maxBy.size) return liveDraft;
+  const draft: Record<string, unknown> =
+    liveDraft && typeof liveDraft === 'object'
+      ? (liveDraft as Record<string, unknown>)
+      : { v: 2, byWeek: {} };
+  if (!draft.byWeek || typeof draft.byWeek !== 'object') draft.byWeek = {};
+  const byWeek = draft.byWeek as Record<string, unknown>;
   const rids = new Set<string>();
   maxBy.forEach((_n, k) => {
     const rid = k.split('\0')[0];
     if (rid) rids.add(rid);
   });
-  let draft = liveDraft;
+  const nullRow = () => [null, null, null, null, null, null, null];
+  const padGrid = (grid: Record<string, unknown>, rid: string) => {
+    (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
+      const maxSort = maxBy.get(`${rid}\0${role}`);
+      if (maxSort == null || maxSort < 0) return;
+      const want = maxSort + 1;
+      if (!Array.isArray(grid[role])) grid[role] = [];
+      const rows = grid[role] as unknown[];
+      while (rows.length < want) rows.push(nullRow());
+    });
+  };
   weekIndices.forEach((wi) => {
-    rids.forEach((rid) => {
-      const layers = loadDraftFromTeamState(draft, wi, rid);
-      (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
-        const maxSort = maxBy.get(`${rid}\0${role}`);
-        if (maxSort == null || maxSort < 0) return;
-        const want = maxSort + 1;
-        if (!(layers as Record<string, unknown>)[role]) {
-          (layers as Record<string, unknown>)[role] = [];
-        }
-        const rows = (layers as Record<string, unknown[]>)[role] as unknown[];
-        if (!Array.isArray(rows)) return;
-        while (rows.length < want) {
-          rows.push([null, null, null, null, null, null, null]);
-        }
+    const key = String(wi);
+    let weekEntry = byWeek[key];
+    if (!weekEntry || typeof weekEntry !== 'object') {
+      const perRest: Record<string, unknown> = {};
+      rids.forEach((rid) => {
+        perRest[rid] = loadDraftFromTeamState(draft, wi, rid);
+        padGrid(perRest[rid] as Record<string, unknown>, rid);
       });
-      draft = patchDraftScheduleForWeek(draft, wi, rid, layers);
+      byWeek[key] = perRest;
+      return;
+    }
+    const rec = weekEntry as Record<string, unknown>;
+    const sharedLayers =
+      Array.isArray(rec.Bartender) || Array.isArray(rec.Kitchen) || Array.isArray(rec.Server);
+    if (sharedLayers) {
+      rids.forEach((rid) => padGrid(rec, rid));
+      return;
+    }
+    rids.forEach((rid) => {
+      if (!rec[rid] || typeof rec[rid] !== 'object') {
+        rec[rid] = loadDraftFromTeamState(draft, wi, rid);
+      }
+      padGrid(rec[rid] as Record<string, unknown>, rid);
     });
   });
   return draft;
@@ -604,10 +650,21 @@ export function projectCellsOntoLocalStores(opts: {
   });
   const slotMap = opts.slotMap || {};
   const nextAssign = JSON.parse(JSON.stringify(opts.liveAssign || {})) as AssignmentStore;
-  let nextDraft: unknown =
+  const nextDraftObj: Record<string, unknown> =
     opts.liveDraft && typeof opts.liveDraft === 'object'
-      ? JSON.parse(JSON.stringify(opts.liveDraft))
+      ? (JSON.parse(JSON.stringify(opts.liveDraft)) as Record<string, unknown>)
       : { v: 2, byWeek: {} };
+  let nextDraft: unknown = nextDraftObj;
+  const layersCache = new Map<string, Record<string, unknown>>();
+  const layersFor = (wi: number, rid: string): Record<string, unknown> => {
+    const ck = `${wi}|${rid}`;
+    let layers = layersCache.get(ck);
+    if (!layers) {
+      layers = loadDraftFromTeamState(nextDraft, wi, rid) as unknown as Record<string, unknown>;
+      layersCache.set(ck, layers);
+    }
+    return layers;
+  };
 
   const projected = new Set<string>();
   const projectedRev = new Map<string, number>();
@@ -650,11 +707,11 @@ export function projectCellsOntoLocalStores(opts: {
 
     const wi = Math.floor(gdi / 7);
     const di = gdi % 7;
-    const layers = loadDraftFromTeamState(nextDraft, wi, rid);
+    const layers = layersFor(wi, rid);
     if (!layers[role as 'Bartender' | 'Kitchen' | 'Server']) {
-      (layers as Record<string, unknown>)[role] = [];
+      layers[role] = [];
     }
-    const rows = (layers as Record<string, unknown[]>)[role] as unknown[];
+    const rows = layers[role] as unknown[];
     while (rows.length <= trIdx) {
       rows.push([null, null, null, null, null, null, null]);
     }
@@ -664,8 +721,14 @@ export function projectCellsOntoLocalStores(opts: {
     while (row.length < 7) row.push(null);
     row[di] = start && end ? [start, end] : null;
     rows[trIdx] = row;
-    nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
   });
+  layersCache.forEach((layers, ck) => {
+    const sep = ck.indexOf('|');
+    const wi = Number(ck.slice(0, sep));
+    const rid = ck.slice(sep + 1);
+    writeWeekRestaurantLayers(nextDraftObj, wi, rid, layers);
+  });
+  nextDraft = nextDraftObj;
 
   const replaceWeeks: number[] = [];
   if (opts.replaceAllWeeks) {
@@ -698,9 +761,13 @@ export function projectCellsOntoLocalStores(opts: {
       ]);
       rids.forEach((rid) => {
         if (!rid) return;
-        const layers = loadDraftFromTeamState(nextDraft, wi, rid);
+        const ck = `${wi}|${rid}`;
+        const layers =
+          layersCache.get(ck) ||
+          (loadDraftFromTeamState(nextDraft, wi, rid) as unknown as Record<string, unknown>);
+        layersCache.set(ck, layers);
         (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
-          const rows = (layers as Record<string, unknown[]>)[role];
+          const rows = layers[role] as unknown[];
           if (!Array.isArray(rows)) return;
           rows.forEach((row, trIdx) => {
             if (!Array.isArray(row)) return;
@@ -718,10 +785,11 @@ export function projectCellsOntoLocalStores(opts: {
             if (changed) rows[trIdx] = nextRow;
           });
         });
-        nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, layers);
+        writeWeekRestaurantLayers(nextDraftObj, wi, rid, layers);
       });
     });
   }
+  nextDraft = nextDraftObj;
 
   const padWeeks =
     replaceWeeks.length > 0

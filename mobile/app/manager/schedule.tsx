@@ -193,7 +193,6 @@ import {
   mergeDraftScheduleSlotOrderFromRemote,
   mergePendingDraftWithHydrated,
   moveTrIdxInSlotOrder,
-  overlayRemoteDraftRowOrderMeta,
   patchSlotOrderAfterAdd,
   patchSlotOrderAfterDelete,
   patchSlotOrderInDraftSchedule,
@@ -483,6 +482,8 @@ export default function ManagerScheduleScreen() {
   /** True after ↑↓ / add / delete row until a successful draft persist. */
   const slotOrderDirtyRef = useRef(false);
   const slotOrderPushedAtRef = useRef(0);
+  const cloudCellsAppliedRef = useRef(false);
+  const blobSeededRef = useRef(false);
 
   /** Single horizontal ScrollView for all day columns — Person column stays outside. */
   const dayScrollRef = useRef<ScrollView | null>(null);
@@ -531,6 +532,7 @@ export default function ManagerScheduleScreen() {
       }
       setAssignmentStore(projected.assign);
       setRolledDraftRaw(projected.draft);
+      cloudCellsAppliedRef.current = true;
       applyLocalScheduleAssignments(projected.assign, projected.draft, {
         markDirty: false,
       });
@@ -2041,26 +2043,25 @@ export default function ManagerScheduleScreen() {
       const cellsOnly = await writeOnlyCells().catch(() => false);
       if (cancelled) return;
       /*
-       * Write-only: assignment/draft times come from ISO cells poll — do not re-apply
-       * team_state byWeek blobs (they diverge across devices). Still take cloud ↑↓
-       * order so this week's people match web.
+       * Write-only: times/names come from ISO cells. Until that poll paints,
+       * seed from team_state blobs so the grid is not all-Unassigned and frozen.
+       * Do not stringify the full draft here — that blocked the JS thread.
        */
       if (cellsOnly) {
         if (
-          !cancelled &&
+          !cloudCellsAppliedRef.current &&
+          !blobSeededRef.current &&
           !localEditPendingRef.current &&
-          !slotOrderDirtyRef.current &&
-          teamState?.draft_schedule &&
-          draftScheduleRawRef.current
+          teamState
         ) {
-          const merged = overlayRemoteDraftRowOrderMeta(
-            draftScheduleRawRef.current,
-            teamState.draft_schedule,
-            'remote'
+          blobSeededRef.current = true;
+          const rolled = hydrateScheduleAssignmentsFromTeamState(
+            teamState.schedule_assignments,
+            restaurants,
+            teamState.draft_schedule
           );
-          if (JSON.stringify(merged) !== JSON.stringify(draftScheduleRawRef.current)) {
-            setRolledDraftRaw(merged);
-          }
+          setAssignmentStore(rolled.store);
+          setRolledDraftRaw(rolled.draftSchedule ?? teamState.draft_schedule ?? null);
         }
         return;
       }

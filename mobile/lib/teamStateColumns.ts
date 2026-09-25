@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { readStoredTeamStateId } from './companySession';
-import { mergeDraftScheduleSlotOrderFromRemote } from './schedule/slotOrder';
+import { mergeDraftScheduleSlotOrderFromRemote, overlayRemoteDraftRowOrderMeta } from './schedule/slotOrder';
 import { mergeScheduleTemplateLibraries } from './schedule/templates';
 
 /** Schedule JSON only — largest egress columns. */
@@ -274,10 +274,10 @@ export function mergeTeamStatePartial(
       next.schedule_assignments = prev.schedule_assignments;
     }
     if (partial.draft_schedule != null && prev.draft_schedule != null) {
-      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+      next.draft_schedule = overlayRemoteDraftRowOrderMeta(
         prev.draft_schedule,
         partial.draft_schedule,
-        { preferWhenBoth: 'remote', keepLocalByWeek: true }
+        'remote'
       );
     }
   } else if (
