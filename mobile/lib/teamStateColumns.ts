@@ -48,6 +48,12 @@ export function teamStateColumnsForRole(
   const isManager = role === 'manager' || role === 'admin';
   if (Array.isArray(fields) && fields.length) {
     const set = new Set(fields.map((f) => String(f)));
+    if (set.has('tip_payroll')) {
+      set.add('timecard_week_tip_pool');
+      set.add('timecard_dishwasher_tips');
+      set.add('timecard_week_extras');
+      set.add('timecard_tip_takehome_pct');
+    }
     const cols = ['updated_at'];
     const allowed = isManager ? MANAGER_ALLOWED : EMPLOYEE_ALLOWED;
     for (const c of allowed) {

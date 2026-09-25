@@ -182,7 +182,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           // Apply remote tip/VL as SoT; do not push local AsyncStorage when remote is empty —
           // that resurrected per-device caches onto shared team_state for other managers.
           try {
-            await applyTipPayrollFromTeamState(data.teamState);
+            await applyTipPayrollFromTeamState(data.teamState, { force: true });
             await applyTipTakehomeFromTeamState(data.teamState);
             invalidateDishwasherTipsSliceCache();
             invalidateWeekExtrasSliceCache();

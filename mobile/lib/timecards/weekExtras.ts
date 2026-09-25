@@ -496,6 +496,7 @@ export async function setEmployeeDayAdditionalCashTip(
   if (val <= 0) delete slice[key];
   else slice[key] = val;
   await saveWeekExtrasMap(bounds, slice);
+  markTipPayrollPendingWeekExtra(weekBoundsStorageKey(bounds), key);
 }
 
 export function sumEmployeeWeekAdditionalCashTipsSync(
@@ -562,6 +563,7 @@ export async function setEmployeeDayMissingHours(
   if (val <= 0) delete slice[key];
   else slice[key] = val;
   await saveWeekExtrasMap(bounds, slice);
+  markTipPayrollPendingWeekExtra(weekBoundsStorageKey(bounds), key);
 }
 
 export function sumEmployeeWeekMissingHoursSync(

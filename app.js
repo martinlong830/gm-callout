@@ -13795,6 +13795,8 @@
     Object.keys(localTip).forEach(function (key) {
       var slice = localTip[key];
       if (!slice || typeof slice !== 'object') return;
+      var pending = tipPayrollPendingAckTipPool[key];
+      if (!pending || !pending[TIP_PAYROLL_POOL_ACK_KEY]) return;
       if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseTip[key])) mergedTip[key] = slice;
     });
     var mergedDw = Object.assign({}, remoteDw);
@@ -13802,7 +13804,14 @@
       var slice = localDw[key];
       if (!slice || typeof slice !== 'object') return;
       if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
-      mergedDw[key] = mergeTipPayrollWeekSliceForPush(slice, remoteDw[key], baseDw[key], null);
+      mergedDw[key] = mergeTipPayrollWeekSliceForPush(
+        slice,
+        remoteDw[key],
+        baseDw[key],
+        tipPayrollPendingAckDishwasher[key] && typeof tipPayrollPendingAckDishwasher[key] === 'object'
+          ? tipPayrollPendingAckDishwasher[key]
+          : null
+      );
     });
     var mergedExtras = Object.assign({}, remoteExtras);
     Object.keys(localExtras).forEach(function (key) {
@@ -14442,6 +14451,12 @@
       fields.forEach(function (f) {
         if (f) set[String(f)] = true;
       });
+      if (set.tip_payroll) {
+        set.timecard_week_tip_pool = true;
+        set.timecard_dishwasher_tips = true;
+        set.timecard_week_extras = true;
+        set.timecard_tip_takehome_pct = true;
+      }
       var cols = ['updated_at'];
       var allowed = gmCalloutSessionIsManager
         ? [
@@ -40437,6 +40452,7 @@
       flushTimecardPayrollSync: flushTipPayrollPushToSupabase,
       markTimecardTipPoolPendingAck: markTimecardTipPoolPendingAck,
       markTimecardDishwasherTipPendingAck: markTimecardDishwasherTipPendingAck,
+      markTipPayrollPendingWeekExtra: markTipPayrollPendingWeekExtra,
       persistEmployeeLeaveBalanceDay: persistEmployeeLeaveBalanceDay,
       notifyLeaveHoursChanged: notifyLeaveHoursChanged,
       markTimecardLeavePendingAck: markTimecardLeavePendingAck,

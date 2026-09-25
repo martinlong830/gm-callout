@@ -3284,6 +3284,9 @@
     if (val <= 0) delete slice[key];
     else slice[key] = val;
     saveWeekExtrasMap(bounds, slice);
+    if (typeof d().markTipPayrollPendingWeekExtra === 'function') {
+      d().markTipPayrollPendingWeekExtra(weekExtrasStorageKey(bounds), key);
+    }
   }
 
   function sumEmployeeWeekAdditionalCashTips(emp, bounds, precomputed) {
@@ -3358,6 +3361,9 @@
     if (val <= 0) delete slice[key];
     else slice[key] = val;
     saveWeekExtrasMap(bounds, slice);
+    if (typeof d().markTipPayrollPendingWeekExtra === 'function') {
+      d().markTipPayrollPendingWeekExtra(weekExtrasStorageKey(bounds), key);
+    }
   }
 
   function sumEmployeeWeekMissingHours(emp, bounds, precomputed) {
@@ -5490,12 +5496,13 @@
   var PAYROLL_TIP_LABEL_COL = 23;
   var PAYROLL_TIP_VALUE_COL = 24;
   var PAYROLL_TIP_RATE_COL = 25;
-  var PAYROLL_ROW_SQ_PICKUP_GROSS = 0;
-  var PAYROLL_ROW_SQ_INHOUSE_GROSS = 1;
-  var PAYROLL_ROW_DOORDASH_GROSS = 2;
-  var PAYROLL_ROW_UBER_GROSS = 3;
-  var PAYROLL_ROW_CASH_TIP = 4;
-  var PAYROLL_ROW_TIP_TOTAL = 6;
+  var PAYROLL_ROW_TIP_HEADER = 0;
+  var PAYROLL_ROW_SQ_PICKUP_GROSS = 1;
+  var PAYROLL_ROW_SQ_INHOUSE_GROSS = 2;
+  var PAYROLL_ROW_DOORDASH_GROSS = 3;
+  var PAYROLL_ROW_UBER_GROSS = 4;
+  var PAYROLL_ROW_CASH_TIP = 5;
+  var PAYROLL_ROW_TIP_TOTAL = 7;
   var PAYROLL_COL_TIP_PT = 2;
   var PAYROLL_COL_REG_H = 3;
   var PAYROLL_COL_OT_H = 4;
@@ -5691,6 +5698,10 @@
         font: { bold: true, sz: 9, name: 'Arial' },
         alignment: { horizontal: 'left', vertical: 'center' },
       },
+      tipHeader: {
+        font: { bold: true, sz: 9, name: 'Arial' },
+        alignment: { horizontal: 'right', vertical: 'center' },
+      },
       tipValue: {
         font: { sz: 9, name: 'Arial' },
         alignment: { horizontal: 'right', vertical: 'center' },
@@ -5755,29 +5766,31 @@
     var hasPlatformGross =
       (defaults.squarePickup || 0) > 0 || (defaults.doordash || 0) > 0 || (defaults.uber || 0) > 0;
 
+    xlSet(ws, PAYROLL_ROW_TIP_HEADER, val, 'Tip Amount', S.tipHeader);
+    xlSet(ws, PAYROLL_ROW_TIP_HEADER, PAYROLL_TIP_RATE_COL, 'Keep rate', S.tipHeader);
+
     xlSet(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, lbl, 'Square Pick Up Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, val, defaults.squarePickup || 0, S.money);
+    xlSetMoney(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, val, defaults.squarePickup || 0, S.tipValue);
     xlSet(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_RATE_COL, Number(sqR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, lbl, 'Square In House Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, val, defaults.squareTips, S.money);
+    xlSetMoney(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, val, defaults.squareTips, S.tipValue);
     xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_RATE_COL, Number(sqR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, lbl, 'DoorDash Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_DOORDASH_GROSS, val, defaults.doordash || 0, S.money);
+    xlSetMoney(ws, PAYROLL_ROW_DOORDASH_GROSS, val, defaults.doordash || 0, S.tipValue);
     xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL, Number(ddR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_UBER_GROSS, lbl, 'Uber Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_UBER_GROSS, val, defaults.uber || 0, S.money);
+    xlSetMoney(ws, PAYROLL_ROW_UBER_GROSS, val, defaults.uber || 0, S.tipValue);
     xlSet(ws, PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL, Number(ubR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_CASH_TIP, lbl, 'Cash Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_CASH_TIP, val, defaults.cashTip, S.money);
-    xlSet(ws, 5, PAYROLL_TIP_RATE_COL, 'Keep rate', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_CASH_TIP, val, defaults.cashTip, S.tipValue);
 
     var totalFormula =
       '=' +
@@ -5812,7 +5825,7 @@
     }
 
     xlSet(ws, PAYROLL_ROW_TIP_TOTAL, lbl, 'Total tips:', S.tipLabel);
-    xlSetFormula(ws, PAYROLL_ROW_TIP_TOTAL, val, totalFormula, S.money, PAYROLL_MONEY_Z);
+    xlSetFormula(ws, PAYROLL_ROW_TIP_TOTAL, val, totalFormula, S.tipValue, PAYROLL_MONEY_Z);
   }
 
   function ongiManagementPayrollRow() {

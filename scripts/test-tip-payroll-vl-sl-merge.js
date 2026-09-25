@@ -406,6 +406,63 @@ assert(
 clearTipPayrollPendingAckTipPool(pendingTips, localTips, localTips);
 assert(!pendingTips[tipWeek], 'tip pool pending-ack clears when remote matches local');
 
+function mergeTipPoolForPush(localTip, remoteTip, baseTip, pendingMap) {
+  var mergedTip = Object.assign({}, remoteTip);
+  Object.keys(localTip || {}).forEach(function (key) {
+    var slice = localTip[key];
+    if (!slice || typeof slice !== 'object') return;
+    var pending = pendingMap[key];
+    if (!pending || !pending[TIP_PAYROLL_POOL_ACK_KEY]) return;
+    if (tipPayrollSliceJson(slice) !== tipPayrollSliceJson(baseTip[key])) mergedTip[key] = slice;
+  });
+  restoreTipPayrollPendingAckTipPool(mergedTip, localTip, pendingMap);
+  return mergedTip;
+}
+
+var peerTips = {};
+peerTips[tipWeek] = {
+  squareTips: 800,
+  squarePickup: 120,
+  doordash: 90,
+  uber: 15,
+  cashTip: 40,
+  manual: true,
+};
+var staleZeroTips = {};
+staleZeroTips[tipWeek] = {
+  squareTips: 0,
+  squarePickup: 0,
+  doordash: 0,
+  uber: 0,
+  cashTip: 0,
+  manual: true,
+};
+var mergedStale = mergeTipPoolForPush(staleZeroTips, peerTips, {}, {});
+assert(
+  mergedStale[tipWeek] && mergedStale[tipWeek].squareTips === 800 && mergedStale[tipWeek].doordash === 90,
+  'stale local $0 tip pool without pending-ack must not overlay peer Square/DD amounts'
+);
+assert(mergedStale[tipWeek].cashTip === 40, 'stale local $0 must not overlay peer cash tips');
+var pendingLocalTips = {};
+pendingLocalTips[tipWeek] = {};
+pendingLocalTips[tipWeek][TIP_PAYROLL_POOL_ACK_KEY] = true;
+var mergedPending = mergeTipPoolForPush(localTips, staleTips, {}, pendingLocalTips);
+assert(
+  mergedPending[tipWeek] && mergedPending[tipWeek].squareTips === 500,
+  'pending-ack local tip pool still overlays stale remote 0'
+);
+
+function applyTipPayrollCloudAuthorityTips(remoteTip, localTip, pendingMap) {
+  var next = JSON.parse(JSON.stringify(remoteTip || {}));
+  restoreTipPayrollPendingAckTipPool(next, localTip || {}, pendingMap || {});
+  return next;
+}
+var cloudTips = applyTipPayrollCloudAuthorityTips(peerTips, staleZeroTips, {});
+assert(
+  cloudTips[tipWeek] && cloudTips[tipWeek].squarePickup === 120 && cloudTips[tipWeek].uber === 15,
+  'cloud-authority first hydrate keeps peer pickup/uber over stale local zeros'
+);
+
 function netTipAmountTest(gross, pct) {
   var grossCents = Math.round(gross * 100);
   if (grossCents <= 0) return 0;
