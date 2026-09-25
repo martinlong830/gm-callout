@@ -2108,6 +2108,8 @@
       /* ignore */
     }
     gmCalloutMarkTimeclockKiosk();
+    var tcApp = document.getElementById('appTimeclock');
+    if (tcApp) tcApp.hidden = false;
     if (typeof gmCalloutKeepAuthedShellPainted === 'function') {
       gmCalloutKeepAuthedShellPainted();
     } else if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
@@ -39703,6 +39705,8 @@
       /* ignore */
     }
     gmCalloutClearTimeclockKiosk();
+    var tcApp = document.getElementById('appTimeclock');
+    if (tcApp) tcApp.hidden = true;
     root.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
     gmManagerShellBootstrapped = false;
     gmCalloutSetLoginGateOpen(true);

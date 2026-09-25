@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-347';
+    window.__GM_ASSET_V = 'perf-348';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -1857,7 +1857,7 @@
     </div>
   </div>
 
-  <div class="app-timeclock" id="appTimeclock">
+  <div class="app-timeclock" id="appTimeclock" hidden>
     <div class="app-top">
       <header class="header">
         <img class="header-logo" src="assets/red-poke-logo.png" alt="red poke" width="64" height="64" decoding="async" />
@@ -4821,6 +4821,8 @@
           'employee-app',
           'timeclock-app'
         );
+        var tcApp = document.getElementById('appTimeclock');
+        if (tcApp) tcApp.hidden = true;
         var loginEl = document.getElementById('login-screen');
         if (loginEl) {
           loginEl.hidden = false;
@@ -5112,8 +5114,8 @@
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
   <script defer src="gm-supabase-init.js?v=perf-3"></script>
-  <script defer src="portal-auth-client.js?v=perf-347"></script>
-  <script defer src="login-timeclock.js?v=perf-347"></script>
+  <script defer src="portal-auth-client.js?v=perf-348"></script>
+  <script defer src="login-timeclock.js?v=perf-348"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;

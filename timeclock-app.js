@@ -268,6 +268,8 @@
     var root = document.documentElement;
     root.classList.add('authed', 'timeclock-app');
     root.classList.remove('manager-app', 'employee-app');
+    var app = document.getElementById('appTimeclock');
+    if (app) app.hidden = false;
   }
 
   function startWatchdog() {
@@ -609,10 +611,34 @@
     }
   }
 
+  function timeclockKioskIsActive() {
+    var root = document.documentElement;
+    if (!root.classList.contains('authed') || !root.classList.contains('timeclock-app')) {
+      return false;
+    }
+    var loginEl = document.getElementById('login-screen');
+    if (loginEl && !loginEl.hidden) {
+      try {
+        var cs = window.getComputedStyle(loginEl);
+        if (cs && cs.display !== 'none' && cs.visibility !== 'hidden') return false;
+      } catch (_cs) {
+        return false;
+      }
+    }
+    var app = document.getElementById('appTimeclock');
+    return !!(app && !app.hidden);
+  }
+
   function bindKeyboard() {
     document.addEventListener('keydown', function (e) {
-      var app = document.getElementById('appTimeclock');
-      if (!app || app.hidden) return;
+      if (!timeclockKioskIsActive()) return;
+      var t = e.target;
+      if (t && t.id !== 'timeclockPinInput') {
+        var tag = t.tagName ? String(t.tagName).toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable) {
+          return;
+        }
+      }
       if (unlockIfStuck()) return;
       if (busy) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -738,6 +764,8 @@
     syncIntro();
     setEnterUiVisible(true);
     setStatus('', null);
+    var app = document.getElementById('appTimeclock');
+    if (app) app.hidden = false;
     if (!uiBound) {
       bindPad();
       bindPadActions();

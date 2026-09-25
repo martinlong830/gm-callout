@@ -268,6 +268,8 @@
     }
     root.classList.add('authed', 'timeclock-app');
     root.classList.remove('manager-app', 'employee-app');
+    var tcApp = document.getElementById('appTimeclock');
+    if (tcApp) tcApp.hidden = false;
     if (typeof window.gmCalloutSetLoginGateOpen === 'function') {
       window.gmCalloutSetLoginGateOpen(false);
     }
