@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-335" />
+  <link rel="stylesheet" href="styles.css?v=perf-341" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-335';
+    window.__GM_ASSET_V = 'perf-341';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -1720,14 +1720,6 @@
       <!-- Screen 10: Timecards roster -->
       <section class="screen" id="screen-timecards" data-screen="10">
         <div id="timecardsRosterWrap" class="timecards-roster-wrap" aria-live="polite"></div>
-        <section class="timecards-timeclock-settings" id="timecardsTimeclockSettings" aria-labelledby="timecardsTimeclockSettingsTitle">
-          <h2 class="timecards-timeclock-settings-title" id="timecardsTimeclockSettingsTitle" data-i18n="timecards.timeClockSettings">Time clock settings</h2>
-          <label class="form-field form-field-inline">
-            <span class="form-label"><span data-i18n="timecards.autoClockOut">Auto clock-out time</span></span>
-            <input type="time" id="tcAutoClockOutTime" class="timecards-time-input" value="00:00" step="60" />
-          </label>
-          <p class="calendar-hint">Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.</p>
-        </section>
       </section>
 
       <!-- Screen 11: Employee timecard shifts -->

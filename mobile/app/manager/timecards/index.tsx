@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { PayWeekPicker } from '../../../components/PayWeekPicker';
-import { GrandTotalsSection } from '../../../components/timecards/GrandTotalsSection';
+import { GrandTotalsSection, TipPoolKeepRatesEditor } from '../../../components/timecards/GrandTotalsSection';
 import { useAppData } from '../../../contexts/AppDataContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useTimecards } from '../../../contexts/TimecardsContext';
@@ -240,6 +240,7 @@ export default function TimecardsRosterScreen() {
     };
   });
   const [tipTakehomeVersion, setTipTakehomeVersion] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
 
   const boundsKey = weekBoundsStorageKey(bounds);
   const lites = useMemo(() => employees.map(toLite), [employees]);
@@ -507,44 +508,59 @@ export default function TimecardsRosterScreen() {
           </ScrollView>
         </View>
 
-        <View style={styles.sohRateSection}>
-          <Text style={styles.locationLabel}>{t('timecards.sohRate')}</Text>
-          <View style={styles.sohRateRow}>
-            <Text style={styles.sohRatePrefix}>$</Text>
-            <TextInput
-              style={styles.sohRateInput}
-              value={sohRateText}
-              onChangeText={setSohRateText}
-              onEndEditing={() => void persistSohRate()}
-              keyboardType="decimal-pad"
-              accessibilityLabel="Spread of hours rate"
-            />
-            <Text style={styles.sohRateSuffix}>/hr</Text>
-          </View>
-        </View>
-
-        <View style={styles.sohRateSection}>
-          <Text style={styles.locationLabel}>{t('timecards.tipTakehome')}</Text>
-          {locationFilter === 'rp-9' || locationFilter === 'rp-8' ? (
-            <View style={styles.sohRateRow}>
-              <TextInput
-                style={styles.sohRateInput}
-                value={tipTakehomeText[locationFilter] ?? ''}
-                onChangeText={(t) =>
-                  setTipTakehomeText((prev) => ({ ...prev, [locationFilter]: t }))
-                }
-                onEndEditing={() => void persistTipTakehome()}
-                keyboardType="decimal-pad"
-                accessibilityLabel={`Tip take-home percent for ${
-                  locationFilter === 'rp-8' ? '8th Ave' : '9th Ave'
-                }`}
-              />
-              <Text style={styles.sohRateSuffix}>%</Text>
+        <Pressable
+          style={styles.settingsToggle}
+          onPress={() => setShowSettings((open) => !open)}
+        >
+          <Text style={styles.settingsToggleText}>{t('timecards.settings')}</Text>
+          <Text style={styles.settingsChevron}>{showSettings ? '▴' : '▾'}</Text>
+        </Pressable>
+        {showSettings ? (
+          <View style={styles.settingsPanel}>
+            <View style={styles.sohRateSection}>
+              <Text style={styles.locationLabel}>{t('timecards.sohRate')}</Text>
+              <View style={styles.sohRateRow}>
+                <Text style={styles.sohRatePrefix}>$</Text>
+                <TextInput
+                  style={styles.sohRateInput}
+                  value={sohRateText}
+                  onChangeText={setSohRateText}
+                  onEndEditing={() => void persistSohRate()}
+                  keyboardType="decimal-pad"
+                  accessibilityLabel="Spread of hours rate"
+                />
+                <Text style={styles.sohRateSuffix}>/hr</Text>
+              </View>
             </View>
-          ) : (
-            <Text style={styles.tipTakehomeHint}>{t('timecards.selectLocationTip')}</Text>
-          )}
-        </View>
+
+            <View style={styles.sohRateSection}>
+              <Text style={styles.locationLabel}>{t('timecards.tipTakehome')}</Text>
+              {locationFilter === 'rp-9' || locationFilter === 'rp-8' ? (
+                <View style={styles.sohRateRow}>
+                  <TextInput
+                    style={styles.sohRateInput}
+                    value={tipTakehomeText[locationFilter] ?? ''}
+                    onChangeText={(t) =>
+                      setTipTakehomeText((prev) => ({ ...prev, [locationFilter]: t }))
+                    }
+                    onEndEditing={() => void persistTipTakehome()}
+                    keyboardType="decimal-pad"
+                    accessibilityLabel={`Delivery take-home percent for ${
+                      locationFilter === 'rp-8' ? '8th Ave' : '9th Ave'
+                    }`}
+                  />
+                  <Text style={styles.sohRateSuffix}>%</Text>
+                </View>
+              ) : (
+                <Text style={styles.tipTakehomeHint}>{t('timecards.selectLocationTip')}</Text>
+              )}
+            </View>
+
+            <View style={styles.keepRatesSection}>
+              <TipPoolKeepRatesEditor bounds={bounds} locationFilter={locationFilter} />
+            </View>
+          </View>
+        ) : null}
 
         {error ? <Text style={styles.err}>{error}</Text> : null}
 
@@ -571,6 +587,8 @@ export default function TimecardsRosterScreen() {
       persistSohRate,
       tipTakehomeText,
       persistTipTakehome,
+      showSettings,
+      t,
       error,
       initialBusy,
       showGrandTotals,
@@ -626,7 +644,36 @@ const styles = StyleSheet.create({
   locationSection: { paddingHorizontal: 16, paddingBottom: 8, paddingTop: 4 },
   locationLabel: { fontSize: 12, fontWeight: '700', color: '#64748b', marginBottom: 6 },
   locationPicker: { gap: 8 },
-  sohRateSection: { paddingHorizontal: 16, paddingBottom: 10 },
+  settingsToggle: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  settingsToggleText: { fontSize: 14, fontWeight: '700', color: '#334155' },
+  settingsChevron: { fontSize: 14, color: '#64748b' },
+  settingsPanel: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+  },
+  sohRateSection: { paddingBottom: 12 },
+  keepRatesSection: {
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
   sohRateRow: {
     flexDirection: 'row',
     alignItems: 'center',

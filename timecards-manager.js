@@ -102,8 +102,11 @@
     doordash: 0,
     uber: 0,
     sqGhDd: 0,
+    squareNetRate: 0.97,
+    doordashNetRate: 0.8,
+    uberNetRate: 0.8,
   };
-  var TIP_NET_RATE_SQUARE = 0.95;
+  var TIP_NET_RATE_SQUARE = 0.97;
   var TIP_NET_RATE_DELIVERY = 0.8;
   var selectedPayWeekStartIso = null;
   var timecardsLocationFilter = 'rp-9';
@@ -693,6 +696,7 @@
           b.classList.toggle('active', b.getAttribute('data-timecards-location') === next);
         });
         syncTipTakehomeControlToLocation();
+        applyTipPoolInputsFromStore();
         var wrap = document.getElementById('timecardsRosterWrap');
         if (wrap && wrap.querySelector('table.timecards-table--roster')) {
           wrap.classList.add('timecards-roster--switching');
@@ -728,8 +732,8 @@
     if (!rid) {
       return (
         '<div class="timecards-tip-takehome-control timecards-tip-takehome-control--disabled">' +
-          '<span class="employee-filter-label">Tip take-home %</span>' +
-          '<p class="timecards-tip-takehome-disabled-hint">Select 8th or 9th Ave to edit tip take-home %</p>' +
+          '<span class="employee-filter-label">Delivery take-home %</span>' +
+          '<p class="timecards-tip-takehome-disabled-hint">Select 8th or 9th Ave to edit delivery take-home %</p>' +
           '</div>'
       );
     }
@@ -740,17 +744,91 @@
     var storeLabel = restaurantShortLabelForId(rid);
     return (
       '<div class="timecards-tip-takehome-control">' +
-        '<label class="employee-filter-label" for="timecardsTipTakehome">Tip take-home %</label>' +
+        '<label class="employee-filter-label" for="timecardsTipTakehome">Delivery take-home %</label>' +
         '<span class="timecards-tip-takehome-input-wrap">' +
         '<input type="number" id="timecardsTipTakehome" class="timecards-tip-takehome-input" data-timecards-tip-takehome="' +
         d().escapeHtml(rid) +
         '" min="0" max="100" step="1" inputmode="decimal" value="' +
         d().escapeHtml(String(pct)) +
-        '" aria-label="Tip take-home percent for ' +
+        '" aria-label="Delivery take-home percent for ' +
         d().escapeHtml(storeLabel) +
         '" />' +
         '<span class="timecards-tip-takehome-suffix">%</span>' +
         '</span></div>'
+    );
+  }
+
+  function payrollSettingsIsOpen() {
+    var el = document.querySelector('#timecardsRosterWrap .timecards-settings');
+    return !!(el && el.open);
+  }
+
+  function renderTipRateFieldHtml(id, label, value) {
+    return (
+      '<label class="timecards-tip-field timecards-tip-rate-field">' +
+      '<span class="timecards-tip-label">' +
+      d().escapeHtml(label) +
+      '</span>' +
+      '<input type="number" class="timecards-tip-rate-input" id="' +
+      id +
+      '" min="0" max="1" step="0.01" inputmode="decimal" value="' +
+      d().escapeHtml(formatTipRateInput(value)) +
+      '" />' +
+      '</label>'
+    );
+  }
+
+  function renderPlatformKeepRatesHtml(pool) {
+    pool = pool || getPayrollTipPoolInputs();
+    return (
+      '<div class="timecards-tip-rates-panel">' +
+      '<h5 class="timecards-tip-panel-title">Platform keep rates</h5>' +
+      '<p class="calendar-hint">Share left after Square, DoorDash, and Uber fees. Used for the payroll tip pool.</p>' +
+      '<div class="timecards-tip-rates-grid">' +
+      renderTipRateFieldHtml('tcTipRateSquare', 'Square keep rate', pool.squareNetRate) +
+      renderTipRateFieldHtml('tcTipRateDoordash', 'DoorDash keep rate', pool.doordashNetRate) +
+      renderTipRateFieldHtml('tcTipRateUber', 'Uber keep rate', pool.uberNetRate) +
+      '</div></div>'
+    );
+  }
+
+  function currentAutoClockOutTime() {
+    if (d().loadTimeclockSettings) {
+      var settings = d().loadTimeclockSettings();
+      if (settings && settings.autoClockOutTime) return settings.autoClockOutTime;
+    }
+    return '00:00';
+  }
+
+  function renderTimeclockSettingsHtml() {
+    return (
+      '<div class="timecards-timeclock-settings">' +
+      '<h5 class="timecards-tip-panel-title">Time clock settings</h5>' +
+      '<label class="timecards-tip-field">' +
+      '<span class="timecards-tip-label">Auto clock-out time</span>' +
+      '<input type="time" id="tcAutoClockOutTime" class="timecards-time-input" value="' +
+      d().escapeHtml(currentAutoClockOutTime()) +
+      '" step="60" />' +
+      '</label>' +
+      '<p class="calendar-hint">Open punches are automatically clocked out at this time each day (Pacific). Default is midnight.</p>' +
+      '</div>'
+    );
+  }
+
+  function renderPayrollSettingsHtml() {
+    return (
+      '<details class="timecards-settings"' +
+      (payrollSettingsIsOpen() ? ' open' : '') +
+      '>' +
+      '<summary class="timecards-settings-summary">Settings</summary>' +
+      '<div class="timecards-settings-panel">' +
+      '<div class="timecards-settings-basics">' +
+      renderSohRateControlHtml() +
+      renderTipTakehomeControlHtml() +
+      '</div>' +
+      renderPlatformKeepRatesHtml() +
+      renderTimeclockSettingsHtml() +
+      '</div></details>'
     );
   }
 
@@ -807,6 +885,18 @@
       var applied = d().saveTipTakehomePctMap(map);
       el.value = String(applied[rid] != null ? applied[rid] : tipTakehomePctForRestaurant(rid));
       // saveTipTakehomePctMap → onTipTakehomePctChanged already refreshes roster/pay math.
+    });
+  }
+
+  var payrollSettingsBound = false;
+  function bindPayrollSettingsOnce() {
+    if (payrollSettingsBound) return;
+    payrollSettingsBound = true;
+    document.addEventListener('click', function (ev) {
+      var details = document.querySelector('#timecardsRosterWrap .timecards-settings');
+      if (!details || !details.open) return;
+      if (details.contains(ev.target)) return;
+      details.open = false;
     });
   }
 
@@ -2413,6 +2503,39 @@
     return Math.round(n * 100) / 100;
   }
 
+  /** Keep rate after platform fees. Accepts 0.97 or 97. */
+  function normalizeTipPoolRate(val, fallback) {
+    var fb = fallback != null ? fallback : TIP_NET_RATE_SQUARE;
+    if (val == null || val === '') return fb;
+    var n = parseFloat(String(val));
+    if (Number.isNaN(n) || n < 0) return fb;
+    if (n > 1 && n <= 100) n = n / 100;
+    if (n > 1) n = 1;
+    return Math.round(n * 10000) / 10000;
+  }
+
+  function formatTipRateInput(rate) {
+    var n = normalizeTipPoolRate(rate, TIP_NET_RATE_SQUARE);
+    var s = n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+    if (s.indexOf('.') < 0) return s + '.00';
+    if (s.split('.')[1].length === 1) return s + '0';
+    return s;
+  }
+
+  function tipNetRatesFromPool(pool) {
+    pool = pool || {};
+    return {
+      square: normalizeTipPoolRate(pool.squareNetRate, TIP_NET_RATE_SQUARE),
+      doordash: normalizeTipPoolRate(pool.doordashNetRate, TIP_NET_RATE_DELIVERY),
+      uber: normalizeTipPoolRate(pool.uberNetRate, TIP_NET_RATE_DELIVERY),
+    };
+  }
+
+  function tipRateExcelNumber(rate) {
+    var n = normalizeTipPoolRate(rate, 0);
+    return String(Math.round(n * 10000) / 10000);
+  }
+
   function loadWeekTipPoolSlice(bounds, locationFilter) {
     bounds = bounds || payWeekBounds();
     try {
@@ -2467,6 +2590,18 @@
         slice && slice.sqGhDd != null ? slice.sqGhDd : null,
         PAYROLL_TIP_POOL_DEFAULTS.sqGhDd
       ),
+      squareNetRate: normalizeTipPoolRate(
+        slice && slice.squareNetRate != null ? slice.squareNetRate : null,
+        PAYROLL_TIP_POOL_DEFAULTS.squareNetRate
+      ),
+      doordashNetRate: normalizeTipPoolRate(
+        slice && slice.doordashNetRate != null ? slice.doordashNetRate : null,
+        PAYROLL_TIP_POOL_DEFAULTS.doordashNetRate
+      ),
+      uberNetRate: normalizeTipPoolRate(
+        slice && slice.uberNetRate != null ? slice.uberNetRate : null,
+        PAYROLL_TIP_POOL_DEFAULTS.uberNetRate
+      ),
       manual: !!(slice && slice.manual),
     };
     cachedWeekTipPool = out;
@@ -2486,6 +2621,7 @@
       });
       localStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(all));
       invalidateWeekTipPoolCache();
+      invalidateFullReportSheetsCache();
       if (d().markTimecardTipPoolPendingAck) {
         d().markTimecardTipPoolPendingAck(weekTipPoolStorageKey(bounds, locationFilter));
       }
@@ -2505,20 +2641,48 @@
     var pickupEl = document.getElementById('tcTipSquarePickup');
     var ddEl = document.getElementById('tcTipDoordash');
     var uberEl = document.getElementById('tcTipUber');
-    if (!cashEl || !squareEl || !pickupEl || !ddEl || !uberEl) return;
-    var squarePickup = normalizeTipPoolMoney(pickupEl.value, 0);
-    var doordash = normalizeTipPoolMoney(ddEl.value, 0);
-    var uber = normalizeTipPoolMoney(uberEl.value, 0);
+    var squareRateEl = document.getElementById('tcTipRateSquare');
+    var ddRateEl = document.getElementById('tcTipRateDoordash');
+    var uberRateEl = document.getElementById('tcTipRateUber');
+    if (
+      !cashEl &&
+      !squareEl &&
+      !pickupEl &&
+      !ddEl &&
+      !uberEl &&
+      !squareRateEl &&
+      !ddRateEl &&
+      !uberRateEl
+    ) {
+      return;
+    }
     var legacy = getPayrollTipPoolInputs();
+    var squarePickup = pickupEl
+      ? normalizeTipPoolMoney(pickupEl.value, 0)
+      : legacy.squarePickup || 0;
+    var doordash = ddEl ? normalizeTipPoolMoney(ddEl.value, 0) : legacy.doordash || 0;
+    var uber = uberEl ? normalizeTipPoolMoney(uberEl.value, 0) : legacy.uber || 0;
     var sqGhDd =
       squarePickup > 0 || doordash > 0 || uber > 0 ? 0 : legacy.sqGhDd || 0;
     saveWeekTipPoolSlice(payWeekBounds(), {
-      cashTip: normalizeTipPoolMoney(cashEl.value, 0),
-      squareTips: normalizeTipPoolMoney(squareEl.value, 0),
+      cashTip: cashEl ? normalizeTipPoolMoney(cashEl.value, 0) : legacy.cashTip || 0,
+      squareTips: squareEl ? normalizeTipPoolMoney(squareEl.value, 0) : legacy.squareTips || 0,
       squarePickup: squarePickup,
       doordash: doordash,
       uber: uber,
       sqGhDd: sqGhDd,
+      squareNetRate: normalizeTipPoolRate(
+        squareRateEl ? squareRateEl.value : null,
+        legacy.squareNetRate
+      ),
+      doordashNetRate: normalizeTipPoolRate(
+        ddRateEl ? ddRateEl.value : null,
+        legacy.doordashNetRate
+      ),
+      uberNetRate: normalizeTipPoolRate(
+        uberRateEl ? uberRateEl.value : null,
+        legacy.uberNetRate
+      ),
       manual: true,
     });
     updateTipPoolSummaryText();
@@ -2531,6 +2695,10 @@
     var ddEl = document.getElementById('tcTipDoordash');
     var uberEl = document.getElementById('tcTipUber');
     if (!cashEl || !squareEl || !pickupEl || !ddEl || !uberEl) return getPayrollTipPoolInputs();
+    var stored = getPayrollTipPoolInputs();
+    var squareRateEl = document.getElementById('tcTipRateSquare');
+    var ddRateEl = document.getElementById('tcTipRateDoordash');
+    var uberRateEl = document.getElementById('tcTipRateUber');
     return {
       cashTip: normalizeTipPoolMoney(cashEl.value, 0),
       squareTips: normalizeTipPoolMoney(squareEl.value, 0),
@@ -2538,18 +2706,23 @@
       doordash: normalizeTipPoolMoney(ddEl.value, 0),
       uber: normalizeTipPoolMoney(uberEl.value, 0),
       sqGhDd: 0,
+      squareNetRate: normalizeTipPoolRate(
+        squareRateEl ? squareRateEl.value : null,
+        stored.squareNetRate
+      ),
+      doordashNetRate: normalizeTipPoolRate(
+        ddRateEl ? ddRateEl.value : null,
+        stored.doordashNetRate
+      ),
+      uberNetRate: normalizeTipPoolRate(
+        uberRateEl ? uberRateEl.value : null,
+        stored.uberNetRate
+      ),
     };
   }
 
   function tipPoolSummaryLabel(totals) {
-    return (
-      'Square In House (Net): ' +
-      formatPayAmount(totals.squareInhouse) +
-      ' · SQ/GH/DD (Net): ' +
-      formatPayAmount(totals.sqGhDd) +
-      ' · Total tips: ' +
-      formatPayAmount(totals.totalTips)
-    );
+    return 'Total tips: ' + formatPayAmount(totals.totalTips);
   }
 
   function updateTipPoolSummaryText() {
@@ -2561,20 +2734,11 @@
   function renderGrandTotalsTipPoolHtml() {
     var pool = getPayrollTipPoolInputs();
     var totals = payrollTipPoolTotals(pool);
-    function tipField(id, label, value, hint) {
-      var hintText = hint != null ? String(hint) : '';
+    function tipField(id, label, value) {
       return (
         '<label class="timecards-tip-field">' +
         '<span class="timecards-tip-label">' +
         d().escapeHtml(label) +
-        '</span>' +
-        /* Always reserve hint line so Cash Tips lines up with Uber (and peers with net %). */
-        '<span class="timecards-tip-hint' +
-        (hintText ? '' : ' timecards-tip-hint--spacer') +
-        '"' +
-        (hintText ? '' : ' aria-hidden="true"') +
-        '>' +
-        (hintText ? d().escapeHtml(hintText) : '\u00a0') +
         '</span>' +
         '<input type="number" class="timecards-tip-input" id="' +
         id +
@@ -2589,13 +2753,13 @@
       d().escapeHtml(weekTipPoolStorageKey(payWeekBounds())) +
       '">' +
       '<h4 class="timecards-grand-totals-tips-title">Tip pool (full payroll report)</h4>' +
-      '<p class="calendar-hint">Enter gross tips per platform. Net amounts auto-calculate for payroll.</p>' +
+      '<p class="calendar-hint">Enter the platform totals for this pay week.</p>' +
       '<div class="timecards-grand-totals-tips-grid">' +
-      tipField('tcTipSquareInHouse', 'Square In House Tips', pool.squareTips, 'Net = × 0.95') +
-      tipField('tcTipSquarePickup', 'Square Pick Up Tips', pool.squarePickup, 'Net = × 0.95') +
-      tipField('tcTipDoordash', 'DoorDash Tips', pool.doordash, 'Net = × 0.80') +
-      tipField('tcTipUber', 'Uber Tips', pool.uber, 'Net = × 0.80') +
-      tipField('tcTipCash', 'Cash Tips', pool.cashTip, '') +
+      tipField('tcTipSquarePickup', 'Square Pick Up Tips', pool.squarePickup) +
+      tipField('tcTipSquareInHouse', 'Square In House Tips', pool.squareTips) +
+      tipField('tcTipDoordash', 'DoorDash Tips', pool.doordash) +
+      tipField('tcTipUber', 'Uber Tips', pool.uber) +
+      tipField('tcTipCash', 'Cash Tips', pool.cashTip) +
       '</div>' +
       '<p class="calendar-hint timecards-tip-pool-summary" id="timecardsTipPoolSummary">' +
       d().escapeHtml(tipPoolSummaryLabel(totals)) +
@@ -2606,16 +2770,11 @@
 
   function timecardsTipPoolInputIsActive() {
     var ae = document.activeElement;
-    return !!(ae && ae.classList && ae.classList.contains('timecards-tip-input'));
+    if (!ae || !ae.classList) return false;
+    return ae.classList.contains('timecards-tip-input') || ae.classList.contains('timecards-tip-rate-input');
   }
 
   function applyTipPoolInputsFromStore() {
-    var squareEl = document.getElementById('tcTipSquareInHouse');
-    var cashEl = document.getElementById('tcTipCash');
-    var pickupEl = document.getElementById('tcTipSquarePickup');
-    var ddEl = document.getElementById('tcTipDoordash');
-    var uberEl = document.getElementById('tcTipUber');
-    if (!squareEl || !cashEl || !pickupEl || !ddEl || !uberEl) return;
     var pool = getPayrollTipPoolInputs();
     var ae = document.activeElement;
     function setIfIdle(el, val) {
@@ -2623,11 +2782,14 @@
       var next = String(val);
       if (el.value !== next) el.value = next;
     }
-    setIfIdle(squareEl, pool.squareTips);
-    setIfIdle(cashEl, pool.cashTip);
-    setIfIdle(pickupEl, pool.squarePickup || 0);
-    setIfIdle(ddEl, pool.doordash || 0);
-    setIfIdle(uberEl, pool.uber || 0);
+    setIfIdle(document.getElementById('tcTipSquareInHouse'), pool.squareTips);
+    setIfIdle(document.getElementById('tcTipCash'), pool.cashTip);
+    setIfIdle(document.getElementById('tcTipSquarePickup'), pool.squarePickup || 0);
+    setIfIdle(document.getElementById('tcTipDoordash'), pool.doordash || 0);
+    setIfIdle(document.getElementById('tcTipUber'), pool.uber || 0);
+    setIfIdle(document.getElementById('tcTipRateSquare'), formatTipRateInput(pool.squareNetRate));
+    setIfIdle(document.getElementById('tcTipRateDoordash'), formatTipRateInput(pool.doordashNetRate));
+    setIfIdle(document.getElementById('tcTipRateUber'), formatTipRateInput(pool.uberNetRate));
     updateTipPoolSummaryText();
   }
 
@@ -2671,7 +2833,7 @@
 
   function wireGrandTotalsTipInputs(wrap) {
     if (!wrap) return;
-    wrap.querySelectorAll('.timecards-tip-input').forEach(function (inp) {
+    wrap.querySelectorAll('.timecards-tip-input, .timecards-tip-rate-input').forEach(function (inp) {
       if (inp.getAttribute('data-tip-wired') === '1') return;
       inp.setAttribute('data-tip-wired', '1');
       inp.addEventListener('click', function (ev) {
@@ -5048,19 +5210,30 @@
   }
 
   /**
+   * Prefer the live Team roster row — full-report cache can hold a stale emp snapshot
+   * after remote employee refresh replaces the array.
+   */
+  function liveEmployeeForExport(emp) {
+    if (!emp || !emp.id) return emp;
+    try {
+      var list = d().employees;
+      if (!list || !list.length) return emp;
+      for (var i = 0; i < list.length; i += 1) {
+        if (list[i] && list[i].id === emp.id) return list[i];
+      }
+    } catch (_liveEmp) {
+      /* init not ready */
+    }
+    return emp;
+  }
+
+  /**
    * Tip points come only from the Team profile (emp.tipPoint or meta.tipPoint).
    * Never invent points from wage/role — that ignored explicit 0 on Karl/Daniel etc.
    */
   function resolveEmployeeTipPoint(emp) {
     if (!emp) return null;
-    /* Prefer the live Team roster row — full-report cache can hold a stale emp snapshot. */
-    var live = emp;
-    if (emp.id && typeof d().employees !== 'undefined' && Array.isArray(d().employees)) {
-      var found = d().employees.find(function (e) {
-        return e && e.id === emp.id;
-      });
-      if (found) live = found;
-    }
+    var live = liveEmployeeForExport(emp);
     if (live.tipPoint != null && !Number.isNaN(Number(live.tipPoint))) {
       return Math.max(0, Number(live.tipPoint));
     }
@@ -5145,10 +5318,11 @@
 
   function payrollTipPoolTotals(pool) {
     pool = pool || PAYROLL_TIP_POOL_DEFAULTS;
-    var squareInhouse = Math.round(pool.squareTips * TIP_NET_RATE_SQUARE * 100) / 100;
-    var squarePickupNet = Math.round((pool.squarePickup || 0) * TIP_NET_RATE_SQUARE * 100) / 100;
-    var doordashNet = Math.round((pool.doordash || 0) * TIP_NET_RATE_DELIVERY * 100) / 100;
-    var uberNet = Math.round((pool.uber || 0) * TIP_NET_RATE_DELIVERY * 100) / 100;
+    var rates = tipNetRatesFromPool(pool);
+    var squareInhouse = Math.round(pool.squareTips * rates.square * 100) / 100;
+    var squarePickupNet = Math.round((pool.squarePickup || 0) * rates.square * 100) / 100;
+    var doordashNet = Math.round((pool.doordash || 0) * rates.doordash * 100) / 100;
+    var uberNet = Math.round((pool.uber || 0) * rates.uber * 100) / 100;
     var hasPlatformGross =
       (pool.squarePickup || 0) > 0 || (pool.doordash || 0) > 0 || (pool.uber || 0) > 0;
     var sqGhDd = hasPlatformGross
@@ -5315,20 +5489,20 @@
 
   var PAYROLL_TIP_LABEL_COL = 23;
   var PAYROLL_TIP_VALUE_COL = 24;
-  var PAYROLL_ROW_SQ_INHOUSE_GROSS = 0;
-  var PAYROLL_ROW_SQ_PICKUP_GROSS = 1;
+  var PAYROLL_TIP_RATE_COL = 25;
+  var PAYROLL_ROW_SQ_PICKUP_GROSS = 0;
+  var PAYROLL_ROW_SQ_INHOUSE_GROSS = 1;
   var PAYROLL_ROW_DOORDASH_GROSS = 2;
   var PAYROLL_ROW_UBER_GROSS = 3;
   var PAYROLL_ROW_CASH_TIP = 4;
-  var PAYROLL_ROW_SQUARE_INHOUSE = 5;
-  var PAYROLL_ROW_SQ_GH_DD = 6;
-  var PAYROLL_ROW_TIP_TOTAL = 7;
+  var PAYROLL_ROW_TIP_TOTAL = 6;
+  var PAYROLL_COL_TIP_PT = 2;
   var PAYROLL_COL_REG_H = 3;
   var PAYROLL_COL_OT_H = 4;
   var PAYROLL_COL_VL_SL = 5;
   var PAYROLL_COL_MISSED_H = 6;
   var PAYROLL_COL_TOTAL_H = 7;
-  var PAYROLL_COL_TIP_PT = 2;
+  var PAYROLL_COL_WAGE = 8;
   var PAYROLL_COL_TOTAL_TIP_PT = 17;
   var PAYROLL_COL_TIP_CALC = 18;
   var PAYROLL_COL_TIP = 19;
@@ -5536,11 +5710,6 @@
 
   function payrollTipPoolAddrs() {
     var cash = xlA1(PAYROLL_ROW_CASH_TIP, PAYROLL_TIP_VALUE_COL, { absCol: true, absRow: true });
-    var sq = xlA1(PAYROLL_ROW_SQ_GH_DD, PAYROLL_TIP_VALUE_COL, { absCol: true, absRow: true });
-    var inhouse = xlA1(PAYROLL_ROW_SQUARE_INHOUSE, PAYROLL_TIP_VALUE_COL, {
-      absCol: true,
-      absRow: true,
-    });
     var total = xlA1(PAYROLL_ROW_TIP_TOTAL, PAYROLL_TIP_VALUE_COL, { absCol: true, absRow: true });
     var squareInhouseGross = xlA1(PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_VALUE_COL, {
       absCol: true,
@@ -5558,88 +5727,92 @@
       absCol: true,
       absRow: true,
     });
+    var absRate = { absCol: true, absRow: true };
     return {
       cash: cash,
-      sq: sq,
-      inhouse: inhouse,
       total: total,
       squareInhouseGross: squareInhouseGross,
       squarePickupGross: squarePickupGross,
       doordashGross: doordashGross,
       uberGross: uberGross,
+      squarePickupKeep: xlA1(PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_RATE_COL, absRate),
+      squareInhouseKeep: xlA1(PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_RATE_COL, absRate),
+      doordashKeep: xlA1(PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL, absRate),
+      uberKeep: xlA1(PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL, absRate),
     };
   }
 
   function writePayrollTipPoolSection(ws, defaults, S) {
     defaults = defaults || PAYROLL_TIP_POOL_DEFAULTS;
     var tip = payrollTipPoolAddrs();
+    var rates = tipNetRatesFromPool(defaults);
     var lbl = PAYROLL_TIP_LABEL_COL;
     var val = PAYROLL_TIP_VALUE_COL;
     var computed = payrollTipPoolTotals(defaults);
-
-    xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, lbl, 'Square In House Tips:', S.tipLabel);
-    xlSetMoney(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, val, defaults.squareTips, S.money);
+    var sqR = tipRateExcelNumber(rates.square);
+    var ddR = tipRateExcelNumber(rates.doordash);
+    var ubR = tipRateExcelNumber(rates.uber);
+    var hasPlatformGross =
+      (defaults.squarePickup || 0) > 0 || (defaults.doordash || 0) > 0 || (defaults.uber || 0) > 0;
 
     xlSet(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, lbl, 'Square Pick Up Tips:', S.tipLabel);
     xlSetMoney(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, val, defaults.squarePickup || 0, S.money);
+    xlSet(ws, PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_RATE_COL, Number(sqR), S.tipValue);
+    ws[xlEncode(PAYROLL_ROW_SQ_PICKUP_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
+
+    xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, lbl, 'Square In House Tips:', S.tipLabel);
+    xlSetMoney(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, val, defaults.squareTips, S.money);
+    xlSet(ws, PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_RATE_COL, Number(sqR), S.tipValue);
+    ws[xlEncode(PAYROLL_ROW_SQ_INHOUSE_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, lbl, 'DoorDash Tips:', S.tipLabel);
     xlSetMoney(ws, PAYROLL_ROW_DOORDASH_GROSS, val, defaults.doordash || 0, S.money);
+    xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL, Number(ddR), S.tipValue);
+    ws[xlEncode(PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_UBER_GROSS, lbl, 'Uber Tips:', S.tipLabel);
     xlSetMoney(ws, PAYROLL_ROW_UBER_GROSS, val, defaults.uber || 0, S.money);
+    xlSet(ws, PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL, Number(ubR), S.tipValue);
+    ws[xlEncode(PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
     xlSet(ws, PAYROLL_ROW_CASH_TIP, lbl, 'Cash Tips:', S.tipLabel);
     xlSetMoney(ws, PAYROLL_ROW_CASH_TIP, val, defaults.cashTip, S.money);
+    xlSet(ws, 5, PAYROLL_TIP_RATE_COL, 'Keep rate', S.tipLabel);
 
-    xlSet(ws, PAYROLL_ROW_SQUARE_INHOUSE, lbl, 'Square In House (Net):', S.tipLabel);
-    xlSetFormula(
-      ws,
-      PAYROLL_ROW_SQUARE_INHOUSE,
-      val,
-      '=' + tip.squareInhouseGross + '*' + TIP_NET_RATE_SQUARE,
-      S.money,
-      PAYROLL_MONEY_Z
-    );
-
-    xlSet(ws, PAYROLL_ROW_SQ_GH_DD, lbl, 'SQ/GH/DD (Net):', S.tipLabel);
-    xlSetFormula(
-      ws,
-      PAYROLL_ROW_SQ_GH_DD,
-      val,
+    var totalFormula =
       '=' +
-        tip.squarePickupGross +
+      tip.squarePickupGross +
+      '*' +
+      tip.squarePickupKeep +
+      '+' +
+      tip.squareInhouseGross +
+      '*' +
+      tip.squareInhouseKeep +
+      '+' +
+      tip.doordashGross +
+      '*' +
+      tip.doordashKeep +
+      '+' +
+      tip.uberGross +
+      '*' +
+      tip.uberKeep +
+      '+' +
+      tip.cash;
+    /* Older weeks stored a combined SQ/GH/DD net with no per-platform gross. */
+    if (!hasPlatformGross && (defaults.sqGhDd || 0) > 0) {
+      totalFormula =
+        '=' +
+        tip.squareInhouseGross +
         '*' +
-        TIP_NET_RATE_SQUARE +
+        tip.squareInhouseKeep +
         '+' +
-        tip.doordashGross +
-        '*' +
-        TIP_NET_RATE_DELIVERY +
+        tip.cash +
         '+' +
-        tip.uberGross +
-        '*' +
-        TIP_NET_RATE_DELIVERY,
-      S.money,
-      PAYROLL_MONEY_Z
-    );
-    /* If this week still has legacy combined SQ/GH/DD only, seed the net cell with that value
-       so older weeks export correctly until managers re-enter platforms. */
-    if (
-      !(defaults.squarePickup || defaults.doordash || defaults.uber) &&
-      (defaults.sqGhDd || 0) > 0
-    ) {
-      xlSetMoney(ws, PAYROLL_ROW_SQ_GH_DD, val, computed.sqGhDd, S.money);
+        String(Math.round(computed.sqGhDd * 100) / 100);
     }
 
     xlSet(ws, PAYROLL_ROW_TIP_TOTAL, lbl, 'Total tips:', S.tipLabel);
-    xlSetFormula(
-      ws,
-      PAYROLL_ROW_TIP_TOTAL,
-      val,
-      '=' + tip.inhouse + '+' + tip.cash + '+' + tip.sq,
-      S.money,
-      PAYROLL_MONEY_Z
-    );
+    xlSetFormula(ws, PAYROLL_ROW_TIP_TOTAL, val, totalFormula, S.money, PAYROLL_MONEY_Z);
   }
 
   function ongiManagementPayrollRow() {
@@ -5770,6 +5943,9 @@
       tipRounded: null,
       dishwasherTipsPay: dishwasherTipsPay,
       otherStoreTips: otherStoreTips,
+      missingRegHours: isOngi ? 0 : row.missingRegHours || 0,
+      missingOtHours: isOngi ? 0 : row.missingOtHours || 0,
+      missingPay: isOngi ? 0 : row.missingPay || 0,
     };
   }
 
@@ -5807,29 +5983,31 @@
     xlSet(ws, r, 4, payrollHoursNum(m.otH), S.num2);
     xlSet(ws, r, PAYROLL_COL_VL_SL, payrollVlSlLabel(m.vlH, m.slH), S.cellCenter);
     xlSet(ws, r, PAYROLL_COL_MISSED_H, payrollHoursNum(m.missedH), S.num2);
-    xlSet(ws, r, PAYROLL_COL_TOTAL_H, payrollHoursNum(m.totalH), S.num2);
-    xlSetMoney(ws, r, 8, m.rate, S.money);
-    xlSetMoney(ws, r, PAYROLL_COL_GROSS, m.gross, S.money);
+    xlSetFormula(ws, r, PAYROLL_COL_TOTAL_H, payrollTotalHoursFormula(r), S.num2, '0.00');
+    xlSetMoney(ws, r, PAYROLL_COL_WAGE, m.rate, S.money);
+    var grossFormula = payrollGrossFormula(r, m);
+    if (grossFormula) {
+      xlSetFormula(ws, r, PAYROLL_COL_GROSS, grossFormula, S.money, PAYROLL_MONEY_Z);
+    } else {
+      xlSetMoney(ws, r, PAYROLL_COL_GROSS, m.gross, S.money);
+    }
     xlSet(ws, r, PAYROLL_COL_SPREAD_HOURS, payrollSpreadHoursCellText(m), S.cell);
     xlSetMoney(ws, r, PAYROLL_COL_SOH_HR, m.sohHr, S.money);
-    xlSetMoney(
-      ws,
-      r,
-      PAYROLL_COL_TOTAL_SOH,
-      m.sohPay != null && m.sohPay > 0 ? m.sohPay : null,
-      S.money
-    );
+    xlSetFormula(ws, r, PAYROLL_COL_TOTAL_SOH, payrollTotalSohFormula(r), S.money, PAYROLL_MONEY_Z);
     xlSetFormula(ws, r, PAYROLL_COL_GROSS_WITH_SOH, payrollGrossWithSohFormula(r), S.money, PAYROLL_MONEY_Z);
     xlSetMoney(ws, r, PAYROLL_COL_COVERAGE, m.coverage > 0 ? m.coverage : null, S.money);
     xlSetMoney(ws, r, PAYROLL_COL_CASH, m.cash > 0 ? m.cash : null, S.money);
     xlSetFormula(ws, r, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(r), S.money, PAYROLL_MONEY_Z);
 
     /* Tip points use this store’s hours only so multi-store staff are not double-counted. */
-    if (tipPtsValue > 0.0001) {
-      xlSet(ws, r, PAYROLL_COL_TOTAL_TIP_PT, payrollHoursNum(tipPtsValue), S.num2);
-    } else {
-      xlSet(ws, r, PAYROLL_COL_TOTAL_TIP_PT, '', S.num2);
-    }
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_TOTAL_TIP_PT,
+      payrollTotalTipPointsFormula(r, m),
+      S.num2,
+      '0.00'
+    );
     xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
     xlSetFormula(
       ws,
@@ -6218,7 +6396,7 @@
   function buildLaborCostWorksheet() {
     var aoa = buildLaborExportAoa();
     if (!aoa) return null;
-    return styleTableSheetFromAoa(aoa, {
+    var ws = styleTableSheetFromAoa(aoa, {
       headerRows: 1,
       headerFill: false,
       headerWrapText: false,
@@ -6228,6 +6406,69 @@
       moneyCols: [5, 6, 7],
       colWidths: laborResolvedColWidths(aoa),
     });
+    var rows = fullReportRosterRows();
+    (rows || []).forEach(function (row, i) {
+      var r = i + 1;
+      if (!row || !row.emp) return;
+      var styleHours = ws[xlEncode(r, 4)] && ws[xlEncode(r, 4)].s;
+      var styleMoney = ws[xlEncode(r, 5)] && ws[xlEncode(r, 5)].s;
+      var payrollHours = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_H);
+      var payrollWage = payrollSheetNumberExpr(row.emp, PAYROLL_COL_WAGE);
+      var payrollGross = payrollSheetNumberExpr(row.emp, PAYROLL_COL_GROSS);
+      var otM = String(OT_RATE_MULTIPLIER);
+      if (payrollHours) {
+        xlSetFormula(ws, r, 4, '=' + payrollHours, styleHours, XL_HOURS_Z);
+      }
+      if (isOngiManagementEmp(row.emp)) {
+        if (payrollGross) {
+          xlSetFormula(ws, r, 7, '=' + payrollGross, styleMoney, PAYROLL_MONEY_Z);
+        }
+        return;
+      }
+      var rate = employeeHourlyRate(row.emp);
+      if (rate == null && !payrollWage) return;
+      var wageExpr = payrollWage || String(xlPayAmount(rate));
+      if (!payrollHours) {
+        var leaveH = (row.vlHours || 0) + (row.slHours || 0);
+        var missH = row.missingHours || 0;
+        var totalHFormula = '=' + payrollExcelNumber(r, 2) + '+' + payrollExcelNumber(r, 3);
+        if (leaveH > 0.005) totalHFormula += '+' + payrollHoursNum(leaveH);
+        if (missH > 0.005) totalHFormula += '+' + payrollHoursNum(missH);
+        xlSetFormula(ws, r, 4, totalHFormula, styleHours, XL_HOURS_Z);
+      }
+      xlSetFormula(
+        ws,
+        r,
+        5,
+        '=' + payrollExcelNumber(r, 2) + '*' + wageExpr,
+        styleMoney,
+        PAYROLL_MONEY_Z
+      );
+      xlSetFormula(
+        ws,
+        r,
+        6,
+        '=' + payrollExcelNumber(r, 3) + '*' + wageExpr + '*' + otM,
+        styleMoney,
+        PAYROLL_MONEY_Z
+      );
+      if (payrollGross) {
+        xlSetFormula(ws, r, 7, '=' + payrollGross, styleMoney, PAYROLL_MONEY_Z);
+        return;
+      }
+      var totalCost = '=' + payrollExcelNumber(r, 5) + '+' + payrollExcelNumber(r, 6);
+      var leaveH2 = (row.vlHours || 0) + (row.slHours || 0);
+      if (leaveH2 > 0.005) totalCost += '+' + payrollHoursNum(leaveH2) + '*' + wageExpr;
+      var missReg = row.missingRegHours || 0;
+      var missOt = row.missingOtHours || 0;
+      if (missReg > 0.005) totalCost += '+' + payrollHoursNum(missReg) + '*' + wageExpr;
+      if (missOt > 0.005) totalCost += '+' + payrollHoursNum(missOt) + '*' + wageExpr + '*' + otM;
+      if (missReg < 0.005 && missOt < 0.005 && (row.missingPay || 0) > 0.005) {
+        totalCost += '+' + String(xlPayAmount(row.missingPay));
+      }
+      xlSetFormula(ws, r, 7, totalCost, styleMoney, PAYROLL_MONEY_Z);
+    });
+    return ws;
   }
 
   var CPA_COLS = 16;
@@ -6496,12 +6737,14 @@
     var rate = employeeHourlyRate(row.emp);
     var regH = row.regMins / 60;
     var otH = row.otMins / 60;
-    var missedH = row.missingHours || 0;
-    var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0) + missedH;
     var vlSlTotalH = (row.vlHours || 0) + (row.slHours || 0);
     var missedPay = row.missingPay != null ? row.missingPay : 0;
-    var gross =
-      (row.grandTotalPay != null ? row.grandTotalPay : 0) + (missedPay || 0);
+    var payrollHours = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_H);
+    var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_TIPS);
+    var payrollSoh = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_SOH);
+    var payrollGross = payrollSheetNumberExpr(row.emp, PAYROLL_COL_GROSS);
+    var payrollDelivery = payrollSheetNumberExpr(row.emp, PAYROLL_COL_DELIVERY);
+    var payrollCoverage = payrollSheetNumberExpr(row.emp, PAYROLL_COL_COVERAGE);
 
     xlSet(ws, r, 0, index + 1, S.cellCenter);
     xlSet(ws, r, 1, String(names.first || '').toUpperCase(), S.cell);
@@ -6510,9 +6753,25 @@
     xlSetHours(ws, r, 4, regH, S.cellRight);
     xlSetHours(ws, r, 5, otH, S.cellRight);
     xlSet(ws, r, 6, cpaVlSlDisplay(row.vlHours, row.slHours), S.cellRight);
-    xlSetHours(ws, r, 7, totalH, S.cellRight);
-    var tips = cpaTipsForRow(row);
-    xlSetMoney(ws, r, 8, tips, S.cellRight);
+    if (payrollHours) {
+      xlSetFormula(ws, r, 7, '=' + payrollHours, S.cellRight, XL_HOURS_Z);
+    } else {
+      var missedH = row.missingHours || 0;
+      var totalHFormula =
+        '=' +
+        payrollExcelNumber(r, 4) +
+        '+' +
+        payrollExcelNumber(r, 5) +
+        '+' +
+        payrollExcelNumber(r, CPA_COL_NOTES_HOURS);
+      if (missedH > 0.005) totalHFormula += '+' + payrollHoursNum(missedH);
+      xlSetFormula(ws, r, 7, totalHFormula, S.cellRight, XL_HOURS_Z);
+    }
+    if (payrollTips) {
+      xlSetFormula(ws, r, 8, '=' + payrollTips, S.cellRight, PAYROLL_MONEY_Z);
+    } else {
+      xlSetMoney(ws, r, 8, cpaTipsForRow(row), S.cellRight);
+    }
     if (row.sohCount > 0) {
       xlSet(ws, r, 9, row.sohCount, S.cellRight);
     } else {
@@ -6527,9 +6786,54 @@
         : '-',
       S.cell
     );
-    xlSetMoney(ws, r, 11, row.sohPay != null && row.sohPay > 0 ? row.sohPay : null, S.cellRight);
+    if (payrollSoh) {
+      xlSetFormula(ws, r, 11, '=' + payrollSoh, S.cellRight, PAYROLL_MONEY_Z);
+    } else {
+      xlSetFormula(
+        ws,
+        r,
+        11,
+        '=' + payrollExcelNumber(r, 9) + '*' + String(xlPayAmount(getSohRate()) || 0),
+        S.cellRight,
+        PAYROLL_MONEY_Z
+      );
+    }
     xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
-    xlSetMoney(ws, r, CPA_COL_GROSS, gross, S.cellRight);
+    if (payrollGross) {
+      var grossFormula =
+        '=' +
+        payrollGross +
+        '+' +
+        (payrollSoh || '0') +
+        '+' +
+        (payrollDelivery || '0') +
+        '+' +
+        (payrollCoverage || '0');
+      xlSetFormula(ws, r, CPA_COL_GROSS, grossFormula, S.cellRight, PAYROLL_MONEY_Z);
+    } else {
+      var extraPay = (row.dishwasherTipsPay || 0) + (row.additionalCashTip || 0);
+      var fallbackGross =
+        '=' +
+        payrollExcelNumber(r, 4) +
+        '*' +
+        payrollExcelNumber(r, 3) +
+        '+' +
+        payrollExcelNumber(r, 5) +
+        '*' +
+        payrollExcelNumber(r, 3) +
+        '*' +
+        String(OT_RATE_MULTIPLIER) +
+        '+' +
+        payrollExcelNumber(r, CPA_COL_NOTES_HOURS) +
+        '*' +
+        payrollExcelNumber(r, 3) +
+        '+' +
+        payrollExcelNumber(r, 11) +
+        '+' +
+        payrollExcelNumber(r, CPA_COL_MISSED_PAY);
+      if (extraPay > 0.005) fallbackGross += '+' + String(xlPayAmount(extraPay));
+      xlSetFormula(ws, r, CPA_COL_GROSS, fallbackGross, S.cellRight, PAYROLL_MONEY_Z);
+    }
     xlSet(ws, r, CPA_COL_NOTES, cpaVlSlNotesDisplay(row.vlHours, row.slHours), S.cell);
     xlSetHours(ws, r, CPA_COL_NOTES_HOURS, vlSlTotalH, S.cellRight);
   }
@@ -6611,6 +6915,124 @@
       '+' +
       payrollExcelNumber(r, PAYROLL_COL_TOTAL_SOH, opts)
     );
+  }
+
+  /** VL/SL is display text ("8.00 / 4.00" or "-"). Parse each side for formulas. */
+  function payrollParsedVlHoursExpr(r) {
+    var cell = xlA1(r, PAYROLL_COL_VL_SL);
+    return (
+      'IFERROR(VALUE(TRIM(LEFT(' + cell + ',FIND("/",' + cell + '&"/")-1))),0)'
+    );
+  }
+
+  function payrollParsedSlHoursExpr(r) {
+    var cell = xlA1(r, PAYROLL_COL_VL_SL);
+    return (
+      'IFERROR(VALUE(TRIM(MID(' + cell + ',FIND("/",' + cell + '&"/")+1,99))),0)'
+    );
+  }
+
+  function payrollTotalHoursFormula(r) {
+    return (
+      '=' +
+      payrollExcelNumber(r, PAYROLL_COL_REG_H) +
+      '+' +
+      payrollExcelNumber(r, PAYROLL_COL_OT_H) +
+      '+' +
+      payrollParsedVlHoursExpr(r) +
+      '+' +
+      payrollParsedSlHoursExpr(r) +
+      '+' +
+      payrollExcelNumber(r, PAYROLL_COL_MISSED_H)
+    );
+  }
+
+  function payrollMissedPayExpr(r, m) {
+    var wage = payrollExcelNumber(r, PAYROLL_COL_WAGE);
+    var missedH = payrollExcelNumber(r, PAYROLL_COL_MISSED_H);
+    var missOt = m && m.missingOtHours != null ? Number(m.missingOtHours) : 0;
+    var missHval = m && m.missedH != null ? Number(m.missedH) : 0;
+    var missPay = m && m.missingPay != null ? Number(m.missingPay) : 0;
+    if (missOt > 0.005) {
+      return (
+        wage +
+        '*(' +
+        missedH +
+        '-' +
+        payrollHoursNum(missOt) +
+        ')+' +
+        wage +
+        '*' +
+        String(OT_RATE_MULTIPLIER) +
+        '*' +
+        payrollHoursNum(missOt)
+      );
+    }
+    if (missHval > 0.005) return wage + '*' + missedH;
+    if (missPay > 0.005) return String(xlPayAmount(missPay));
+    return '';
+  }
+
+  function payrollGrossFormula(r, m) {
+    if (m && m.isOngi) return '=' + String(ONGI_MANAGEMENT_GROSS);
+    if (!m || m.rate == null) return null;
+    var wage = payrollExcelNumber(r, PAYROLL_COL_WAGE);
+    var formula =
+      wage +
+      '*' +
+      payrollExcelNumber(r, PAYROLL_COL_REG_H) +
+      '+' +
+      wage +
+      '*' +
+      String(OT_RATE_MULTIPLIER) +
+      '*' +
+      payrollExcelNumber(r, PAYROLL_COL_OT_H) +
+      '+' +
+      wage +
+      '*(' +
+      payrollParsedVlHoursExpr(r) +
+      '+' +
+      payrollParsedSlHoursExpr(r) +
+      ')';
+    var missed = payrollMissedPayExpr(r, m);
+    if (missed) formula += '+' + missed;
+    return '=' + formula;
+  }
+
+  function payrollSpreadCountExpr(r) {
+    var cell = xlA1(r, PAYROLL_COL_SPREAD_HOURS);
+    return (
+      'IF(ISNUMBER(' +
+      cell +
+      '),' +
+      cell +
+      ',IF(OR(' +
+      cell +
+      '="-",' +
+      cell +
+      '="",' +
+      cell +
+      '="—"),0,LEN(' +
+      cell +
+      ')-LEN(SUBSTITUTE(' +
+      cell +
+      ',",",""))+1))'
+    );
+  }
+
+  function payrollTotalSohFormula(r) {
+    return '=' + payrollSpreadCountExpr(r) + '*' + payrollExcelNumber(r, PAYROLL_COL_SOH_HR);
+  }
+
+  function payrollTotalTipPointsFormula(r, m) {
+    var tipPt = payrollExcelNumber(r, PAYROLL_COL_TIP_PT);
+    var sheetHours =
+      payrollExcelNumber(r, PAYROLL_COL_REG_H) + '+' + payrollExcelNumber(r, PAYROLL_COL_OT_H);
+    var tipHours = m && m.emp && !m.isOngi ? (m.totalTipPoints || 0) / (m.tipPt || 0) : 0;
+    if (m && m.tipPt > 0.0001 && Math.abs(tipHours - ((m.regH || 0) + (m.otH || 0))) > 0.02) {
+      return '=' + tipPt + '*' + payrollHoursNum(tipHours);
+    }
+    return '=' + 'IF(' + tipPt + '=0,"",(' + sheetHours + ')*' + tipPt + ')';
   }
 
   function writePayrollSectionTotal(ws, r, sumFirst, sumLast, S, layout) {
@@ -6748,7 +7170,8 @@
     var tipLayout = { tipperRows: [] };
 
     var colWidths = payrollResolvedColWidths(fohMetrics, bohMetrics);
-    while (colWidths.length <= PAYROLL_TIP_VALUE_COL) colWidths.push(12);
+    while (colWidths.length <= PAYROLL_TIP_RATE_COL) colWidths.push(12);
+    colWidths[PAYROLL_TIP_RATE_COL] = Math.max(colWidths[PAYROLL_TIP_RATE_COL] || 0, 10);
 
     xlSet(ws, 0, 0, payrollTitleForLocation(), S.title);
     xlMerge(merges, 0, 0, 0, PAYROLL_COLS - 1);
@@ -7116,6 +7539,26 @@
     return 'Payroll!' + xlA1(payrollRow, col, { absCol: true, absRow: true });
   }
 
+  function payrollSheetRefForEmp(emp, col) {
+    var row = payStubPayrollDataRow(emp);
+    if (row == null) return null;
+    return payStubPayrollRef(row, col);
+  }
+
+  function payrollSheetNumberExpr(emp, col) {
+    var addr = payrollSheetRefForEmp(emp, col);
+    if (!addr) return null;
+    return 'IF(ISNUMBER(' + addr + '),' + addr + ',0)';
+  }
+
+  function payStubVlSlPayFormula(vlSlCell, rateRef) {
+    var vl =
+      'IFERROR(VALUE(TRIM(LEFT(' + vlSlCell + ',FIND("/",' + vlSlCell + '&"/")-1))),0)';
+    var sl =
+      'IFERROR(VALUE(TRIM(MID(' + vlSlCell + ',FIND("/",' + vlSlCell + '&"/")+1,99))),0)';
+    return '=IF((' + vl + '+' + sl + ')=0,"",(' + vl + '+' + sl + ')*' + rateRef + ')';
+  }
+
   function payslipSheetColWidths(maxColIndex) {
     var cols = [];
     var printCols = payslipPrintLastCol();
@@ -7357,6 +7800,7 @@
     var payrollRow = payStubPayrollDataRow(emp);
     var headerPaidRow = startRow;
     var periodRow = startRow + 1;
+    var rateRef = payStubAbsRef(periodRow, DC(10));
     var shiftFirstRow = startRow + 4;
     var shiftLastRow = startRow + 9;
     var vlSlRow;
@@ -7383,7 +7827,18 @@
     xlMerge(merges, r, DC(1), r, DC(3));
     xlSet(ws, r, DC(8), 'Per Hour', S.label);
     xlMerge(merges, r, DC(8), r, DC(9));
-    payStubSetMoney(ws, r, DC(10), rate, S.moneyUnderline);
+    if (payrollRow != null) {
+      xlSetFormula(
+        ws,
+        r,
+        DC(10),
+        '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_WAGE),
+        S.moneyUnderline,
+        PAY_STUB_MONEY_Z
+      );
+    } else {
+      payStubSetMoney(ws, r, DC(10), rate, S.moneyUnderline);
+    }
     xlMerge(merges, r, DC(10), r, DC(11));
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
     r += 1;
@@ -7399,21 +7854,60 @@
     r += 1;
 
     shiftLines.forEach(function (line) {
+      var hasPaidHours = false;
       line.forEach(function (val, i) {
-        if (i >= 9 && val !== '' && val != null) {
-          var n = parseFloat(String(val));
-          payStubSetMoney(ws, r, DC(i), Number.isNaN(n) ? null : n, S.tableNum);
-        } else if (i >= 6 && i <= 8 && val !== '' && val != null) {
+        if (i >= 8) return;
+        if (i >= 6 && i <= 7 && val !== '' && val != null) {
           var hf = parseFloat(String(val));
           if (Number.isNaN(hf)) {
             xlSet(ws, r, DC(i), val, S.tableNum);
-        } else {
+          } else {
+            if (Math.abs(hf) >= 0.005) hasPaidHours = true;
             ws[xlEncode(r, DC(i))] = { v: xlHoursNum(hf), t: 'n', z: XL_HOURS_Z, s: S.tableNum };
           }
         } else {
           xlSet(ws, r, DC(i), val, i >= 6 ? S.tableNum : S.tableCell);
         }
       });
+      if (hasPaidHours) {
+        xlSetFormula(
+          ws,
+          r,
+          DC(8),
+          '=' + payStubExcelNumber(r, DC(6)) + '+' + payStubExcelNumber(r, DC(7)),
+          S.tableNum,
+          XL_HOURS_Z
+        );
+        xlSetFormula(
+          ws,
+          r,
+          DC(9),
+          '=' + payStubExcelNumber(r, DC(6)) + '*' + rateRef,
+          S.tableNum,
+          PAY_STUB_MONEY_Z
+        );
+        xlSetFormula(
+          ws,
+          r,
+          DC(10),
+          '=' +
+            payStubExcelNumber(r, DC(7)) +
+            '*' +
+            rateRef +
+            '*' +
+            String(OT_RATE_MULTIPLIER),
+          S.tableNum,
+          PAY_STUB_MONEY_Z
+        );
+        xlSetFormula(
+          ws,
+          r,
+          DC(11),
+          '=' + payStubExcelNumber(r, DC(9)) + '+' + payStubExcelNumber(r, DC(10)),
+          S.tableNum,
+          PAY_STUB_MONEY_Z
+        );
+      }
       if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
       r += 1;
     });
@@ -7429,7 +7923,14 @@
       payStubVlSlHoursLabel(rosterRow.vlHours || 0, rosterRow.slHours || 0),
       S.summaryValue
     );
-    payStubSetAmount(ws, r, DC(3), payStubVlSlPayAmount(rosterRow), S.summaryValue);
+    xlSetFormula(
+      ws,
+      r,
+      DC(3),
+      payStubVlSlPayFormula(xlA1(r, DC(2)), rateRef),
+      S.summaryValue,
+      PAY_STUB_AMOUNT_Z
+    );
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
     r += 1;
 
@@ -7446,13 +7947,24 @@
           : '-',
       S.summaryValue
     );
-    payStubSetAmount(
-      ws,
-      r,
-      DC(3),
-      rosterRow.sohPay != null && rosterRow.sohPay > 0 ? rosterRow.sohPay : null,
-      S.summaryValue
-    );
+    if (payrollRow != null) {
+      xlSetFormula(
+        ws,
+        r,
+        DC(3),
+        '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_TOTAL_SOH),
+        S.summaryValue,
+        PAY_STUB_AMOUNT_Z
+      );
+    } else {
+      payStubSetAmount(
+        ws,
+        r,
+        DC(3),
+        rosterRow.sohPay != null && rosterRow.sohPay > 0 ? rosterRow.sohPay : null,
+        S.summaryValue
+      );
+    }
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
     r += 1;
 
@@ -7460,13 +7972,24 @@
       dishwasherTipsRow = r;
       xlSet(ws, r, DC(0), 'Net dishwasher tips', S.summaryLabel);
       xlSet(ws, r, DC(2), '-', S.summaryValue);
-      payStubSetAmount(
-        ws,
-        r,
-        DC(3),
-        rosterRow.dishwasherTipsPay > 0 ? rosterRow.dishwasherTipsPay : null,
-        S.summaryValue
-      );
+      if (payrollRow != null) {
+        xlSetFormula(
+          ws,
+          r,
+          DC(3),
+          '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_DELIVERY),
+          S.summaryValue,
+          PAY_STUB_AMOUNT_Z
+        );
+      } else {
+        payStubSetAmount(
+          ws,
+          r,
+          DC(3),
+          rosterRow.dishwasherTipsPay > 0 ? rosterRow.dishwasherTipsPay : null,
+          S.summaryValue
+        );
+      }
       if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
       r += 1;
     }
@@ -7513,7 +8036,6 @@
     xlMerge(merges, r, DC(4), r, DC(5));
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
 
-    var rateRef = payStubAbsRef(periodRow, DC(10));
     var regHoursRef = payrollRow != null
       ? payStubPayrollRef(payrollRow, PAYROLL_COL_REG_H)
       : payStubAbsRef(workTotRow, DC(2));
@@ -7574,7 +8096,18 @@
       '=SUM(' + regHoursCell + ',' + otHoursCell + ')',
       S.tableNum
     );
-    xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
+    if (payrollRow != null) {
+      xlSetFormula(
+        ws,
+        totalHoursRow,
+        DC(2),
+        '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_TOTAL_H),
+        S.summaryBoldUnderline,
+        XL_HOURS_Z
+      );
+    } else {
+      xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
+    }
 
     var totalPaidFormula =
       '=SUM(' +
@@ -8867,23 +9400,74 @@
     };
   }
 
+  function ptoPayWeekEffectiveOverrides(emp) {
+    var vl = Object.create(null);
+    var sl = Object.create(null);
+    if (!emp) return { vl: vl, sl: sl };
+    var bounds = payWeekBounds();
+    var startIso = isoFromDate(bounds.start);
+    var endIso = isoFromDate(bounds.end);
+    eachIsoDayInclusive(startIso, endIso, function (iso) {
+      var day = getEffectiveDayLeave(emp, iso, bounds);
+      if (day && day.vl > 0) vl[iso] = day.vl;
+      if (day && day.sl > 0) sl[iso] = day.sl;
+    });
+    return { vl: vl, sl: sl };
+  }
+
+  function ptoMergeOverrideMaps(a, b) {
+    var out = Object.create(null);
+    Object.keys(a || {}).forEach(function (k) {
+      out[k] = a[k];
+    });
+    Object.keys(b || {}).forEach(function (k) {
+      out[k] = b[k];
+    });
+    return out;
+  }
+
+  function ptoEntriesInPeriodOrPayWeek(entries, period, payStart, payEnd) {
+    return (entries || []).filter(function (e) {
+      var d = String(e.date || '').slice(0, 10);
+      if (!d) return false;
+      if (payStart && payEnd && d >= payStart && d <= payEnd) return true;
+      if (period && period.start && d < period.start) return false;
+      if (period && period.end && d > period.end) return false;
+      return true;
+    });
+  }
+
   function ptoBalanceForEmployee(emp) {
+    emp = liveEmployeeForExport(emp);
     if (!emp) return null;
     var L = global.gmEmployeeLeave;
     if (!L || !L.ensureEmployeeLeaveBalance || !L.computeBalance) return null;
     L.ensureEmployeeLeaveBalance(emp, d().employeeDisplayName);
     if (!emp.meta || !emp.meta.leaveBalance) return null;
-    var computed = L.computeBalance(emp.meta.leaveBalance);
+    var hiringDate = emp.meta.hiringDate ? String(emp.meta.hiringDate) : '';
+    var computed = L.computeBalance(emp.meta.leaveBalance, { hiringDate: hiringDate });
     var extras = ptoWeekExtrasOverridesForEmployee(emp);
+    var weekLeave = ptoPayWeekEffectiveOverrides(emp);
+    var mergedVl = ptoMergeOverrideMaps(extras.vl, weekLeave.vl);
+    var mergedSl = ptoMergeOverrideMaps(extras.sl, weekLeave.sl);
+    var bounds = payWeekBounds();
+    var payStart = isoFromDate(bounds.start);
+    var payEnd = isoFromDate(bounds.end);
+    var vacEntries = ptoEntriesInPeriodOrPayWeek(
+      ptoMergeLeaveEntries(computed.vacation && computed.vacation.entries, mergedVl),
+      computed.vacationPeriod,
+      payStart,
+      payEnd
+    );
+    var sickEntries = ptoEntriesInPeriodOrPayWeek(
+      ptoMergeLeaveEntries(computed.sick && computed.sick.entries, mergedSl),
+      computed.sickPeriod,
+      payStart,
+      payEnd
+    );
     return {
-      vacation: ptoRecomputeSide(
-        computed.vacation,
-        ptoMergeLeaveEntries(computed.vacation.entries, extras.vl)
-      ),
-      sick: ptoRecomputeSide(
-        computed.sick,
-        ptoMergeLeaveEntries(computed.sick.entries, extras.sl)
-      ),
+      vacation: ptoRecomputeSide(computed.vacation, vacEntries),
+      sick: ptoRecomputeSide(computed.sick, sickEntries),
     };
   }
 
@@ -8894,7 +9478,7 @@
 
   function ptoExportHasPhotoCandidates() {
     return fullReportRosterRows().some(function (row) {
-      return ptoPhotoCandidates(row.emp).length > 0;
+      return ptoPhotoCandidates(liveEmployeeForExport(row.emp)).length > 0;
     });
   }
 
@@ -8999,7 +9583,7 @@
     return (entries || [])
       .slice()
       .sort(function (a, b) {
-        return String(a.date || '').localeCompare(String(b.date || ''));
+        return String(b.date || '').localeCompare(String(a.date || ''));
       });
   }
 
@@ -9068,7 +9652,7 @@
     var blocks = [];
     rows.forEach(function (row, idx) {
       if (idx > 0) blocks.push({ spacer: true });
-      var emp = row.emp;
+      var emp = liveEmployeeForExport(row.emp);
       var bal = ptoBalanceForEmployee(emp);
       var vac = bal ? bal.vacation : null;
       var sick = bal ? bal.sick : null;
@@ -9935,6 +10519,7 @@
       });
       r += 1;
       emps.forEach(function (emp) {
+        emp = liveEmployeeForExport(emp);
         var meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
         var rate = employeeHourlyRate(emp);
         var tipPt = tipPointForEmployee(emp);
@@ -10293,22 +10878,38 @@
     wireRosterTableRows(wrap);
   }
 
+  function renderTimecardsRosterToolbarHtml() {
+    return (
+      '<div class="timecards-roster-toolbar">' +
+      renderPayWeekSelectorHtml() +
+      renderTimecardsLocationSwitcherHtml() +
+      '<div class="timecards-download-group">' +
+      renderPayrollSettingsHtml() +
+      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-open>' +
+      d().escapeHtml(tcT('timecards.download')) +
+      '</button>' +
+      '</div></div>'
+    );
+  }
+
+  function paintEmptyRoster(wrap, message) {
+    if (!wrap) return;
+    wrap.innerHTML =
+      renderTimecardsRosterToolbarHtml() +
+      '<p class="calendar-hint">' +
+      d().escapeHtml(message || 'No employees on the roster.') +
+      '</p>';
+    wireRosterTable(wrap);
+    syncPayWeekSelectorUi();
+  }
+
   function paintRosterTable(wrap, opts) {
     opts = opts || {};
     if (!rosterCache) return;
     var sorted = sortedRosterRows(rosterCache.rows);
     var body = sorted.map(renderRosterRowHtml).join('');
     wrap.innerHTML =
-      '<div class="timecards-roster-toolbar">' +
-      renderPayWeekSelectorHtml() +
-      renderTimecardsLocationSwitcherHtml() +
-      renderSohRateControlHtml() +
-      renderTipTakehomeControlHtml() +
-      '<div class="timecards-download-group">' +
-      '<button type="button" class="btn btn-secondary timecards-download-btn" data-timecards-download-open>' +
-      d().escapeHtml(tcT('timecards.download')) +
-      '</button>' +
-      '</div></div>' +
+      renderTimecardsRosterToolbarHtml() +
       (opts.deferGrandTotals
         ? ''
         : renderGrandTotalsHtml(computeRosterTotals(sorted)) + renderGrandTotalsTipPoolHtml()) +
@@ -11621,7 +12222,7 @@
   function paintRosterWrap(wrap, opts) {
     if (!wrap) return;
     if (!rosterCache || !rosterCache.rows || !rosterCache.rows.length) {
-      wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
+      paintEmptyRoster(wrap, 'No employees on the roster.');
       return;
     }
     paintRosterTable(wrap, opts);
@@ -11710,7 +12311,7 @@
     var emps = d().employees.slice();
     if (!emps.length) {
       rosterCache = null;
-      wrap.innerHTML = '<p class="calendar-hint">No employees on the roster.</p>';
+      paintEmptyRoster(wrap, 'No employees on the roster.');
       return;
     }
     var paintOpts = { deferGrandTotals: true };
@@ -11813,17 +12414,15 @@
     };
   }
 
-  function wireTimeclockSettings() {
-    var input = document.getElementById('tcAutoClockOutTime');
-    if (!input || input.dataset.bound) return;
-    input.dataset.bound = '1';
-    if (d().loadTimeclockSettings) {
-      var settings = d().loadTimeclockSettings();
-      if (settings && settings.autoClockOutTime) input.value = settings.autoClockOutTime;
-    }
-    input.addEventListener('change', function () {
+  var timeclockSettingsBound = false;
+  function bindTimeclockSettingsOnce() {
+    if (timeclockSettingsBound) return;
+    timeclockSettingsBound = true;
+    document.addEventListener('change', function (ev) {
+      var el = ev.target;
+      if (!el || el.id !== 'tcAutoClockOutTime') return;
       if (!d().saveTimeclockSettings) return;
-      d().saveTimeclockSettings({ autoClockOutTime: input.value || '00:00' });
+      d().saveTimeclockSettings({ autoClockOutTime: el.value || '00:00' });
     });
   }
 
@@ -13525,10 +14124,11 @@
     hydrateWeekEntriesCacheFromDisk();
     bindTimecardsBackButtons();
     bindTimecardsDownloadModal();
-    wireTimeclockSettings();
+    bindTimeclockSettingsOnce();
     bindPayWeekSelectorOnce();
     bindSohRateControlOnce();
     bindTipTakehomeControlOnce();
+    bindPayrollSettingsOnce();
     /* Warm current + adjacent weeks so first Timecards open already has punches. */
     if (d().gmSupabaseReadyNow && d().gmSupabaseReadyNow()) {
       void loadWeekEntries({ force: false });

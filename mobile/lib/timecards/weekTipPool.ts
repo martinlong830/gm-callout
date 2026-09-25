@@ -9,8 +9,8 @@ import {
 import type { LocationFilter } from './restaurantAttribution';
 import type { PayWeekBounds } from './types';
 
-/** Net keep rates after platform fees. */
-export const TIP_NET_RATE_SQUARE = 0.95;
+/** Default keep rates after platform fees. */
+export const TIP_NET_RATE_SQUARE = 0.97;
 export const TIP_NET_RATE_DELIVERY = 0.8;
 
 export const PAYROLL_TIP_POOL_DEFAULTS = {
@@ -28,6 +28,9 @@ export const PAYROLL_TIP_POOL_DEFAULTS = {
    * (weeks entered before per-platform breakdown).
    */
   sqGhDd: 0,
+  squareNetRate: TIP_NET_RATE_SQUARE,
+  doordashNetRate: TIP_NET_RATE_DELIVERY,
+  uberNetRate: TIP_NET_RATE_DELIVERY,
 };
 
 export type TipPoolInputs = {
@@ -37,6 +40,9 @@ export type TipPoolInputs = {
   doordash: number;
   uber: number;
   sqGhDd: number;
+  squareNetRate: number;
+  doordashNetRate: number;
+  uberNetRate: number;
   manual?: boolean;
 };
 
@@ -49,7 +55,7 @@ export type TipPoolTotals = {
   squarePickupNet: number;
   doordashNet: number;
   uberNet: number;
-  /** Square In House net (gross × 0.95). */
+  /** Square In House net (gross × Square keep rate). */
   squareInhouse: number;
   /** Combined SQ Pickup / DD / Uber net (or legacy sqGhDd). */
   sqGhDd: number;
@@ -61,6 +67,32 @@ function normalizeMoney(val: unknown, fallback = 0): number {
   const n = parseFloat(String(val));
   if (Number.isNaN(n) || n < 0) return fallback;
   return Math.round(n * 100) / 100;
+}
+
+/** Keep rate after platform fees. Accepts 0.97 or 97. */
+export function normalizeTipPoolRate(val: unknown, fallback = TIP_NET_RATE_SQUARE): number {
+  if (val == null || val === '') return fallback;
+  let n = parseFloat(String(val));
+  if (Number.isNaN(n) || n < 0) return fallback;
+  if (n > 1 && n <= 100) n = n / 100;
+  if (n > 1) n = 1;
+  return Math.round(n * 10000) / 10000;
+}
+
+export function formatTipRateInput(rate: unknown): string {
+  const n = normalizeTipPoolRate(rate, TIP_NET_RATE_SQUARE);
+  let s = n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  if (s.indexOf('.') < 0) return `${s}.00`;
+  if (s.split('.')[1].length === 1) return `${s}0`;
+  return s;
+}
+
+function tipNetRatesFromPool(pool: TipPoolInputs) {
+  return {
+    square: normalizeTipPoolRate(pool.squareNetRate, TIP_NET_RATE_SQUARE),
+    doordash: normalizeTipPoolRate(pool.doordashNetRate, TIP_NET_RATE_DELIVERY),
+    uber: normalizeTipPoolRate(pool.uberNetRate, TIP_NET_RATE_DELIVERY),
+  };
 }
 
 function tipPoolStorageKey(bounds: PayWeekBounds, locationFilter: LocationFilter = 'rp-9'): string {
@@ -77,16 +109,20 @@ function sliceFromRecord(slice: unknown): TipPoolInputs | null {
     doordash: normalizeMoney(s.doordash, PAYROLL_TIP_POOL_DEFAULTS.doordash),
     uber: normalizeMoney(s.uber, PAYROLL_TIP_POOL_DEFAULTS.uber),
     sqGhDd: normalizeMoney(s.sqGhDd, PAYROLL_TIP_POOL_DEFAULTS.sqGhDd),
+    squareNetRate: normalizeTipPoolRate(s.squareNetRate, PAYROLL_TIP_POOL_DEFAULTS.squareNetRate),
+    doordashNetRate: normalizeTipPoolRate(s.doordashNetRate, PAYROLL_TIP_POOL_DEFAULTS.doordashNetRate),
+    uberNetRate: normalizeTipPoolRate(s.uberNetRate, PAYROLL_TIP_POOL_DEFAULTS.uberNetRate),
     manual: !!s.manual,
   };
 }
 
 export function payrollTipPoolTotals(pool: TipPoolInputs): TipPoolTotals {
   const p = pool || PAYROLL_TIP_POOL_DEFAULTS;
-  const squareInhouse = Math.round(p.squareTips * TIP_NET_RATE_SQUARE * 100) / 100;
-  const squarePickupNet = Math.round(p.squarePickup * TIP_NET_RATE_SQUARE * 100) / 100;
-  const doordashNet = Math.round(p.doordash * TIP_NET_RATE_DELIVERY * 100) / 100;
-  const uberNet = Math.round(p.uber * TIP_NET_RATE_DELIVERY * 100) / 100;
+  const rates = tipNetRatesFromPool(p);
+  const squareInhouse = Math.round(p.squareTips * rates.square * 100) / 100;
+  const squarePickupNet = Math.round(p.squarePickup * rates.square * 100) / 100;
+  const doordashNet = Math.round(p.doordash * rates.doordash * 100) / 100;
+  const uberNet = Math.round(p.uber * rates.uber * 100) / 100;
   const hasPlatformGross = p.squarePickup > 0 || p.doordash > 0 || p.uber > 0;
   const sqGhDd = hasPlatformGross
     ? Math.round((squarePickupNet + doordashNet + uberNet) * 100) / 100
@@ -157,4 +193,18 @@ export async function saveWeekTipPoolSlice(
   } catch {
     /* ignore */
   }
+}
+
+export async function patchWeekTipPoolSlice(
+  bounds: PayWeekBounds,
+  patch: Partial<TipPoolInputs>,
+  locationFilter: LocationFilter = 'rp-9'
+): Promise<TipPoolInputs> {
+  const existing = await getPayrollTipPoolInputs(bounds, locationFilter);
+  const next: TipPoolInputs = { ...existing, ...patch, manual: true };
+  if (next.squarePickup > 0 || next.doordash > 0 || next.uber > 0) {
+    next.sqGhDd = 0;
+  }
+  await saveWeekTipPoolSlice(bounds, next, locationFilter);
+  return next;
 }

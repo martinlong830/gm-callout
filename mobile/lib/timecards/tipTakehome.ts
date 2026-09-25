@@ -3,7 +3,7 @@ import { isSupabaseConfigured, supabase } from '../supabase';
 import { readStoredTeamStateId } from '../companySession';
 import { broadcastTeamStateChanged } from '../teamStateSync';
 
-/** Managers see/edit this as “Tip take-home %” (not a cryptic net factor). */
+/** Managers see/edit this as “Delivery take-home %” (not a cryptic net factor). */
 export const TIP_TAKEHOME_STORAGE_KEY = 'gm-timecard-tip-takehome-pct-v1';
 
 export const DEFAULT_TIP_TAKEHOME_PCT: Record<string, number> = {

@@ -188,7 +188,7 @@ export const LOCAL_SCHEDULE_DIRTY_KEY = '__localScheduleDirty';
 export function mergeTeamStatePartial(
   prev: Record<string, unknown> | null,
   partial: Record<string, unknown> | null,
-  opts?: { protectLocalSchedule?: boolean }
+  opts?: { protectLocalSchedule?: boolean; writeOnlyCells?: boolean }
 ): Record<string, unknown> | null {
   if (!partial) return prev;
   if (!prev) return { ...partial };
@@ -265,16 +265,51 @@ export function mergeTeamStatePartial(
     }
   }
 
-  if (
+  if (opts?.writeOnlyCells) {
+    /*
+     * Cells own times/names. Keep local assignment + byWeek blobs, but take cloud
+     * ↑↓ row order (and group/sales/ongi) so mobile matches web after Refresh.
+     */
+    if (prev.schedule_assignments != null) {
+      next.schedule_assignments = prev.schedule_assignments;
+    }
+    if (partial.draft_schedule != null && prev.draft_schedule != null) {
+      next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+        prev.draft_schedule,
+        partial.draft_schedule,
+        { preferWhenBoth: 'remote', keepLocalByWeek: true }
+      );
+    }
+  } else if (
     Object.prototype.hasOwnProperty.call(partial, 'draft_schedule') &&
     partial.draft_schedule != null &&
     prev.draft_schedule != null
   ) {
     next.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
       prev.draft_schedule,
-      partial.draft_schedule
+      partial.draft_schedule,
+      { preferWhenBoth: 'remote' }
     );
   }
   delete next[LOCAL_SCHEDULE_DIRTY_KEY];
   return next;
+}
+
+/** Slim draft_schedule meta only — skip byWeek (cells are SoT). Parity with web Refresh. */
+export async function fetchDraftScheduleRowOrderMeta(
+  sb: SupabaseClient,
+  teamStateId?: string
+): Promise<Record<string, unknown> | null> {
+  const id = teamStateId || (await readStoredTeamStateId());
+  const slim = await sb
+    .from('team_state')
+    .select(
+      'slotOrderByWeek:draft_schedule->slotOrderByWeek,groupOrderPotentialByWeek:draft_schedule->groupOrderPotentialByWeek,scheduleNetSalesByWeek:draft_schedule->scheduleNetSalesByWeek,ongiFlagsByWeek:draft_schedule->ongiFlagsByWeek,windowMondayIso:draft_schedule->windowMondayIso,slotOrderByRestaurant:draft_schedule->slotOrderByRestaurant'
+    )
+    .eq('id', id)
+    .maybeSingle();
+  if (!slim.error && slim.data && typeof slim.data === 'object') {
+    return slim.data as Record<string, unknown>;
+  }
+  return null;
 }

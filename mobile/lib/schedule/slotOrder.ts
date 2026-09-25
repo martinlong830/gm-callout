@@ -272,26 +272,40 @@ export function mergePendingDraftWithHydrated(pending: unknown, hydrated: unknow
   return p;
 }
 
+export type DraftSlotOrderMergeOpts = {
+  /** When both sides have a role list. Cloud is king on hydrate/Refresh. */
+  preferWhenBoth?: 'local' | 'remote';
+  /**
+   * Keep local `byWeek` times (ISO cells are SoT). Overlay ↑↓ / group / sales / ongi
+   * from remote. Default false starts from remote (legacy blob SoT).
+   */
+  keepLocalByWeek?: boolean;
+};
+
 /**
- * Merge remote draft_schedule into local cache without letting a missing/empty
+ * Merge remote draft_schedule meta into local cache without letting a missing/empty
  * remote slotOrderByWeek wipe a non-empty local map.
  */
 export function mergeDraftScheduleSlotOrderFromRemote(
   localDraft: unknown,
-  remoteDraft: unknown
+  remoteDraft: unknown,
+  opts?: DraftSlotOrderMergeOpts
 ): unknown {
+  const preferWhenBoth = opts?.preferWhenBoth ?? 'remote';
+  const keepLocalByWeek = opts?.keepLocalByWeek === true;
   if (!remoteDraft || typeof remoteDraft !== 'object') return localDraft;
   if (!localDraft || typeof localDraft !== 'object') {
     return JSON.parse(JSON.stringify(remoteDraft));
   }
-  const merged = JSON.parse(JSON.stringify(remoteDraft)) as Record<string, unknown>;
+  const merged = JSON.parse(
+    JSON.stringify(keepLocalByWeek ? localDraft : remoteDraft)
+  ) as Record<string, unknown>;
   writeSlotOrderByWeekMap(
     merged,
     mergeSlotOrderByWeekMaps(
       readSlotOrderByWeek(localDraft),
       readSlotOrderByWeek(remoteDraft),
-      /* Prefer local arrangement on hydrate so refresh/push cannot reshuffle ↑↓ order. */
-      'local'
+      preferWhenBoth
     )
   );
   /* Keep legacy global fallback if remote omitted it but local still has it. */
@@ -305,25 +319,40 @@ export function mergeDraftScheduleSlotOrderFromRemote(
   const mergedGroup = mergeGroupOrderPotentialByWeekMaps(
     readGroupOrderPotentialByWeek(localDraft),
     readGroupOrderPotentialByWeek(remoteDraft),
-    'local'
+    preferWhenBoth
   );
   if (Object.keys(mergedGroup).length) merged.groupOrderPotentialByWeek = mergedGroup;
   else delete merged.groupOrderPotentialByWeek;
   const mergedSales = mergeScheduleNetSalesByWeekMaps(
     readScheduleNetSalesByWeek(localDraft),
     readScheduleNetSalesByWeek(remoteDraft),
-    'local'
+    preferWhenBoth
   );
   if (Object.keys(mergedSales).length) merged.scheduleNetSalesByWeek = mergedSales;
   else delete merged.scheduleNetSalesByWeek;
   const mergedOngi = mergeOngiFlagsByWeekMaps(
     readOngiFlagsByWeek(localDraft),
     readOngiFlagsByWeek(remoteDraft),
-    'local'
+    preferWhenBoth
   );
   if (Object.keys(mergedOngi).length) merged.ongiFlagsByWeek = mergedOngi;
   else delete merged.ongiFlagsByWeek;
+  const rem = remoteDraft as Record<string, unknown>;
+  const remWin = rem.windowMondayIso != null ? String(rem.windowMondayIso).slice(0, 10) : '';
+  if (remWin && keepLocalByWeek && !merged.windowMondayIso) merged.windowMondayIso = remWin;
   return merged;
+}
+
+/** Write-only: keep cell-projected byWeek, take cloud ↑↓ / group / sales / ongi. */
+export function overlayRemoteDraftRowOrderMeta(
+  localDraft: unknown,
+  remoteDraftOrMeta: unknown,
+  preferWhenBoth: 'local' | 'remote' = 'remote'
+): unknown {
+  return mergeDraftScheduleSlotOrderFromRemote(localDraft, remoteDraftOrMeta, {
+    preferWhenBoth,
+    keepLocalByWeek: true,
+  });
 }
 
 /** Write/replace one role's order for a specific week (does not write legacy global). */

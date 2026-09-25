@@ -2130,8 +2130,10 @@ export function buildCalendarBody(
       .replace(/\s+/g, ' ');
     if (!nameKey || nameKey === 'unassigned' || !assignmentStore) return false;
     const rs = assignmentStore[rid] || {};
-    for (let roleIdx = 0; roleIdx < SCHEDULE_GRID_ROLE_ORDER.length; roleIdx += 1) {
-      const role = SCHEDULE_GRID_ROLE_ORDER[roleIdx];
+    for (let ri = 0; ri < SCHEDULE_GRID_ROLE_ORDER.length; ri += 1) {
+      const role = SCHEDULE_GRID_ROLE_ORDER[ri];
+      const roleIdx = roleIdxForDraftRole(role);
+      if (roleIdx < 0) continue;
       const slotN = slotCountForRoleWithAssignments(draftRows, role, assignmentStore, rid, wi);
       for (let trIdx = 0; trIdx < slotN; trIdx += 1) {
         for (let day = 0; day < 7; day += 1) {

@@ -10,10 +10,13 @@ import {
 import type { LocationFilter } from '../../lib/timecards/restaurantAttribution';
 import type { PayWeekBounds } from '../../lib/timecards/types';
 import {
+  formatTipRateInput,
   getPayrollTipPoolInputs,
+  normalizeTipPoolRate,
+  patchWeekTipPoolSlice,
   payrollTipPoolTotals,
-  saveWeekTipPoolSlice,
-  type TipPoolInputs,
+  TIP_NET_RATE_DELIVERY,
+  TIP_NET_RATE_SQUARE,
 } from '../../lib/timecards/weekTipPool';
 
 type Props = {
@@ -63,16 +66,116 @@ type TipDraft = {
   cashTip: string;
 };
 
-function draftToPool(draft: TipDraft): TipPoolInputs {
-  return {
-    squareTips: Math.max(0, parseFloat(draft.squareTips) || 0),
-    squarePickup: Math.max(0, parseFloat(draft.squarePickup) || 0),
-    doordash: Math.max(0, parseFloat(draft.doordash) || 0),
-    uber: Math.max(0, parseFloat(draft.uber) || 0),
-    cashTip: Math.max(0, parseFloat(draft.cashTip) || 0),
-    sqGhDd: 0,
-    manual: true,
+type RateDraft = {
+  squareNetRate: string;
+  doordashNetRate: string;
+  uberNetRate: string;
+};
+
+export function TipPoolKeepRatesEditor({
+  bounds,
+  locationFilter = 'rp-9',
+}: {
+  bounds: PayWeekBounds;
+  locationFilter?: LocationFilter;
+}) {
+  const { t } = useI18n();
+  const { teamState } = useAppData();
+  const [draft, setDraft] = useState<RateDraft>({
+    squareNetRate: formatTipRateInput(TIP_NET_RATE_SQUARE),
+    doordashNetRate: formatTipRateInput(TIP_NET_RATE_DELIVERY),
+    uberNetRate: formatTipRateInput(TIP_NET_RATE_DELIVERY),
+  });
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const focusedRef = useRef(false);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadRates = useCallback(async () => {
+    const pool = await getPayrollTipPoolInputs(bounds, locationFilter);
+    setDraft({
+      squareNetRate: formatTipRateInput(pool.squareNetRate),
+      doordashNetRate: formatTipRateInput(pool.doordashNetRate),
+      uberNetRate: formatTipRateInput(pool.uberNetRate),
+    });
+  }, [bounds, locationFilter]);
+
+  const persistRates = useCallback(
+    async (next: RateDraft) => {
+      await patchWeekTipPoolSlice(
+        bounds,
+        {
+          squareNetRate: normalizeTipPoolRate(next.squareNetRate, TIP_NET_RATE_SQUARE),
+          doordashNetRate: normalizeTipPoolRate(next.doordashNetRate, TIP_NET_RATE_DELIVERY),
+          uberNetRate: normalizeTipPoolRate(next.uberNetRate, TIP_NET_RATE_DELIVERY),
+        },
+        locationFilter
+      );
+    },
+    [bounds, locationFilter]
+  );
+
+  useEffect(() => {
+    if (focusedRef.current) return;
+    void loadRates();
+  }, [loadRates, teamState?.updated_at]);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    };
+  }, []);
+
+  const onChangeField = (key: keyof RateDraft, value: string) => {
+    setDraft((prev) => {
+      const next = { ...prev, [key]: value };
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        void persistRates(next);
+      }, 250);
+      return next;
+    });
   };
+
+  const flushPersist = () => {
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    void persistRates(draftRef.current);
+  };
+
+  const rateFields: { key: keyof RateDraft; label: string }[] = [
+    { key: 'squareNetRate', label: t('timecards.squareKeepRate') },
+    { key: 'doordashNetRate', label: t('timecards.doordashKeepRate') },
+    { key: 'uberNetRate', label: t('timecards.uberKeepRate') },
+  ];
+
+  return (
+    <View>
+      <Text style={styles.panelTitle}>{t('timecards.keepRates')}</Text>
+      <Text style={styles.tipsHint}>{t('timecards.keepRatesHint')}</Text>
+      {rateFields.map((field) => (
+        <View key={field.key}>
+          <Text style={styles.label}>{field.label}</Text>
+          <TextInput
+            style={styles.input}
+            value={draft[field.key]}
+            onChangeText={(v) => onChangeField(field.key, v)}
+            onFocus={() => {
+              focusedRef.current = true;
+            }}
+            onBlur={() => {
+              focusedRef.current = false;
+            }}
+            onEndEditing={flushPersist}
+            keyboardType="decimal-pad"
+          />
+        </View>
+      ))}
+    </View>
+  );
 }
 
 export function GrandTotalsSection({
@@ -98,20 +201,6 @@ export function GrandTotalsSection({
   const focusedRef = useRef(false);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const updateSummary = useCallback(
-    (pool: TipPoolInputs) => {
-      const tipTotals = payrollTipPoolTotals(pool);
-      setTipSummary(
-        t('timecards.tipPoolSummary', {
-          squareInhouse: formatPayAmount(tipTotals.squareInhouse),
-          sqGhDd: formatPayAmount(tipTotals.sqGhDd),
-          totalTips: formatPayAmount(tipTotals.totalTips),
-        })
-      );
-    },
-    [t]
-  );
-
   const loadTips = useCallback(async () => {
     const pool = await getPayrollTipPoolInputs(bounds, locationFilter);
     setDraft({
@@ -121,20 +210,40 @@ export function GrandTotalsSection({
       uber: String(pool.uber),
       cashTip: String(pool.cashTip),
     });
-    updateSummary(pool);
-  }, [bounds, locationFilter, updateSummary]);
+    const tipTotals = payrollTipPoolTotals(pool);
+    setTipSummary(
+      t('timecards.tipPoolSummary', {
+        totalTips: formatPayAmount(tipTotals.totalTips),
+      })
+    );
+  }, [bounds, locationFilter, t]);
 
   const persistTips = useCallback(
     async (next: TipDraft) => {
-      const pool = draftToPool(next);
       const existing = await getPayrollTipPoolInputs(bounds, locationFilter);
-      if (!(pool.squarePickup > 0 || pool.doordash > 0 || pool.uber > 0)) {
-        pool.sqGhDd = existing.sqGhDd || 0;
-      }
-      await saveWeekTipPoolSlice(bounds, pool, locationFilter);
-      updateSummary(pool);
+      const squarePickup = Math.max(0, parseFloat(next.squarePickup) || 0);
+      const doordash = Math.max(0, parseFloat(next.doordash) || 0);
+      const uber = Math.max(0, parseFloat(next.uber) || 0);
+      const saved = await patchWeekTipPoolSlice(
+        bounds,
+        {
+          squareTips: Math.max(0, parseFloat(next.squareTips) || 0),
+          squarePickup,
+          doordash,
+          uber,
+          cashTip: Math.max(0, parseFloat(next.cashTip) || 0),
+          sqGhDd: squarePickup > 0 || doordash > 0 || uber > 0 ? 0 : existing.sqGhDd || 0,
+        },
+        locationFilter
+      );
+      const tipTotals = payrollTipPoolTotals(saved);
+      setTipSummary(
+        t('timecards.tipPoolSummary', {
+          totalTips: formatPayAmount(tipTotals.totalTips),
+        })
+      );
     },
-    [bounds, locationFilter, updateSummary]
+    [bounds, locationFilter, t]
   );
 
   const flushPersistTips = useCallback(() => {
@@ -160,7 +269,6 @@ export function GrandTotalsSection({
   const onChangeField = (key: keyof TipDraft, value: string) => {
     setDraft((prev) => {
       const next = { ...prev, [key]: value };
-      updateSummary(draftToPool(next));
       if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
       persistTimerRef.current = setTimeout(() => {
         persistTimerRef.current = null;
@@ -186,11 +294,11 @@ export function GrandTotalsSection({
   const allPaidMins =
     totals.totalMins + Math.round(totals.vlHours * 60) + Math.round(totals.slHours * 60);
 
-  const tipFields: { key: keyof TipDraft; label: string; hint?: string }[] = [
-    { key: 'squareTips', label: t('timecards.squareInHouseTips'), hint: t('timecards.tipRateSquare') },
-    { key: 'squarePickup', label: t('timecards.squarePickupTips'), hint: t('timecards.tipRateSquare') },
-    { key: 'doordash', label: t('timecards.doordashTips'), hint: t('timecards.tipRateDelivery') },
-    { key: 'uber', label: t('timecards.uberTips'), hint: t('timecards.tipRateDelivery') },
+  const tipFields: { key: keyof TipDraft; label: string }[] = [
+    { key: 'squarePickup', label: t('timecards.squarePickupTips') },
+    { key: 'squareTips', label: t('timecards.squareInHouseTips') },
+    { key: 'doordash', label: t('timecards.doordashTips') },
+    { key: 'uber', label: t('timecards.uberTips') },
     { key: 'cashTip', label: t('timecards.cashTips') },
   ];
 
@@ -237,11 +345,10 @@ export function GrandTotalsSection({
       {showTipPool ? (
         <View style={styles.tips}>
           <Text style={styles.tipsTitle}>{t('timecards.tipPool')}</Text>
-          <Text style={styles.tipsHint}>{t('timecards.tipPoolHint')}</Text>
+          <Text style={styles.tipsHint}>{t('timecards.grossTipsHint')}</Text>
           {tipFields.map((field) => (
             <View key={field.key}>
               <Text style={styles.label}>{field.label}</Text>
-              {field.hint ? <Text style={styles.fieldHint}>{field.hint}</Text> : null}
               <TextInput
                 style={styles.input}
                 value={draft[field.key]}
@@ -300,7 +407,26 @@ const styles = StyleSheet.create({
     borderTopColor: '#e8eaed',
   },
   tipsTitle: { fontSize: 14, fontWeight: '700', color: '#334155' },
-  tipsHint: { fontSize: 12, color: '#64748b', marginTop: 4, marginBottom: 10 },
+  panelTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: '#64748b',
+  },
+  ratesPanel: {
+    marginTop: 12,
+    marginBottom: 14,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+  },
+  amountsPanel: {
+    marginTop: 2,
+  },
+  tipsHint: { fontSize: 12, color: '#64748b', marginTop: 4, marginBottom: 6 },
   label: { fontSize: 12, fontWeight: '600', color: '#64748b', marginTop: 8, marginBottom: 2 },
   fieldHint: { fontSize: 11, color: '#94a3b8', marginBottom: 4 },
   input: {

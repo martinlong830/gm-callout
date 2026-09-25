@@ -118,6 +118,7 @@ import {
   slotCountForRole,
   slotCountForRoleWithAssignments,
   STAFF_TYPE_LABELS,
+  ROLE_DEFS,
   assignmentShell,
   WEEKDAY_KEYS,
   weekdayKeyFromScheduleDay,
@@ -145,6 +146,7 @@ import {
 import { enqueueRestaurantWeekCellOps } from '../../lib/schedule/weekCellOps';
 import {
   enqueueOps,
+  ensureBoundSlotKey,
   ensureSlotKey,
   fetchSlots,
   flushOutbox,
@@ -191,6 +193,7 @@ import {
   mergeDraftScheduleSlotOrderFromRemote,
   mergePendingDraftWithHydrated,
   moveTrIdxInSlotOrder,
+  overlayRemoteDraftRowOrderMeta,
   patchSlotOrderAfterAdd,
   patchSlotOrderAfterDelete,
   patchSlotOrderInDraftSchedule,
@@ -477,6 +480,9 @@ export default function ManagerScheduleScreen() {
   const suppressHydrateUndoClearRef = useRef(false);
   const assignmentStoreRef = useRef(assignmentStore);
   const draftScheduleRawRef = useRef<unknown>(null);
+  /** True after ↑↓ / add / delete row until a successful draft persist. */
+  const slotOrderDirtyRef = useRef(false);
+  const slotOrderPushedAtRef = useRef(0);
 
   /** Single horizontal ScrollView for all day columns — Person column stays outside. */
   const dayScrollRef = useRef<ScrollView | null>(null);
@@ -550,6 +556,9 @@ export default function ManagerScheduleScreen() {
         if (!cellsOnly) return;
         const liveAssign = assignmentStoreRef.current;
         const liveDraft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+        const applyRowOrderMeta =
+          !!opts?.cloudAuthority ||
+          (!slotOrderDirtyRef.current && Date.now() - slotOrderPushedAtRef.current > 4000);
         if (opts?.fullWindow) {
           const projected = await pullCloudCellsVisibleThenFull({
             sb: supabase,
@@ -559,6 +568,7 @@ export default function ManagerScheduleScreen() {
             liveAssign,
             liveDraft,
             cloudAuthority: !!opts?.cloudAuthority,
+            applyRowOrderMeta,
             onVisible: (vis) => {
               if (opts?.ignoreLocalEdit || !localEditPendingRef.current) applyProjectedStores(vis);
             },
@@ -577,6 +587,7 @@ export default function ManagerScheduleScreen() {
           liveDraft,
           cloudAuthority: !!opts?.cloudAuthority,
           fullWindow: false,
+          applyRowOrderMeta,
         });
         if (projected && (opts?.ignoreLocalEdit || !localEditPendingRef.current)) {
           applyProjectedStores(projected);
@@ -1170,7 +1181,11 @@ export default function ManagerScheduleScreen() {
             } else if (draftToSave !== undefined) {
               payload.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
                 draftToSave,
-                remoteRes.data?.draft_schedule
+                remoteRes.data?.draft_schedule,
+                {
+                  keepLocalByWeek: true,
+                  preferWhenBoth: slotOrderDirtyRef.current ? 'local' : 'remote',
+                }
               );
             }
           } catch (conflictMergeErr) {
@@ -1232,6 +1247,8 @@ export default function ManagerScheduleScreen() {
             pendingDraftRef.current = undefined;
             pendingStoreRef.current = null;
             localEditPendingRef.current = false;
+            slotOrderDirtyRef.current = false;
+            slotOrderPushedAtRef.current = Date.now();
             applyLocalScheduleAssignments(toSave, draftToSave, {
               markDirty: false,
               pushedUpdatedAt,
@@ -1474,8 +1491,8 @@ export default function ManagerScheduleScreen() {
       });
       const breakGrid = template.draftBreakSchedule;
       if (breakGrid && typeof breakGrid === 'object') {
-        (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIdx) => {
-          const rows = (breakGrid as Record<string, unknown>)[roleKey];
+        (ROLE_DEFS as { role: RoleKey }[]).forEach((rd, roleIdx) => {
+          const rows = (breakGrid as Record<string, unknown>)[rd.role];
           if (!Array.isArray(rows)) return;
           rows.forEach((row, trIdx) => {
             if (!Array.isArray(row)) return;
@@ -1505,7 +1522,7 @@ export default function ManagerScheduleScreen() {
         try {
           await flushPendingScheduleEdits();
           if (!supabase) return;
-          const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+          const rolesLoop = ROLE_DEFS;
           const ops: ScheduleOp[] = [];
           const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
           const rs = nextStore[currentRestaurantId] || {};
@@ -1518,8 +1535,8 @@ export default function ManagerScheduleScreen() {
             sort_order?: number;
             active?: boolean;
           }[];
-          for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
-            const roleKey = roles[roleIdx];
+          for (let roleIdx = 0; roleIdx < rolesLoop.length; roleIdx += 1) {
+            const roleKey = rolesLoop[roleIdx].role as RoleKey;
             const n = slotCountForRole(draft, roleKey);
             for (let trIdx = 0; trIdx < n; trIdx += 1) {
               const slotKey = await ensureSlotKey(
@@ -1848,15 +1865,26 @@ export default function ManagerScheduleScreen() {
                 /* Force blob push even in write-only, and upsert ISO cells (never delete). */
                 await persistCloud(nextAssign, nextDraft, { forceBlobPush: true });
                 try {
-                  const roles: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
+                  const rolesLoop = ROLE_DEFS;
                   const ops: ScheduleOp[] = [];
                   const rs = nextAssign[rid] || {};
                   const draft = loadDraftFromTeamState(nextDraft, wi, rid);
-                  for (let roleIdx = 0; roleIdx < roles.length; roleIdx += 1) {
-                    const roleKey = roles[roleIdx];
+                  const companyIdHr = (await readStoredCompanyId()) || '';
+                  const slotsResHr = companyIdHr
+                    ? await fetchSlots(sb, companyIdHr)
+                    : { data: [] as unknown[] };
+                  const knownSlotsHr = (slotsResHr.data || []) as {
+                    restaurant_id?: string;
+                    role?: string;
+                    slot_key?: string;
+                    sort_order?: number;
+                    active?: boolean;
+                  }[];
+                  for (let roleIdx = 0; roleIdx < rolesLoop.length; roleIdx += 1) {
+                    const roleKey = rolesLoop[roleIdx].role as RoleKey;
                     const n = slotCountForRole(draft, roleKey);
                     for (let trIdx = 0; trIdx < n; trIdx += 1) {
-                      const slotKey = await ensureSlotKey(rid, roleKey, trIdx);
+                      const slotKey = await ensureSlotKey(rid, roleKey, trIdx, knownSlotsHr);
                       ops.push(opAddSlot(rid, roleKey, slotKey, trIdx));
                       for (let di = 0; di < 7; di += 1) {
                         const dayIso = weekMeta[wi * 7 + di]?.iso;
@@ -2013,10 +2041,29 @@ export default function ManagerScheduleScreen() {
       const cellsOnly = await writeOnlyCells().catch(() => false);
       if (cancelled) return;
       /*
-       * Write-only: assignment/draft UI comes from ISO cells poll — do not re-apply
-       * team_state blobs (they diverge across devices).
+       * Write-only: assignment/draft times come from ISO cells poll — do not re-apply
+       * team_state byWeek blobs (they diverge across devices). Still take cloud ↑↓
+       * order so this week's people match web.
        */
-      if (cellsOnly) return;
+      if (cellsOnly) {
+        if (
+          !cancelled &&
+          !localEditPendingRef.current &&
+          !slotOrderDirtyRef.current &&
+          teamState?.draft_schedule &&
+          draftScheduleRawRef.current
+        ) {
+          const merged = overlayRemoteDraftRowOrderMeta(
+            draftScheduleRawRef.current,
+            teamState.draft_schedule,
+            'remote'
+          );
+          if (JSON.stringify(merged) !== JSON.stringify(draftScheduleRawRef.current)) {
+            setRolledDraftRaw(merged);
+          }
+        }
+        return;
+      }
       const pendingDraft = pendingDraftRef.current;
       const pendingStore = pendingStoreRef.current;
       const editPending = localEditPendingRef.current || !!pendingStore;
@@ -2426,7 +2473,12 @@ export default function ManagerScheduleScreen() {
       const worker = opts.isDayOff ? workerFromOpts || dayOffOwner : workerFromOpts;
       void (async () => {
         try {
-          const slotKey = await ensureSlotKey(currentRestaurantId, opts.role, opts.trIdx);
+          const slotKey = await ensureBoundSlotKey(
+            supabase,
+            currentRestaurantId,
+            opts.role,
+            opts.trIdx
+          );
           const ops: ScheduleOp[] = [opAddSlot(currentRestaurantId, opts.role, slotKey, opts.trIdx)];
           if (opts.isDayOff) {
             ops.push(
@@ -2825,10 +2877,16 @@ export default function ManagerScheduleScreen() {
     applyLocalScheduleAssignments(assignmentStore, draftPayload);
     queuePersist(assignmentStore, draftPayload);
     armCellWriteProtect(30000);
+    slotOrderDirtyRef.current = true;
     if (supabase) {
       void (async () => {
         try {
-          const slotKey = await ensureSlotKey(currentRestaurantId, roleKey, newTrIdx);
+          const slotKey = await ensureBoundSlotKey(
+            supabase,
+            currentRestaurantId,
+            roleKey,
+            newTrIdx
+          );
           await enqueueOps([opAddSlot(currentRestaurantId, roleKey, slotKey, newTrIdx)]);
           await flushOutbox(supabase);
         } catch {
@@ -2858,7 +2916,7 @@ export default function ManagerScheduleScreen() {
       void (async () => {
         let slotKey: string | null = null;
         try {
-          slotKey = await ensureSlotKey(currentRestaurantId, roleKey, trIdx);
+          slotKey = await ensureBoundSlotKey(supabase, currentRestaurantId, roleKey, trIdx);
         } catch (_sk) {
           slotKey = null;
         }
@@ -2884,6 +2942,7 @@ export default function ManagerScheduleScreen() {
         setAssignmentStore(nextStore);
         setRolledDraftRaw(draftPayload);
         applyLocalScheduleAssignments(nextStore, draftPayload);
+        slotOrderDirtyRef.current = true;
         queuePersist(nextStore, draftPayload);
         armCellWriteProtect(15000);
         if (slotKey) {
@@ -2957,6 +3016,7 @@ export default function ManagerScheduleScreen() {
     if (!nextOrder) return;
     pushUndoSnapshot();
     suppressHydrateUndoClearRef.current = true;
+    slotOrderDirtyRef.current = true;
     const draftPayload = patchSlotOrderInDraftSchedule(
       draftScheduleRawRef.current ?? draftScheduleRaw,
       selectedWeekMonday,
@@ -3020,7 +3080,12 @@ export default function ManagerScheduleScreen() {
     if (supabase) {
       void (async () => {
         try {
-          const slotKey = await ensureSlotKey(currentRestaurantId, target.role, target.trIdx);
+          const slotKey = await ensureBoundSlotKey(
+            supabase,
+            currentRestaurantId,
+            target.role,
+            target.trIdx
+          );
           const draft = loadDraftFromTeamState(
             draftScheduleRawRef.current,
             weekIndex,

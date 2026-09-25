@@ -195,13 +195,12 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         const cellsOnly = await writeOnlyCells().catch(() => false);
         const remote = data.teamState;
         const prev = teamStateRef.current;
-        const protectLocal =
-          cellsOnly ||
-          shouldProtectLocalSchedule(prev, remote as Record<string, unknown>);
+        const protectLocal = shouldProtectLocalSchedule(prev, remote as Record<string, unknown>);
         let mergedTeamState = remote;
         if (remote && prev) {
           mergedTeamState = mergeTeamStatePartial(prev, remote as Record<string, unknown>, {
             protectLocalSchedule: protectLocal,
+            writeOnlyCells: cellsOnly,
           }) as HydrationResult['teamState'];
         }
         setTeamState(mergedTeamState);
@@ -348,8 +347,8 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       const cellsOnly = await writeOnlyCells();
       setTeamState((prev) =>
         mergeTeamStatePartial(prev, partial, {
-          protectLocalSchedule:
-            cellsOnly || shouldProtectLocalSchedule(prev, partial),
+          protectLocalSchedule: shouldProtectLocalSchedule(prev, partial),
+          writeOnlyCells: cellsOnly,
         })
       );
       lastHydrateAtRef.current = Date.now();

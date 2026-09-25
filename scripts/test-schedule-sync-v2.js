@@ -515,6 +515,20 @@ function emptyState() {
   assert(filterMutateOps(typedWrong, {}).length === 1, 'reads op_type not only .type');
 })();
 
+// 23) pickStableSlotKey (web 3-arg): keep mapped UUID when still a candidate and cache is empty
+(function () {
+  assert(typeof sync.pickStableSlotKey === 'function', 'pickStableSlotKey exported');
+  var map = { 'rp-9|Bartender|3': 'aaa' };
+  assert(
+    sync.pickStableSlotKey('rp-9|Bartender|3', ['bbb', 'aaa', 'ccc'], map) === 'aaa',
+    'mapped key kept when it is still a candidate (no timed cells in cache)'
+  );
+  assert(
+    sync.pickStableSlotKey('rp-9|Bartender|3', ['ccc', 'bbb'], map) === 'bbb',
+    'stale mapped fork not in candidates → sorted remaining slot'
+  );
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

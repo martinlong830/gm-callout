@@ -4,11 +4,14 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { readStoredCompanyId } from '../companySession';
+import { fetchDraftScheduleRowOrderMeta } from '../teamStateColumns';
 import {
   loadDraftFromTeamState,
   patchDraftScheduleForWeek,
 } from './engine';
 import { isoAddDaysLocal, isoDaySpanInclusive } from './isoDate';
+import { overlayRemoteDraftRowOrderMeta } from './slotOrder';
 import type { AssignmentStore } from './types';
 
 const CELL_SELECT =
@@ -170,6 +173,163 @@ export function opReorderSlots(
   });
 }
 
+export type ScheduleSlotRow = {
+  restaurant_id?: string;
+  role?: string;
+  slot_key?: string;
+  sort_order?: number;
+  active?: boolean;
+};
+
+function slotMapStorageKey(restaurantId: string, role: string, sortOrder: number): string {
+  return `${restaurantId}|${role}|${sortOrder}`;
+}
+
+function liveTimedCellCountForSlotKey(
+  cells: Record<string, unknown>[] | undefined,
+  slotKey: string
+): number {
+  const key = String(slotKey);
+  let n = 0;
+  (cells || []).forEach((c) => {
+    if (!c || c.deleted) return;
+    if (String(c.slot_key || '') !== key) return;
+    if (c.start_hhmm && c.end_hhmm) n += 1;
+  });
+  return n;
+}
+
+/**
+ * Canonical slot_key for restaurant|role|sort_order — prefer the mapped key when it
+ * still exists, else the fork that actually has timed cells (web pickStableSlotKey).
+ */
+export function pickStableSlotKey(
+  mapKey: string,
+  candidates: string[],
+  preferMap: Record<string, string>,
+  timedCountForKey: (slotKey: string) => number
+): string | null {
+  const list = (candidates || []).filter(Boolean).map(String);
+  if (!list.length) return null;
+  list.sort();
+  let richest = list[0];
+  let richestN = timedCountForKey(richest);
+  for (let i = 1; i < list.length; i += 1) {
+    const n = timedCountForKey(list[i]);
+    if (n > richestN) {
+      richest = list[i];
+      richestN = n;
+    }
+  }
+  const prev = preferMap && preferMap[mapKey];
+  if (prev && list.indexOf(String(prev)) >= 0) {
+    const prevN = timedCountForKey(prev);
+    if (prevN >= richestN || richestN < 1) return String(prev);
+  }
+  return richest;
+}
+
+/** Rebuild restaurant|role|trIdx → slot_key from the active cloud slot list. */
+export async function bindSlotMapFromFetchedSlots(
+  slots: ScheduleSlotRow[],
+  cells?: Record<string, unknown>[]
+): Promise<Record<string, string>> {
+  const prevMap = await readJson<Record<string, string>>(SLOT_MAP_KEY, {});
+  if (!slots || !slots.length) return prevMap;
+  const bySort: Record<string, string[]> = {};
+  (slots || []).forEach((row) => {
+    if (!row || row.active === false) return;
+    const rid = String(row.restaurant_id || '');
+    const role = String(row.role || '');
+    const slotKey = String(row.slot_key || '');
+    if (!rid || !role || !slotKey) return;
+    const mk = slotMapStorageKey(rid, role, Number(row.sort_order) || 0);
+    if (!bySort[mk]) bySort[mk] = [];
+    bySort[mk].push(slotKey);
+  });
+  if (!Object.keys(bySort).length) return prevMap;
+  const nextMap: Record<string, string> = {};
+  const timed = (k: string) => liveTimedCellCountForSlotKey(cells, k);
+  Object.keys(bySort).forEach((mk) => {
+    const chosen = pickStableSlotKey(mk, bySort[mk], prevMap, timed);
+    if (chosen) nextMap[mk] = chosen;
+  });
+  await writeJson(SLOT_MAP_KEY, nextMap);
+  return nextMap;
+}
+
+function trIdxForBoundSlotKey(
+  restaurantId: string,
+  role: string,
+  slotKey: string,
+  slotMap: Record<string, string>,
+  sortOrderByPk: Map<string, number>
+): number | null {
+  const rid = String(restaurantId || '');
+  const roleS = String(role || '');
+  const key = String(slotKey || '');
+  if (!rid || !roleS || !key) return null;
+  let found: number | null = null;
+  Object.keys(slotMap || {}).forEach((k) => {
+    if (String(slotMap[k]) !== key) return;
+    const parts = String(k).split('|');
+    if (parts.length < 3) return;
+    if (String(parts[0]) !== rid || String(parts[1]) !== roleS) return;
+    const n = Number(parts[2]);
+    if (!Number.isNaN(n)) found = n;
+  });
+  if (found != null) return found;
+  const so = sortOrderByPk.get(`${rid}\0${roleS}\0${key}`);
+  if (so == null || so < 0) return null;
+  return Number(so) || 0;
+}
+
+function padDraftWeeksFromActiveSlots(
+  liveDraft: unknown,
+  slots: ScheduleSlotRow[],
+  weekIndices: number[]
+): unknown {
+  if (!weekIndices.length) return liveDraft;
+  const maxBy = new Map<string, number>();
+  (slots || []).forEach((s) => {
+    if (!s || s.active === false) return;
+    const rid = String(s.restaurant_id || '');
+    const role = String(s.role || '');
+    if (!rid || !role) return;
+    const k = `${rid}\0${role}`;
+    const n = Number(s.sort_order) || 0;
+    const prev = maxBy.get(k);
+    if (prev == null || n > prev) maxBy.set(k, n);
+  });
+  if (!maxBy.size) return liveDraft;
+  const rids = new Set<string>();
+  maxBy.forEach((_n, k) => {
+    const rid = k.split('\0')[0];
+    if (rid) rids.add(rid);
+  });
+  let draft = liveDraft;
+  weekIndices.forEach((wi) => {
+    rids.forEach((rid) => {
+      const layers = loadDraftFromTeamState(draft, wi, rid);
+      (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
+        const maxSort = maxBy.get(`${rid}\0${role}`);
+        if (maxSort == null || maxSort < 0) return;
+        const want = maxSort + 1;
+        if (!(layers as Record<string, unknown>)[role]) {
+          (layers as Record<string, unknown>)[role] = [];
+        }
+        const rows = (layers as Record<string, unknown[]>)[role] as unknown[];
+        if (!Array.isArray(rows)) return;
+        while (rows.length < want) {
+          rows.push([null, null, null, null, null, null, null]);
+        }
+      });
+      draft = patchDraftScheduleForWeek(draft, wi, rid, layers);
+    });
+  });
+  return draft;
+}
+
 export async function ensureSlotKey(
   restaurantId: string,
   role: string,
@@ -184,8 +344,6 @@ export async function ensureSlotKey(
 ): Promise<string> {
   const map = await readJson<Record<string, string>>(SLOT_MAP_KEY, {});
   const k = `${restaurantId}|${role}|${trIdx}`;
-  if (map[k]) return map[k];
-  /* Prefer an existing server slot so mobile does not fork UUIDs vs web. */
   const candidates = (knownSlots || [])
     .filter(
       (s) =>
@@ -196,13 +354,16 @@ export async function ensureSlotKey(
         Number(s.sort_order) === Number(trIdx) &&
         s.slot_key
     )
-    .map((s) => String(s.slot_key))
-    .sort();
+    .map((s) => String(s.slot_key));
   if (candidates.length) {
-    map[k] = candidates[0];
-    await writeJson(SLOT_MAP_KEY, map);
-    return candidates[0];
+    const chosen = pickStableSlotKey(k, candidates, map, () => 0);
+    if (chosen) {
+      map[k] = chosen;
+      await writeJson(SLOT_MAP_KEY, map);
+      return chosen;
+    }
   }
+  if (map[k]) return map[k];
   const sk = uuid();
   map[k] = sk;
   await writeJson(SLOT_MAP_KEY, map);
@@ -392,16 +553,35 @@ export async function fetchSlots(sb: SupabaseClient, companyId: string) {
     .eq('active', true);
 }
 
+/** Bind cloud slots then resolve restaurant|role|trIdx so edits hit the same UUID as web. */
+export async function ensureBoundSlotKey(
+  sb: SupabaseClient,
+  restaurantId: string,
+  role: string,
+  trIdx: number
+): Promise<string> {
+  const companyId = await readStoredCompanyId();
+  let known: ScheduleSlotRow[] = [];
+  if (companyId) {
+    const slotsRes = await fetchSlots(sb, companyId);
+    known = (slotsRes.data || []) as ScheduleSlotRow[];
+    await bindSlotMapFromFetchedSlots(known);
+  }
+  return ensureSlotKey(restaurantId, role, trIdx, known);
+}
+
 /**
  * Project fetched ISO cells onto legacy assignment + draft stores for one display window.
  * Used when write-only mode ignores team_state schedule blobs.
  */
 export function projectCellsOntoLocalStores(opts: {
   cells: Record<string, unknown>[];
-  slots: { restaurant_id?: string; role?: string; slot_key?: string; sort_order?: number }[];
+  slots: { restaurant_id?: string; role?: string; slot_key?: string; sort_order?: number; active?: boolean }[];
   weekMeta: { iso?: string }[];
   liveAssign: AssignmentStore;
   liveDraft: unknown;
+  /** restaurant|role|trIdx → slot_key (from bindSlotMapFromFetchedSlots). */
+  slotMap?: Record<string, string>;
   /** When set, replace that week from cells (drop stale local keys). */
   replaceWeekIndex?: number;
   /** Replace every week in `weekMeta` (Refresh / first-open cloud SoT). */
@@ -416,11 +596,13 @@ export function projectCellsOntoLocalStores(opts: {
   const slotTr = new Map<string, number>();
   (opts.slots || []).forEach((s) => {
     if (!s?.restaurant_id || !s.role || !s.slot_key) return;
+    if (s.active === false) return;
     slotTr.set(
       `${s.restaurant_id}\0${s.role}\0${s.slot_key}`,
       Number(s.sort_order) || 0
     );
   });
+  const slotMap = opts.slotMap || {};
   const nextAssign = JSON.parse(JSON.stringify(opts.liveAssign || {})) as AssignmentStore;
   let nextDraft: unknown =
     opts.liveDraft && typeof opts.liveDraft === 'object'
@@ -428,6 +610,7 @@ export function projectCellsOntoLocalStores(opts: {
       : { v: 2, byWeek: {} };
 
   const projected = new Set<string>();
+  const projectedRev = new Map<string, number>();
   (opts.cells || []).forEach((cell) => {
     if (!cell || cell.deleted) return;
     const dayIso = String(cell.day_iso || '').slice(0, 10);
@@ -439,10 +622,15 @@ export function projectCellsOntoLocalStores(opts: {
     const rid = String(cell.restaurant_id || '');
     const slotKey = String(cell.slot_key || '');
     if (!rid || !slotKey) return;
-    const trIdx = slotTr.get(`${rid}\0${role}\0${slotKey}`);
+    const trIdx = trIdxForBoundSlotKey(rid, role, slotKey, slotMap, slotTr);
     if (trIdx == null || trIdx < 0) return;
     const shiftId = `shift-${gdi}-${roleIdx}-${trIdx}`;
-    projected.add(`${rid}\0${shiftId}`);
+    const projKey = `${rid}\0${shiftId}`;
+    const remoteRev = Number(cell.rev) || 0;
+    const existingRev = projectedRev.get(projKey);
+    if (existingRev != null && existingRev > remoteRev) return;
+    projected.add(projKey);
+    projectedRev.set(projKey, remoteRev);
     if (!nextAssign[rid]) nextAssign[rid] = {};
     const worker =
       cell.worker_name && String(cell.worker_name) !== 'Unassigned'
@@ -535,6 +723,17 @@ export function projectCellsOntoLocalStores(opts: {
     });
   }
 
+  const padWeeks =
+    replaceWeeks.length > 0
+      ? replaceWeeks
+      : (() => {
+          const n = Math.floor((opts.weekMeta || []).length / 7);
+          const out: number[] = [];
+          for (let wi = 0; wi < n; wi += 1) out.push(wi);
+          return out;
+        })();
+  nextDraft = padDraftWeeksFromActiveSlots(nextDraft, opts.slots || [], padWeeks);
+
   return { assign: nextAssign, draft: nextDraft };
 }
 
@@ -548,6 +747,8 @@ export type CloudCellsPullOpts = {
   /** First-open / Refresh: do not flush leftover outbox (would stamp stale times). */
   cloudAuthority?: boolean;
   fullWindow?: boolean;
+  /** Overlay draft_schedule ↑↓ / group / sales from cloud (skip after a local row-order push). */
+  applyRowOrderMeta?: boolean;
 };
 
 /**
@@ -574,20 +775,30 @@ export async function pullCloudCellsOntoStores(
       fetchSlots(opts.sb, opts.companyId),
     ]);
     if (!cellsRes.ok || cellsRes.error || slotsRes.error) return null;
-    return projectCellsOntoLocalStores({
-      cells: cellsRes.rows || [],
-      slots: (slotsRes.data || []) as {
-        restaurant_id?: string;
-        role?: string;
-        slot_key?: string;
-        sort_order?: number;
-      }[],
+    const cells = cellsRes.rows || [];
+    const slots = (slotsRes.data || []) as ScheduleSlotRow[];
+    const slotMap = await bindSlotMapFromFetchedSlots(slots, cells);
+    const projected = projectCellsOntoLocalStores({
+      cells,
+      slots,
       weekMeta: opts.weekMeta,
       liveAssign: opts.liveAssign,
       liveDraft: opts.liveDraft,
+      slotMap,
       replaceWeekIndex: opts.fullWindow ? undefined : opts.weekIndex,
       replaceAllWeeks: !!opts.fullWindow,
     });
+    try {
+      if (opts.applyRowOrderMeta !== false) {
+        const meta = await fetchDraftScheduleRowOrderMeta(opts.sb);
+        if (meta) {
+          projected.draft = overlayRemoteDraftRowOrderMeta(projected.draft, meta, 'remote');
+        }
+      }
+    } catch (metaErr) {
+      console.warn('schedule row-order meta', metaErr);
+    }
+    return projected;
   } catch (err) {
     console.warn('pullCloudCellsOntoStores', err);
     return null;
@@ -618,12 +829,14 @@ export async function pullCloudCellsVisibleThenFull(opts: {
   liveAssign: AssignmentStore;
   liveDraft: unknown;
   cloudAuthority?: boolean;
+  applyRowOrderMeta?: boolean;
   onVisible?: (projected: { assign: AssignmentStore; draft: unknown }) => boolean | void;
 }): Promise<{ assign: AssignmentStore; draft: unknown } | null> {
   const visible = await pullCloudCellsOntoStores({
     ...opts,
     fullWindow: false,
     cloudAuthority: opts.cloudAuthority,
+    applyRowOrderMeta: opts.applyRowOrderMeta,
   });
   if (!visible) return null;
   if (opts.onVisible) {
@@ -639,6 +852,7 @@ export async function pullCloudCellsVisibleThenFull(opts: {
     liveDraft: visible.draft,
     fullWindow: true,
     cloudAuthority: true,
+    applyRowOrderMeta: opts.applyRowOrderMeta,
   });
   return full || visible;
 }

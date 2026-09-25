@@ -487,6 +487,79 @@ for (const name of expected) {
   if (names.indexOf(name) < 0) throw new Error('Missing sheet: ' + name);
 }
 
+const payrollSheet = build.find((s) => s.name === 'Payroll');
+if (!payrollSheet || !payrollSheet.worksheet) {
+  throw new Error('Payroll sheet missing worksheet');
+}
+const payrollText = worksheetText(payrollSheet.worksheet);
+const tipHeaderNeedles = [
+  'Square Pick Up Tips:',
+  'Square In House Tips:',
+  'DoorDash Tips:',
+  'Uber Tips:',
+  'Cash Tips:',
+  'Total tips:',
+];
+for (const needle of tipHeaderNeedles) {
+  if (payrollText.indexOf(needle) < 0) {
+    throw new Error('Payroll tip header missing ' + needle);
+  }
+}
+if (payrollText.indexOf('Square In House (Net)') >= 0) {
+  throw new Error('Payroll tip header still has Square In House (Net)');
+}
+if (payrollText.indexOf('SQ/GH/DD (Net)') >= 0) {
+  throw new Error('Payroll tip header still has SQ/GH/DD (Net)');
+}
+const pickupLabel = payrollSheet.worksheet.X1;
+const inHouseLabel = payrollSheet.worksheet.X2;
+const totalLabel = payrollSheet.worksheet.X7;
+if (!pickupLabel || String(pickupLabel.v) !== 'Square Pick Up Tips:') {
+  throw new Error('Payroll X1 should be Square Pick Up Tips, got ' + (pickupLabel && pickupLabel.v));
+}
+if (!inHouseLabel || String(inHouseLabel.v) !== 'Square In House Tips:') {
+  throw new Error('Payroll X2 should be Square In House Tips, got ' + (inHouseLabel && inHouseLabel.v));
+}
+if (!totalLabel || String(totalLabel.v) !== 'Total tips:') {
+  throw new Error('Payroll X7 should be Total tips, got ' + (totalLabel && totalLabel.v));
+}
+const totalFormula = payrollSheet.worksheet.Y7;
+const squareKeep = payrollSheet.worksheet.Z1;
+if (!squareKeep || Number(squareKeep.v) !== 0.97) {
+  throw new Error('Payroll Square keep rate Z1 should be 0.97, got ' + (squareKeep && squareKeep.v));
+}
+if (!totalFormula || String(totalFormula.f || '').indexOf('$Z$1') < 0) {
+  throw new Error('Payroll Total tips formula should multiply by Square keep Z1, got ' + (totalFormula && totalFormula.f));
+}
+console.log('OK: Payroll tip header is Pick Up / In House / DD / Uber / Cash / Total (no net rows)');
+
+function sheetFormulas(ws) {
+  return Object.keys(ws || {})
+    .filter((k) => k.charAt(0) !== '!')
+    .map((k) => (ws[k] && ws[k].f) || '')
+    .filter(Boolean);
+}
+function assertFormulaContains(formulas, needle, label) {
+  if (!formulas.some((f) => String(f).indexOf(needle) >= 0)) {
+    throw new Error(label + ' should use Excel formula containing ' + JSON.stringify(needle));
+  }
+}
+const payrollH4 = payrollSheet.worksheet.H4;
+if (!payrollH4 || !payrollH4.f) {
+  throw new Error('Payroll TOTAL HOURS (H4) should be a formula, got ' + JSON.stringify(payrollH4));
+}
+const payrollJ4 = payrollSheet.worksheet.J4;
+if (!payrollJ4 || !payrollJ4.f) {
+  throw new Error('Payroll TOTAL GROSS (J4) should be a formula, got ' + JSON.stringify(payrollJ4));
+}
+const laborSheet = build.find((s) => s.name === 'Labor Cost');
+const cpaSheet = build.find((s) => s.name === 'CPA');
+const payslipSheet = build.find((s) => s.name === 'Payslip');
+assertFormulaContains(sheetFormulas(laborSheet.worksheet), 'Payroll!', 'Labor Cost');
+assertFormulaContains(sheetFormulas(cpaSheet.worksheet), 'Payroll!', 'CPA');
+assertFormulaContains(sheetFormulas(payslipSheet.worksheet), 'Payroll!', 'Payslip');
+console.log('OK: Labor Cost, CPA, Payslip, and Payroll derived cells use Excel formulas');
+
 function worksheetText(ws) {
   return Object.keys(ws || {})
     .filter((k) => k.charAt(0) !== '!')
@@ -1582,6 +1655,9 @@ await verifyPayslipPatchedExport();
   }
   if (freshInfo.indexOf('1/1/2020') < 0) {
     throw new Error('forceFresh Employee Information must pick up hiring date edits');
+  }
+  if (freshInfo.indexOf('25') < 0) {
+    throw new Error('forceFresh Employee Information must pick up Team hourly rate edits');
   }
 
   /* Person-week SL extras must appear on PTO sheet after leave updates. */
