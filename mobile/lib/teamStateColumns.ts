@@ -273,18 +273,34 @@ export function mergeTeamStatePartial(
 
   if (opts?.writeOnlyCells) {
     /*
-     * Cells own times/names. Keep local assignment + byWeek blobs, but take cloud
-     * ↑↓ row order (and group/sales/ongi) so mobile matches web after Refresh.
+     * A phone edit updates the saved schedule and the draft. When this device
+     * has nothing unsaved, take that remote schedule so the other phone and
+     * the office computer stay on the same names, breaks, and times.
      */
-    if (prev.schedule_assignments != null) {
+    if (partial.schedule_assignments != null) {
+      const remoteKeys = Object.values(partial.schedule_assignments as Record<string, unknown>).reduce(
+        (n, rs) =>
+          n + (rs && typeof rs === 'object' && !Array.isArray(rs) ? Object.keys(rs as object).length : 0),
+        0
+      );
+      const localKeys = Object.values((prev.schedule_assignments || {}) as Record<string, unknown>).reduce(
+        (n, rs) =>
+          n + (rs && typeof rs === 'object' && !Array.isArray(rs) ? Object.keys(rs as object).length : 0),
+        0
+      );
+      /* A blank remote grid must not erase the names this phone already has. */
+      if (remoteKeys >= 200 || remoteKeys >= localKeys) {
+        next.schedule_assignments = partial.schedule_assignments;
+      } else if (prev.schedule_assignments != null) {
+        next.schedule_assignments = prev.schedule_assignments;
+      }
+    } else if (prev.schedule_assignments != null) {
       next.schedule_assignments = prev.schedule_assignments;
     }
-    if (partial.draft_schedule != null && prev.draft_schedule != null) {
-      next.draft_schedule = overlayRemoteDraftRowOrderMeta(
-        prev.draft_schedule,
-        partial.draft_schedule,
-        'remote'
-      );
+    if (partial.draft_schedule != null) {
+      next.draft_schedule = partial.draft_schedule;
+    } else if (prev.draft_schedule != null) {
+      next.draft_schedule = prev.draft_schedule;
     }
   } else if (
     Object.prototype.hasOwnProperty.call(partial, 'draft_schedule') &&

@@ -1529,6 +1529,27 @@ export function hydrateScheduleAssignmentsFromTeamState(
   draftMetaChanged: boolean;
   windowRolled: boolean;
 } {
+  /*
+   * The live blob is already on the current Monday. Skip the full-store JSON
+   * clone — that ran on every Home / Timecards open and stalled the phone.
+   */
+  const mondayIso = currentScheduleWeekMondayIso();
+  const prevIso = windowMondayIsoFromDraft(draftScheduleRaw);
+  if (
+    prevIso &&
+    prevIso === mondayIso &&
+    scheduleAssignments &&
+    typeof scheduleAssignments === 'object' &&
+    !Array.isArray(scheduleAssignments)
+  ) {
+    return {
+      store: scheduleAssignments as AssignmentStore,
+      draftSchedule: draftScheduleRaw,
+      changed: false,
+      draftMetaChanged: false,
+      windowRolled: false,
+    };
+  }
   const ids = restaurants.map((r) => r.id);
   const merged = mergeRemoteAssignments(
     assignmentShell(restaurants),
@@ -2945,7 +2966,10 @@ export function formatBreakAnnotation(time: string, type: string): string {
     .trim()
     .toUpperCase();
   if (t === 'NO BREAK') return '(NO BREAK TIME)';
-  if (t === 'OFFICE') return '(OFFICE)';
+  if (t === 'OFFICE') {
+    const officeTm = normalizeBreakAnnotationTime(time) || '2:00PM';
+    return `(${officeTm} OFFICE)`;
+  }
   const tm = normalizeBreakAnnotationTime(time);
   if (!tm || !t) return '';
   return `(${tm} ${t})`;
@@ -3002,7 +3026,7 @@ export function parseBreakAnnotation(text: string): {
       raw: s,
     };
   }
-  if (/office/i.test(s)) return { time: '', type: 'OFFICE', raw: s };
+  if (/office/i.test(s)) return { time: '2:00PM', type: 'OFFICE', raw: s };
   if (/break/i.test(s)) return { time: '3:00PM', type: 'BREAK TIME', raw: s };
   return { time: '3:00PM', type: 'BREAK TIME', raw: s };
 }
@@ -3019,7 +3043,8 @@ export function displayBreakAnnotation(
     return `(${labels.noBreak})`;
   }
   if (parsed.type === 'OFFICE') {
-    return `(${labels.office})`;
+    const officeTime = parsed.time || '2:00PM';
+    return `(${officeTime} ${labels.office})`;
   }
   if (parsed.time && parsed.type) {
     const typeLabel = parsed.type === 'BREAK TIME' ? labels.breakTime : parsed.type;

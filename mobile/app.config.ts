@@ -41,11 +41,11 @@ const config: AppConfig = {
     [
       'expo-router',
       {
-        // Defer non-initial route evaluation in dev; native production still uses sync requires
-        // on navigate, but Tabs already use lazy:true so employee screens stay off cold start.
+        // One bundle for the phone. Per-screen bundles made every bottom tab
+        // wait on a fresh download in Expo Go.
         asyncRoutes: {
           web: true,
-          default: 'development',
+          default: false,
         },
       },
     ],

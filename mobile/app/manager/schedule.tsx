@@ -158,7 +158,6 @@ import {
   pullCloudCellsVisibleThenFull,
   consumeDocumentCloudSoT,
   visibleWeekProjectionKey,
-  visibleWeekHasStaffedName,
   mergeBlobNamesIntoUnassigned,
   writeOnlyCells,
   type ScheduleOp,
@@ -238,8 +237,8 @@ const SECTION_ROW_H = 52;
 const SECTION_GAP_BELOW = 8;
 /** Shared header height so PERSON sticky and day headers stay level. */
 const HEADER_ROW_H = 52;
-/** Minimum data-row height (person + day cells share one row View). */
-const DATA_ROW_MIN_H = 96;
+/** Fixed data-row height so Person, day cells, and the right rail stay level. */
+const DATA_ROW_MIN_H = 128;
 const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-kitchen': { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
   'role-server': { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
@@ -335,7 +334,6 @@ export default function ManagerScheduleScreen() {
     staffRequests,
     teamState,
     refetch,
-    loading,
     applyLocalScheduleAssignments,
     myEmployee,
     setSchedulePushInFlight,
@@ -526,6 +524,8 @@ export default function ManagerScheduleScreen() {
   }, [teamState?.schedule_published]);
 
   const lastPaintKeyRef = useRef('');
+  const lastCellProjectionKeyRef = useRef('');
+  const lastMergedBlobRef = useRef<unknown>(null);
   const scheduleScreenFocusedRef = useRef(true);
   const scheduleFocusPullReadyRef = useRef(false);
   const applyProjectedStores = useCallback(
@@ -538,16 +538,25 @@ export default function ManagerScheduleScreen() {
         return;
       }
       let assign = projected.assign;
+      const blob = teamStateRef.current?.schedule_assignments;
+      const cellKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
       if (
-        !visibleWeekHasStaffedName(assign, weekIndex) &&
-        teamStateRef.current?.schedule_assignments
+        cellKey &&
+        cellKey === lastCellProjectionKeyRef.current &&
+        blob === lastMergedBlobRef.current
       ) {
-        const rolled = hydrateScheduleAssignmentsFromTeamState(
-          teamStateRef.current.schedule_assignments,
-          restaurantsRef.current,
-          teamStateRef.current.draft_schedule
-        );
-        assign = mergeBlobNamesIntoUnassigned(assign, rolled.store) || assign;
+        cloudCellsAppliedRef.current = true;
+        return;
+      }
+      lastCellProjectionKeyRef.current = cellKey;
+      lastMergedBlobRef.current = blob ?? null;
+      /*
+       * Cells often omit worker_name. Fill those slots from the schedule blob
+       * without writing the projection back into team state — that clone was
+       * restarting this pull and freezing the other tabs.
+       */
+      if (blob && typeof blob === 'object') {
+        assign = mergeBlobNamesIntoUnassigned(assign, blob as AssignmentStore) || assign;
       }
       const paintKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
       cloudCellsAppliedRef.current = true;
@@ -555,11 +564,8 @@ export default function ManagerScheduleScreen() {
       lastPaintKeyRef.current = paintKey;
       setAssignmentStore(assign);
       setRolledDraftRaw(projected.draft);
-      applyLocalScheduleAssignments(assign, projected.draft, {
-        markDirty: false,
-      });
     },
-    [applyLocalScheduleAssignments, cellWriteProtectActive, weekIndex]
+    [cellWriteProtectActive, weekIndex]
   );
 
   const pullCloudSchedule = useCallback(
@@ -579,7 +585,8 @@ export default function ManagerScheduleScreen() {
         const cellsOnly = await writeOnlyCells();
         if (!cellsOnly) return;
         const liveAssign = assignmentStoreRef.current;
-        const liveDraft = draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+        const liveDraft =
+          draftScheduleRawRef.current ?? teamStateRef.current?.draft_schedule ?? {};
         const applyRowOrderMeta =
           !!opts?.cloudAuthority ||
           (!slotOrderDirtyRef.current && Date.now() - slotOrderPushedAtRef.current > 4000);
@@ -620,45 +627,18 @@ export default function ManagerScheduleScreen() {
         console.warn('schedule sync v2 hydrate', err);
       }
     },
-    [
-      supabase,
-      role,
-      weekMeta,
-      weekIndex,
-      teamState?.draft_schedule,
-      applyProjectedStores,
-      cellWriteProtectActive,
-    ]
+    [supabase, role, weekMeta, weekIndex, applyProjectedStores, cellWriteProtectActive]
   );
-
-  useEffect(() => {
-    if (!supabase || !isManagerLikeRole(role)) return;
-    let cancelled = false;
-    const first = consumeDocumentCloudSoT();
-    void pullCloudSchedule({ fullWindow: first, cloudAuthority: first });
-    /* Poll only while this tab is open. A 5s full-store clone was freezing other pages. */
-    const pollTimer = setInterval(() => {
-      if (cancelled || !scheduleScreenFocusedRef.current) return;
-      if (localEditPendingRef.current || panelInputFocusedRef.current) return;
-      void pullCloudSchedule({ fullWindow: false });
-    }, 30000);
-    return () => {
-      cancelled = true;
-      if (pollTimer) clearInterval(pollTimer);
-    };
-  }, [supabase, role, weekIndex, pullCloudSchedule]);
+  const pullCloudScheduleRef = useRef(pullCloudSchedule);
+  pullCloudScheduleRef.current = pullCloudSchedule;
 
   useFocusEffect(
     useCallback(() => {
       scheduleScreenFocusedRef.current = true;
-      if (scheduleFocusPullReadyRef.current) {
-        void pullCloudSchedule({ fullWindow: false });
-      }
-      scheduleFocusPullReadyRef.current = true;
       return () => {
         scheduleScreenFocusedRef.current = false;
       };
-    }, [pullCloudSchedule])
+    }, [])
   );
 
   const publishedMap = useMemo(() => {
@@ -1049,8 +1029,33 @@ export default function ManagerScheduleScreen() {
     ]
   );
 
+  function assignmentShiftCount(store: AssignmentStore | null | undefined): number {
+  let n = 0;
+  Object.keys(store || {}).forEach((rid) => {
+    const rs = store?.[rid];
+    if (rs && typeof rs === 'object') n += Object.keys(rs).length;
+  });
+  return n;
+}
+
+/** Saved schedule plus any shifts edited on this phone. Never start from the empty shell. */
+function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): AssignmentStore {
+  if (!blob || typeof blob !== 'object' || Array.isArray(blob)) return local;
+  const base = blob as AssignmentStore;
+  const out: AssignmentStore = { ...base };
+  Object.keys(local || {}).forEach((rid) => {
+    const localRs = local[rid];
+    if (!localRs || typeof localRs !== 'object' || !Object.keys(localRs).length) return;
+    out[rid] = { ...(base[rid] || {}), ...localRs };
+  });
+  return out;
+}
+
   const draftScheduleRaw = rolledDraftRaw ?? teamState?.draft_schedule;
-  assignmentStoreRef.current = assignmentStore;
+  assignmentStoreRef.current = scheduleStoreForEdit(
+    teamState?.schedule_assignments,
+    assignmentStore
+  );
   draftScheduleRawRef.current = draftScheduleRaw;
   const draftRows = useMemo(
     () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
@@ -1139,8 +1144,11 @@ export default function ManagerScheduleScreen() {
               const remoteAssign = remoteRes.data?.schedule_assignments;
               if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
                 const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
-                merged[managedScope] = toSave[managedScope] || {};
-                toSave = merged;
+                const localRs = toSave[managedScope];
+                if (localRs && Object.keys(localRs).length >= 20) {
+                  merged[managedScope] = localRs;
+                  toSave = merged;
+                }
               }
             }
           } catch (mergeErr) {
@@ -1150,27 +1158,30 @@ export default function ManagerScheduleScreen() {
         const draftToSave =
           draftSchedule !== undefined ? draftSchedule : pendingDraftRef.current;
         const cellsOnly = opts?.forceBlobPush ? false : await writeOnlyCells();
+        const assignCount = assignmentShiftCount(toSave);
         const payload: Record<string, unknown> = {
           id: teamStateId,
         };
         const fields: string[] = [];
-        /* Schedule sync v2 write-only: cells/RPC are SoT — do not push legacy blobs. */
-        if (!cellsOnly) {
+        /*
+         * Cell ops update the office computer. The saved schedule is sent too
+         * so other phones match, but only when it still has the real grid.
+         * An empty shell must never replace the live schedule.
+         */
+        if ((!cellsOnly || assignCount >= 200) && assignCount >= 200) {
           payload.schedule_assignments = toSave;
           fields.push('schedule_assignments');
-          if (draftToSave !== undefined) {
-            payload.draft_schedule = draftToSave;
-            fields.push('draft_schedule');
-          }
-        } else if (draftToSave !== undefined) {
-          /* Group-order / net-sales / ↑↓ live in draft_schedule, not cells. */
+        }
+        if (draftToSave !== undefined) {
           payload.draft_schedule = draftToSave;
           fields.push('draft_schedule');
-        } else if (!fields.length) {
-          /* Nothing blob-shaped to push; ops already flushed via syncV2. */
+        }
+        if (!fields.length) {
           return;
         }
-        const pushedAssignJson = cellsOnly ? null : JSON.stringify(toSave);
+        const pushedAssignJson = fields.includes('schedule_assignments')
+          ? JSON.stringify(toSave)
+          : null;
         const pushedDraftJson = fields.includes('draft_schedule')
           ? JSON.stringify(payload.draft_schedule ?? draftToSave ?? null)
           : null;
@@ -1198,19 +1209,23 @@ export default function ManagerScheduleScreen() {
               .eq('id', teamStateId)
               .maybeSingle();
             const remoteAssign = remoteRes.data?.schedule_assignments;
-            if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
-              const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
-              if (managedScope === 'rp-8' || managedScope === 'rp-9') {
-                merged[managedScope] = toSave[managedScope] || {};
-              } else {
-                /* Admin / company-wide: overlay every restaurant we have locally. */
-                Object.keys(toSave).forEach((rid) => {
-                  if (toSave[rid] != null) merged[rid] = toSave[rid];
-                });
+              if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
+                const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
+                const localCount = assignmentShiftCount(toSave);
+                if (localCount >= 200) {
+                  if (managedScope === 'rp-8' || managedScope === 'rp-9') {
+                    const localRs = toSave[managedScope];
+                    if (localRs && Object.keys(localRs).length) merged[managedScope] = localRs;
+                  } else {
+                    Object.keys(toSave).forEach((rid) => {
+                      const localRs = toSave[rid];
+                      if (localRs && Object.keys(localRs).length) merged[rid] = localRs;
+                    });
+                  }
+                  toSave = merged;
+                  payload.schedule_assignments = toSave;
+                }
               }
-              toSave = merged;
-              payload.schedule_assignments = toSave;
-            }
             if (
               draftToSave === undefined &&
               remoteRes.data?.draft_schedule != null &&
@@ -1288,6 +1303,7 @@ export default function ManagerScheduleScreen() {
             localEditPendingRef.current = false;
             slotOrderDirtyRef.current = false;
             slotOrderPushedAtRef.current = Date.now();
+            setAssignmentStore(assignmentShell(restaurantsRef.current));
             applyLocalScheduleAssignments(toSave, draftToSave, {
               markDirty: false,
               pushedUpdatedAt,
@@ -2074,86 +2090,6 @@ export default function ManagerScheduleScreen() {
     openScheduleHistory,
   ]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const cellsOnly = await writeOnlyCells().catch(() => false);
-      if (cancelled) return;
-      /*
-       * Write-only: times/names come from ISO cells. Until that poll paints,
-       * seed from team_state blobs so the grid is not all-Unassigned and frozen.
-       * Do not stringify the full draft here — that blocked the JS thread.
-       */
-      if (cellsOnly) {
-        if (
-          !cloudCellsAppliedRef.current &&
-          !blobSeededRef.current &&
-          !localEditPendingRef.current &&
-          teamState
-        ) {
-          blobSeededRef.current = true;
-          const rolled = hydrateScheduleAssignmentsFromTeamState(
-            teamState.schedule_assignments,
-            restaurants,
-            teamState.draft_schedule
-          );
-          setAssignmentStore(rolled.store);
-          setRolledDraftRaw(rolled.draftSchedule ?? teamState.draft_schedule ?? null);
-        }
-        return;
-      }
-      const pendingDraft = pendingDraftRef.current;
-      const pendingStore = pendingStoreRef.current;
-      const editPending = localEditPendingRef.current || !!pendingStore;
-      const rolled = hydrateScheduleAssignmentsFromTeamState(
-        teamState?.schedule_assignments,
-        restaurants,
-        teamState?.draft_schedule
-      );
-      let draftOut: unknown = rolled.draftSchedule ?? teamState?.draft_schedule ?? null;
-      if (pendingDraft !== undefined) {
-        draftOut = mergePendingDraftWithHydrated(pendingDraft, draftOut);
-        pendingDraftRef.current = draftOut;
-      }
-      if (editPending) {
-        if (pendingStore) setAssignmentStore(pendingStore);
-        setRolledDraftRaw(draftOut);
-        suppressHydrateUndoClearRef.current = false;
-        return;
-      }
-      const nextStore = rolled.store;
-      if (cancelled) return;
-      setAssignmentStore(nextStore);
-      setRolledDraftRaw(draftOut);
-      if (rolled.changed && isManagerLikeRole(role)) {
-        if (!suppressHydrateUndoClearRef.current) clearUndoStack();
-        applyLocalScheduleAssignments(nextStore, draftOut, {
-          markDirty: 'keep',
-        });
-        queuePersist(nextStore, draftOut, { fromHydrate: true });
-      } else if (
-        (rolled.draftMetaChanged || rolled.windowRolled) &&
-        isManagerLikeRole(role)
-      ) {
-        applyLocalScheduleAssignments(nextStore, draftOut, { markDirty: 'keep' });
-      }
-      suppressHydrateUndoClearRef.current = false;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    teamState,
-    restaurants,
-    role,
-    scheduleEditable,
-    currentRestaurantId,
-    employees,
-    queuePersist,
-    applyLocalScheduleAssignments,
-    clearUndoStack,
-  ]);
-
   const [borrowByEmpId, setBorrowByEmpId] = useState<Record<string, string>>({});
   const [weekExtrasSlice, setWeekExtrasSlice] = useState<WeekExtrasSlice>({});
 
@@ -2208,6 +2144,65 @@ export default function ManagerScheduleScreen() {
     [employees, borrowByEmpId]
   );
 
+  /*
+   * Person column reads this week only. The full blob is not copied into React
+   * state — that copy, and the cell poll after it, froze the phone on Unassigned.
+   */
+  const gridStore = useMemo(() => {
+    const start = weekIndex * 7;
+    const end = start + 7;
+    const blob =
+      teamState?.schedule_assignments && typeof teamState.schedule_assignments === 'object'
+        ? (teamState.schedule_assignments as AssignmentStore)
+        : null;
+    const out: AssignmentStore = {};
+    const copyWeek = (src: AssignmentStore | null | undefined, overlay: boolean) => {
+      if (!src) return;
+      Object.keys(src).forEach((rid) => {
+        const rs = src[rid];
+        if (!rs) return;
+        Object.keys(rs).forEach((shiftId) => {
+          const m = /^shift-(\d+)-/.exec(shiftId);
+          if (!m) return;
+          const gdi = Number(m[1]);
+          if (gdi < start || gdi >= end) return;
+          const entry = rs[shiftId];
+          if (!out[rid]) out[rid] = {};
+          if (!overlay) {
+            out[rid][shiftId] = entry;
+            return;
+          }
+          const prev = out[rid][shiftId];
+          const prevRec =
+            prev && typeof prev === 'object' && !Array.isArray(prev)
+              ? (prev as { workers?: string[]; break?: string; rowOwner?: string; breakPaid?: boolean })
+              : null;
+          const nextRec =
+            entry && typeof entry === 'object' && !Array.isArray(entry)
+              ? (entry as { workers?: string[]; break?: string; rowOwner?: string; breakPaid?: boolean })
+              : null;
+          if (!nextRec) return;
+          const localName = (nextRec.workers || []).find((w) => w && w !== 'Unassigned');
+          if (!prevRec) {
+            out[rid][shiftId] = nextRec;
+            return;
+          }
+          const merged = { ...prevRec };
+          if (localName) merged.workers = nextRec.workers;
+          if (nextRec.break) merged.break = nextRec.break;
+          if (nextRec.rowOwner) merged.rowOwner = nextRec.rowOwner;
+          if (nextRec.breakPaid === true || nextRec.breakPaid === false) {
+            merged.breakPaid = nextRec.breakPaid;
+          }
+          out[rid][shiftId] = merged;
+        });
+      });
+    };
+    copyWeek(blob, false);
+    copyWeek(assignmentStore, true);
+    return out;
+  }, [assignmentStore, teamState?.schedule_assignments, weekIndex]);
+
   const schedule = useMemo(() => {
     try {
       return buildSchedule({
@@ -2216,14 +2211,14 @@ export default function ManagerScheduleScreen() {
         employees: lites,
         restaurants,
         currentRestaurantId,
-        assignmentStore,
+        assignmentStore: gridStore,
         weekIndex,
       });
     } catch (err) {
       console.warn('buildSchedule', err);
       return [] as ScheduleRow[];
     }
-  }, [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore, weekIndex]);
+  }, [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, gridStore, weekIndex]);
 
   const otherStoreDayLabels = useMemo(() => {
     try {
@@ -2233,7 +2228,7 @@ export default function ManagerScheduleScreen() {
         draftScheduleRaw,
         draftRows,
         restaurants,
-        assignmentStore,
+        assignmentStore: gridStore,
         currentRestaurantId,
       });
     } catch (err) {
@@ -2246,7 +2241,7 @@ export default function ManagerScheduleScreen() {
     draftScheduleRaw,
     draftRows,
     restaurants,
-    assignmentStore,
+    gridStore,
     currentRestaurantId,
   ]);
 
@@ -2315,7 +2310,7 @@ export default function ManagerScheduleScreen() {
         lites,
         currentRestaurantId,
         slotOrderByRestaurant,
-        assignmentStore,
+        gridStore,
         weekIndex,
         otherStoreDayLabels,
         abbreviateForManagedStoreId,
@@ -2333,7 +2328,7 @@ export default function ManagerScheduleScreen() {
     lites,
     currentRestaurantId,
     slotOrderByRestaurant,
-    assignmentStore,
+    gridStore,
     weekIndex,
     otherStoreDayLabels,
     leaveFlagByPersonDay,
@@ -2342,6 +2337,10 @@ export default function ManagerScheduleScreen() {
     myEmployee,
   ]);
 
+  /* Don't paint the default blank grid while the saved names are still loading. */
+  const schedulePaintReady = teamState?.schedule_assignments != null;
+  const paintedCalendar = schedulePaintReady ? calendarBody : [];
+
   /** Display position within role section → enable ↑/↓. */
   const slotMoveFlags = useMemo(() => {
     const flags = new Map<string, { up: boolean; down: boolean }>();
@@ -2349,7 +2348,7 @@ export default function ManagerScheduleScreen() {
       const slotN = slotCountForRoleWithAssignments(
         draftRows,
         roleKey,
-        assignmentStore,
+        gridStore,
         currentRestaurantId,
         weekIndex
       );
@@ -2361,7 +2360,7 @@ export default function ManagerScheduleScreen() {
         lites,
         currentRestaurantId,
         slotOrderByRestaurant,
-        assignmentStore,
+        gridStore,
         weekIndex
       );
       order.forEach((trIdx, pos) => {
@@ -2379,7 +2378,7 @@ export default function ManagerScheduleScreen() {
     lites,
     currentRestaurantId,
     slotOrderByRestaurant,
-    assignmentStore,
+    gridStore,
     weekIndex,
   ]);
 
@@ -2415,7 +2414,7 @@ export default function ManagerScheduleScreen() {
     const base = SHIFT_DETAIL_BREAK_TIME_PRESETS;
     const norm = normalizeBreakAnnotationTime(currentLabel || '') || '';
     /* Keep web draft-modal times (11:00AM–7:00PM) selectable so open/save does not rewrite them. */
-    if (norm && breakType === 'BREAK TIME' && base.indexOf(norm) < 0) {
+    if (norm && (breakType === 'BREAK TIME' || breakType === 'OFFICE') && base.indexOf(norm) < 0) {
       return [...base, norm];
     }
     return base;
@@ -2424,14 +2423,19 @@ export default function ManagerScheduleScreen() {
   function clampBreakTimeLabel(breakType: BreakAnnotationType, label: string): string {
     const norm = normalizeBreakAnnotationTime(label) || '';
     if (norm) return norm;
+    if (breakType === 'OFFICE') return '2:00PM';
     return breakType === 'BREAK TIME' ? '3:00PM' : '';
   }
 
   function applyBreakTypeChange(breakType: BreakAnnotationType) {
     setEditBreakType(breakType);
-    if (breakType === 'OFFICE' || breakType === 'NO BREAK') return;
-    const nextLabel = clampBreakTimeLabel('BREAK TIME', normalizeBreakAnnotationTime(editBreakTime) || '3:00PM');
-    setEditBreakTime(breakAnnotationTimeToHHMM(nextLabel) || '15:00');
+    if (breakType === 'NO BREAK') return;
+    const fallback = breakType === 'OFFICE' ? '2:00PM' : '3:00PM';
+    const nextLabel = clampBreakTimeLabel(
+      breakType,
+      breakType === 'OFFICE' ? '2:00PM' : normalizeBreakAnnotationTime(editBreakTime) || fallback
+    );
+    setEditBreakTime(breakAnnotationTimeToHHMM(nextLabel) || (breakType === 'OFFICE' ? '14:00' : '15:00'));
   }
 
   function persistSlotEdit(opts: {
@@ -2608,13 +2612,16 @@ export default function ManagerScheduleScreen() {
       setEditEnd(target.shift.end || '18:00');
       setEditBreakType(parsed.type);
       const breakLabel =
-        parsed.type === 'BREAK TIME'
-          ? clampBreakTimeLabel(parsed.type, parsed.time || '3:00PM')
-          : '';
+        parsed.type === 'NO BREAK'
+          ? ''
+          : clampBreakTimeLabel(
+              parsed.type,
+              parsed.time || (parsed.type === 'OFFICE' ? '2:00PM' : '3:00PM')
+            );
       setEditBreakTime(
-        parsed.type === 'BREAK TIME'
-          ? breakAnnotationTimeToHHMM(breakLabel) || '15:00'
-          : '15:00'
+        parsed.type === 'NO BREAK'
+          ? '15:00'
+          : breakAnnotationTimeToHHMM(breakLabel) || (parsed.type === 'OFFICE' ? '14:00' : '15:00')
       );
       const w = (target.shift.workers || []).find((n) => n && n !== 'Unassigned');
       nextWorker = w || 'Unassigned';
@@ -2802,15 +2809,22 @@ export default function ManagerScheduleScreen() {
         Alert.alert(t('schedule.invalidTime'), t('schedule.invalidTimeHint'));
         return;
       }
-      if (breakType === 'BREAK TIME' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
+      if (
+        (breakType === 'BREAK TIME' || breakType === 'OFFICE') &&
+        !normalizeBreakAnnotationTime(breakTimeRaw)
+      ) {
         Alert.alert(t('schedule.invalidBreakTime'), t('schedule.invalidBreakHint'));
         return;
       }
     }
     const breakLabel =
-      breakType === 'BREAK TIME'
-        ? clampBreakTimeLabel(breakType, normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM')
-        : '';
+      breakType === 'NO BREAK'
+        ? ''
+        : clampBreakTimeLabel(
+            breakType,
+            normalizeBreakAnnotationTime(breakTimeRaw) ||
+              (breakType === 'OFFICE' ? '2:00PM' : '3:00PM')
+          );
     const breakText = formatBreakAnnotation(breakLabel || '3:00PM', breakType);
     const list =
       editWorker === 'Unassigned' ? ['Unassigned'] : [editWorker].filter(Boolean);
@@ -3417,14 +3431,13 @@ export default function ManagerScheduleScreen() {
               ))}
             </ScrollView>
             <View style={styles.locActions}>
-              {loading ? <ActivityIndicator /> : null}
               {saving ? <Text style={styles.syncHint}>{t('common.saving')}</Text> : null}
               <Pressable
                 onPress={() => {
                   clearUndoStack();
-                  void refetch();
-                  void pullCloudSchedule({
-                    fullWindow: true,
+                  void refetch({ silent: true });
+                  void pullCloudScheduleRef.current({
+                    fullWindow: false,
                     cloudAuthority: true,
                     ignoreLocalEdit: true,
                   });
@@ -3484,7 +3497,7 @@ export default function ManagerScheduleScreen() {
                 <Text style={styles.thFull}>{t('schedule.personHeader')}</Text>
                 <Text style={styles.thSub}>{t('schedule.rowAssignee')}</Text>
               </View>
-              {calendarBody.map((row, ri) => {
+              {paintedCalendar.map((row, ri) => {
                 const move =
                   row.kind === 'cells'
                     ? slotMoveFlags.get(`${row.role}:${row.trIdx}`)
@@ -3497,7 +3510,7 @@ export default function ManagerScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
-                    assignmentStore={assignmentStore}
+                    assignmentStore={gridStore}
                     weekIndex={weekIndex}
                     editable={scheduleEditable}
                     onOpenRowPerson={(t) => {
@@ -3556,7 +3569,7 @@ export default function ManagerScheduleScreen() {
                       );
                     })}
                   </View>
-                  {calendarBody.map((row, ri) => (
+                  {paintedCalendar.map((row, ri) => (
                     <DayColRow
                       key={`d-${ri}`}
                       row={row}
@@ -3574,7 +3587,7 @@ export default function ManagerScheduleScreen() {
                       <Text style={styles.sideTotalsTitle}>{t('schedule.personTotals')}</Text>
                       <Text style={styles.thSub}>{t('schedule.personTotalsSub')}</Text>
                     </View>
-                    {calendarBody.map((row, ri) => {
+                    {paintedCalendar.map((row, ri) => {
                       if (row.kind === 'section') {
                         const sectionTotal = sectionWeekTotals.get(row.variant) || {
                           paidHours: 0,
@@ -3587,8 +3600,9 @@ export default function ManagerScheduleScreen() {
                             key={`pt-s-${ri}`}
                             style={[
                               styles.personTotalsSection,
+                              styles.sectionMatrixRow,
                               {
-                                height: SECTION_ROW_H + SECTION_GAP_BELOW,
+                                height: SECTION_ROW_H,
                                 backgroundColor: sectionBg(row.variant),
                               },
                             ]}
@@ -4246,13 +4260,9 @@ export default function ManagerScheduleScreen() {
                       <View style={styles.editField}>
                         <Text style={styles.editFieldLabel}>{t('common.start')}</Text>
                         <TextInput
-                          style={[
-                            styles.editInput,
-                            editBreakType === 'OFFICE' && styles.editInputLocked,
-                          ]}
+                          style={styles.editInput}
                           value={editStart}
                           onChangeText={setEditStart}
-                          editable={editBreakType !== 'OFFICE'}
                           placeholder="10:00"
                           autoCapitalize="none"
                           autoCorrect={false}
@@ -4298,7 +4308,7 @@ export default function ManagerScheduleScreen() {
                         </Pressable>
                       ))}
                     </View>
-                    {editBreakType === 'BREAK TIME' ? (
+                    {editBreakType === 'BREAK TIME' || editBreakType === 'OFFICE' ? (
                       <View style={{ marginTop: 10 }}>
                         <Text style={styles.editFieldLabel}>{t('schedule.assignedTime')}</Text>
                         <View style={styles.chipWrap}>
@@ -4726,21 +4736,8 @@ const CalendarCellView = memo(function CalendarCellView({
       breakTime: t('schedule.breakTime'),
       office: t('schedule.office'),
     });
-  const otherStoreBadge = (label: string, stacked: boolean) => (
-    <View style={[styles.otherStorePill, stacked ? styles.flagPillStacked : null]}>
-      <Text style={styles.otherStorePillText} numberOfLines={1}>
-        {label}
-      </Text>
-    </View>
-  );
-  const leaveFlagBadge = (label: string, stacked: boolean, stacked2?: boolean) => (
-    <View
-      style={[
-        styles.leaveFlagPill,
-        stacked ? styles.flagPillStacked : null,
-        stacked2 ? styles.flagPillStacked2 : null,
-      ]}
-    >
+  const leaveFlagBadge = (label: string) => (
+    <View style={styles.leaveFlagPill}>
       <Text style={styles.leaveFlagPillText} numberOfLines={1}>
         {label}
       </Text>
@@ -4763,22 +4760,20 @@ const CalendarCellView = memo(function CalendarCellView({
     );
   };
   const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: number) => {
-    const belowLeave = (otherStore ? 1 : 0) + (ongi ? 1 : 0);
+    if (!leaveFlag && !otherStore && !ongi) return null;
     return (
-      <>
-        {leaveFlag ? leaveFlagBadge(leaveFlag, belowLeave >= 1, belowLeave >= 2) : null}
-        {otherStore ? otherStoreBadge(otherStore, !!ongi) : null}
+      <View style={styles.flagStack}>
+        {leaveFlag ? leaveFlagBadge(leaveFlag) : null}
+        {otherStore ? (
+          <View style={styles.otherStorePill}>
+            <Text style={styles.otherStorePillText} numberOfLines={1}>
+              {otherStore}
+            </Text>
+          </View>
+        ) : null}
         {ongi ? ongiBadge(ongi) : null}
-      </>
+      </View>
     );
-  };
-  const flagCountForCell = (c: CalendarCell) =>
-    (c.leaveFlag ? 1 : 0) + (c.otherStoreLabel ? 1 : 0) + (c.ongiFlag ? 1 : 0);
-  const extraFlagPad = (c: CalendarCell) => {
-    const n = flagCountForCell(c);
-    if (n >= 3) return 36;
-    if (n >= 2) return 18;
-    return 0;
   };
   if (cell.kind === 'empty') {
     const target: ShiftEditTarget = {
@@ -4787,7 +4782,6 @@ const CalendarCellView = memo(function CalendarCellView({
       dayStr: cell.dayStr,
     };
     const pill = pillForRole(cell.role);
-    const extraPad = extraFlagPad(cell);
     const emptyStyle = [
       styles.cellInnerEmpty,
       {
@@ -4795,7 +4789,6 @@ const CalendarCellView = memo(function CalendarCellView({
         borderColor: pill.border,
         borderLeftColor: pill.fg,
       },
-      extraPad ? { paddingBottom: 22 + extraPad } : null,
     ];
     const body = (
       <>
@@ -4822,7 +4815,6 @@ const CalendarCellView = memo(function CalendarCellView({
       dayStr: cell.dayStr,
     };
     const pill = pillForRole(cell.role);
-    const extraPad = extraFlagPad(cell);
     const emptyStyle = [
       styles.cellInnerEmpty,
       styles.cellInnerEmptyTimed,
@@ -4831,7 +4823,6 @@ const CalendarCellView = memo(function CalendarCellView({
         borderColor: pill.border,
         borderLeftColor: pill.fg,
       },
-      extraPad ? { paddingBottom: 22 + extraPad } : null,
     ];
     const body = (
       <>
@@ -4859,7 +4850,6 @@ const CalendarCellView = memo(function CalendarCellView({
     shift: cell.shift,
   };
   const rd = ROLE_PILL[cell.shift.roleClass] || ROLE_PILL['role-kitchen'];
-  const extraPad = extraFlagPad(cell);
   const filledStyle = [
     styles.cellInner,
     {
@@ -4867,7 +4857,6 @@ const CalendarCellView = memo(function CalendarCellView({
       borderColor: rd.border,
       borderLeftColor: rd.fg,
     },
-    extraPad ? { paddingBottom: 22 + extraPad } : null,
   ];
   const filledBody = (
     <>
@@ -4892,6 +4881,7 @@ const CalendarCellView = memo(function CalendarCellView({
         <Text style={styles.cellDayOffBtnText}>×</Text>
       </Pressable>
       <Pressable
+        style={styles.cellHit}
         onPress={() => onOpenShift(target)}
         onLongPress={() => onLongPressShift(target)}
         delayLongPress={350}
@@ -5020,7 +5010,7 @@ const styles = StyleSheet.create({
   syncHint: { fontSize: 13, color: '#64748b' },
   refreshBtn: { paddingVertical: 4 },
   refreshTxt: { fontSize: 14, color: '#c41230', fontWeight: '700' },
-  matrix: { paddingLeft: 4, paddingBottom: 16, alignSelf: 'stretch', width: '100%' },
+  matrix: { paddingLeft: 4, paddingBottom: 0, alignSelf: 'stretch', width: '100%' },
   matrixInner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -5036,7 +5026,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: '#eef2f7',
     backgroundColor: '#fff',
-    minHeight: DATA_ROW_MIN_H,
+    height: DATA_ROW_MIN_H,
+    overflow: 'hidden',
   },
   personTh: {
     height: HEADER_ROW_H,
@@ -5192,7 +5183,7 @@ const styles = StyleSheet.create({
   },
   dataDays: {
     flexDirection: 'row',
-    minHeight: DATA_ROW_MIN_H,
+    height: DATA_ROW_MIN_H,
     alignItems: 'stretch',
   },
   sideTotals: {
@@ -5211,6 +5202,9 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   personTotalsSection: {
+    height: SECTION_ROW_H,
+    overflow: 'hidden',
+    justifyContent: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e2e8f0',
   },
@@ -5226,7 +5220,7 @@ const styles = StyleSheet.create({
     color: '#334155',
   },
   belowPanels: {
-    marginTop: 12,
+    marginTop: 0,
     marginBottom: 8,
     gap: 8,
   },
@@ -5377,7 +5371,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   personTotalsCell: {
-    minHeight: DATA_ROW_MIN_H,
+    height: DATA_ROW_MIN_H,
+    overflow: 'hidden',
     paddingHorizontal: 4,
     paddingVertical: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -5394,7 +5389,7 @@ const styles = StyleSheet.create({
   },
   sideTotalsNet: { fontSize: 11, fontWeight: '700', color: '#0f766e', marginTop: 1 },
   sideTotalsTag: { fontSize: 8, fontWeight: '500', color: '#64748b' },
-  cell: { minHeight: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
+  cell: { height: DATA_ROW_MIN_H, borderRightWidth: 1, borderColor: '#f1f5f9', padding: 4 },
   cellInner: {
     flex: 1,
     borderWidth: 1,
@@ -5402,8 +5397,15 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingTop: 6,
     paddingHorizontal: 6,
-    paddingBottom: 22,
+    paddingBottom: 6,
     position: 'relative',
+  },
+  cellHit: {
+    flex: 1,
+  },
+  flagStack: {
+    marginTop: 'auto',
+    gap: 2,
   },
   cellInnerEmpty: {
     flex: 1,
@@ -5413,7 +5415,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingTop: 6,
     paddingHorizontal: 6,
-    paddingBottom: 22,
+    paddingBottom: 6,
     position: 'relative',
   },
   cellInnerEmptyTimed: {
@@ -5444,11 +5446,7 @@ const styles = StyleSheet.create({
   dayoffLabel: { fontSize: 11, fontWeight: '700', color: '#94a3b8', marginTop: 2 },
   dayoffSmall: { fontSize: 11, fontWeight: '700', color: '#cbd5e1', textAlign: 'center' },
   otherStorePill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
@@ -5463,23 +5461,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   leaveFlagPill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
     backgroundColor: '#dbeafe',
     borderWidth: 1,
     borderColor: '#93c5fd',
-  },
-  flagPillStacked: {
-    bottom: 22,
-  },
-  flagPillStacked2: {
-    bottom: 40,
   },
   leaveFlagPillText: {
     fontSize: 10,
@@ -5488,11 +5476,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   ongiFlagPill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,

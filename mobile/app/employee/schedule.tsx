@@ -63,9 +63,7 @@ import {
   backfillIfNeeded,
   consumeDocumentCloudSoT,
   pullCloudCellsOntoStores,
-  pullCloudCellsVisibleThenFull,
   visibleWeekProjectionKey,
-  visibleWeekHasStaffedName,
   mergeBlobNamesIntoUnassigned,
   writeOnlyCells,
 } from '../../lib/schedule/syncV2';
@@ -81,7 +79,7 @@ const SIDE_TOTALS_W = 68;
 const SECTION_ROW_H = 40;
 const SECTION_GAP_BELOW = 8;
 const HEADER_ROW_H = 52;
-const DATA_ROW_H = 80;
+const DATA_ROW_H = 128;
 const ROLE_PILL: Record<string, { bg: string; fg: string; border: string }> = {
   'role-kitchen': { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
   'role-server': { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
@@ -252,25 +250,37 @@ export default function EmployeeScheduleScreen() {
   const cellAssignRef = useRef(cellAssign);
   const cellDraftRef = useRef(cellDraft);
   const lastPaintKeyRef = useRef('');
+  const lastCellProjectionKeyRef = useRef('');
+  const lastMergedBlobRef = useRef<unknown>(null);
   const scheduleScreenFocusedRef = useRef(false);
+  const teamStateRef = useRef(teamState);
   cellAssignRef.current = cellAssign;
   cellDraftRef.current = cellDraft;
+  teamStateRef.current = teamState;
 
-  /** Same ISO cell SoT as managers — visible week first, then full window on open. */
+  /** Names come from the saved schedule. A cell poll here cloned the week and froze taps. */
   useEffect(() => {
+    return;
     if (!supabase) return;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     const applyProjected = (projected: { assign: AssignmentStore; draft: unknown }) => {
       let assign = projected.assign;
-      if (!visibleWeekHasStaffedName(assign, weekIndex) && teamState?.schedule_assignments) {
-        const rolled = hydrateScheduleAssignmentsFromTeamState(
-          teamState.schedule_assignments,
-          allRestaurants,
-          teamState.draft_schedule
-        );
-        assign = mergeBlobNamesIntoUnassigned(assign, rolled.store) || assign;
+      const ts = teamStateRef.current;
+      const blob = ts?.schedule_assignments;
+      const cellKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
+      if (
+        cellKey &&
+        cellKey === lastCellProjectionKeyRef.current &&
+        blob === lastMergedBlobRef.current
+      ) {
+        return;
+      }
+      lastCellProjectionKeyRef.current = cellKey;
+      lastMergedBlobRef.current = blob ?? null;
+      if (blob && typeof blob === 'object') {
+        assign = mergeBlobNamesIntoUnassigned(assign, blob as AssignmentStore) || assign;
       }
       const paintKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
       if (paintKey && paintKey === lastPaintKeyRef.current) return;
@@ -279,7 +289,7 @@ export default function EmployeeScheduleScreen() {
       setCellDraft(projected.draft);
     };
 
-    const pullCells = async (opts?: { fullWindow?: boolean; cloudAuthority?: boolean }) => {
+    const pullCells = async (opts?: { cloudAuthority?: boolean }) => {
       try {
         if (!supabase) return;
         const companyId = await readStoredCompanyId();
@@ -288,38 +298,23 @@ export default function EmployeeScheduleScreen() {
         if (cancelled) return;
         const cellsOnly = await writeOnlyCells();
         if (!cellsOnly || cancelled) return;
+        const ts = teamStateRef.current;
         const liveAssign =
           cellAssignRef.current ||
           hydrateScheduleAssignmentsFromTeamState(
-            teamState?.schedule_assignments,
+            ts?.schedule_assignments,
             allRestaurants,
-            teamState?.draft_schedule
+            ts?.draft_schedule
           ).store;
         const liveDraft =
           cellDraftRef.current ??
           hydrateScheduleAssignmentsFromTeamState(
-            teamState?.schedule_assignments,
+            ts?.schedule_assignments,
             allRestaurants,
-            teamState?.draft_schedule
+            ts?.draft_schedule
           ).draftSchedule ??
-          teamState?.draft_schedule ??
+          ts?.draft_schedule ??
           {};
-        if (opts?.fullWindow) {
-          const projected = await pullCloudCellsVisibleThenFull({
-            sb: supabase,
-            companyId,
-            weekMeta,
-            weekIndex,
-            liveAssign,
-            liveDraft,
-            cloudAuthority: !!opts.cloudAuthority,
-            onVisible: (vis) => {
-              if (!cancelled) applyProjected(vis);
-            },
-          });
-          if (!cancelled && projected) applyProjected(projected);
-          return;
-        }
         const projected = await pullCloudCellsOntoStores({
           sb: supabase,
           companyId,
@@ -337,24 +332,17 @@ export default function EmployeeScheduleScreen() {
     };
 
     const first = consumeDocumentCloudSoT();
-    void pullCells({ fullWindow: first, cloudAuthority: first });
+    void pullCells({ cloudAuthority: first });
     pollTimer = setInterval(() => {
       if (cancelled || !scheduleScreenFocusedRef.current) return;
-      void pullCells({ fullWindow: false });
+      void pullCells();
     }, 30000);
 
     return () => {
       cancelled = true;
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [
-    supabase,
-    weekMeta,
-    weekIndex,
-    teamState?.schedule_assignments,
-    teamState?.draft_schedule,
-    allRestaurants,
-  ]);
+  }, [supabase, weekMeta, weekIndex, allRestaurants]);
 
   useFocusEffect(
     useCallback(() => {
@@ -532,6 +520,9 @@ export default function EmployeeScheduleScreen() {
     ongiFlagByCell,
   ]);
 
+  const schedulePaintReady = teamState?.schedule_assignments != null;
+  const paintedCalendar = schedulePaintReady ? calendarBody : [];
+
   const daysWidth = visibleDays.length * CELL_MIN;
 
   const rowWeekTotals = useMemo(() => {
@@ -637,7 +628,7 @@ export default function EmployeeScheduleScreen() {
                   <Text style={styles.thFull}>{t('schedule.personHeader')}</Text>
                   <Text style={styles.thSub}>{t('schedule.rowAssignee')}</Text>
                 </View>
-                {calendarBody.map((row, ri) => (
+                {paintedCalendar.map((row, ri) => (
                   <PersonColRow
                     key={`p-${ri}`}
                     row={row}
@@ -695,7 +686,7 @@ export default function EmployeeScheduleScreen() {
                       );
                     })}
                   </View>
-                  {calendarBody.map((row, ri) => (
+                  {paintedCalendar.map((row, ri) => (
                     <DayColRow key={`d-${ri}`} row={row} daysWidth={daysWidth} dayOffLabel={t('schedule.dayOffLabel')} />
                   ))}
                 </View>
@@ -704,7 +695,7 @@ export default function EmployeeScheduleScreen() {
                     <Text style={styles.sideTotalsTitle}>{t('schedule.personTotals')}</Text>
                     <Text style={styles.thSub}>{t('schedule.personTotalsSub')}</Text>
                   </View>
-                  {calendarBody.map((row, ri) => {
+                  {paintedCalendar.map((row, ri) => {
                     if (row.kind === 'section') {
                       return (
                         <View
@@ -885,14 +876,8 @@ const CalendarCellView = memo(function CalendarCellView({
   dayOffLabel: string;
 }) {
   const { t } = useI18n();
-  const leaveFlagBadge = (label: string, stacked: boolean, stacked2?: boolean) => (
-    <View
-      style={[
-        styles.leaveFlagPill,
-        stacked ? styles.leaveFlagPillStacked : null,
-        stacked2 ? styles.leaveFlagPillStacked2 : null,
-      ]}
-    >
+  const leaveFlagBadge = (label: string) => (
+    <View style={styles.leaveFlagPill}>
       <Text style={styles.leaveFlagPillText} numberOfLines={1}>
         {label}
       </Text>
@@ -915,19 +900,19 @@ const CalendarCellView = memo(function CalendarCellView({
     );
   };
   const flagStrip = (leaveFlag?: string, otherStore?: string, ongi?: number) => {
-    const belowLeave = (otherStore ? 1 : 0) + (ongi ? 1 : 0);
+    if (!leaveFlag && !otherStore && !ongi) return null;
     return (
-      <>
-        {leaveFlag ? leaveFlagBadge(leaveFlag, belowLeave >= 1, belowLeave >= 2) : null}
+      <View style={styles.flagStack}>
+        {leaveFlag ? leaveFlagBadge(leaveFlag) : null}
         {otherStore ? (
-          <View style={[styles.otherStorePill, ongi ? styles.otherStorePillStacked : null]}>
+          <View style={styles.otherStorePill}>
             <Text style={styles.otherStorePillText} numberOfLines={1}>
               {otherStore}
             </Text>
           </View>
         ) : null}
         {ongi ? ongiBadge(ongi) : null}
-      </>
+      </View>
     );
   };
   if (cell.kind === 'empty') {
@@ -1188,9 +1173,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingTop: 6,
     paddingHorizontal: 6,
-    paddingBottom: 22,
+    paddingBottom: 6,
     overflow: 'hidden',
-    position: 'relative',
+  },
+  flagStack: {
+    marginTop: 'auto',
+    gap: 2,
   },
   cellInnerEmpty: {
     flex: 1,
@@ -1200,8 +1188,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingTop: 6,
     paddingHorizontal: 6,
-    paddingBottom: 22,
-    position: 'relative',
+    paddingBottom: 6,
   },
   cellInnerEmptyTimed: {
     justifyContent: 'flex-start',
@@ -1215,11 +1202,7 @@ const styles = StyleSheet.create({
   },
   cellDayoffLabel: { fontSize: 10, color: '#64748b', marginTop: 2, fontWeight: '700' },
   otherStorePill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
@@ -1234,11 +1217,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   leaveFlagPill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,
@@ -1246,27 +1225,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#93c5fd',
   },
-  leaveFlagPillStacked: {
-    bottom: 22,
-  },
-  leaveFlagPillStacked2: {
-    bottom: 40,
-  },
   leaveFlagPillText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#1e40af',
     textAlign: 'center',
   },
-  otherStorePillStacked: {
-    bottom: 22,
-  },
   ongiFlagPill: {
-    position: 'absolute',
-    left: 6,
-    right: 6,
-    bottom: 4,
-    marginTop: 0,
+    alignSelf: 'stretch',
     paddingVertical: 1,
     paddingHorizontal: 5,
     borderRadius: 4,

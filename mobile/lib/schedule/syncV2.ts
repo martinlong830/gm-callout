@@ -706,9 +706,6 @@ export function projectCellsOntoLocalStores(opts: {
     const projKey = `${rid}\0${shiftId}`;
     const remoteRev = Number(cell.rev) || 0;
     const existingRev = projectedRev.get(projKey);
-    if (existingRev != null && existingRev > remoteRev) return;
-    projected.add(projKey);
-    projectedRev.set(projKey, remoteRev);
     if (!nextAssign[rid]) nextAssign[rid] = {};
     const named =
       cell.worker_name && String(cell.worker_name) !== 'Unassigned'
@@ -717,20 +714,39 @@ export function projectCellsOntoLocalStores(opts: {
     const start = cell.start_hhmm ? String(cell.start_hhmm) : '';
     const end = cell.end_hhmm ? String(cell.end_hhmm) : '';
     /*
-     * Match web: a timed cell with no worker is Unassigned (callout / swap source).
-     * Day off keeps worker_name as rowOwner only, so the person stays on the row
-     * without a shift. A fully nameless week is filled from the schedule blob later.
+     * Many timed cells have a null worker_name. A forked slot at the same row
+     * often still has the person — keep that name. A null cell with no other
+     * name stays Unassigned so a callout can clear the row. Blob names are
+     * filled in by the screen after this projection.
      */
+    if (existingRev != null && existingRev > remoteRev) {
+      if (named) {
+        const cur = nextAssign[rid][shiftId] as { workers?: string[]; rowOwner?: string } | undefined;
+        if (cur && !staffedAssignmentName(cur)) {
+          if (start && end) {
+            cur.workers = [named];
+            cur.rowOwner = named;
+          } else if (!cur.rowOwner) {
+            cur.rowOwner = named;
+          }
+        }
+      }
+      return;
+    }
+    projected.add(projKey);
+    projectedRev.set(projKey, remoteRev);
+    const already = staffedAssignmentName(nextAssign[rid][shiftId]);
+    const person = named || already;
     const entry: Record<string, unknown> = { workers: ['Unassigned'] };
     if (start && end) {
-      if (named) {
-        entry.workers = [named];
-        entry.rowOwner = named;
+      if (person) {
+        entry.workers = [person];
+        entry.rowOwner = person;
       }
       entry.break = cell.break_annotation || null;
       if (cell.break_paid === true || cell.break_paid === false) entry.breakPaid = cell.break_paid;
-    } else if (named) {
-      entry.rowOwner = named;
+    } else if (person) {
+      entry.rowOwner = person;
     }
     nextAssign[rid][shiftId] = entry as AssignmentStore[string][string];
 

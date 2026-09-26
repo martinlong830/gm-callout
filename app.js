@@ -1744,7 +1744,8 @@
       return '(' + gmT('schedule.noBreak') + ')';
     }
     if (parsed.type === 'OFFICE') {
-      return '(' + breakAnnotationTypeLabel('OFFICE') + ')';
+      var officeTime = parsed.time || '2:00PM';
+      return '(' + officeTime + ' ' + breakAnnotationTypeLabel('OFFICE') + ')';
     }
     if (parsed.time && parsed.type) {
       return '(' + parsed.time + ' ' + breakAnnotationTypeLabel(parsed.type) + ')';
@@ -4833,13 +4834,16 @@
           '</option>'
         );
       }).join('');
-      var hideBreakClock =
-        breakParsed.type === 'NO BREAK' || breakParsed.type === 'OFFICE';
+      var hideBreakClock = breakParsed.type === 'NO BREAK';
       var breakTimePresets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
       var breakCurTime = '';
       if (!hideBreakClock) {
         breakCurTime = normalizeBreakAnnotationTime(breakParsed.time || '') || '';
-        if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakCurTime) < 0) breakCurTime = '3:00PM';
+        if (breakParsed.type === 'OFFICE') {
+          if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakCurTime) < 0) breakCurTime = '2:00PM';
+        } else if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakCurTime) < 0) {
+          breakCurTime = '3:00PM';
+        }
       }
       if (breakCurTime && breakTimePresets.indexOf(breakCurTime) < 0) {
         breakTimePresets.push(breakCurTime);
@@ -4917,7 +4921,7 @@
     function syncReviewBreakTimeOptions() {
       if (!reviewBreakType || !reviewBreakTime) return;
       var type = reviewBreakType.value || 'BREAK TIME';
-      var hideTime = type === 'NO BREAK' || type === 'OFFICE';
+      var hideTime = type === 'NO BREAK';
       reviewBreakTime.disabled = hideTime;
       if (reviewBreakWrap) {
         reviewBreakWrap.classList.toggle('shift-detail-break--no-time', hideTime);
@@ -4925,7 +4929,9 @@
       if (hideTime) return;
       var presets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
       var cur = normalizeBreakAnnotationTime(reviewBreakTime.value || '') || '';
-      if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(cur) < 0) {
+      if (type === 'OFFICE') {
+        if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(cur) < 0) cur = '2:00PM';
+      } else if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(cur) < 0) {
         cur = '3:00PM';
       }
       reviewBreakTime.innerHTML = presets
@@ -4944,6 +4950,9 @@
     }
     if (reviewBreakType) {
       reviewBreakType.addEventListener('change', function () {
+        if (reviewBreakType.value === 'OFFICE' && reviewBreakTime) {
+          reviewBreakTime.value = '2:00PM';
+        }
         syncReviewBreakTimeOptions();
       });
       syncReviewBreakTimeOptions();
@@ -18962,7 +18971,10 @@
   function formatBreakAnnotation(time, type) {
     var t = String(type || '').trim().toUpperCase();
     if (t === 'NO BREAK') return '(NO BREAK TIME)';
-    if (t === 'OFFICE') return '(OFFICE)';
+    if (t === 'OFFICE') {
+      var officeTm = normalizeBreakAnnotationTime(time) || '2:00PM';
+      return '(' + officeTm + ' OFFICE)';
+    }
     var tm = normalizeBreakAnnotationTime(time);
     if (!tm || !t) return '';
     return '(' + tm + ' ' + t + ')';
@@ -19015,7 +19027,7 @@
         raw: s,
       };
     }
-    if (/office/i.test(s)) return { time: '', type: 'OFFICE', raw: s };
+    if (/office/i.test(s)) return { time: '2:00PM', type: 'OFFICE', raw: s };
     if (/break/i.test(s)) return { time: '3:00PM', type: 'BREAK TIME', raw: s };
     return { time: '3:00PM', type: 'BREAK TIME', raw: s };
   }
@@ -19108,7 +19120,7 @@
         '</option>'
       );
     }).join('');
-    var hideDraftBreakClock = parsed.type === 'NO BREAK' || parsed.type === 'OFFICE';
+    var hideDraftBreakClock = parsed.type === 'NO BREAK';
     return (
       '<div class="draft-cell-break' +
       (hideDraftBreakClock ? ' draft-cell-break--no-time' : '') +
@@ -19123,7 +19135,7 @@
         '<select class="draft-break-time" aria-label="' +
         escapeHtml(gmT('schedule.assignedTime')) +
         '"' +
-        (parsed.type === 'NO BREAK' || parsed.type === 'OFFICE' ? ' disabled' : '') +
+        (parsed.type === 'NO BREAK' ? ' disabled' : '') +
         '>' +
           timeOpts +
         '</select>' +
@@ -19146,9 +19158,11 @@
     var typeSel = td.querySelector('.draft-break-type');
     var timeSel = td.querySelector('.draft-break-time');
     if (!typeSel || !timeSel) return;
-    var hideTime = typeSel.value === 'NO BREAK' || typeSel.value === 'OFFICE';
+    var hideTime = typeSel.value === 'NO BREAK';
     timeSel.disabled = hideTime;
-    timeSel.closest('.draft-cell-break').classList.toggle('draft-cell-break--no-time', hideTime);
+    var wrap = timeSel.closest('.draft-cell-break');
+    if (wrap) wrap.classList.toggle('draft-cell-break--no-time', hideTime);
+    if (typeSel.value === 'OFFICE') timeSel.value = '2:00PM';
   }
 
   function restoreFohTemplateWeekBreaks(weekIndex, restaurantId) {
@@ -35184,8 +35198,13 @@
       'BREAK TIME';
     var presets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
     var curLabel = '';
-    if (type !== 'NO BREAK' && type !== 'OFFICE' && parsed && parsed.type === 'BREAK TIME') {
+    if (type === 'OFFICE') {
+      curLabel = normalizeBreakAnnotationTime((parsed && parsed.time) || '') || '2:00PM';
+    } else if (type !== 'NO BREAK' && parsed && parsed.type === 'BREAK TIME') {
       curLabel = normalizeBreakAnnotationTime(parsed.time || '') || '';
+    }
+    if (type === 'OFFICE' && SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) {
+      curLabel = '2:00PM';
     }
     if (type === 'BREAK TIME' && SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) {
       curLabel = '3:00PM';
@@ -35210,8 +35229,7 @@
     if (shiftDetailTimesWrap) shiftDetailTimesWrap.hidden = off;
     if (shiftDetailBreakWrap) shiftDetailBreakWrap.hidden = off;
     if (!off && shiftDetailBreakType && shiftDetailBreakWrap) {
-      var hideTime =
-        shiftDetailBreakType.value === 'NO BREAK' || shiftDetailBreakType.value === 'OFFICE';
+      var hideTime = shiftDetailBreakType.value === 'NO BREAK';
       if (shiftDetailBreakTime) shiftDetailBreakTime.disabled = hideTime;
       shiftDetailBreakWrap.classList.toggle('shift-detail-break--no-time', hideTime);
     }
@@ -35594,9 +35612,11 @@
     }
     if (shiftDetailBreakType) {
       shiftDetailBreakType.addEventListener('change', function () {
+        var nextTime = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM';
+        if (shiftDetailBreakType.value === 'OFFICE') nextTime = '2:00PM';
         populateShiftDetailBreakTimeOptions({
           type: shiftDetailBreakType.value,
-          time: (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM',
+          time: nextTime,
         });
         syncShiftDetailEditorVisibility();
       });
