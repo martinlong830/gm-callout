@@ -69,6 +69,8 @@ export type ScheduleAssignmentEntry =
   | string[]
   | {
       workers: string[];
+      /** Person-column identity when the day is off (workers stay Unassigned). */
+      rowOwner?: string;
       break?: string;
       hours?: string;
       timeLabel?: string;

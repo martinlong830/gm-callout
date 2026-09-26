@@ -4,7 +4,8 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { readStoredCompanyId } from '../companySession';
+import { readStoredCompanyId, readStoredTeamStateId } from '../companySession';
+import { broadcastScheduleCellsChanged } from '../teamStateSync';
 import { fetchDraftScheduleRowOrderMeta } from '../teamStateColumns';
 import {
   loadDraftFromTeamState,
@@ -453,7 +454,27 @@ export async function flushOutbox(sb: SupabaseClient): Promise<{
   await writeJson(OUTBOX_KEY, remain);
   const rev = (data as { schedule_rev?: number })?.schedule_rev;
   if (rev != null) await writeJson(LAST_REV_KEY, rev);
+  if (appliedIds.size) queueScheduleCellsPeerPing(sb);
   return { ok: true, data };
+}
+
+let scheduleCellsPeerPingTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** One ping after a burst of cell writes so the other office computer pulls immediately. */
+function queueScheduleCellsPeerPing(sb: SupabaseClient) {
+  if (scheduleCellsPeerPingTimer) clearTimeout(scheduleCellsPeerPingTimer);
+  scheduleCellsPeerPingTimer = setTimeout(() => {
+    scheduleCellsPeerPingTimer = null;
+    void (async () => {
+      try {
+        const teamStateId = await readStoredTeamStateId();
+        if (!teamStateId) return;
+        await broadcastScheduleCellsChanged(sb, teamStateId);
+      } catch {
+        /* peer still has the backup poll */
+      }
+    })();
+  }, 40);
 }
 
 /** Drain outbox until empty or max rounds (hard revert). */
@@ -689,19 +710,27 @@ export function projectCellsOntoLocalStores(opts: {
     projected.add(projKey);
     projectedRev.set(projKey, remoteRev);
     if (!nextAssign[rid]) nextAssign[rid] = {};
-    const worker =
+    const named =
       cell.worker_name && String(cell.worker_name) !== 'Unassigned'
         ? String(cell.worker_name)
-        : null;
+        : '';
     const start = cell.start_hhmm ? String(cell.start_hhmm) : '';
     const end = cell.end_hhmm ? String(cell.end_hhmm) : '';
-    const entry: Record<string, unknown> = {
-      workers: worker ? [worker] : ['Unassigned'],
-    };
-    if (worker) entry.rowOwner = worker;
+    /*
+     * Match web: a timed cell with no worker is Unassigned (callout / swap source).
+     * Day off keeps worker_name as rowOwner only, so the person stays on the row
+     * without a shift. A fully nameless week is filled from the schedule blob later.
+     */
+    const entry: Record<string, unknown> = { workers: ['Unassigned'] };
     if (start && end) {
+      if (named) {
+        entry.workers = [named];
+        entry.rowOwner = named;
+      }
       entry.break = cell.break_annotation || null;
       if (cell.break_paid === true || cell.break_paid === false) entry.breakPaid = cell.break_paid;
+    } else if (named) {
+      entry.rowOwner = named;
     }
     nextAssign[rid][shiftId] = entry as AssignmentStore[string][string];
 
@@ -803,6 +832,103 @@ export function projectCellsOntoLocalStores(opts: {
   nextDraft = padDraftWeeksFromActiveSlots(nextDraft, opts.slots || [], padWeeks);
 
   return { assign: nextAssign, draft: nextDraft };
+}
+
+function staffedAssignmentName(entry: unknown): string {
+  if (!entry) return '';
+  if (Array.isArray(entry)) {
+    const hit = entry.find((w) => w && w !== 'Unassigned');
+    return hit ? String(hit) : '';
+  }
+  if (typeof entry !== 'object') return '';
+  const rec = entry as { workers?: string[]; rowOwner?: string };
+  if (rec.rowOwner && rec.rowOwner !== 'Unassigned') return String(rec.rowOwner);
+  const worker = (rec.workers || []).find((w) => w && w !== 'Unassigned');
+  return worker ? String(worker) : '';
+}
+
+export function visibleWeekHasStaffedName(assign: AssignmentStore, weekIndex: number): boolean {
+  const start = weekIndex * 7;
+  const end = start + 7;
+  return Object.keys(assign || {}).some((rid) => {
+    const rs = assign[rid] || {};
+    return Object.keys(rs).some((shiftId) => {
+      const m = /^shift-(\d+)-/.exec(shiftId);
+      if (!m) return false;
+      const gdi = Number(m[1]);
+      if (gdi < start || gdi >= end) return false;
+      return !!staffedAssignmentName(rs[shiftId]);
+    });
+  });
+}
+
+/**
+ * Fill slots the cell poll left Unassigned with names still stored on the
+ * team_state schedule blob. Does not replace a name the cloud already has.
+ */
+export function mergeBlobNamesIntoUnassigned(
+  cloud: AssignmentStore,
+  blob: AssignmentStore
+): AssignmentStore | null {
+  let changed = false;
+  const next: AssignmentStore = { ...cloud };
+  Object.keys(blob || {}).forEach((rid) => {
+    const src = blob[rid] || {};
+    const dest = { ...(next[rid] || {}) };
+    let ridChanged = false;
+    Object.keys(src).forEach((shiftId) => {
+      const name = staffedAssignmentName(src[shiftId]);
+      if (!name) return;
+      if (staffedAssignmentName(dest[shiftId])) return;
+      const cur = dest[shiftId];
+      dest[shiftId] =
+        cur && !Array.isArray(cur) ? { ...cur, workers: [name] } : { workers: [name] };
+      ridChanged = true;
+    });
+    if (ridChanged) {
+      next[rid] = dest;
+      changed = true;
+    }
+  });
+  return changed ? next : null;
+}
+
+/** Cheap visible-week signature so an unchanged poll does not re-render the grid. */
+export function visibleWeekProjectionKey(
+  assign: AssignmentStore,
+  draft: unknown,
+  weekIndex: number
+): string {
+  const start = weekIndex * 7;
+  const end = start + 7;
+  const parts: string[] = [];
+  Object.keys(assign || {}).forEach((rid) => {
+    const rs = assign[rid] || {};
+    Object.keys(rs).forEach((shiftId) => {
+      const m = /^shift-(\d+)-/.exec(shiftId);
+      if (!m) return;
+      const gdi = Number(m[1]);
+      if (gdi < start || gdi >= end) return;
+      const entry = rs[shiftId] as { workers?: string[]; rowOwner?: string; break?: unknown } | undefined;
+      const workers = (entry?.workers || []).join(',');
+      parts.push(
+        `${rid}|${shiftId}|${workers}|${entry?.rowOwner || ''}|${entry?.break == null ? '' : String(entry.break)}`
+      );
+    });
+  });
+  parts.sort();
+  let draftBit = '';
+  if (draft && typeof draft === 'object') {
+    const byWeek = (draft as { byWeek?: Record<string, unknown> }).byWeek;
+    if (byWeek && typeof byWeek === 'object') {
+      try {
+        draftBit = JSON.stringify(byWeek[String(weekIndex)] || '');
+      } catch {
+        draftBit = '';
+      }
+    }
+  }
+  return parts.join('\n') + '\n' + draftBit;
 }
 
 export type CloudCellsPullOpts = {

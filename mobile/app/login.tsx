@@ -1,4 +1,4 @@
-import { useRouter, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
+import { usePathname, useRouter, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -33,7 +34,6 @@ import {
   portalCreateCompany,
   portalRequestPasswordReset,
   portalSetupAccessCode,
-  portalTimeclockUrl,
   portalVerifyAccessCode,
   portalWebUrl,
 } from '../lib/portalAuth';
@@ -93,6 +93,9 @@ function PasswordInput({
 
 export default function LoginScreen() {
   const router = useRouter();
+  const pathname = usePathname();
+  const { height: windowHeight } = useWindowDimensions();
+  const [cardHeight, setCardHeight] = useState(0);
   const params = useLocalSearchParams<{ setup_access_code?: string }>();
   const { signIn, signUp, session, role, loading: authLoading } = useAuth();
   const { t, locale, staffTypeLabel } = useI18n();
@@ -199,11 +202,13 @@ export default function LoginScreen() {
 
   useEffect(() => {
     if (authLoading) return;
+    if (pathname !== '/login') return;
     if (panel === 'setup-access-code') return;
     if (session && isAdminRole(role)) router.replace('/manager/schedule');
     else if (session && isManagerLikeRole(role)) router.replace('/manager');
     else if (session && role === 'employee') router.replace('/employee');
-  }, [authLoading, session, role, router, panel]);
+    else if (session && role === 'timeclock') router.replace('/timeclock');
+  }, [authLoading, session, role, router, panel, pathname]);
 
   function clearMsg() {
     setMessage(null);
@@ -221,18 +226,9 @@ export default function LoginScreen() {
     if (prefillName) setLoginName(prefillName);
   }
 
-  async function openTimeClock() {
+  function openTimeClock() {
     clearMsg();
-    const url = portalTimeclockUrl();
-    if (!url) {
-      setMessage(t('auth.portalEnvHint'));
-      return;
-    }
-    try {
-      await Linking.openURL(url);
-    } catch {
-      setMessage(t('auth.portalEnvHint'));
-    }
+    router.push('/timeclock');
   }
 
   const showRedPokeBrand = panel === 'signin' && isRedPokeAccessCode(verifiedAccessCode);
@@ -566,7 +562,10 @@ export default function LoginScreen() {
   const portalOk = isPortalAuthConfigured();
   const supabaseOk = isSupabaseConfigured;
 
-  const centerShortPanel = panel === 'landing' || panel === 'pending';
+  const centerPanel =
+    panel === 'landing' || panel === 'pending' || panel === 'access-code' || panel === 'signin';
+  const centerPad =
+    centerPanel && cardHeight > 0 ? Math.max(12, (windowHeight - cardHeight) / 2 - 24) : 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
@@ -576,12 +575,18 @@ export default function LoginScreen() {
       >
         <ScrollView
           style={styles.flex}
-          contentContainerStyle={[styles.scroll, centerShortPanel && styles.scrollCenter]}
+          contentContainerStyle={[styles.scroll, centerPad > 0 && { paddingTop: centerPad }]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         >
-          <View style={styles.card}>
+          <View
+            style={styles.card}
+            onLayout={(e) => {
+              const h = e.nativeEvent.layout.height;
+              setCardHeight((prev) => (prev === h ? prev : h));
+            }}
+          >
             <View style={styles.langRow}>
               <LanguageToggle variant="compact" />
             </View>
@@ -867,8 +872,8 @@ export default function LoginScreen() {
                 <View style={styles.deviceSignIn}>
                   <Pressable
                     style={styles.deviceLinkBtn}
-                    onPress={() => void openTimeClock()}
-                    accessibilityRole="link"
+                    onPress={openTimeClock}
+                    accessibilityRole="button"
                     accessibilityLabel={t('auth.timeclockTabletSignIn')}
                   >
                     <Text style={styles.deviceLinkText}>{t('auth.timeclockTabletSignIn')}</Text>
@@ -1074,10 +1079,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 20,
     paddingBottom: 40,
-  },
-  /** Only for short panels — `justifyContent: 'center'` on a tall form blocks scrolling. */
-  scrollCenter: {
-    justifyContent: 'center',
   },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#e8eef5' },
   card: {

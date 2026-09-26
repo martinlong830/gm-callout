@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "120640576714",
+    "project_id": "shiflow-55318",
+    "storage_bucket": "shiflow-55318.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:120640576714:android:e8da430aa1794b1c752833",
+        "android_client_info": {
+          "package_name": "com.shiflow.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiTiGtxGqsC4LcY8ivvq2Han3gKPT6RiQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

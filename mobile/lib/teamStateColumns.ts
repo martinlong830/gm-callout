@@ -42,7 +42,7 @@ const EMPLOYEE_ALLOWED = [
 ] as const;
 
 export function teamStateColumnsForRole(
-  role: 'manager' | 'admin' | 'employee' | null | undefined,
+  role: 'manager' | 'admin' | 'employee' | 'timeclock' | null | undefined,
   fields?: string[] | null
 ): string {
   const isManager = role === 'manager' || role === 'admin';
@@ -154,7 +154,7 @@ function parseMissingColumnFromError(err: unknown): string {
 export async function fetchTeamStateColumns(
   sb: SupabaseClient,
   opts: {
-    role?: 'manager' | 'admin' | 'employee' | null;
+    role?: 'manager' | 'admin' | 'employee' | 'timeclock' | null;
     fields?: string[] | null;
     teamStateId?: string;
   }

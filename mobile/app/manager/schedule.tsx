@@ -98,9 +98,6 @@ import {
   normalizeBreakAnnotationTime,
   normalizeScheduleAssignment,
   normalizeSchedulePublishedMap,
-  OFFICE_BREAK_TIME_PRESETS,
-  OFFICE_DEFAULT_BREAK_TIME,
-  OFFICE_DEFAULT_START_HHMM,
   orderedScheduleSlotIndicesForRole,
   parseBreakAnnotation,
   displayBreakAnnotation,
@@ -160,6 +157,9 @@ import {
   pullCloudCellsOntoStores,
   pullCloudCellsVisibleThenFull,
   consumeDocumentCloudSoT,
+  visibleWeekProjectionKey,
+  visibleWeekHasStaffedName,
+  mergeBlobNamesIntoUnassigned,
   writeOnlyCells,
   type ScheduleOp,
 } from '../../lib/schedule/syncV2';
@@ -344,6 +344,10 @@ export default function ManagerScheduleScreen() {
   const params = useLocalSearchParams<{ weekMondayIso?: string }>();
   const [weekIndex, setWeekIndex] = useState(SCHEDULE_TEMPLATE_WEEK_INDEX);
   const [restaurants, setRestaurants] = useState<Restaurant[]>(() => defaultRestaurants());
+  const teamStateRef = useRef(teamState);
+  const restaurantsRef = useRef(restaurants);
+  teamStateRef.current = teamState;
+  restaurantsRef.current = restaurants;
   /** Main store leftmost; does not reshuffle when the selected chip changes. */
   const scheduleRestaurants = useMemo(
     () => orderRestaurantsMainFirst(restaurants, managerScheduleMainRestaurantId(myEmployee)),
@@ -521,6 +525,9 @@ export default function ManagerScheduleScreen() {
     ingestPublishedSnapshotsFromRaw(teamState?.schedule_published);
   }, [teamState?.schedule_published]);
 
+  const lastPaintKeyRef = useRef('');
+  const scheduleScreenFocusedRef = useRef(true);
+  const scheduleFocusPullReadyRef = useRef(false);
   const applyProjectedStores = useCallback(
     (projected: { assign: AssignmentStore; draft: unknown }) => {
       if (
@@ -530,14 +537,29 @@ export default function ManagerScheduleScreen() {
       ) {
         return;
       }
-      setAssignmentStore(projected.assign);
-      setRolledDraftRaw(projected.draft);
+      let assign = projected.assign;
+      if (
+        !visibleWeekHasStaffedName(assign, weekIndex) &&
+        teamStateRef.current?.schedule_assignments
+      ) {
+        const rolled = hydrateScheduleAssignmentsFromTeamState(
+          teamStateRef.current.schedule_assignments,
+          restaurantsRef.current,
+          teamStateRef.current.draft_schedule
+        );
+        assign = mergeBlobNamesIntoUnassigned(assign, rolled.store) || assign;
+      }
+      const paintKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
       cloudCellsAppliedRef.current = true;
-      applyLocalScheduleAssignments(projected.assign, projected.draft, {
+      if (paintKey && paintKey === lastPaintKeyRef.current) return;
+      lastPaintKeyRef.current = paintKey;
+      setAssignmentStore(assign);
+      setRolledDraftRaw(projected.draft);
+      applyLocalScheduleAssignments(assign, projected.draft, {
         markDirty: false,
       });
     },
-    [applyLocalScheduleAssignments, cellWriteProtectActive]
+    [applyLocalScheduleAssignments, cellWriteProtectActive, weekIndex]
   );
 
   const pullCloudSchedule = useCallback(
@@ -614,15 +636,30 @@ export default function ManagerScheduleScreen() {
     let cancelled = false;
     const first = consumeDocumentCloudSoT();
     void pullCloudSchedule({ fullWindow: first, cloudAuthority: first });
+    /* Poll only while this tab is open. A 5s full-store clone was freezing other pages. */
     const pollTimer = setInterval(() => {
-      if (cancelled || localEditPendingRef.current || panelInputFocusedRef.current) return;
+      if (cancelled || !scheduleScreenFocusedRef.current) return;
+      if (localEditPendingRef.current || panelInputFocusedRef.current) return;
       void pullCloudSchedule({ fullWindow: false });
-    }, 5000);
+    }, 30000);
     return () => {
       cancelled = true;
       if (pollTimer) clearInterval(pollTimer);
     };
   }, [supabase, role, weekIndex, pullCloudSchedule]);
+
+  useFocusEffect(
+    useCallback(() => {
+      scheduleScreenFocusedRef.current = true;
+      if (scheduleFocusPullReadyRef.current) {
+        void pullCloudSchedule({ fullWindow: false });
+      }
+      scheduleFocusPullReadyRef.current = true;
+      return () => {
+        scheduleScreenFocusedRef.current = false;
+      };
+    }, [pullCloudSchedule])
+  );
 
   const publishedMap = useMemo(() => {
     const map = normalizeSchedulePublishedMap(teamState?.schedule_published);
@@ -2180,12 +2217,13 @@ export default function ManagerScheduleScreen() {
         restaurants,
         currentRestaurantId,
         assignmentStore,
+        weekIndex,
       });
     } catch (err) {
       console.warn('buildSchedule', err);
       return [] as ScheduleRow[];
     }
-  }, [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore]);
+  }, [allWeekDays, draftScheduleRaw, lites, restaurants, currentRestaurantId, assignmentStore, weekIndex]);
 
   const otherStoreDayLabels = useMemo(() => {
     try {
@@ -2374,11 +2412,10 @@ export default function ManagerScheduleScreen() {
     breakType: BreakAnnotationType,
     currentLabel?: string
   ): string[] {
-    const base =
-      breakType === 'OFFICE' ? OFFICE_BREAK_TIME_PRESETS : SHIFT_DETAIL_BREAK_TIME_PRESETS;
+    const base = SHIFT_DETAIL_BREAK_TIME_PRESETS;
     const norm = normalizeBreakAnnotationTime(currentLabel || '') || '';
     /* Keep web draft-modal times (11:00AM–7:00PM) selectable so open/save does not rewrite them. */
-    if (norm && breakType !== 'NO BREAK' && base.indexOf(norm) < 0) {
+    if (norm && breakType === 'BREAK TIME' && base.indexOf(norm) < 0) {
       return [...base, norm];
     }
     return base;
@@ -2387,17 +2424,12 @@ export default function ManagerScheduleScreen() {
   function clampBreakTimeLabel(breakType: BreakAnnotationType, label: string): string {
     const norm = normalizeBreakAnnotationTime(label) || '';
     if (norm) return norm;
-    return breakType === 'OFFICE' ? OFFICE_DEFAULT_BREAK_TIME : '3:00PM';
+    return breakType === 'BREAK TIME' ? '3:00PM' : '';
   }
 
   function applyBreakTypeChange(breakType: BreakAnnotationType) {
     setEditBreakType(breakType);
-    if (breakType === 'OFFICE') {
-      setEditStart(OFFICE_DEFAULT_START_HHMM);
-      setEditBreakTime(breakAnnotationTimeToHHMM(OFFICE_DEFAULT_BREAK_TIME) || '14:00');
-      return;
-    }
-    if (breakType === 'NO BREAK') return;
+    if (breakType === 'OFFICE' || breakType === 'NO BREAK') return;
     const nextLabel = clampBreakTimeLabel('BREAK TIME', normalizeBreakAnnotationTime(editBreakTime) || '3:00PM');
     setEditBreakTime(breakAnnotationTimeToHHMM(nextLabel) || '15:00');
   }
@@ -2572,21 +2604,17 @@ export default function ManagerScheduleScreen() {
     if (target.shift) {
       const parsed = parseBreakAnnotation(target.shift.redPokeBreak || '');
       setEditDayOff(false);
-      setEditStart(
-        parsed.type === 'OFFICE'
-          ? OFFICE_DEFAULT_START_HHMM
-          : target.shift.start || '10:00'
-      );
+      setEditStart(target.shift.start || '10:00');
       setEditEnd(target.shift.end || '18:00');
       setEditBreakType(parsed.type);
       const breakLabel =
-        parsed.type === 'NO BREAK'
-          ? ''
-          : clampBreakTimeLabel(parsed.type, parsed.time || '3:00PM');
+        parsed.type === 'BREAK TIME'
+          ? clampBreakTimeLabel(parsed.type, parsed.time || '3:00PM')
+          : '';
       setEditBreakTime(
-        parsed.type === 'NO BREAK'
-          ? '15:00'
-          : breakAnnotationTimeToHHMM(breakLabel) || '15:00'
+        parsed.type === 'BREAK TIME'
+          ? breakAnnotationTimeToHHMM(breakLabel) || '15:00'
+          : '15:00'
       );
       const w = (target.shift.workers || []).find((n) => n && n !== 'Unassigned');
       nextWorker = w || 'Unassigned';
@@ -2728,14 +2756,11 @@ export default function ManagerScheduleScreen() {
           const parsed = parseBreakAnnotation(target.shift!.redPokeBreak || '');
           const breakType = parsed.type;
           const breakTimeLabel =
-            breakType === 'NO BREAK'
-              ? ''
-              : clampBreakTimeLabel(breakType, parsed.time || '3:00PM');
+            breakType === 'BREAK TIME'
+              ? clampBreakTimeLabel(breakType, parsed.time || '3:00PM')
+              : '';
           setCopyTimesClip({
-            start:
-              breakType === 'OFFICE'
-                ? OFFICE_DEFAULT_START_HHMM
-                : target.shift!.start || '10:00',
+            start: target.shift!.start || '10:00',
             end: target.shift!.end || '18:00',
             breakType,
             breakTimeLabel,
@@ -2773,23 +2798,19 @@ export default function ManagerScheduleScreen() {
     let breakType = editBreakType;
     let breakTimeRaw = editBreakTime;
     if (!editDayOff) {
-      if (breakType === 'OFFICE') {
-        start = OFFICE_DEFAULT_START_HHMM;
-        breakTimeRaw = breakAnnotationTimeToHHMM(OFFICE_DEFAULT_BREAK_TIME) || '14:00';
-      }
       if (!/^\d{1,2}:\d{2}$/.test(start.trim()) || !/^\d{1,2}:\d{2}$/.test(end.trim())) {
         Alert.alert(t('schedule.invalidTime'), t('schedule.invalidTimeHint'));
         return;
       }
-      if (breakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
+      if (breakType === 'BREAK TIME' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
         Alert.alert(t('schedule.invalidBreakTime'), t('schedule.invalidBreakHint'));
         return;
       }
     }
     const breakLabel =
-      breakType === 'NO BREAK'
-        ? ''
-        : clampBreakTimeLabel(breakType, normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM');
+      breakType === 'BREAK TIME'
+        ? clampBreakTimeLabel(breakType, normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM')
+        : '';
     const breakText = formatBreakAnnotation(breakLabel || '3:00PM', breakType);
     const list =
       editWorker === 'Unassigned' ? ['Unassigned'] : [editWorker].filter(Boolean);
@@ -4277,7 +4298,7 @@ export default function ManagerScheduleScreen() {
                         </Pressable>
                       ))}
                     </View>
-                    {editBreakType !== 'NO BREAK' ? (
+                    {editBreakType === 'BREAK TIME' ? (
                       <View style={{ marginTop: 10 }}>
                         <Text style={styles.editFieldLabel}>{t('schedule.assignedTime')}</Text>
                         <View style={styles.chipWrap}>

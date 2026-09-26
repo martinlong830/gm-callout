@@ -36,5 +36,8 @@ export default function Index() {
   if (role === 'employee') {
     return <Redirect href="/employee" />;
   }
+  if (role === 'timeclock') {
+    return <Redirect href="/timeclock" />;
+  }
   return <Redirect href="/login" />;
 }

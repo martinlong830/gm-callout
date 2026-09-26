@@ -56,7 +56,7 @@ async function selectEmployees(
 
 export async function hydrateFromSupabase(
   sb: SupabaseClient,
-  opts?: { role?: 'manager' | 'admin' | 'employee' | null; userId?: string | null }
+  opts?: { role?: 'manager' | 'admin' | 'employee' | 'timeclock' | null; userId?: string | null }
 ): Promise<HydrationResult> {
   const teamStateId = await readStoredTeamStateId();
   const companyId = await resolveCompanyIdForEmployees();
@@ -129,7 +129,7 @@ export async function hydrateFromSupabase(
 
 export async function fetchEmployeesOnly(
   sb: SupabaseClient,
-  opts?: { role?: 'manager' | 'admin' | 'employee' | null; userId?: string | null }
+  opts?: { role?: 'manager' | 'admin' | 'employee' | 'timeclock' | null; userId?: string | null }
 ): Promise<EmployeeRow[]> {
   const companyId = await resolveCompanyIdForEmployees();
   const isManager = opts?.role === 'manager' || opts?.role === 'admin';

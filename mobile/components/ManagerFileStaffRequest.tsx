@@ -6,6 +6,7 @@ import { useI18n } from '../contexts/LocaleContext';
 import {
   employeeDisplayName,
   employeeIsDeactivated,
+  employeeMatchesUsualLocation,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
   type EmployeeRow,
@@ -77,6 +78,7 @@ export function ManagerFileStaffRequest({
 }: Props) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [storeFilter, setStoreFilter] = useState<'all' | 'rp-9' | 'rp-8'>('all');
   const [empId, setEmpId] = useState('');
   const [form, setForm] = useState<FormKey>('timeoff');
   const [busy, setBusy] = useState(false);
@@ -104,11 +106,14 @@ export function ManagerFileStaffRequest({
         .filter((e) => {
           if (employeeIsDeactivated(e)) return false;
           if (storeScope && !employeeVisibleInManagerStoreScope(e, storeScope)) return false;
+          if (storeFilter !== 'all' && !employeeMatchesUsualLocation(e.usualRestaurant, storeFilter)) {
+            return false;
+          }
           return !!employeeDisplayName(e).trim();
         })
         .slice()
         .sort((a, b) => employeeDisplayName(a).localeCompare(employeeDisplayName(b))),
-    [employees, storeScope]
+    [employees, storeScope, storeFilter]
   );
 
   const selected = useMemo(
@@ -162,10 +167,13 @@ export function ManagerFileStaffRequest({
     restaurants,
   ]);
 
-  const swapCoworkers = useMemo(
-    () => coworkerSwapTargets(employees, workerName, selected?.id),
-    [employees, workerName, selected?.id]
-  );
+  const swapCoworkers = useMemo(() => {
+    const pool =
+      storeFilter === 'all'
+        ? employees
+        : employees.filter((e) => employeeMatchesUsualLocation(e.usualRestaurant, storeFilter));
+    return coworkerSwapTargets(pool, workerName, selected?.id);
+  }, [employees, workerName, selected?.id, storeFilter]);
 
   const assignmentStore = hydrated.store;
 
@@ -357,7 +365,29 @@ export function ManagerFileStaffRequest({
       {open ? (
         <View style={styles.body}>
           <Text style={styles.hint}>{t('requests.fileForEmployeeHint')}</Text>
+          <Text style={styles.fieldLabel}>{t('requests.store')}</Text>
+          <View style={styles.chipRow}>
+            {(
+              [
+                { id: 'all' as const, labelKey: 'requests.storeAll' },
+                { id: 'rp-9' as const, labelKey: 'requests.store9' },
+                { id: 'rp-8' as const, labelKey: 'requests.store8' },
+              ] as const
+            ).map((opt) => {
+              const on = storeFilter === opt.id;
+              return (
+                <Pressable
+                  key={opt.id}
+                  style={[styles.chip, on && styles.chipOn]}
+                  onPress={() => setStoreFilter(opt.id)}
+                >
+                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{t(opt.labelKey)}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <Text style={styles.fieldLabel}>{t('requests.employee')}</Text>
+          {!roster.length ? <Text style={styles.muted}>{t('requests.noEmployeesStore')}</Text> : null}
           <View style={styles.empList}>
             {roster.map((e) => {
               const on = e.id === empId;

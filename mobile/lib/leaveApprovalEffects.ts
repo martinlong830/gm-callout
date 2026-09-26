@@ -211,10 +211,11 @@ export function clearWorkerScheduleOnDateRange(params: {
   );
   const hoursByIso = hoursByIsoFromShifts(inRange, params.emp ?? null);
   const targets = inRange.map((s) => ({ restaurantId: s.restaurantId, shiftId: s.id }));
-  const store = unassignShiftsInStore(params.assignmentStore, targets);
+  let store = unassignShiftsInStore(params.assignmentStore, targets);
   let draftRaw = params.draftScheduleRaw;
   if (params.asDayOff && targets.length) {
     draftRaw = nullDraftCellsForTargets(draftRaw, targets);
+    store = stampDayOffOwners(store, targets, params.workerName);
   }
   return {
     store,
@@ -226,6 +227,24 @@ export function clearWorkerScheduleOnDateRange(params: {
 }
 
 /** Unassign a single offered shift (callout / swap-style ref). */
+/** Day off keeps the person on the row (rowOwner) without a timed shift. */
+function stampDayOffOwners(
+  store: AssignmentStore,
+  targets: { restaurantId: string; shiftId: string }[],
+  workerName: string
+): AssignmentStore {
+  const next = JSON.parse(JSON.stringify(store || {})) as AssignmentStore;
+  const owner = String(workerName || '').trim();
+  for (const t of targets) {
+    if (!t.restaurantId || !t.shiftId) continue;
+    if (!next[t.restaurantId]) next[t.restaurantId] = {};
+    const entry: Record<string, unknown> = { workers: ['Unassigned'] };
+    if (owner && owner !== 'Unassigned') entry.rowOwner = owner;
+    next[t.restaurantId][t.shiftId] = entry as AssignmentStore[string][string];
+  }
+  return next;
+}
+
 export function clearOfferedShiftFromStore(
   store: AssignmentStore,
   shift: OfferedShiftRef
@@ -282,6 +301,17 @@ export async function applyTimeoffApprovalEffects(
     asDayOff: true,
   });
 
+  if (cleared.clearedShiftIds.length) {
+    const persisted = await persistAssignmentStore(sb, cleared.store, cleared.draftRaw);
+    if (!persisted.ok) return persisted;
+    await enqueueCellOpsForShiftTargets({
+      sb,
+      assignmentStore: persisted.store,
+      draftRaw: cleared.draftRaw,
+      targets: cleared.targets,
+    });
+  }
+
   const leaveEntries = buildLeaveEntriesForTimeoff(range.start, range.end, cleared.hoursByIso);
   appendLeaveBalanceEntries(emp, range.leaveType, leaveEntries);
   const saved = await saveEmployeeRow(sb, emp);
@@ -295,21 +325,6 @@ export async function applyTimeoffApprovalEffects(
     /* non-blocking — leaveBalance still drives display */
   }
 
-  if (cleared.clearedShiftIds.length) {
-    const persisted = await persistAssignmentStore(sb, cleared.store, cleared.draftRaw);
-    if (!persisted.ok) return persisted;
-    try {
-      await enqueueCellOpsForShiftTargets({
-        sb,
-        assignmentStore: persisted.store,
-        draftRaw: cleared.draftRaw,
-        targets: cleared.targets,
-      });
-    } catch {
-      /* assignment blob already saved — manager can Refresh if cells lag */
-    }
-    return { ok: true, store: persisted.store, draftSchedule: cleared.draftRaw };
-  }
   return { ok: true, store: cleared.store, draftSchedule: cleared.draftRaw };
 }
 
@@ -360,16 +375,12 @@ export async function applyCalloutApprovalEffects(
     const persisted = await persistAssignmentStore(sb, nextStore);
     if (!persisted.ok) return persisted;
     if (targets.length) {
-      try {
-        await enqueueCellOpsForShiftTargets({
-          sb,
-          assignmentStore: persisted.store,
-          draftRaw: params.draftScheduleRaw,
-          targets,
-        });
-      } catch {
-        /* assignment blob already saved */
-      }
+      await enqueueCellOpsForShiftTargets({
+        sb,
+        assignmentStore: persisted.store,
+        draftRaw: params.draftScheduleRaw,
+        targets,
+      });
     }
     return { ok: true, store: persisted.store };
   }

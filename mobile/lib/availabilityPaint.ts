@@ -2,7 +2,9 @@
  * WhenIsGood-style availability paint helpers (mirror web availability-paint.js).
  * Paint dense 30-min cells (9:00–23:00), project onto draft schedule slotKeys.
  */
-import { WEEKDAY_KEYS, type WeekdayKey } from './schedule/types';
+import type { WeekdayKey } from './schedule/types';
+
+const WEEKDAY_KEYS: WeekdayKey[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 export const PAINT_START_MIN = 9 * 60;
 export const PAINT_END_MIN = 23 * 60;

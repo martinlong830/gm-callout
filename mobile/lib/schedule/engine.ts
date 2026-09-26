@@ -337,41 +337,14 @@ export function redPokeBreakAnnotation(trStart: string, trEnd: string, role: str
   return opts[seed % opts.length];
 }
 
-function scheduleBreakIsHashPlaceholder(
-  shift: { start?: string; end?: string; role?: string; day?: string } | null,
-  breakText: string
-): boolean {
-  if (!shift || !breakText) return false;
-  return (
-    breakText ===
-    redPokeBreakAnnotation(shift.start || '', shift.end || '', shift.role || '', shift.day || '')
-  );
-}
-
-/** Live grid/export break: stored/cloud only. Drop hash-invented NO BREAK only. */
+/** Live grid/export break: stored/cloud text, including a saved No break. */
 export function liveScheduleBreakText(
   shift: { start?: string; end?: string; role?: string; day?: string; redPokeBreak?: string } | null,
-  role?: string,
-  dayStr?: string
+  _role?: string,
+  _dayStr?: string
 ): string {
   if (!shift) return '';
-  const t = shift.redPokeBreak;
-  if (!t) return '';
-  if (
-    /no break/i.test(t) &&
-    scheduleBreakIsHashPlaceholder(
-      {
-        start: shift.start,
-        end: shift.end,
-        role: role || shift.role,
-        day: dayStr || shift.day,
-      },
-      t
-    )
-  ) {
-    return '';
-  }
-  return t;
+  return shift.redPokeBreak || '';
 }
 
 /** Single source of truth: assignment store (with template inherit). No hash invent on live. */
@@ -384,16 +357,7 @@ export function resolveScheduleBreakAnnotation(
   dayStr: string
 ): string {
   const entry = lookupScheduleAssignment(stored, shiftId);
-  if (entry?.break) {
-    const br = String(entry.break);
-    if (
-      /no break/i.test(br) &&
-      scheduleBreakIsHashPlaceholder({ start, end, role, day: dayStr }, br)
-    ) {
-      return '';
-    }
-    return entry.break;
-  }
+  if (entry?.break) return entry.break;
   return '';
 }
 
@@ -662,6 +626,7 @@ export function parseShiftIdParts(shiftId: string): { globalDayIdx: number; role
 
 type NormalizedScheduleAssignment = {
   workers: string[];
+  rowOwner?: string;
   break?: string;
   hours?: string;
   timeLabel?: string;
@@ -680,6 +645,8 @@ export function normalizeScheduleAssignment(val: ScheduleAssignmentEntry | null 
       ? val.workers.filter((n) => n && n !== 'Unassigned')
       : [];
     const out: NormalizedScheduleAssignment = { workers: workers.length ? workers : ['Unassigned'] };
+    const owner = String(val.rowOwner || '').trim();
+    if (owner && owner !== 'Unassigned') out.rowOwner = owner;
     if (val.break) out.break = String(val.break);
     if (val.hours != null && val.hours !== '') out.hours = String(val.hours);
     if (val.timeLabel) out.timeLabel = String(val.timeLabel);
@@ -1979,17 +1946,24 @@ export function scheduleRowPrimaryPerson(
             : shift.id;
         const stub = normalizeScheduleAssignment(rs[stubId] ?? rs[shift.id]);
         const stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
+        const owner = stub.rowOwner && stub.rowOwner !== 'Unassigned' ? stub.rowOwner : '';
         name = stubWorkers.length
           ? canonicalScheduleWorkerNameLite(employees, stubWorkers[0], restaurantId)
-          : 'Unassigned';
+          : owner
+            ? canonicalScheduleWorkerNameLite(employees, owner, restaurantId)
+            : 'Unassigned';
       }
-    } else if (rs && roleIdx >= 0 && weekIndex != null && !Number.isNaN(weekIndex)) {
+      } else if (rs && roleIdx >= 0 && weekIndex != null && !Number.isNaN(weekIndex)) {
       const shiftId = `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`;
-      const stub = normalizeScheduleAssignment(rs[shiftId]);
+      const raw = rs[shiftId];
+      const stub = normalizeScheduleAssignment(raw);
       const stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
+      const owner = stub.rowOwner && stub.rowOwner !== 'Unassigned' ? stub.rowOwner : '';
       name = stubWorkers.length
         ? canonicalScheduleWorkerNameLite(employees, stubWorkers[0], restaurantId)
-        : 'Unassigned';
+        : owner
+          ? canonicalScheduleWorkerNameLite(employees, owner, restaurantId)
+          : 'Unassigned';
     } else {
       return;
     }
@@ -2948,7 +2922,7 @@ export const SHIFT_DETAIL_BREAK_TIME_PRESETS = [
   '4:00PM',
   '4:30PM',
 ];
-/** Office annotation is always 2:00 PM (parity with web). */
+/** Office is a label, not a timed break. */
 export const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
 export const OFFICE_DEFAULT_START_HHMM = '14:00';
 export const OFFICE_DEFAULT_BREAK_TIME = '2:00PM';
@@ -2971,6 +2945,7 @@ export function formatBreakAnnotation(time: string, type: string): string {
     .trim()
     .toUpperCase();
   if (t === 'NO BREAK') return '(NO BREAK TIME)';
+  if (t === 'OFFICE') return '(OFFICE)';
   const tm = normalizeBreakAnnotationTime(time);
   if (!tm || !t) return '';
   return `(${tm} ${t})`;
@@ -3027,7 +3002,7 @@ export function parseBreakAnnotation(text: string): {
       raw: s,
     };
   }
-  if (/office/i.test(s)) return { time: '2:00PM', type: 'OFFICE', raw: s };
+  if (/office/i.test(s)) return { time: '', type: 'OFFICE', raw: s };
   if (/break/i.test(s)) return { time: '3:00PM', type: 'BREAK TIME', raw: s };
   return { time: '3:00PM', type: 'BREAK TIME', raw: s };
 }
@@ -3043,13 +3018,11 @@ export function displayBreakAnnotation(
   if (parsed.type === 'NO BREAK' || /no\s*break/i.test(s)) {
     return `(${labels.noBreak})`;
   }
+  if (parsed.type === 'OFFICE') {
+    return `(${labels.office})`;
+  }
   if (parsed.time && parsed.type) {
-    const typeLabel =
-      parsed.type === 'OFFICE'
-        ? labels.office
-        : parsed.type === 'BREAK TIME'
-          ? labels.breakTime
-          : parsed.type;
+    const typeLabel = parsed.type === 'BREAK TIME' ? labels.breakTime : parsed.type;
     return `(${parsed.time} ${typeLabel})`;
   }
   return s;

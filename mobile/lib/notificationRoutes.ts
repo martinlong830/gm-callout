@@ -107,7 +107,7 @@ export function resolveNotificationRoute(
 
 /** Expo Router href for manager / employee tabs. */
 export function hrefForNotificationRoute(
-  role: 'manager' | 'admin' | 'employee' | null | undefined,
+  role: 'manager' | 'admin' | 'employee' | 'timeclock' | null | undefined,
   route: NotificationRoute
 ): string {
   const managerLike = role === 'manager' || role === 'admin';

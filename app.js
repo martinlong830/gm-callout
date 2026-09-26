@@ -1743,6 +1743,9 @@
     if (parsed.type === 'NO BREAK' || /no\s*break/i.test(s)) {
       return '(' + gmT('schedule.noBreak') + ')';
     }
+    if (parsed.type === 'OFFICE') {
+      return '(' + breakAnnotationTypeLabel('OFFICE') + ')';
+    }
     if (parsed.time && parsed.type) {
       return '(' + parsed.time + ' ' + breakAnnotationTypeLabel(parsed.type) + ')';
     }
@@ -4830,19 +4833,12 @@
           '</option>'
         );
       }).join('');
-      var breakTimePresets =
-        breakParsed.type === 'OFFICE'
-          ? OFFICE_BREAK_TIME_PRESETS.slice()
-          : SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
+      var hideBreakClock =
+        breakParsed.type === 'NO BREAK' || breakParsed.type === 'OFFICE';
+      var breakTimePresets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
       var breakCurTime = '';
-      if (breakParsed.type !== 'NO BREAK') {
+      if (!hideBreakClock) {
         breakCurTime = normalizeBreakAnnotationTime(breakParsed.time || '') || '';
-      }
-      if (breakParsed.type === 'OFFICE') {
-        if (OFFICE_BREAK_TIME_PRESETS.indexOf(breakCurTime) < 0) {
-          breakCurTime = OFFICE_DEFAULT_BREAK_TIME;
-        }
-      } else if (breakParsed.type !== 'NO BREAK') {
         if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakCurTime) < 0) breakCurTime = '3:00PM';
       }
       if (breakCurTime && breakTimePresets.indexOf(breakCurTime) < 0) {
@@ -4874,7 +4870,9 @@
             '</span><input type="time" id="scheduleReviewCellEnd" value="' +
             escapeHtml(times ? times.end : '') +
             '" step="60" /></label>' +
-            '<div class="shift-detail-break" id="scheduleReviewCellBreakWrap">' +
+            '<div class="shift-detail-break' +
+            (hideBreakClock ? ' shift-detail-break--no-time' : '') +
+            '" id="scheduleReviewCellBreakWrap">' +
             '<label class="form-field form-field-block"><span class="form-label">' +
             escapeHtml(breakLabel) +
             '</span><select id="scheduleReviewCellBreakType" class="timecards-input">' +
@@ -4883,7 +4881,7 @@
             '<label class="form-field form-field-block" id="scheduleReviewCellBreakTimeField"><span class="form-label">' +
             escapeHtml(timeLabel) +
             '</span><select id="scheduleReviewCellBreakTime" class="timecards-input"' +
-            (breakParsed.type === 'NO BREAK' ? ' disabled' : '') +
+            (hideBreakClock ? ' disabled' : '') +
             '>' +
             breakTimeOpts +
             '</select></label>' +
@@ -4919,20 +4917,15 @@
     function syncReviewBreakTimeOptions() {
       if (!reviewBreakType || !reviewBreakTime) return;
       var type = reviewBreakType.value || 'BREAK TIME';
-      var noBreak = type === 'NO BREAK';
-      reviewBreakTime.disabled = noBreak;
+      var hideTime = type === 'NO BREAK' || type === 'OFFICE';
+      reviewBreakTime.disabled = hideTime;
       if (reviewBreakWrap) {
-        reviewBreakWrap.classList.toggle('shift-detail-break--no-time', noBreak);
+        reviewBreakWrap.classList.toggle('shift-detail-break--no-time', hideTime);
       }
-      if (noBreak) return;
-      var presets =
-        type === 'OFFICE'
-          ? OFFICE_BREAK_TIME_PRESETS.slice()
-          : SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
+      if (hideTime) return;
+      var presets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
       var cur = normalizeBreakAnnotationTime(reviewBreakTime.value || '') || '';
-      if (type === 'OFFICE') {
-        if (OFFICE_BREAK_TIME_PRESETS.indexOf(cur) < 0) cur = OFFICE_DEFAULT_BREAK_TIME;
-      } else if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(cur) < 0) {
+      if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(cur) < 0) {
         cur = '3:00PM';
       }
       reviewBreakTime.innerHTML = presets
@@ -4951,10 +4944,6 @@
     }
     if (reviewBreakType) {
       reviewBreakType.addEventListener('change', function () {
-        if (reviewBreakType.value === 'OFFICE') {
-          var startElOff = document.getElementById('scheduleReviewCellStart');
-          if (startElOff) startElOff.value = OFFICE_DEFAULT_START_HHMM;
-        }
         syncReviewBreakTimeOptions();
       });
       syncReviewBreakTimeOptions();
@@ -6096,7 +6085,7 @@
     }
     return out;
   })();
-  /** Break TIME options in the shift editor (locked). */
+  /** Break TIME options in the shift editor (locked). Office is a label, not a break. */
   const SHIFT_DETAIL_BREAK_TIME_PRESETS = [
     '2:00PM',
     '2:30PM',
@@ -6105,10 +6094,6 @@
     '4:00PM',
     '4:30PM',
   ];
-  /** Office annotation times — locked to 2:00 PM only in the shift editor. */
-  const OFFICE_BREAK_TIME_PRESETS = ['2:00PM'];
-  const OFFICE_DEFAULT_START_HHMM = '14:00';
-  const OFFICE_DEFAULT_BREAK_TIME = '2:00PM';
   const BREAK_ANNOTATION_TYPE_PRESETS = ['BREAK TIME', 'OFFICE', 'NO BREAK'];
   const TEAM_ROSTER_KITCHEN = [
     'BALTAZAR LUCAS',
@@ -7507,6 +7492,8 @@
 
   var gmEmployeeProfileSaveInFlight = false;
   /** empId → timestamp while leaveBalance is being upserted (block roster clobber). */
+  var employeeAvailabilityPendingById = Object.create(null);
+  var EMPLOYEE_AVAILABILITY_CLOUD_GUARD_MS = 20000;
   var employeeLeaveCloudSaveIds = Object.create(null);
   /**
    * empId → leaveBalance snapshot from a conscious VL/SL edit. Roster soft-apply must not
@@ -7701,12 +7688,24 @@
         } else {
           e.meta.leaveBalance = pending;
         }
-        return;
+      } else {
+        var keep = localLeaveById[id];
+        if (keep) {
+          e.meta = e.meta && typeof e.meta === 'object' ? e.meta : {};
+          e.meta.leaveBalance = keep;
+        }
       }
-      var keep = localLeaveById[id];
-      if (!keep) return;
-      e.meta = e.meta && typeof e.meta === 'object' ? e.meta : {};
-      e.meta.leaveBalance = keep;
+      var availPend = employeeAvailabilityPendingById[id];
+      if (availPend && Date.now() - availPend.at < EMPLOYEE_AVAILABILITY_CLOUD_GUARD_MS) {
+        var remoteWeek = e.meta && e.meta.availabilityByWeek ? e.meta.availabilityByWeek : null;
+        if (JSON.stringify(remoteWeek || null) === JSON.stringify(availPend.availabilityByWeek)) {
+          delete employeeAvailabilityPendingById[id];
+        } else {
+          e.meta = e.meta && typeof e.meta === 'object' ? e.meta : {};
+          e.meta.availabilityByWeek = JSON.parse(JSON.stringify(availPend.availabilityByWeek));
+          e.weeklyGrid = JSON.parse(JSON.stringify(availPend.weeklyGrid || {}));
+        }
+      }
     });
     employees.length = 0;
     next.forEach(function (e) {
@@ -7973,7 +7972,7 @@
   /** Poll cloud so other devices' edits appear even if Realtime broadcast is missed. */
   var TEAM_STATE_POLL_MS = 15000;
   /** Soft cell poll backup (Realtime handles most). Paint only when local changed. */
-  var SCHEDULE_CELLS_POLL_MS = 8000;
+  var SCHEDULE_CELLS_POLL_MS = 4000;
   /** Refetch slot rows periodically once warm (peer deletes + ghost-row trim need slots). */
   var SCHEDULE_SLOTS_POLL_EVERY_N = 3;
   var scheduleSlotsPollTick = 0;
@@ -7984,6 +7983,8 @@
   var scheduleCellsPeerPollTimer = null;
   var scheduleV2FlushPromise = null;
   var scheduleCellsPollInFlight = false;
+  /** Peer ping that arrived while a poll was running — run once when it finishes. */
+  var scheduleCellsFollowUpOpts = null;
   /** Coalesced write-through so staffing edits reach cloud within ~200ms of the last click. */
   var SCHEDULE_WRITE_THROUGH_MS = 150;
   var scheduleWriteThroughTimer = null;
@@ -8342,8 +8343,11 @@
     if (softOnly && scheduleSoftPollApplyFrozen()) return false;
     /* Do not let peer cells overwrite a Keep-mine / in-flight local edit. */
     if (scheduleCellRemoteApplyBlocked() && !forceCloudSoT) return false;
-    /* Soft polls: skip if one already in flight (interval + Realtime pile-up). */
-    if (softOnly && scheduleCellsPollInFlight) return false;
+    /* Soft polls: don't drop a peer update; run it as soon as the in-flight poll ends. */
+    if (softOnly && scheduleCellsPollInFlight) {
+      scheduleCellsFollowUpOpts = opts;
+      return false;
+    }
     var cid = gmCalloutCompanyId();
     if (!cid) return false;
     var targetWi =
@@ -8719,6 +8723,9 @@
        * Manual Refresh skips this paint so it can re-apply ↑↓ order first, then
        * remount the grid once (a fast paint left stale Person selects until reload).
        */
+      if (applied || trimmed) {
+        if (timecardsScreenActive()) notifyTimecardsScheduleChanged();
+      }
       if ((applied || trimmed) && currentScreen === 1 && !opts.skipPaint) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
@@ -8749,6 +8756,11 @@
     } finally {
       if (gen === scheduleCellsPollGeneration) {
         scheduleCellsPollInFlight = false;
+      }
+      if (scheduleCellsFollowUpOpts) {
+        var followOpts = scheduleCellsFollowUpOpts;
+        scheduleCellsFollowUpOpts = null;
+        void pollVisibleScheduleCellsFromCloud(followOpts);
       }
     }
   }
@@ -14978,12 +14990,12 @@
             void pollVisibleScheduleCellsFromCloud(peerPollOpts);
           }
         } else {
-          /* Debounce soft Realtime bursts so overlapping polls don't stack. */
+          /* Short coalesce so a burst of saves becomes one pull, not an 8s wait. */
           if (scheduleCellsPeerPollTimer) clearTimeout(scheduleCellsPeerPollTimer);
           scheduleCellsPeerPollTimer = setTimeout(function () {
             scheduleCellsPeerPollTimer = null;
             void pollVisibleScheduleCellsFromCloud(peerPollOpts);
-          }, 280);
+          }, 40);
         }
       })
       .on(
@@ -15328,7 +15340,7 @@
     staffRequestsRemoteRefreshTimer = setTimeout(function () {
       staffRequestsRemoteRefreshTimer = null;
       void refreshStaffRequestsFromRemote();
-    }, 800);
+    }, 150);
   }
 
   async function refreshStaffRequestsFromRemote() {
@@ -15344,8 +15356,21 @@
       console.warn('gm-callout: staff_requests refresh', res.error);
       return { ok: false, error: res.error };
     }
-    if (res.data && res.data.length) mergeStaffRequestsFromRemoteRows(res.data);
+    var requestsChanged = false;
+    if (res.data && res.data.length) {
+      requestsChanged = !!mergeStaffRequestsFromRemoteRows(res.data);
+    }
     notifyStaffRequestsUiRefresh();
+    if (requestsChanged && scheduleSyncV2WriteOnly()) {
+      /* Approval changed the schedule — pull that week now instead of waiting for the backup poll. */
+      void pollVisibleScheduleCellsFromCloud({
+        rebuild: currentScreen === 1,
+        force: false,
+        upsertTimedOnly: true,
+        replaceWeekIndex: scheduleCalendarWeekIndex,
+      });
+      if (timecardsScreenActive()) notifyTimecardsScheduleChanged();
+    }
     return { ok: true };
   }
 
@@ -18113,26 +18138,10 @@
     );
   }
 
-  /** Live calendar/export break: stored/cloud only. Drop hash-invented NO BREAK only. */
+  /** Live calendar/export break: stored/cloud text, including a saved No break. */
   function liveScheduleBreakText(shift, role, dayStr) {
     if (!shift) return '';
-    var t = shift.redPokeBreak;
-    if (!t) return '';
-    if (
-      /no break/i.test(t) &&
-      scheduleBreakIsHashPlaceholder(
-        {
-          start: shift.start,
-          end: shift.end,
-          role: role || shift.role,
-          day: dayStr || shift.day,
-        },
-        t
-      )
-    ) {
-      return '';
-    }
-    return t;
+    return shift.redPokeBreak || '';
   }
 
   /** Gross hours from draft shift times; assignment sheet hours only when times are missing. */
@@ -18438,7 +18447,7 @@
   function scheduleSlotDisplayLines(shift, role, dayStr) {
     if (!shift) return { time: '', break: '', hours: '' };
     var time = shift.timeLabel || redPokeShiftTimeLabel(shift.start, shift.end);
-    var br = liveScheduleBreakText(shift, role, dayStr);
+    var br = displayBreakAnnotation(liveScheduleBreakText(shift, role, dayStr));
     return { time: time, break: br, hours: scheduleAssignedHoursString(shift) };
   }
 
@@ -18945,18 +18954,7 @@
   function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr, opts) {
     opts = opts || {};
     var entry = lookupScheduleAssignment(stored, shiftId);
-    if (entry && entry.break) {
-      if (
-        /no break/i.test(entry.break) &&
-        scheduleBreakIsHashPlaceholder(
-          { start: start, end: end, role: role, day: dayStr },
-          entry.break
-        )
-      ) {
-        return '';
-      }
-      return entry.break;
-    }
+    if (entry && entry.break) return entry.break;
     if (opts.allowPlaceholder) return redPokeBreakAnnotation(start, end, role, dayStr);
     return '';
   }
@@ -18964,6 +18962,7 @@
   function formatBreakAnnotation(time, type) {
     var t = String(type || '').trim().toUpperCase();
     if (t === 'NO BREAK') return '(NO BREAK TIME)';
+    if (t === 'OFFICE') return '(OFFICE)';
     var tm = normalizeBreakAnnotationTime(time);
     if (!tm || !t) return '';
     return '(' + tm + ' ' + t + ')';
@@ -19016,7 +19015,7 @@
         raw: s,
       };
     }
-    if (/office/i.test(s)) return { time: '2:00PM', type: 'OFFICE', raw: s };
+    if (/office/i.test(s)) return { time: '', type: 'OFFICE', raw: s };
     if (/break/i.test(s)) return { time: '3:00PM', type: 'BREAK TIME', raw: s };
     return { time: '3:00PM', type: 'BREAK TIME', raw: s };
   }
@@ -19109,8 +19108,13 @@
         '</option>'
       );
     }).join('');
+    var hideDraftBreakClock = parsed.type === 'NO BREAK' || parsed.type === 'OFFICE';
     return (
-      '<div class="draft-cell-break"' + (off ? ' hidden' : '') + '>' +
+      '<div class="draft-cell-break' +
+      (hideDraftBreakClock ? ' draft-cell-break--no-time' : '') +
+      '"' +
+      (off ? ' hidden' : '') +
+      '>' +
         '<select class="draft-break-type" aria-label="' +
         escapeHtml(gmT('schedule.breakOffice')) +
         '">' +
@@ -19119,7 +19123,7 @@
         '<select class="draft-break-time" aria-label="' +
         escapeHtml(gmT('schedule.assignedTime')) +
         '"' +
-        (parsed.type === 'NO BREAK' ? ' disabled' : '') +
+        (parsed.type === 'NO BREAK' || parsed.type === 'OFFICE' ? ' disabled' : '') +
         '>' +
           timeOpts +
         '</select>' +
@@ -19142,9 +19146,9 @@
     var typeSel = td.querySelector('.draft-break-type');
     var timeSel = td.querySelector('.draft-break-time');
     if (!typeSel || !timeSel) return;
-    var noBreak = typeSel.value === 'NO BREAK';
-    timeSel.disabled = noBreak;
-    timeSel.closest('.draft-cell-break').classList.toggle('draft-cell-break--no-time', noBreak);
+    var hideTime = typeSel.value === 'NO BREAK' || typeSel.value === 'OFFICE';
+    timeSel.disabled = hideTime;
+    timeSel.closest('.draft-cell-break').classList.toggle('draft-cell-break--no-time', hideTime);
   }
 
   function restoreFohTemplateWeekBreaks(weekIndex, restaurantId) {
@@ -24124,9 +24128,7 @@
     if (scheduleAssignmentHasStaffedWorkers(entry)) {
       entry.rowOwner = scheduleAssignmentPrimaryWorker(entry);
     }
-    if (shiftRow.redPokeBreak && !scheduleBreakIsHashPlaceholder(shiftRow, shiftRow.redPokeBreak)) {
-      entry.break = shiftRow.redPokeBreak;
-    }
+    if (shiftRow.redPokeBreak) entry.break = shiftRow.redPokeBreak;
     if (shiftRow.redPokeHours != null && shiftRow.redPokeHours !== '') {
       entry.hours = String(shiftRow.redPokeHours);
     }
@@ -28718,6 +28720,9 @@
       requestsEmployeeSearch.placeholder =
         t === 'callout' ? 'Search shift, names, location…' : 'Search employee name';
     }
+    if (typeof syncMgrFileRequestToTypeFilter === 'function') {
+      syncMgrFileRequestToTypeFilter();
+    }
   }
 
   /** Deep-link from notification center click → Actions / Availability / Schedule. */
@@ -28892,7 +28897,7 @@
         escapeHtml(tl) +
         '</div>' +
         '<div class="schedule-rp-break">' +
-        escapeHtml(br) +
+        escapeHtml(displayBreakAnnotation(br)) +
         '</div>' +
         '<div class="schedule-rp-hours">' +
         escapeHtml(hrs) +
@@ -30877,7 +30882,7 @@
                   escapeHtml(rpTimeOff) +
                   '</div>' +
                   '<div class="calendar-slot-rp-break">' +
-                  escapeHtml(rpBreakOff || '') +
+                  escapeHtml(displayBreakAnnotation(rpBreakOff || '')) +
                   '</div>' +
                   '<div class="calendar-slot-rp-hours">' +
                   escapeHtml(
@@ -31732,7 +31737,7 @@
       escapeHtml(tl) +
       '</div>' +
       '<div class="emp-shift-rp-break">' +
-      escapeHtml(br) +
+      escapeHtml(displayBreakAnnotation(br)) +
       '</div>' +
       '<div class="emp-shift-rp-hours">' +
       escapeHtml(hrs) +
@@ -32940,6 +32945,13 @@
     if (opts.syncWeeklyGrid !== false) {
       emp.weeklyGrid = cloneAvailabilityGrid(grid, st, weekIndex);
     }
+    if (emp.id) {
+      employeeAvailabilityPendingById[String(emp.id)] = {
+        at: Date.now(),
+        availabilityByWeek: JSON.parse(JSON.stringify(meta.availabilityByWeek)),
+        weeklyGrid: JSON.parse(JSON.stringify(emp.weeklyGrid || {})),
+      };
+    }
     return next;
   }
 
@@ -33286,9 +33298,16 @@
       },
       { syncWeeklyGrid: true }
     );
-    saveEmployees({ singleEmployee: emp });
     renderManagerAvailabilityScreen();
-    showMgrAvailFeedback('Saved availability for ' + employeeDisplayName(emp) + '.');
+    saveEmployees({ singleEmployee: emp, awaitCloud: true }).then(function (cloud) {
+      if (!cloud || cloud.ok === false) {
+        showMgrAvailFeedback(
+          (cloud && cloud.message) || 'Saved on this device, but it did not reach other devices. Try again.'
+        );
+        return;
+      }
+      showMgrAvailFeedback('Saved availability for ' + employeeDisplayName(emp) + '.');
+    });
   }
 
   function openAvailabilitySubmissionModal(reqId) {
@@ -35163,18 +35182,13 @@
       (shiftDetailBreakType && shiftDetailBreakType.value) ||
       (parsed && parsed.type) ||
       'BREAK TIME';
-    var presets =
-      type === 'OFFICE'
-        ? OFFICE_BREAK_TIME_PRESETS.slice()
-        : SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
+    var presets = SHIFT_DETAIL_BREAK_TIME_PRESETS.slice();
     var curLabel = '';
-    if (parsed && parsed.type !== 'NO BREAK') {
+    if (type !== 'NO BREAK' && type !== 'OFFICE' && parsed && parsed.type === 'BREAK TIME') {
       curLabel = normalizeBreakAnnotationTime(parsed.time || '') || '';
     }
-    if (type === 'OFFICE') {
-      if (OFFICE_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) curLabel = OFFICE_DEFAULT_BREAK_TIME;
-    } else {
-      if (SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) curLabel = '3:00PM';
+    if (type === 'BREAK TIME' && SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(curLabel) < 0) {
+      curLabel = '3:00PM';
     }
     shiftDetailBreakTime.innerHTML = presets
       .map(function (p) {
@@ -35191,25 +35205,15 @@
       .join('');
   }
 
-  function applyOfficeShiftDetailDefaults() {
-    if (!shiftDetailBreakType || shiftDetailBreakType.value !== 'OFFICE') return;
-    if (shiftDetailDayOff && shiftDetailDayOff.checked) return;
-    if (shiftDetailStart) shiftDetailStart.value = OFFICE_DEFAULT_START_HHMM;
-    populateShiftDetailBreakTimeOptions({
-      type: 'OFFICE',
-      time: OFFICE_DEFAULT_BREAK_TIME,
-    });
-    updateShiftDetailHoursReadout();
-  }
-
   function syncShiftDetailEditorVisibility() {
     var off = !!(shiftDetailDayOff && shiftDetailDayOff.checked);
     if (shiftDetailTimesWrap) shiftDetailTimesWrap.hidden = off;
     if (shiftDetailBreakWrap) shiftDetailBreakWrap.hidden = off;
     if (!off && shiftDetailBreakType && shiftDetailBreakWrap) {
-      var noBreak = shiftDetailBreakType.value === 'NO BREAK';
-      if (shiftDetailBreakTime) shiftDetailBreakTime.disabled = noBreak;
-      shiftDetailBreakWrap.classList.toggle('shift-detail-break--no-time', noBreak);
+      var hideTime =
+        shiftDetailBreakType.value === 'NO BREAK' || shiftDetailBreakType.value === 'OFFICE';
+      if (shiftDetailBreakTime) shiftDetailBreakTime.disabled = hideTime;
+      shiftDetailBreakWrap.classList.toggle('shift-detail-break--no-time', hideTime);
     }
     if (shiftDetailSlotTarget && !off) {
       syncTemplateShiftDetailMasterMode(
@@ -35590,14 +35594,10 @@
     }
     if (shiftDetailBreakType) {
       shiftDetailBreakType.addEventListener('change', function () {
-        if (shiftDetailBreakType.value === 'OFFICE') {
-          applyOfficeShiftDetailDefaults();
-        } else {
-          populateShiftDetailBreakTimeOptions({
-            type: shiftDetailBreakType.value,
-            time: (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM',
-          });
-        }
+        populateShiftDetailBreakTimeOptions({
+          type: shiftDetailBreakType.value,
+          time: (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM',
+        });
         syncShiftDetailEditorVisibility();
       });
     }
@@ -35627,9 +35627,7 @@
     var breakType = (shiftDetailBreakType && shiftDetailBreakType.value) || 'BREAK TIME';
     var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM';
     var breakTimeNorm = normalizeBreakAnnotationTime(breakTimeRaw) || '';
-    if (breakType === 'OFFICE' && OFFICE_BREAK_TIME_PRESETS.indexOf(breakTimeNorm) < 0) {
-      breakTimeRaw = OFFICE_DEFAULT_BREAK_TIME;
-    } else if (
+    if (
       breakType === 'BREAK TIME' &&
       SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakTimeNorm) < 0
     ) {
@@ -35644,8 +35642,8 @@
         showScheduleNotice('Enter a valid start and end time, or mark the day off.', false);
         return false;
       }
-      if (breakType !== 'NO BREAK' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
-        showScheduleNotice('Enter a valid break / office time.', false);
+      if (breakType === 'BREAK TIME' && !normalizeBreakAnnotationTime(breakTimeRaw)) {
+        showScheduleNotice('Enter a valid break time.', false);
         return false;
       }
       var masterCheck = validateTemplateShiftMasterChoice(
@@ -36032,6 +36030,9 @@
         requestsEmployeeSearch.placeholder =
           t === 'callout' ? 'Search shift, names, location…' : 'Search employee name';
       }
+      if (typeof syncMgrFileRequestToTypeFilter === 'function') {
+        syncMgrFileRequestToTypeFilter();
+      }
       renderRequestsList();
     });
   }
@@ -36237,31 +36238,54 @@
   }
 
   function populateMgrFileSwapTargets() {
-    var sel = document.getElementById('mgrFileSwapTarget');
-    if (!sel) return;
+    var box = document.getElementById('mgrFileSwapTargets');
+    if (!box) return;
     var emp = mgrFileSelectedEmployee();
     var selfId = emp && emp.id;
-    var prev = sel.value;
-    var opts =
-      '<option value="">Everyone</option>' +
-      mgrFileActiveEmployees()
-        .filter(function (e) {
-          return !selfId || e.id !== selfId;
-        })
+    var prevEveryone = true;
+    var prevIds = {};
+    box.querySelectorAll('[data-mgr-swap-target]').forEach(function (input) {
+      if (input.checked) prevIds[input.value] = true;
+    });
+    var everyoneInput = box.querySelector('[data-mgr-swap-everyone]');
+    if (everyoneInput) prevEveryone = !!everyoneInput.checked && !Object.keys(prevIds).length;
+    if (Object.keys(prevIds).length) prevEveryone = false;
+    var people = mgrFileActiveEmployees().filter(function (e) {
+      return !selfId || e.id !== selfId;
+    });
+    box.innerHTML =
+      '<label class="mgr-file-swap-target"><input type="checkbox" data-mgr-swap-everyone' +
+      (prevEveryone ? ' checked' : '') +
+      ' /> Everyone</label>' +
+      people
         .map(function (e) {
           return (
-            '<option value="' +
+            '<label class="mgr-file-swap-target"><input type="checkbox" data-mgr-swap-target value="' +
             escapeHtml(e.id) +
-            '">' +
+            '"' +
+            (!prevEveryone && prevIds[e.id] ? ' checked' : '') +
+            ' /> ' +
             escapeHtml(employeeDisplayName(e)) +
-            '</option>'
+            '</label>'
           );
         })
         .join('');
-    sel.innerHTML = opts;
-    if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) {
-      sel.value = prev;
-    }
+  }
+
+  function selectedMgrFileSwapTargets() {
+    var box = document.getElementById('mgrFileSwapTargets');
+    if (!box) return [];
+    var everyone = box.querySelector('[data-mgr-swap-everyone]');
+    if (everyone && everyone.checked) return [];
+    var picked = [];
+    box.querySelectorAll('[data-mgr-swap-target]').forEach(function (input) {
+      if (!input.checked) return;
+      var id = String(input.value || '').trim();
+      if (!id) return;
+      var label = input.parentNode ? String(input.parentNode.textContent || '').trim() : '';
+      picked.push({ id: id, name: label });
+    });
+    return picked;
   }
 
   function populateMgrFileRequestPanel() {
@@ -36285,8 +36309,17 @@
     if (prev && Array.prototype.some.call(empSel.options, function (o) { return o.value === prev; })) {
       empSel.value = prev;
     }
+    syncMgrFileEmployeeLabel();
     populateMgrFileShiftSelects();
     populateMgrFileSwapTargets();
+  }
+
+  function syncMgrFileEmployeeLabel() {
+    var empSel = document.getElementById('mgrFileEmployeeSelect');
+    var label = document.getElementById('mgrFileEmployeeLabel');
+    if (!label || !empSel) return;
+    var opt = empSel.options[empSel.selectedIndex];
+    label.textContent = (opt && opt.textContent) || 'Select…';
   }
 
   function showMgrFileFeedback(msg) {
@@ -36305,9 +36338,31 @@
     if (timeoff) timeoff.hidden = mgrFileFormKind !== 'timeoff';
     if (swap) swap.hidden = mgrFileFormKind !== 'swap';
     if (callout) callout.hidden = mgrFileFormKind !== 'callout_request';
-    document.querySelectorAll('[data-mgr-file-form]').forEach(function (chip) {
-      chip.classList.toggle('active', chip.getAttribute('data-mgr-file-form') === mgrFileFormKind);
-    });
+  }
+
+  function syncMgrFileRequestToTypeFilter() {
+    var type = requestsTypeFilter === 'swap' || requestsTypeFilter === 'callout' ? requestsTypeFilter : 'timeoff';
+    var copy = {
+      timeoff: {
+        title: 'File time off for an employee',
+        hint: 'Pick a person, then file time off in their name. It is approved immediately and marked as a day off on the main schedule.',
+      },
+      swap: {
+        title: 'File a shift swap for an employee',
+        hint: 'Pick a person, then post a swap in their name for others to accept. You still approve the swap after someone covers.',
+      },
+      callout: {
+        title: 'File a callout for an employee',
+        hint: 'Pick a person, then file a callout in their name. It is approved immediately and the selected shift is unassigned on the main schedule.',
+      },
+    };
+    var text = copy[type];
+    var summary = document.getElementById('mgrFileRequestSummary');
+    var hint = document.getElementById('mgrFileRequestHint');
+    if (summary) summary.textContent = text.title;
+    if (hint) hint.textContent = text.hint;
+    setMgrFileFormKind(type === 'callout' ? 'callout_request' : type);
+    showMgrFileFeedback('');
   }
 
   (function wireMgrFileRequestPanel() {
@@ -36315,18 +36370,62 @@
     if (!panel || panel.getAttribute('data-wired') === '1') return;
     panel.setAttribute('data-wired', '1');
     var empSel = document.getElementById('mgrFileEmployeeSelect');
+    var summary = panel.querySelector('summary');
+    var suppressEmployeeMenu = false;
+    if (summary) {
+      summary.addEventListener('click', function () {
+        suppressEmployeeMenu = true;
+        setTimeout(function () {
+          suppressEmployeeMenu = false;
+        }, 450);
+      });
+    }
     if (empSel) {
+      empSel.addEventListener(
+        'pointerdown',
+        function (e) {
+          if (!suppressEmployeeMenu) return;
+          e.preventDefault();
+          e.stopPropagation();
+          empSel.blur();
+        },
+        true
+      );
+      empSel.addEventListener('focus', function () {
+        if (!suppressEmployeeMenu) return;
+        empSel.blur();
+      });
       empSel.addEventListener('change', function () {
+        syncMgrFileEmployeeLabel();
         populateMgrFileShiftSelects();
         populateMgrFileSwapTargets();
         showMgrFileFeedback('');
       });
     }
-    panel.addEventListener('click', function (e) {
-      var chip = e.target.closest('[data-mgr-file-form]');
-      if (!chip || !panel.contains(chip)) return;
-      setMgrFileFormKind(chip.getAttribute('data-mgr-file-form'));
-    });
+    syncMgrFileRequestToTypeFilter();
+    var targetBox = document.getElementById('mgrFileSwapTargets');
+    if (targetBox) {
+      targetBox.addEventListener('change', function (ev) {
+        var input = ev.target;
+        if (!input || input.type !== 'checkbox') return;
+        if (input.hasAttribute('data-mgr-swap-everyone')) {
+          if (input.checked) {
+            targetBox.querySelectorAll('[data-mgr-swap-target]').forEach(function (el) {
+              el.checked = false;
+            });
+          }
+          return;
+        }
+        var everyone = targetBox.querySelector('[data-mgr-swap-everyone]');
+        if (input.checked) {
+          if (everyone) everyone.checked = false;
+          return;
+        }
+        if (!targetBox.querySelector('[data-mgr-swap-target]:checked') && everyone) {
+          everyone.checked = true;
+        }
+      });
+    }
 
     function selectedNameAndRole() {
       var emp = mgrFileSelectedEmployee();
@@ -36411,7 +36510,6 @@
         var who = selectedNameAndRole();
         if (!who) return;
         var shiftSel = document.getElementById('mgrFileSwapShift');
-        var targetSel = document.getElementById('mgrFileSwapTarget');
         var noteEl = document.getElementById('mgrFileSwapNote');
         if (!shiftSel || shiftSel.disabled || !shiftSel.value) {
           showMgrFileFeedback('Choose one of this person’s upcoming shifts.');
@@ -36420,52 +36518,70 @@
         var parsed = mgrFileParseShiftValue(shiftSel.value);
         var opt = shiftSel.options[shiftSel.selectedIndex];
         var shiftLabel = opt ? String(opt.textContent || '').trim() : '';
-        var targetId = targetSel ? String(targetSel.value || '').trim() : '';
-        var targetName = '';
-        if (targetId && targetSel) {
-          var tOpt = targetSel.options[targetSel.selectedIndex];
-          targetName = tOpt ? String(tOpt.textContent || '').trim() : '';
-        }
+        var targets = selectedMgrFileSwapTargets();
         var note = noteEl ? String(noteEl.value || '').trim() : '';
-        var payload = {
-          type: 'swap',
-          employeeName: who.name,
-          role: who.role,
-          offeredShiftLabel: shiftLabel,
-          offeredShift: {
-            restaurantId: parsed.restaurantId,
-            shiftId: parsed.shiftId,
-            day: parsed.day,
-            timeLabel: parsed.timeLabel,
-            iso: parsed.iso,
-          },
-          summary:
-            'Shift Swap Offer: ' +
-            shiftLabel +
-            (targetName ? '. Requested cover: ' + targetName : '. Send to everyone') +
-            (note ? '. Notes: ' + note : '') +
-            ' (filed by manager)',
-        };
-        if (targetId) {
-          payload.swapTargetEmployeeId = targetId;
-          payload.swapTargetEmployeeName = targetName;
-        } else {
-          payload.swapTargetEmployeeId = null;
-          payload.swapTargetEmployeeName = null;
-        }
+        var targetGroups = targets.length ? targets : [{ id: '', name: '' }];
         var btn = swapForm.querySelector('button[type="submit"]');
         if (btn) btn.disabled = true;
-        Promise.resolve(window.gmCalloutBridge.submitEmployeeRequest(payload))
-          .then(function (res) {
-            if (!res || !res.ok) {
-              showMgrFileFeedback((res && res.message) || 'Could not post swap offer.');
+        var chain = Promise.resolve();
+        var failed = '';
+        targetGroups.forEach(function (target) {
+          chain = chain.then(function () {
+            if (failed) return null;
+            var targetName = target.name || '';
+            var payload = {
+              type: 'swap',
+              employeeName: who.name,
+              role: who.role,
+              offeredShiftLabel: shiftLabel,
+              offeredShift: {
+                restaurantId: parsed.restaurantId,
+                shiftId: parsed.shiftId,
+                day: parsed.day,
+                timeLabel: parsed.timeLabel,
+                iso: parsed.iso,
+              },
+              summary:
+                'Shift Swap Offer: ' +
+                shiftLabel +
+                (targetName ? '. Requested cover: ' + targetName : '. Send to everyone') +
+                (note ? '. Notes: ' + note : '') +
+                ' (filed by manager)',
+            };
+            if (target.id) {
+              payload.swapTargetEmployeeId = target.id;
+              payload.swapTargetEmployeeName = targetName;
+            } else {
+              payload.swapTargetEmployeeId = null;
+              payload.swapTargetEmployeeName = null;
+            }
+            return Promise.resolve(window.gmCalloutBridge.submitEmployeeRequest(payload)).then(function (res) {
+              if (!res || !res.ok) {
+                failed = (res && res.message) || 'Could not post swap offer.';
+              }
+            });
+          });
+        });
+        chain
+          .then(function () {
+            if (failed) {
+              showMgrFileFeedback(failed);
               return;
             }
             if (noteEl) noteEl.value = '';
+            var whoLabel = targets.length
+              ? targets
+                  .map(function (t) {
+                    return t.name;
+                  })
+                  .join(', ')
+              : 'everyone';
             showMgrFileFeedback(
               'Swap offer posted in ' +
                 who.name +
-                '’s name. Other employees can accept it, then you approve.'
+                '’s name for ' +
+                whoLabel +
+                '. They can accept it, then you approve.'
             );
             renderRequestsList();
           })
@@ -41253,6 +41369,9 @@
         return;
       }
       if (document.visibilityState === 'visible') {
+        if (currentScreen === 13) {
+          void refreshEmployeesFromSupabaseRemote();
+        }
         if (gmCalloutIsTimeclockKiosk()) {
           gmCalloutPinTimeclockShell();
         }

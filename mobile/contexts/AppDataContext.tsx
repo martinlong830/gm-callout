@@ -413,7 +413,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   }, [runRefetch, role, session?.user?.id]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !session?.user || !isManagerLikeRole(role)) return;
+    if (!isSupabaseConfigured || !supabase || !session?.user) return;
     if (realtimePaused) return;
     return subscribeEmployees(supabase, () => {
       void refreshEmployeesOnly();

@@ -98,8 +98,8 @@ export async function enqueueRestaurantWeekCellOps(opts: {
 }
 
 /**
- * Stamp schedule_cells for every restaurant-week touched by the given shift ids
- * (time-off / callout / swap approvals). Cloud cells are the main-schedule SoT.
+ * Stamp schedule_cells for the shifts an approval actually changed
+ * (time off, callout, swap). Does not rewrite the rest of the week.
  */
 export async function enqueueCellOpsForShiftTargets(opts: {
   sb: SupabaseClient;
@@ -108,25 +108,61 @@ export async function enqueueCellOpsForShiftTargets(opts: {
   targets: { restaurantId: string; shiftId: string }[];
 }): Promise<void> {
   const companyId = (await readStoredCompanyId()) || '';
-  if (!companyId) return;
+  if (!companyId) {
+    throw new Error('Company is not set, so the schedule could not be updated on other devices.');
+  }
   const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
-  const seen = new Set<string>();
+  const slotsRes = await fetchSlots(opts.sb, companyId);
+  if (slotsRes.error) {
+    throw new Error(slotsRes.error.message || 'Could not load schedule rows.');
+  }
+  const knownSlots = (slotsRes.data || []) as {
+    restaurant_id?: string;
+    role?: string;
+    slot_key?: string;
+    sort_order?: number;
+    active?: boolean;
+  }[];
+  const ops: ScheduleOp[] = [];
+  const seenSlots = new Set<string>();
   for (const t of opts.targets || []) {
     if (!t?.restaurantId || !t.shiftId) continue;
     const p = parseShiftIdParts(t.shiftId);
     if (!p) continue;
+    const roleKey = ROLE_DEFS[p.roleIdx]?.role as RoleKey | undefined;
+    if (!roleKey) continue;
+    const dayIso = weekMeta[p.globalDayIdx]?.iso;
+    if (!dayIso) continue;
+    const slotKey = await ensureSlotKey(t.restaurantId, roleKey, p.trIdx, knownSlots);
+    const slotSig = `${t.restaurantId}|${roleKey}|${slotKey}`;
+    if (!seenSlots.has(slotSig)) {
+      seenSlots.add(slotSig);
+      ops.push(opAddSlot(t.restaurantId, roleKey, slotKey, p.trIdx));
+    }
     const wi = Math.floor(p.globalDayIdx / 7);
-    const key = `${t.restaurantId}|${wi}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await enqueueRestaurantWeekCellOps({
-      sb: opts.sb,
-      companyId,
-      restaurantId: t.restaurantId,
-      weekIndex: wi,
-      weekMeta,
-      draftRaw: opts.draftRaw,
-      assignmentStore: opts.assignmentStore,
-    });
+    const di = p.globalDayIdx % 7;
+    const draft = loadDraftFromTeamState(opts.draftRaw, wi, t.restaurantId) as DraftGrid;
+    const tr = draftTimeSlotFor(draft, roleKey, WEEKDAY_KEYS[di], p.trIdx);
+    const raw = opts.assignmentStore?.[t.restaurantId]?.[t.shiftId];
+    const entry = normalizeScheduleAssignment(raw);
+    const worker =
+      (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
+      (entry.rowOwner && entry.rowOwner !== 'Unassigned' ? entry.rowOwner : null);
+    if (!tr?.start || !tr?.end) {
+      ops.push(opSetDayOff(t.restaurantId, dayIso, roleKey, slotKey, worker));
+    } else {
+      ops.push(
+        opSetTimes(t.restaurantId, dayIso, roleKey, slotKey, tr.start, tr.end, entry.break || null)
+      );
+      ops.push(opSetWorker(t.restaurantId, dayIso, roleKey, slotKey, worker));
+    }
+  }
+  if (!ops.length) return;
+  await enqueueOps(ops);
+  const flushed = await flushOutboxFully(opts.sb);
+  if (!flushed.ok) {
+    const err = flushed.error;
+    const message = err instanceof Error ? err.message : 'Could not sync the schedule.';
+    throw new Error(message);
   }
 }

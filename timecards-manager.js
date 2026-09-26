@@ -4851,58 +4851,8 @@
   var PAY_STUB_COL_WIDTHS = [3.7, 13.7, 13.7, 15.7, 20.7, 20.7, 10.7, 10.7, 10.7, 10.7, 12.7, 12.7, 12.7, 3.7];
   var PAY_STUB_TOTAL_COLS = PAY_STUB_PER_ROW_MAX * PAY_STUB_COLS;
 
-  var PAYROLL_RP_COMP_TEXT = [
-    ['RP Compensation'],
-    [],
-    ['MANAGEMENT (GM, MANAGER, CHEF, SOUS CHEF)'],
-    [],
-    ['GM & CHEF'],
-    [],
-    ['HOURLY PAY: $20 & up (5% profit share every 6 months)'],
-    [
-      '5% profit share every 6 months from each location- it will be paid out within next month via check - based on ‘A’ health grade',
-    ],
-    [
-      'Paid Vacation - Vacation can not be used in (JUNE-AUGUST) unless approved by owner or gm - management (from the date after being a management team)',
-    ],
-    ['From 7month-1yr : 5 days'],
-    ['1yr - :10 days'],
-    [
-      'Health insurance - Company pays 1/2 Value - same value of other members get, if not - 1/4 credit toward to cc benefit',
-    ],
-    ['FOOD CREDIT: $200 a month'],
-    ['COMMUTE CREDIT: $150 a month (6 months after)'],
-    [],
-    ['MANAGER & SOUS CHEF'],
-    [],
-    ['HOURLY PAY: $18 - $20'],
-    [
-      'Paid Vacation - Vacation can not be used in (JUNE-AUGUST) unless approved by owner or gm - management (from the date after being a management team)',
-    ],
-    ['From 7month-1yr : 5 days'],
-    ['1yr - :10 days'],
-    ['FOOD CREDIT: $100 a month'],
-    ['COMMUTE CREDIT: $150 a month (6 months after)'],
-    [],
-    ['HEAD POSITION(FOH) & KITCHEN (full time - average 35 hours up or 5 days)'],
-    [],
-    ['HOURLY PAY: HEAD ($17-$18)'],
-    ['COOK & FOH TEAM ($15-$17) / DELIVERY ($11.5-$12)'],
-    [],
-    [
-      'Paid Vacation - Vacation can not be used in (JUNE-AUGUST) unless approved by owner or gm - management (from the date after being a management team)',
-    ],
-    [],
-    ['After 6 months: 5-6 days (6 days vacation applies to 6-day scheduler)'],
-    [],
-    ['COMMUTE CREDIT(HEAD POSITION ONLY): $150 a month (6 months after)'],
-    [],
-    ['Vacation pay: no over time & tip apply / pay for the average working hours'],
-    [],
-    [],
+  var PAYROLL_TIP_POINT_GUIDE = [
     ['', 'TIP POINT'],
-    ['GM / CHEF', '', '5 - 5.5'],
-    ['MANAGER', '', '4 - 4.5'],
     ['HEAD', '', '3-3.5'],
     ['CHECK EMPLOYEE', '', '2-2.5'],
     ['CASH EMPLOYEE', 'or -1', '1-1.5'],
@@ -5293,15 +5243,12 @@
   var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12, 12];
   var PAYROLL_HEADER_ROW_HPT = 42;
 
-  function payrollSpreadHoursCellText(m) {
-    return m.sohCount > 0 && m.row.sohDatesLabel && m.row.sohDatesLabel !== '—'
-      ? m.row.sohDatesLabel
-      : m.sohCount > 0
-        ? m.sohCount
-        : '-';
+  function payrollSpreadHoursValue(m) {
+    if (!m || !(m.sohCount > 0)) return 0;
+    return Math.round(Number(m.sohCount) * SOH_PAY_HOURS * 100) / 100;
   }
 
-  /** Widen SPREAD HOURS column so SoH date strings are not clipped (wrapText: false). */
+  /** Widen SPREAD HOURS for the header and hour totals (wrapText: false). */
   function payrollResolvedColWidths(fohMetrics, bohMetrics) {
     var w = PAYROLL_COL_WIDTHS.slice();
     var spreadCol = PAYROLL_COL_SPREAD_HOURS;
@@ -5311,9 +5258,9 @@
     });
     function considerMetrics(metrics) {
       (metrics || []).forEach(function (m) {
-        var cell = payrollSpreadHoursCellText(m);
-        if (cell == null || cell === '') return;
-        w[spreadCol] = Math.max(w[spreadCol], String(cell).length + 1);
+        var hours = payrollSpreadHoursValue(m);
+        if (!(hours > 0)) return;
+        w[spreadCol] = Math.max(w[spreadCol], String(hours).length + 1);
       });
     }
     considerMetrics(fohMetrics);
@@ -5711,6 +5658,12 @@
         alignment: { horizontal: 'right', vertical: 'center' },
         border: thin,
       },
+      moneyHighlight: {
+        font: { sz: 9, name: 'Arial', bold: true },
+        alignment: { horizontal: 'right', vertical: 'center' },
+        border: thin,
+        fill: { patternType: 'solid', fgColor: { rgb: 'FFFF00' } },
+      },
       num2: {
         font: { sz: 9, name: 'Arial' },
         alignment: { horizontal: 'right', vertical: 'center' },
@@ -6004,7 +5957,7 @@
     } else {
       xlSetMoney(ws, r, PAYROLL_COL_GROSS, m.gross, S.money);
     }
-    xlSet(ws, r, PAYROLL_COL_SPREAD_HOURS, payrollSpreadHoursCellText(m), S.cell);
+    xlSetHours(ws, r, PAYROLL_COL_SPREAD_HOURS, payrollSpreadHoursValue(m), S.num2);
     xlSetMoney(ws, r, PAYROLL_COL_SOH_HR, m.sohHr, S.money);
     xlSetFormula(ws, r, PAYROLL_COL_TOTAL_SOH, payrollTotalSohFormula(r), S.money, PAYROLL_MONEY_Z);
     xlSetFormula(ws, r, PAYROLL_COL_GROSS_WITH_SOH, payrollGrossWithSohFormula(r), S.money, PAYROLL_MONEY_Z);
@@ -6484,8 +6437,8 @@
     return ws;
   }
 
-  var CPA_COLS = 16;
-  var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 12, 18, 12, 11, 12, 12, 20, 12];
+  var CPA_COLS = 15;
+  var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 12, 16, 12, 12, 12, 20, 12];
   var CPA_TITLE = '600 BAKERY CAFÉ CORP';
   var CPA_NOTES_MERGE_HEADER = 'NOTES | ADJUSTMENTS HOURLY - PTO - SL';
   var CPA_HEADER_ROW_HPT = 20;
@@ -6499,16 +6452,17 @@
     'VL/SL',
     'TOTAL WORK HOUR',
     'TIPS',
-    'SPREAD OF HOUR/S',
     'SOH DATE/S',
     'SOH TOTAL',
     'MISSED PAY',
     'GROSS PAY',
   ];
-  var CPA_COL_MISSED_PAY = 12;
-  var CPA_COL_GROSS = 13;
-  var CPA_COL_NOTES = 14;
-  var CPA_COL_NOTES_HOURS = 15;
+  var CPA_COL_SOH_DATES = 9;
+  var CPA_COL_SOH_TOTAL = 10;
+  var CPA_COL_MISSED_PAY = 11;
+  var CPA_COL_GROSS = 12;
+  var CPA_COL_NOTES = 13;
+  var CPA_COL_NOTES_HOURS = 14;
   var XL_CPA_YELLOW = { patternType: 'solid', fgColor: { rgb: 'FFFF00' } };
 
   function cpaMergedColWidth(colWidths, startCol, endCol) {
@@ -6733,11 +6687,10 @@
       cpaVlSlDisplay(row.vlHours, row.slHours),
       cpaHoursDisplay(totalH),
       tips != null ? cpaMoneyDisplay(tips) : '-',
-      row.sohCount > 0 ? String(row.sohCount) : '-',
       row.sohCount > 0 && row.sohDatesLabel && row.sohDatesLabel !== '—'
         ? row.sohDatesLabel
         : '-',
-      row.sohPay != null && row.sohPay > 0 ? cpaMoneyDisplay(row.sohPay) : '-',
+      row.sohCount > 0 ? String(row.sohCount) : '-',
       missedPay > 0 ? cpaMoneyDisplay(missedPay) : '-',
       cpaMoneyDisplay(gross),
       cpaVlSlNotesDisplay(row.vlHours, row.slHours),
@@ -6785,31 +6738,24 @@
     } else {
       xlSetMoney(ws, r, 8, cpaTipsForRow(row), S.cellRight);
     }
-    if (row.sohCount > 0) {
-      xlSet(ws, r, 9, row.sohCount, S.cellRight);
-    } else {
-      xlSet(ws, r, 9, '-', S.cellRight);
-    }
     xlSet(
       ws,
       r,
-      10,
+      CPA_COL_SOH_DATES,
       row.sohCount > 0 && row.sohDatesLabel && row.sohDatesLabel !== '—'
         ? row.sohDatesLabel
         : '-',
       S.cell
     );
-    if (payrollSoh) {
-      xlSetFormula(ws, r, 11, '=' + payrollSoh, S.cellRight, PAYROLL_MONEY_Z);
+    if (row.sohCount > 0) {
+      ws[xlEncode(r, CPA_COL_SOH_TOTAL)] = {
+        v: row.sohCount,
+        t: 'n',
+        z: '0',
+        s: S.cellRight,
+      };
     } else {
-      xlSetFormula(
-        ws,
-        r,
-        11,
-        '=' + payrollExcelNumber(r, 9) + '*' + String(xlPayAmount(getSohRate()) || 0),
-        S.cellRight,
-        PAYROLL_MONEY_Z
-      );
+      xlSet(ws, r, CPA_COL_SOH_TOTAL, '-', S.cellRight);
     }
     xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
     if (payrollGross) {
@@ -6841,9 +6787,14 @@
         '*' +
         payrollExcelNumber(r, 3) +
         '+' +
-        payrollExcelNumber(r, 11) +
-        '+' +
         payrollExcelNumber(r, CPA_COL_MISSED_PAY);
+      if (row.sohCount > 0) {
+        fallbackGross +=
+          '+' +
+          payrollExcelNumber(r, CPA_COL_SOH_TOTAL) +
+          '*' +
+          String(xlPayAmount(getSohRate()) || 0);
+      }
       if (extraPay > 0.005) fallbackGross += '+' + String(xlPayAmount(extraPay));
       xlSetFormula(ws, r, CPA_COL_GROSS, fallbackGross, S.cellRight, PAYROLL_MONEY_Z);
     }
@@ -7094,7 +7045,7 @@
       S.money,
       PAYROLL_MONEY_Z
     );
-    xlSetFormula(ws, r, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(r), S.money, PAYROLL_MONEY_Z);
+    xlSetFormula(ws, r, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(r), S.moneyHighlight, PAYROLL_MONEY_Z);
     xlSetFormula(
       ws,
       r,
@@ -7140,7 +7091,7 @@
       r,
       PAYROLL_COL_TOTAL_TIPS,
       '=' + payrollSumFormula(PAYROLL_COL_TOTAL_TIPS, sumFirst, sumLast),
-      S.money,
+      S.moneyHighlight,
       PAYROLL_MONEY_Z
     );
   }
@@ -7291,7 +7242,7 @@
       S.money,
       PAYROLL_MONEY_Z
     );
-    xlSetFormula(ws, grandRow, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(grandRow), S.money, PAYROLL_MONEY_Z);
+    xlSetFormula(ws, grandRow, PAYROLL_COL_CHECK, payrollCheckBeforeTaxFormula(grandRow), S.moneyHighlight, PAYROLL_MONEY_Z);
     xlSetFormula(
       ws,
       grandRow,
@@ -7338,21 +7289,19 @@
       grandRow,
       PAYROLL_COL_TOTAL_TIPS,
       '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_TOTAL_TIPS, fohTotalRow, bohTotalRow),
-      S.money,
+      S.moneyHighlight,
       PAYROLL_MONEY_Z
     );
 
     applyPayrollTableFrame(ws, headerRow, grandRow);
 
     r = grandRow + 2;
-    PAYROLL_RP_COMP_TEXT.forEach(function (line, i) {
+    PAYROLL_TIP_POINT_GUIDE.forEach(function (line) {
       var cells = line || [];
-      var isTitle = i === 0 && cells[0] === 'RP Compensation';
-      var style = isTitle ? S.compTitle : S.compText;
       cells.forEach(function (cell, c) {
-        if (cell) xlSet(ws, r, c, cell, style);
+        if (cell) xlSet(ws, r, c, cell, S.compText);
       });
-      payrollRowHeights[r] = { hpt: isTitle ? 14 : 12 };
+      payrollRowHeights[r] = { hpt: 12 };
       r += 1;
     });
 

@@ -1193,12 +1193,19 @@ html.authed .header-signout-btn {
 
 .avail-tab-employee-field {
   min-width: min(100%, 220px);
+  max-width: 100%;
   flex: 1 1 180px;
   margin: 0;
 }
 
 .avail-tab-employee-field select {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+html.authed.manager-app #screen-availability.screen.active {
+  overflow-x: hidden;
 }
 
 .avail-tab-hint {
@@ -1264,6 +1271,10 @@ html.authed .header-signout-btn {
   background: var(--surface-2, #f8fafc);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+}
+
+.avail-pending-list[hidden] {
+  display: none !important;
 }
 
 .avail-pending-list-label {
@@ -2339,10 +2350,6 @@ html.authed .header-signout-btn {
   min-width: 4.75rem;
 }
 
-.draft-cell-break--no-time .draft-break-time {
-  opacity: 0.45;
-}
-
 /* In-shift details editor (replaces Edit Staffing on screen 2) */
 .shift-details-editor {
   display: flex;
@@ -2460,9 +2467,10 @@ html.authed .header-signout-btn {
 }
 
 .shift-detail-break--no-time #shiftDetailBreakTime,
-.shift-detail-break--no-time #scheduleReviewCellBreakTimeField {
-  opacity: 0.45;
-  pointer-events: none;
+.shift-detail-break--no-time label:has(#shiftDetailBreakTime),
+.shift-detail-break--no-time #scheduleReviewCellBreakTimeField,
+.draft-cell-break--no-time .draft-break-time {
+  display: none;
 }
 
 .calendar-section-actions {
@@ -5891,12 +5899,7 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 #screen-requests .employees-controls {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  padding-top: 2px;
-  padding-bottom: 10px;
-  background: var(--bg, var(--surface));
+  position: static;
 }
 
 .employee-search-wrap {
@@ -6017,9 +6020,13 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 }
 
 .mgr-file-request-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   cursor: pointer;
   list-style: none;
-  padding: 12px 0;
+  padding: 12px 2px 12px 0;
   font-size: 0.9375rem;
   font-weight: 650;
   color: var(--text);
@@ -6027,6 +6034,36 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 .mgr-file-request-summary::-webkit-details-marker {
   display: none;
+}
+
+.mgr-file-request-summary::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-top: -0.2rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.mgr-file-request[open] > .mgr-file-request-summary::after {
+  margin-top: 0.2rem;
+  transform: rotate(-135deg);
+}
+
+/* The opening click used to land on the employee menu and flash its picker. */
+.mgr-file-request[open] > :not(summary) {
+  animation: mgr-file-request-arm 0.4s step-end;
+}
+
+@keyframes mgr-file-request-arm {
+  from {
+    pointer-events: none;
+  }
+  to {
+    pointer-events: auto;
+  }
 }
 
 .mgr-file-request-hint {
@@ -6038,6 +6075,105 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
 
 .mgr-file-request .emp-request-form {
   margin-top: 4px;
+}
+
+/* Fixed-height name box. A native <select> paints the chosen option's grey
+   highlight taller than the control and covers the request-type buttons. */
+.mgr-file-employee-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 2.75rem;
+  max-height: 2.75rem;
+  margin: 0 0 10px;
+  overflow: hidden;
+}
+
+.mgr-file-employee-label {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  box-sizing: border-box;
+  padding: 0 2rem 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface, #fff);
+  font: inherit;
+  font-size: inherit;
+  line-height: 2.75rem;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.mgr-file-employee-wrap::after {
+  content: '';
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  z-index: 3;
+  width: 0;
+  height: 0;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #64748b;
+  pointer-events: none;
+}
+
+.mgr-file-employee-wrap select {
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 2.75rem !important;
+  max-height: 2.75rem !important;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0 2rem 0 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: transparent;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.mgr-file-swap-targets {
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.mgr-file-swap-targets .form-label {
+  padding: 0;
+}
+
+#mgrFileSwapTargets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 11rem;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface, #fff);
+}
+
+.mgr-file-swap-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 0.875rem;
+  cursor: pointer;
 }
 
 .requests-list {

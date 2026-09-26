@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -6,7 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScheduleWeekPicker } from '../../components/ScheduleWeekPicker';
 import { RouteErrorFallback } from '../../components/RouteErrorFallback';
@@ -64,6 +64,9 @@ import {
   consumeDocumentCloudSoT,
   pullCloudCellsOntoStores,
   pullCloudCellsVisibleThenFull,
+  visibleWeekProjectionKey,
+  visibleWeekHasStaffedName,
+  mergeBlobNamesIntoUnassigned,
   writeOnlyCells,
 } from '../../lib/schedule/syncV2';
 
@@ -248,6 +251,8 @@ export default function EmployeeScheduleScreen() {
   const [cellDraft, setCellDraft] = useState<unknown>(null);
   const cellAssignRef = useRef(cellAssign);
   const cellDraftRef = useRef(cellDraft);
+  const lastPaintKeyRef = useRef('');
+  const scheduleScreenFocusedRef = useRef(false);
   cellAssignRef.current = cellAssign;
   cellDraftRef.current = cellDraft;
 
@@ -258,7 +263,19 @@ export default function EmployeeScheduleScreen() {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     const applyProjected = (projected: { assign: AssignmentStore; draft: unknown }) => {
-      setCellAssign(projected.assign);
+      let assign = projected.assign;
+      if (!visibleWeekHasStaffedName(assign, weekIndex) && teamState?.schedule_assignments) {
+        const rolled = hydrateScheduleAssignmentsFromTeamState(
+          teamState.schedule_assignments,
+          allRestaurants,
+          teamState.draft_schedule
+        );
+        assign = mergeBlobNamesIntoUnassigned(assign, rolled.store) || assign;
+      }
+      const paintKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
+      if (paintKey && paintKey === lastPaintKeyRef.current) return;
+      lastPaintKeyRef.current = paintKey;
+      setCellAssign(assign);
       setCellDraft(projected.draft);
     };
 
@@ -322,8 +339,9 @@ export default function EmployeeScheduleScreen() {
     const first = consumeDocumentCloudSoT();
     void pullCells({ fullWindow: first, cloudAuthority: first });
     pollTimer = setInterval(() => {
-      if (!cancelled) void pullCells({ fullWindow: false });
-    }, 5000);
+      if (cancelled || !scheduleScreenFocusedRef.current) return;
+      void pullCells({ fullWindow: false });
+    }, 30000);
 
     return () => {
       cancelled = true;
@@ -337,6 +355,15 @@ export default function EmployeeScheduleScreen() {
     teamState?.draft_schedule,
     allRestaurants,
   ]);
+
+  useFocusEffect(
+    useCallback(() => {
+      scheduleScreenFocusedRef.current = true;
+      return () => {
+        scheduleScreenFocusedRef.current = false;
+      };
+    }, [])
+  );
 
   /** Prefer cell projection; fall back to blob hydrate only before first cell fetch. */
   const hydrated = useMemo(
@@ -386,12 +413,13 @@ export default function EmployeeScheduleScreen() {
         restaurants: allRestaurants,
         currentRestaurantId,
         assignmentStore,
+        weekIndex,
       });
     } catch (err) {
       console.warn('buildSchedule', err);
       return [] as ScheduleRow[];
     }
-  }, [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore]);
+  }, [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore, weekIndex]);
 
   const otherStoreDayLabels = useMemo(() => {
     try {

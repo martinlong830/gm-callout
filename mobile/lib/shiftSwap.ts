@@ -375,20 +375,16 @@ export async function applyApprovedSwapToSchedule(
     /* non-blocking */
   }
 
-  try {
-    const { enqueueCellOpsForShiftTargets } = await import('./schedule/weekCellOps');
-    await enqueueCellOpsForShiftTargets({
-      sb,
-      assignmentStore: nextStore,
-      draftRaw: draftChanged ? draftRaw : opts?.draftScheduleRaw,
-      targets: [
-        { restaurantId: rid, shiftId: shift.shiftId },
-        { restaurantId: rid, shiftId: destSid },
-      ],
-    });
-  } catch {
-    /* assignment blob already saved */
-  }
+  const { enqueueCellOpsForShiftTargets } = await import('./schedule/weekCellOps');
+  await enqueueCellOpsForShiftTargets({
+    sb,
+    assignmentStore: nextStore,
+    draftRaw: draftChanged ? draftRaw : opts?.draftScheduleRaw,
+    targets: [
+      { restaurantId: rid, shiftId: shift.shiftId },
+      { restaurantId: rid, shiftId: destSid },
+    ],
+  });
 
   return {
     ok: true,

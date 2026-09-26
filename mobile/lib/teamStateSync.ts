@@ -7,7 +7,8 @@ export type TeamStateBroadcastPayload = {
 };
 
 const TEAM_STATE_BROADCAST_EVENT = 'team_state_changed';
-const REMOTE_REFRESH_DEBOUNCE_MS = 1200;
+const SCHEDULE_CELLS_BROADCAST_EVENT = 'schedule_cells_changed';
+const REMOTE_REFRESH_DEBOUNCE_MS = 200;
 
 /** Ignore own broadcast echo briefly after a local upsert (parity with web). */
 export const TEAM_STATE_SELF_ECHO_IGNORE_MS = 8000;
@@ -60,6 +61,46 @@ export function subscribeTeamState(
     }
     void sb.removeChannel(channel);
   };
+}
+
+/** Tell open web/mobile schedule tabs to pull cells now (don't wait for the backup poll). */
+export async function broadcastScheduleCellsChanged(
+  sb: SupabaseClient,
+  teamStateId: string,
+  opts?: { weekIndex?: number | null; restaurantId?: string | null }
+): Promise<void> {
+  const payload = {
+    ts: Date.now(),
+    source: 'mobile',
+    weekIndex: opts?.weekIndex != null ? opts.weekIndex : null,
+    restaurantId: opts?.restaurantId ? String(opts.restaurantId) : null,
+    forceDayOffReplace: false,
+  };
+  if (sharedChannel && sharedTeamStateId === teamStateId) {
+    try {
+      await sharedChannel.send({
+        type: 'broadcast',
+        event: SCHEDULE_CELLS_BROADCAST_EVENT,
+        payload,
+      });
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  const channel = sb.channel(`team_state_sync_${teamStateId}`, {
+    config: { broadcast: { ack: false, self: true } },
+  });
+  await channel.subscribe();
+  try {
+    await channel.send({
+      type: 'broadcast',
+      event: SCHEDULE_CELLS_BROADCAST_EVENT,
+      payload,
+    });
+  } finally {
+    void sb.removeChannel(channel);
+  }
 }
 
 /** Notify other clients after a successful team_state upsert (manager web/mobile). */
