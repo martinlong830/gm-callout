@@ -29,6 +29,12 @@
    * the deleting device ("deleted then came back after a while").
    */
   var recentLocalDeactivatedSlots = Object.create(null);
+  /**
+   * Sort indexes just deleted on this device. A sibling slot_key at the same
+   * sort_order used to survive deactivate (only the mapped UUID was removed)
+   * and repaint an Unassigned row until a later fetch dropped it.
+   */
+  var recentDeletedSlotSorts = Object.create(null);
   var LOCAL_DEACTIVATED_SLOT_MS = 45000;
 
   function cellKey(restaurantId, dayIso, role, slotKey) {
@@ -47,6 +53,94 @@
 
   function clearLocalDeactivatedSlots() {
     recentLocalDeactivatedSlots = Object.create(null);
+    recentDeletedSlotSorts = Object.create(null);
+  }
+
+  function deactivatedSortGuardKey(restaurantId, role, sortOrder) {
+    return [String(restaurantId || ''), String(role || ''), String(sortOrder)].join('\0');
+  }
+
+  function armLocalDeactivatedSort(restaurantId, role, sortOrder) {
+    var n = Number(sortOrder);
+    if (!restaurantId || !role || isNaN(n) || n < 0) return;
+    recentDeletedSlotSorts[deactivatedSortGuardKey(restaurantId, role, n)] =
+      Date.now() + LOCAL_DEACTIVATED_SLOT_MS;
+  }
+
+  function isLocallyDeactivatedSort(restaurantId, role, sortOrder) {
+    var n = Number(sortOrder);
+    if (isNaN(n) || n < 0) return false;
+    var k = deactivatedSortGuardKey(restaurantId, role, n);
+    var until = recentDeletedSlotSorts[k];
+    if (!until) return false;
+    if (Date.now() >= until) {
+      delete recentDeletedSlotSorts[k];
+      return false;
+    }
+    return true;
+  }
+
+  function localSlotDeleteGuardActive() {
+    var now = Date.now();
+    var k;
+    for (k in recentLocalDeactivatedSlots) {
+      if (recentLocalDeactivatedSlots[k] > now) return true;
+      delete recentLocalDeactivatedSlots[k];
+    }
+    for (k in recentDeletedSlotSorts) {
+      if (recentDeletedSlotSorts[k] > now) return true;
+      delete recentDeletedSlotSorts[k];
+    }
+    return false;
+  }
+
+  /** Every active cache key at this row, plus the mapped key. */
+  function activeSlotKeysAtSort(restaurantId, role, sortOrder) {
+    var keys = [];
+    var seen = Object.create(null);
+    function add(k) {
+      var s = k ? String(k) : '';
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      keys.push(s);
+    }
+    var n = Number(sortOrder);
+    if (isNaN(n) || n < 0) return keys;
+    var map = getSlotMap();
+    var mk = slotMapKey(restaurantId, role, n);
+    if (map[mk]) add(map[mk]);
+    var slots = getSlotCache();
+    Object.keys(slots).forEach(function (pk) {
+      var row = slots[pk];
+      if (!row || row.active === false) return;
+      if (String(row.restaurant_id) !== String(restaurantId)) return;
+      if (String(row.role) !== String(role)) return;
+      if (Number(row.sort_order) !== n) return;
+      add(row.slot_key);
+    });
+    return keys;
+  }
+
+  /**
+   * Drop these keys from the local slot cache immediately and refuse lagged
+   * fetches from putting them (or an unseen fork at this sort) back.
+   */
+  function tombstoneLocalSlotKeys(restaurantId, role, slotKeys, sortOrder) {
+    var cache = getSlotCache();
+    var changed = false;
+    (slotKeys || []).forEach(function (sk) {
+      if (!sk) return;
+      armLocalDeactivatedSlot(restaurantId, role, sk);
+      var pk = [String(restaurantId), String(role), String(sk)].join('\0');
+      if (cache[pk] && cache[pk].active !== false) {
+        cache[pk] = Object.assign({}, cache[pk], { active: false });
+        changed = true;
+      }
+    });
+    if (changed) setSlotCache(cache);
+    if (sortOrder != null && !isNaN(Number(sortOrder))) {
+      armLocalDeactivatedSort(restaurantId, role, sortOrder);
+    }
   }
 
   function isLocallyDeactivatedSlot(restaurantId, role, slotKey) {
@@ -227,7 +321,9 @@
       if (String(s.restaurant_id) !== String(restaurantId)) return;
       if (String(s.role) !== String(role)) return;
       if (Number(s.sort_order) !== Number(trIdx)) return;
-      if (s.slot_key) candidates.push(String(s.slot_key));
+      if (s.slot_key && !isLocallyDeactivatedSlot(restaurantId, role, s.slot_key)) {
+        candidates.push(String(s.slot_key));
+      }
     });
     candidates.sort();
     if (candidates.length) {
@@ -980,6 +1076,16 @@
       if (!rid || !role || !slotKey) return;
       /* Lagged fetch must not revive a slot this device just deactivated. */
       if (isLocallyDeactivatedSlot(rid, role, slotKey)) return;
+      /*
+       * A second UUID at the deleted sort_order is not a reorder survivor.
+       * Keep a key only when the map already says that exact key belongs here
+       * (cloud reorder moved a real row into this index).
+       */
+      var sortOrder = Number(row.sort_order) || 0;
+      if (isLocallyDeactivatedSort(rid, role, sortOrder)) {
+        var mappedAtSort = prevMap[slotMapKey(rid, role, sortOrder)];
+        if (!mappedAtSort || String(mappedAtSort) !== slotKey) return;
+      }
       var pk = [rid, role, slotKey].join('\0');
       nextSlots[pk] = {
         restaurant_id: rid,
@@ -1276,6 +1382,7 @@
     var roleS = String(role || '');
     var key = String(slotKey || '');
     if (!rid || !roleS || !key) return null;
+    if (isLocallyDeactivatedSlot(rid, roleS, key)) return null;
     var slots = getSlotCache();
     var spk = [rid, roleS, key].join('\0');
     /* Also try raw ids in case cache was keyed without String(). */
@@ -1295,8 +1402,13 @@
     });
     if (found != null) return found;
     var slotRow = slots[spk] || slots[spkAlt];
-    if (slotRow && slotRow.sort_order != null) return Number(slotRow.sort_order) || 0;
-    return null;
+    if (!slotRow || slotRow.active === false || slotRow.sort_order == null) return null;
+    var sortOrder = Number(slotRow.sort_order) || 0;
+    if (isLocallyDeactivatedSort(rid, roleS, sortOrder)) {
+      var mappedAtSort = map[slotMapKey(rid, roleS, sortOrder)];
+      if (!mappedAtSort || String(mappedAtSort) !== key) return null;
+    }
+    return sortOrder;
   }
 
   /**
@@ -1405,8 +1517,13 @@
     clearOutbox: clearOutbox,
     clearLocalCellGuards: clearLocalCellGuards,
     armLocalDeactivatedSlot: armLocalDeactivatedSlot,
+    armLocalDeactivatedSort: armLocalDeactivatedSort,
     clearLocalDeactivatedSlots: clearLocalDeactivatedSlots,
     isLocallyDeactivatedSlot: isLocallyDeactivatedSlot,
+    isLocallyDeactivatedSort: isLocallyDeactivatedSort,
+    localSlotDeleteGuardActive: localSlotDeleteGuardActive,
+    activeSlotKeysAtSort: activeSlotKeysAtSort,
+    tombstoneLocalSlotKeys: tombstoneLocalSlotKeys,
     getLastRev: getLastRev,
     setLastRev: setLastRev,
     trIdxForSlotKey: trIdxForSlotKey,

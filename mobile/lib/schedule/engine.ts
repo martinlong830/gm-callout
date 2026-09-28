@@ -580,6 +580,70 @@ export function slotCountForRoleWithAssignments(
   return slotCountForRole(draftRows, role);
 }
 
+function draftRowHasClockTimes(row: unknown): boolean {
+  if (!Array.isArray(row)) return false;
+  return row.some((cell) => Array.isArray(cell) && cell[0] && cell[1]);
+}
+
+function assignmentRowHasPerson(
+  store: AssignmentStore | null | undefined,
+  restaurantId: string,
+  role: RoleKey,
+  weekIndex: number,
+  trIdx: number
+): boolean {
+  if (!store || !restaurantId) return false;
+  const roleIdx = roleIdxForDraftRole(role);
+  if (roleIdx < 0) return false;
+  const rs = store[restaurantId];
+  if (!rs) return false;
+  const weekStart = weekIndex * 7;
+  for (let di = 0; di < 7; di += 1) {
+    const ent = normalizeScheduleAssignment(rs[`shift-${weekStart + di}-${roleIdx}-${trIdx}`]);
+    if (ent.rowOwner && ent.rowOwner !== 'Unassigned') return true;
+    if (scheduleAssignmentHasStaffedWorkers(ent)) return true;
+    const label = String(ent.timeLabel || '').trim();
+    if (label && label.toUpperCase() !== 'DAY-OFF') return true;
+  }
+  return false;
+}
+
+/**
+ * Hide a trailing Unassigned row that has no times and no person.
+ * One company-wide slot used to show that empty line on weeks nobody edited.
+ * `preserveRole` keeps a row the manager just added and has not filled in yet.
+ */
+export function trimTrailingEmptySlotRows(
+  draftRows: DraftGrid,
+  store: AssignmentStore | null | undefined,
+  restaurantId: string,
+  weekIndex: number,
+  preserveRole?: RoleKey | null
+): DraftGrid {
+  const roles: RoleKey[] = ['Kitchen', 'Bartender', 'Server'];
+  let changed = false;
+  const next: DraftGrid = { ...draftRows };
+  roles.forEach((role) => {
+    const rows = getDraftRowsForRole(draftRows, role).slice();
+    if (preserveRole && role === preserveRole) {
+      next[role] = rows;
+      return;
+    }
+    let n = rows.length;
+    while (n > 1) {
+      const last = n - 1;
+      if (draftRowHasClockTimes(rows[last])) break;
+      if (assignmentRowHasPerson(store, restaurantId, role, weekIndex, last)) break;
+      n -= 1;
+    }
+    if (n !== rows.length) {
+      next[role] = rows.slice(0, n);
+      changed = true;
+    }
+  });
+  return changed ? next : draftRows;
+}
+
 export function getThisMondayDate(): Date {
   const now = new Date();
   const day = now.getDay();

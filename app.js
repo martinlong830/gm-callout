@@ -1624,6 +1624,65 @@
     return getDraftRowsForRole(role, weekIndex, restaurantId).length;
   }
 
+  /**
+   * Rows to paint. A global slot added on one week used to leave an empty
+   * Unassigned line under the last person on every other week. Those trailing
+   * shells are not shown. A row the manager just added on this week is kept.
+   */
+  function paintedSlotCountForRole(role, weekIndex, restaurantId) {
+    var rows = getDraftRowsForRole(role, weekIndex, restaurantId);
+    var n = rows ? rows.length : 0;
+    if (n <= 1) return n;
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var wi = resolveDraftWeekIndex(weekIndex);
+    if (schedulePersonRowProtectActive(rid, wi)) return n;
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return n;
+    var store = null;
+    try {
+      store = loadScheduleAssignmentsStore();
+    } catch (_paintSlots) {
+      return n;
+    }
+    var rs = (store && store[rid]) || {};
+    var weekStart = wi * 7;
+    while (n > 1) {
+      var last = n - 1;
+      var row = rows[last];
+      var keep = false;
+      for (var di = 0; di < 7; di += 1) {
+        var cell = row && row[di];
+        if (cell && cell[0] && cell[1]) {
+          keep = true;
+          break;
+        }
+        var ent = normalizeScheduleAssignment(
+          rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + last]
+        );
+        if (ent && ent.rowOwner && ent.rowOwner !== 'Unassigned') {
+          keep = true;
+          break;
+        }
+        if (scheduleAssignmentHasStaffedWorkers(ent)) {
+          keep = true;
+          break;
+        }
+        if (
+          ent &&
+          ent.timeLabel &&
+          String(ent.timeLabel).trim() &&
+          String(ent.timeLabel).toUpperCase() !== 'DAY-OFF'
+        ) {
+          keep = true;
+          break;
+        }
+      }
+      if (keep) break;
+      n -= 1;
+    }
+    return n;
+  }
+
   function buildAvailabilitySlotRangesUnion() {
     var u = {};
     var roles = ['Bartender', 'Kitchen', 'Server'];
@@ -8147,7 +8206,10 @@
            * Also keep a brief settle after timed edits so soft day-off cannot snap back
            * before the cloud replica shows the new times.
            */
-          if (
+          if (v2.localSlotDeleteGuardActive && v2.localSlotDeleteGuardActive()) {
+            /* Slot delete must keep winning over a lagged slot fetch after flush. */
+            armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+          } else if (
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
             !scheduleProtectLocalTimedFromSoftDayOff() &&
             !scheduleDayOffPushGuardActive() &&
@@ -8167,7 +8229,9 @@
           }
           void broadcastScheduleCellsChanged();
         } else if (res && res.ok && res.empty) {
-          if (
+          if (v2.localSlotDeleteGuardActive && v2.localSlotDeleteGuardActive()) {
+            armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+          } else if (
             !schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex) &&
             !scheduleProtectLocalTimedFromSoftDayOff() &&
             !scheduleDayOffPushGuardActive() &&
@@ -9109,49 +9173,45 @@
           return b - a;
         });
       indices.forEach(function (trIdx) {
-        var slotKey =
-          (v2.resolveSlotKey && v2.resolveSlotKey(rid, role, trIdx)) ||
-          null;
-        /* Fall back to map peek via ensure only if resolve missing — never mint for delete. */
-        if (!slotKey) {
-          try {
-            var map = v2.getSlotMap && v2.getSlotMap();
-            var mk = rid + '|' + role + '|' + String(trIdx);
-            if (map && map[mk]) slotKey = map[mk];
-          } catch (_peek) {
-            slotKey = null;
-          }
+        /*
+         * Deactivate every active UUID at this row, not only the mapped one.
+         * A forked slot_key at the same sort_order stayed active, so a poll a
+         * couple of seconds later painted the Unassigned row again, then a
+         * later fetch dropped it.
+         */
+        var slotKeys =
+          v2.activeSlotKeysAtSort ? v2.activeSlotKeysAtSort(rid, role, trIdx) : [];
+        if (!slotKeys.length) {
+          var one =
+            (v2.resolveSlotKey && v2.resolveSlotKey(rid, role, trIdx)) || null;
+          if (one) slotKeys = [one];
         }
-        /* Last resort: active slot cache by sort_order (stale map after peer edits). */
-        if (!slotKey && v2.getSlotCache) {
-          try {
-            var cache = v2.getSlotCache() || {};
-            Object.keys(cache).forEach(function (pk) {
-              if (slotKey) return;
-              var s = cache[pk];
-              if (!s || s.active === false) return;
-              if (String(s.restaurant_id) !== String(rid)) return;
-              if (String(s.role) !== String(role)) return;
-              if (Number(s.sort_order) === trIdx && s.slot_key) {
-                slotKey = String(s.slot_key);
-              }
-            });
-          } catch (_cachePeek) {
-            /* ignore */
-          }
+        if (v2.tombstoneLocalSlotKeys) {
+          v2.tombstoneLocalSlotKeys(rid, role, slotKeys, trIdx);
+        } else if (v2.armLocalDeactivatedSort) {
+          v2.armLocalDeactivatedSort(rid, role, trIdx);
         }
-        if (!slotKey || !v2.opDeactivateSlot) {
+        if (!slotKeys.length || !v2.opDeactivateSlot) {
           if (v2.remapSlotMapAfterDelete) v2.remapSlotMapAfterDelete(rid, role, trIdx);
           return;
         }
-        enqueueScheduleV2Ops([v2.opDeactivateSlot(rid, role, slotKey)], { conscious: true });
+        enqueueScheduleV2Ops(
+          slotKeys.map(function (slotKey) {
+            return v2.opDeactivateSlot(rid, role, slotKey);
+          }),
+          { conscious: true }
+        );
         if (v2.remapSlotMapAfterDelete) v2.remapSlotMapAfterDelete(rid, role, trIdx);
       });
       if (v2.opReorderSlots) {
         var remain = [];
         var postCount = slotCountForRole(role, wi, rid);
+        var mapAfter = v2.getSlotMap ? v2.getSlotMap() : {};
         for (var i = 0; i < postCount; i += 1) {
-          remain.push(v2.ensureSlotKey(rid, role, i));
+          var sk = mapAfter[rid + '|' + role + '|' + String(i)];
+          if (!sk) continue;
+          if (v2.isLocallyDeactivatedSlot && v2.isLocallyDeactivatedSlot(rid, role, sk)) continue;
+          remain.push(sk);
         }
         if (remain.length) {
           enqueueScheduleV2Ops([v2.opReorderSlots(rid, role, remain)], { conscious: true });
@@ -11505,6 +11565,12 @@
                   pc.workers[0]) ||
                 null;
               if (!cellHasTimed(pc) && !person) return;
+              if (
+                v2.isLocallyDeactivatedSort &&
+                v2.isLocallyDeactivatedSort(rid, role, pCell.trIdx)
+              ) {
+                return;
+              }
               if (pCell.trIdx > maxRowTr) maxRowTr = pCell.trIdx;
             });
             var n = maxRowTr >= 0 ? maxRowTr + 1 : 0;
@@ -11616,6 +11682,12 @@
            * In-flight Person adds are gated by person-protect / add_slot → activeN.
            */
           if (maxSlots > 0 && p.trIdx >= maxSlots) return;
+          if (
+            v2.isLocallyDeactivatedSort &&
+            v2.isLocallyDeactivatedSort(rid, role, p.trIdx)
+          ) {
+            return;
+          }
           var layers = ensureDraftWeek(wi, rid);
           if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
           if (upsertTimedOnly && p.trIdx >= layers[role].length && !softDayOffGrow) return;
@@ -18951,7 +19023,7 @@
         Server: ['SERVICE REP', 'SERVICE REP', 'SERVICE REP'],
       };
       sectionMeta.forEach(function (sec) {
-        var slotN = slotCountForRole(sec.role, wi, rid);
+        var slotN = paintedSlotCountForRole(sec.role, wi, rid);
         var slotOrder = orderedScheduleSlotIndicesForRole(sec.role, slotN, visibleDays);
         if (!slotOrder.length) return;
         var rowsOut = [];
@@ -22413,6 +22485,18 @@
     pushScheduleUndoSnapshot();
     if (pendingSlotDeletes && pendingSlotDeletes.length) {
       markScheduleInteractiveEdit();
+      armScheduleLocalAuthority(SCHEDULE_TIMED_EDIT_SETTLE_MS);
+      try {
+        var v2Del = gmScheduleV2();
+        if (v2Del && v2Del.armLocalDeactivatedSort) {
+          pendingSlotDeletes.forEach(function (d) {
+            if (!d || !d.role || d.originalTrIdx == null || isNaN(Number(d.originalTrIdx))) return;
+            v2Del.armLocalDeactivatedSort(rid, d.role, Number(d.originalTrIdx));
+          });
+        }
+      } catch (_armDelSort) {
+        /* ignore */
+      }
       compactAssignmentsAfterDraftSlotDeletes(wi, rid, pendingSlotDeletes);
     }
     saveDraftScheduleRowsForWeek(wi, nextRows, rid);
@@ -31041,7 +31125,7 @@
       });
       if (!rd) return;
 
-      var slotN = slotCountForRole(rd.role, scheduleCalendarWeekIndex, currentRestaurantId);
+      var slotN = paintedSlotCountForRole(rd.role, scheduleCalendarWeekIndex, currentRestaurantId);
       var slotOrder = orderedScheduleSlotIndicesForRole(rd.role, slotN, visibleDays);
       var visibleSlotOrder = slotOrder;
       if (abbreviateOtherStore && managedScopeForAbbrev) {

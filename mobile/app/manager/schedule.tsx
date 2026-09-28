@@ -113,6 +113,7 @@ import {
   SHIFT_DETAIL_BREAK_TIME_PRESETS,
   slotCountForRole,
   slotCountForRoleWithAssignments,
+  trimTrailingEmptySlotRows,
   STAFF_TYPE_LABELS,
   ROLE_DEFS,
   assignmentShell,
@@ -149,7 +150,9 @@ import {
   flushOutboxFully,
   backfillIfNeeded,
   opAddSlot,
+  noteLocallyDeactivatedSlot,
   opDeactivateSlot,
+  slotKeysAtSort,
   opSetDayOff,
   opSetTimes,
   opSetWorker,
@@ -461,6 +464,10 @@ export default function ManagerScheduleScreen() {
    * cell apply until replica lag settles — same idea as web scheduleLocalAuthority.
    */
   const cellWriteProtectUntilRef = useRef(0);
+  /** Keep a just-added empty row visible until a person or time is set. */
+  const preserveEmptyTailRef = useRef<{ week: number; role: RoleKey; until: number } | null>(
+    null
+  );
   const armCellWriteProtect = useCallback((ms = 15000) => {
     cellWriteProtectUntilRef.current = Math.max(
       cellWriteProtectUntilRef.current,
@@ -1056,10 +1063,21 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     assignmentStore
   );
   draftScheduleRawRef.current = draftScheduleRaw;
-  const draftRows = useMemo(
-    () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
-    [draftScheduleRaw, weekIndex, currentRestaurantId]
-  );
+  const draftRows = useMemo(() => {
+    const grid = loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId);
+    const preserve = preserveEmptyTailRef.current;
+    const keepRole =
+      preserve && preserve.week === weekIndex && Date.now() < preserve.until
+        ? preserve.role
+        : null;
+    return trimTrailingEmptySlotRows(
+      grid,
+      assignmentStoreRef.current,
+      currentRestaurantId,
+      weekIndex,
+      keepRole
+    );
+  }, [draftScheduleRaw, weekIndex, currentRestaurantId, assignmentStore]);
 
   const slotOrderByRestaurant = useMemo(
     () => readSlotOrderByRestaurantForWeek(draftScheduleRaw, selectedWeekMonday),
@@ -2901,6 +2919,11 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
       nextRows
     );
     const newTrIdx = slotCountForRole(nextRows, roleKey) - 1;
+    preserveEmptyTailRef.current = {
+      week: weekIndex,
+      role: roleKey,
+      until: Date.now() + 60000,
+    };
     draftPayload = patchSlotOrderAfterAdd(
       draftPayload,
       selectedWeekMonday,
@@ -2972,18 +2995,44 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     slotOrderDirtyRef.current = true;
     queuePersist(nextStore, draftPayload);
     armCellWriteProtect(15000);
-    /* Resolve the slot key for the row we just removed, then deactivate that cloud row. */
+    /*
+     * Deactivate every UUID at this row. A second slot_key at the same position
+     * used to stay active and paint the Unassigned line again a few seconds later.
+     */
+    noteLocallyDeactivatedSlot(currentRestaurantId, roleKey, [], trIdx);
+    const sb = supabase;
+    if (!sb) return;
     void (async () => {
-      let slotKey: string | null = null;
+      let keys: string[] = [];
       try {
-        slotKey = await ensureBoundSlotKey(supabase, currentRestaurantId, roleKey, trIdx);
-      } catch (_sk) {
-        slotKey = null;
+        const companyId = await readStoredCompanyId();
+        if (companyId) {
+          const slotsRes = await fetchSlots(sb, companyId);
+          keys = slotKeysAtSort(
+            (slotsRes.data || []) as { restaurant_id?: string; role?: string; slot_key?: string; sort_order?: number; active?: boolean }[],
+            currentRestaurantId,
+            roleKey,
+            trIdx
+          );
+        }
+      } catch (_slots) {
+        keys = [];
       }
-      if (!slotKey) return;
+      if (!keys.length) {
+        try {
+          const one = await ensureBoundSlotKey(sb, currentRestaurantId, roleKey, trIdx);
+          if (one) keys = [one];
+        } catch (_sk) {
+          keys = [];
+        }
+      }
+      if (!keys.length) return;
+      noteLocallyDeactivatedSlot(currentRestaurantId, roleKey, keys, trIdx);
       try {
-        await enqueueOps([opDeactivateSlot(currentRestaurantId, roleKey, slotKey)]);
-        await flushOutbox(supabase);
+        await enqueueOps(
+          keys.map((slotKey) => opDeactivateSlot(currentRestaurantId, roleKey, slotKey))
+        );
+        await flushOutbox(sb);
       } catch (_deact) {
         /* best-effort — local delete already applied */
       }

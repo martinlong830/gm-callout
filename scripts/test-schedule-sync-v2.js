@@ -558,6 +558,51 @@ function emptyState() {
   assert(sync.consumeRemovedSlotRows().length === 0, 'a second fetch does not repeat the removal');
 })();
 
+// 25) Deleting a row must not let a sibling UUID at the same sort_order paint it back
+(function () {
+  sync.clearLocalDeactivatedSlots();
+  var kept = 'ffffffff-ffff-4fff-8fff-fffffffffff6';
+  var deleted = '11111111-1111-4111-8111-111111111111';
+  var fork = '22222222-2222-4222-8222-222222222222';
+  var survivor = '33333333-3333-4333-8333-333333333333';
+  sync.setSlotMap({
+    'rp-9|Bartender|4': kept,
+    'rp-9|Bartender|5': deleted,
+  });
+  var keys = sync.activeSlotKeysAtSort('rp-9', 'Bartender', 5);
+  assert(keys.indexOf(deleted) >= 0, 'mapped key is included in the row being deleted');
+  sync.tombstoneLocalSlotKeys('rp-9', 'Bartender', [deleted, fork], 5);
+  sync.consumeRemovedSlotRows();
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: kept, sort_order: 4, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: deleted, sort_order: 5, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: fork, sort_order: 5, active: true },
+  ]);
+  var map = sync.getSlotMap();
+  assert(!map['rp-9|Bartender|5'], 'sibling fork does not refill the deleted row');
+  assert(map['rp-9|Bartender|4'] === kept, 'the row above the delete stays put');
+  assert(
+    sync.trIdxForSlotKey('rp-9', 'Bartender', fork) == null,
+    'fork cells do not project onto the deleted row'
+  );
+  assert(sync.activeSlotCount('rp-9', 'Bartender') === 5, 'slot count drops the deleted row');
+  sync.clearLocalDeactivatedSlots();
+  sync.setSlotMap({
+    'rp-9|Bartender|4': kept,
+    'rp-9|Bartender|5': survivor,
+  });
+  sync.armLocalDeactivatedSort('rp-9', 'Bartender', 5);
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: kept, sort_order: 4, active: true },
+    { restaurant_id: 'rp-9', role: 'Bartender', slot_key: survivor, sort_order: 5, active: true },
+  ]);
+  assert(
+    sync.getSlotMap()['rp-9|Bartender|5'] === survivor,
+    'a real row reordered into that index is kept'
+  );
+  sync.clearLocalDeactivatedSlots();
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

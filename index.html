@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-364" />
+  <link rel="stylesheet" href="styles.css?v=perf-366" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-364';
+    window.__GM_ASSET_V = 'perf-366';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -158,6 +158,30 @@
       return false;
     }
     window.__GM_BOOT_HAS_SESSION__ = gmLikelyHasStoredSession();
+    /*
+     * Apply the signed-in shell before the body is parsed. The login card is the
+     * first thing in the page; waiting until a later script hid it flashed Sign in
+     * on every refresh.
+     */
+    if (window.__GM_BOOT_HAS_SESSION__) {
+      try {
+        var bootRole = (sessionStorage.getItem('gm-callout-session') || '').trim();
+        var bootRoot = document.documentElement;
+        bootRoot.classList.add('authed');
+        if (bootRole === 'employee') {
+          bootRoot.classList.add('employee-app');
+          bootRoot.classList.remove('manager-app', 'timeclock-app');
+        } else if (bootRole === 'timeclock') {
+          bootRoot.classList.add('timeclock-app');
+          bootRoot.classList.remove('manager-app', 'employee-app');
+        } else {
+          bootRoot.classList.add('manager-app');
+          bootRoot.classList.remove('employee-app', 'timeclock-app');
+        }
+      } catch (_bootShell) {
+        /* ignore */
+      }
+    }
     /* Warm Render + Supabase before anyone taps Sign in (iPhone Chrome cold start). */
     if (!window.__GM_BOOT_HAS_SESSION__) {
       try {

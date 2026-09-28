@@ -196,6 +196,73 @@ type RemovedSlotRow = {
 
 let pendingRemovedSlots: RemovedSlotRow[] = [];
 
+const LOCAL_DEACTIVATED_SLOT_MS = 45000;
+const locallyDeactivatedSlotKeys = new Map<string, number>();
+const locallyDeactivatedSorts = new Map<string, number>();
+
+function deactivatedGuardLive(until: number | undefined): boolean {
+  return until != null && Date.now() < until;
+}
+
+/** Refuse a lagged slot fetch from painting a row this device just deleted. */
+export function noteLocallyDeactivatedSlot(
+  restaurantId: string,
+  role: string,
+  slotKeys: string[],
+  sortOrder: number
+): void {
+  const until = Date.now() + LOCAL_DEACTIVATED_SLOT_MS;
+  (slotKeys || []).forEach((k) => {
+    if (!k) return;
+    locallyDeactivatedSlotKeys.set(`${restaurantId}\0${role}\0${k}`, until);
+  });
+  const n = Number(sortOrder);
+  if (!Number.isNaN(n) && n >= 0) {
+    locallyDeactivatedSorts.set(`${restaurantId}\0${role}\0${n}`, until);
+  }
+}
+
+function slotKeyLocallyDeactivated(restaurantId: string, role: string, slotKey: string): boolean {
+  const k = `${restaurantId}\0${role}\0${slotKey}`;
+  const until = locallyDeactivatedSlotKeys.get(k);
+  if (!deactivatedGuardLive(until)) {
+    if (until != null) locallyDeactivatedSlotKeys.delete(k);
+    return false;
+  }
+  return true;
+}
+
+function sortLocallyDeactivated(restaurantId: string, role: string, sortOrder: number): boolean {
+  const k = `${restaurantId}\0${role}\0${sortOrder}`;
+  const until = locallyDeactivatedSorts.get(k);
+  if (!deactivatedGuardLive(until)) {
+    if (until != null) locallyDeactivatedSorts.delete(k);
+    return false;
+  }
+  return true;
+}
+
+export function slotKeysAtSort(
+  slots: ScheduleSlotRow[],
+  restaurantId: string,
+  role: string,
+  sortOrder: number
+): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  (slots || []).forEach((s) => {
+    if (!s || s.active === false) return;
+    if (String(s.restaurant_id || '') !== String(restaurantId)) return;
+    if (String(s.role || '') !== String(role)) return;
+    if (Number(s.sort_order) !== Number(sortOrder)) return;
+    const key = String(s.slot_key || '');
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    keys.push(key);
+  });
+  return keys;
+}
+
 function parseSlotMapStorageKey(
   mapKey: string
 ): { restaurantId: string; role: string; trIdx: number } | null {
@@ -420,7 +487,13 @@ export async function bindSlotMapFromFetchedSlots(
     const role = String(row.role || '');
     const slotKey = String(row.slot_key || '');
     if (!rid || !role || !slotKey) return;
-    const mk = slotMapStorageKey(rid, role, Number(row.sort_order) || 0);
+    if (slotKeyLocallyDeactivated(rid, role, slotKey)) return;
+    const sortOrder = Number(row.sort_order) || 0;
+    if (sortLocallyDeactivated(rid, role, sortOrder)) {
+      const mapped = prevMap[slotMapStorageKey(rid, role, sortOrder)];
+      if (!mapped || String(mapped) !== slotKey) return;
+    }
+    const mk = slotMapStorageKey(rid, role, sortOrder);
     if (!bySort[mk]) bySort[mk] = [];
     bySort[mk].push(slotKey);
   });
@@ -438,6 +511,12 @@ export async function bindSlotMapFromFetchedSlots(
     const role = String(row.role || '');
     const slotKey = String(row.slot_key || '');
     if (!rid || !role || !slotKey) return;
+    if (slotKeyLocallyDeactivated(rid, role, slotKey)) return;
+    const sortOrder = Number(row.sort_order) || 0;
+    if (sortLocallyDeactivated(rid, role, sortOrder)) {
+      const mapped = prevMap[slotMapStorageKey(rid, role, sortOrder)];
+      if (!mapped || String(mapped) !== slotKey) return;
+    }
     activeKeys.add(`${rid}\0${role}\0${slotKey}`);
   });
   const removed: RemovedSlotRow[] = [];
@@ -469,6 +548,7 @@ function trIdxForBoundSlotKey(
   const roleS = String(role || '');
   const key = String(slotKey || '');
   if (!rid || !roleS || !key) return null;
+  if (slotKeyLocallyDeactivated(rid, roleS, key)) return null;
   let found: number | null = null;
   Object.keys(slotMap || {}).forEach((k) => {
     if (String(slotMap[k]) !== key) return;
@@ -481,6 +561,10 @@ function trIdxForBoundSlotKey(
   if (found != null) return found;
   const so = sortOrderByPk.get(`${rid}\0${roleS}\0${key}`);
   if (so == null || so < 0) return null;
+  if (sortLocallyDeactivated(rid, roleS, so)) {
+    const mapped = slotMap[slotMapStorageKey(rid, roleS, so)];
+    if (!mapped || String(mapped) !== key) return null;
+  }
   return Number(so) || 0;
 }
 
@@ -506,75 +590,6 @@ function writeWeekRestaurantLayers(
     return;
   }
   rec[restaurantId] = layers;
-}
-
-function padDraftWeeksFromActiveSlots(
-  liveDraft: unknown,
-  slots: ScheduleSlotRow[],
-  weekIndices: number[]
-): unknown {
-  if (!weekIndices.length) return liveDraft;
-  const maxBy = new Map<string, number>();
-  (slots || []).forEach((s) => {
-    if (!s || s.active === false) return;
-    const rid = String(s.restaurant_id || '');
-    const role = String(s.role || '');
-    if (!rid || !role) return;
-    const k = `${rid}\0${role}`;
-    const n = Number(s.sort_order) || 0;
-    const prev = maxBy.get(k);
-    if (prev == null || n > prev) maxBy.set(k, n);
-  });
-  if (!maxBy.size) return liveDraft;
-  const draft: Record<string, unknown> =
-    liveDraft && typeof liveDraft === 'object'
-      ? (liveDraft as Record<string, unknown>)
-      : { v: 2, byWeek: {} };
-  if (!draft.byWeek || typeof draft.byWeek !== 'object') draft.byWeek = {};
-  const byWeek = draft.byWeek as Record<string, unknown>;
-  const rids = new Set<string>();
-  maxBy.forEach((_n, k) => {
-    const rid = k.split('\0')[0];
-    if (rid) rids.add(rid);
-  });
-  const nullRow = () => [null, null, null, null, null, null, null];
-  const padGrid = (grid: Record<string, unknown>, rid: string) => {
-    (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
-      const maxSort = maxBy.get(`${rid}\0${role}`);
-      if (maxSort == null || maxSort < 0) return;
-      const want = maxSort + 1;
-      if (!Array.isArray(grid[role])) grid[role] = [];
-      const rows = grid[role] as unknown[];
-      while (rows.length < want) rows.push(nullRow());
-    });
-  };
-  weekIndices.forEach((wi) => {
-    const key = String(wi);
-    let weekEntry = byWeek[key];
-    if (!weekEntry || typeof weekEntry !== 'object') {
-      const perRest: Record<string, unknown> = {};
-      rids.forEach((rid) => {
-        perRest[rid] = loadDraftFromTeamState(draft, wi, rid);
-        padGrid(perRest[rid] as Record<string, unknown>, rid);
-      });
-      byWeek[key] = perRest;
-      return;
-    }
-    const rec = weekEntry as Record<string, unknown>;
-    const sharedLayers =
-      Array.isArray(rec.Bartender) || Array.isArray(rec.Kitchen) || Array.isArray(rec.Server);
-    if (sharedLayers) {
-      rids.forEach((rid) => padGrid(rec, rid));
-      return;
-    }
-    rids.forEach((rid) => {
-      if (!rec[rid] || typeof rec[rid] !== 'object') {
-        rec[rid] = loadDraftFromTeamState(draft, wi, rid);
-      }
-      padGrid(rec[rid] as Record<string, unknown>, rid);
-    });
-  });
-  return draft;
 }
 
 export async function ensureSlotKey(
@@ -860,16 +875,25 @@ export function projectCellsOntoLocalStores(opts: {
     if (iso) isoToGdi[iso] = i;
   });
   const roleToIdx: Record<string, number> = { Kitchen: 0, Bartender: 1, Server: 2 };
+  const slotMap = opts.slotMap || {};
   const slotTr = new Map<string, number>();
   (opts.slots || []).forEach((s) => {
     if (!s?.restaurant_id || !s.role || !s.slot_key) return;
     if (s.active === false) return;
+    const rid = String(s.restaurant_id);
+    const role = String(s.role);
+    const slotKey = String(s.slot_key);
+    if (slotKeyLocallyDeactivated(rid, role, slotKey)) return;
+    const sortOrder = Number(s.sort_order) || 0;
+    if (sortLocallyDeactivated(rid, role, sortOrder)) {
+      const mapped = slotMap[slotMapStorageKey(rid, role, sortOrder)];
+      if (!mapped || String(mapped) !== slotKey) return;
+    }
     slotTr.set(
       `${s.restaurant_id}\0${s.role}\0${s.slot_key}`,
       Number(s.sort_order) || 0
     );
   });
-  const slotMap = opts.slotMap || {};
   const nextAssign = JSON.parse(JSON.stringify(opts.liveAssign || {})) as AssignmentStore;
   const nextDraftObj: Record<string, unknown> =
     opts.liveDraft && typeof opts.liveDraft === 'object'
@@ -1035,17 +1059,6 @@ export function projectCellsOntoLocalStores(opts: {
     });
   }
   nextDraft = nextDraftObj;
-
-  const padWeeks =
-    replaceWeeks.length > 0
-      ? replaceWeeks
-      : (() => {
-          const n = Math.floor((opts.weekMeta || []).length / 7);
-          const out: number[] = [];
-          for (let wi = 0; wi < n; wi += 1) out.push(wi);
-          return out;
-        })();
-  nextDraft = padDraftWeeksFromActiveSlots(nextDraft, opts.slots || [], padWeeks);
 
   return { assign: nextAssign, draft: nextDraft };
 }
