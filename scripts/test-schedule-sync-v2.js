@@ -529,6 +529,35 @@ function emptyState() {
   );
 })();
 
+// 24) Peer slot delete: record the old trIdx of a slot_key that left the active set
+(function () {
+  var a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  var b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+  var c = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3';
+  sync.setSlotMap({});
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: a, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: b, sort_order: 1, active: true },
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: c, sort_order: 2, active: true },
+  ]);
+  sync.consumeRemovedSlotRows();
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: a, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: c, sort_order: 1, active: true },
+  ]);
+  var removed = sync.consumeRemovedSlotRows();
+  assert(
+    removed.length === 1 && removed[0].trIdx === 1 && removed[0].slotKey === b,
+    'middle slot delete is reported at the old row index'
+  );
+  assert(sync.getSlotMap()['rp-9|Server|1'] === c, 'surviving slot below the delete moves up');
+  sync.replaceActiveSlots([
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: a, sort_order: 0, active: true },
+    { restaurant_id: 'rp-9', role: 'Server', slot_key: c, sort_order: 1, active: true },
+  ]);
+  assert(sync.consumeRemovedSlotRows().length === 0, 'a second fetch does not repeat the removal');
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

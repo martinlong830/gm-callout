@@ -84,7 +84,6 @@ import {
   defaultRestaurants,
   defaultTimesForDraftCell,
   deleteDraftSlotRow,
-  draftSlotRowHasContent,
   draftTimeSlotFor,
   formatBreakAnnotation,
   getScheduleAnchorMondayDate,
@@ -2934,89 +2933,61 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
 
   function deleteSlotForRole(roleKey: RoleKey, trIdx: number) {
     if (!isManagerLikeRole(role) || !scheduleEditable) return;
-    const runDelete = () => {
-      const liveDraft = loadDraftFromTeamState(
-        draftScheduleRawRef.current,
-        weekIndex,
-        currentRestaurantId
-      );
-      const liveStore = assignmentStoreRef.current;
-      pushUndoSnapshot();
-      const nextRows = deleteDraftSlotRow(liveDraft, roleKey, trIdx);
-      if (!nextRows) {
-        Alert.alert(t('schedule.cannotDelete'), t('schedule.keepOneSlot'));
-        return;
-      }
-      suppressHydrateUndoClearRef.current = true;
-      /* Resolve slot key before local remap so we deactivate the real cloud row. */
-      void (async () => {
-        let slotKey: string | null = null;
-        try {
-          slotKey = await ensureBoundSlotKey(supabase, currentRestaurantId, roleKey, trIdx);
-        } catch (_sk) {
-          slotKey = null;
-        }
-        const nextStore = compactAssignmentsAfterDraftSlotDeletes(
-          liveStore,
-          currentRestaurantId,
-          weekIndex,
-          [{ role: roleKey, originalTrIdx: trIdx }]
-        );
-        let draftPayload = patchDraftScheduleForWeek(
-          draftScheduleRawRef.current,
-          weekIndex,
-          currentRestaurantId,
-          nextRows
-        );
-        draftPayload = patchSlotOrderAfterDelete(
-          draftPayload,
-          selectedWeekMonday,
-          currentRestaurantId,
-          roleKey,
-          trIdx
-        );
-        setAssignmentStore(nextStore);
-        setRolledDraftRaw(draftPayload);
-        applyLocalScheduleAssignments(nextStore, draftPayload);
-        slotOrderDirtyRef.current = true;
-        queuePersist(nextStore, draftPayload);
-        armCellWriteProtect(15000);
-        if (slotKey) {
-          try {
-            await enqueueOps([opDeactivateSlot(currentRestaurantId, roleKey, slotKey)]);
-            await flushOutbox(supabase);
-          } catch (_deact) {
-            /* best-effort — local delete already applied */
-          }
-        }
-      })();
-    };
     const liveDraft = loadDraftFromTeamState(
       draftScheduleRawRef.current,
       weekIndex,
       currentRestaurantId
     );
-    if (
-      draftSlotRowHasContent(
-        liveDraft,
-        assignmentStoreRef.current,
-        currentRestaurantId,
-        roleKey,
-        trIdx,
-        weekIndex
-      )
-    ) {
-      Alert.alert(
-        t('schedule.deleteSlot'),
-        t('schedule.deleteSlotConfirm', { n: trIdx + 1 }),
-        [
-          { text: t('common.cancel'), style: 'cancel' },
-          { text: t('common.delete'), style: 'destructive', onPress: runDelete },
-        ]
-      );
+    const liveStore = assignmentStoreRef.current;
+    const nextRows = deleteDraftSlotRow(liveDraft, roleKey, trIdx);
+    if (!nextRows) {
+      Alert.alert(t('schedule.cannotDelete'), t('schedule.keepOneSlot'));
       return;
     }
-    runDelete();
+    /* Drop the row on this tap. Undo is still available. Cloud deactivate follows. */
+    pushUndoSnapshot();
+    suppressHydrateUndoClearRef.current = true;
+    const nextStore = compactAssignmentsAfterDraftSlotDeletes(
+      liveStore,
+      currentRestaurantId,
+      weekIndex,
+      [{ role: roleKey, originalTrIdx: trIdx }]
+    );
+    let draftPayload = patchDraftScheduleForWeek(
+      draftScheduleRawRef.current,
+      weekIndex,
+      currentRestaurantId,
+      nextRows
+    );
+    draftPayload = patchSlotOrderAfterDelete(
+      draftPayload,
+      selectedWeekMonday,
+      currentRestaurantId,
+      roleKey,
+      trIdx
+    );
+    setAssignmentStore(nextStore);
+    setRolledDraftRaw(draftPayload);
+    applyLocalScheduleAssignments(nextStore, draftPayload);
+    slotOrderDirtyRef.current = true;
+    queuePersist(nextStore, draftPayload);
+    armCellWriteProtect(15000);
+    /* Resolve the slot key for the row we just removed, then deactivate that cloud row. */
+    void (async () => {
+      let slotKey: string | null = null;
+      try {
+        slotKey = await ensureBoundSlotKey(supabase, currentRestaurantId, roleKey, trIdx);
+      } catch (_sk) {
+        slotKey = null;
+      }
+      if (!slotKey) return;
+      try {
+        await enqueueOps([opDeactivateSlot(currentRestaurantId, roleKey, slotKey)]);
+        await flushOutbox(supabase);
+      } catch (_deact) {
+        /* best-effort — local delete already applied */
+      }
+    })();
   }
 
   function moveScheduleRow(roleKey: RoleKey, trIdx: number, direction: -1 | 1) {

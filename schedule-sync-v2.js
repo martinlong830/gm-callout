@@ -927,6 +927,45 @@
    * Removes deactivated slots from map/cache so peers drop deleted rows.
    * Refuse empty replace — a failed/empty fetch must not wipe the map (blank schedule).
    */
+  var removedSlotRows = [];
+
+  function parseSlotMapKey(mapKey) {
+    var s = String(mapKey || '');
+    var last = s.lastIndexOf('|');
+    if (last < 0) return null;
+    var prev = s.lastIndexOf('|', last - 1);
+    if (prev < 0) return null;
+    var trIdx = Number(s.slice(last + 1));
+    if (isNaN(trIdx) || trIdx < 0) return null;
+    return {
+      restaurantId: s.slice(0, prev),
+      role: s.slice(prev + 1, last),
+      trIdx: trIdx,
+    };
+  }
+
+  function noteRemovedSlotRows(rows) {
+    (rows || []).forEach(function (row) {
+      if (!row || !row.slotKey) return;
+      var dup = removedSlotRows.some(function (ex) {
+        return (
+          ex.restaurantId === row.restaurantId &&
+          ex.role === row.role &&
+          ex.trIdx === row.trIdx &&
+          ex.slotKey === row.slotKey
+        );
+      });
+      if (!dup) removedSlotRows.push(row);
+    });
+  }
+
+  /** Slot keys that disappeared from the active cloud list since the previous map. */
+  function consumeRemovedSlotRows() {
+    var rows = removedSlotRows;
+    removedSlotRows = [];
+    return rows;
+  }
+
   function replaceActiveSlots(rows) {
     if (!rows || !rows.length) return;
     var prevMap = getSlotMap();
@@ -959,6 +998,27 @@
       var chosen = pickStableSlotKey(mk, bySort[mk], prevMap);
       if (chosen) nextMap[mk] = chosen;
     });
+    /*
+     * A deleted slot_key leaves the peer map stale. Record the old trIdx so the
+     * app can shift draft rows and names before cells are painted at the new
+     * sort_order. Keys still active (including forks) are not removals.
+     * Append — a later fetch must not drop a removal the UI has not consumed.
+     */
+    var removed = [];
+    Object.keys(prevMap || {}).forEach(function (mk) {
+      var parsed = parseSlotMapKey(mk);
+      var slotKey = prevMap[mk] ? String(prevMap[mk]) : '';
+      if (!parsed || !slotKey) return;
+      var activeId = [parsed.restaurantId, parsed.role, slotKey].join('\0');
+      if (nextSlots[activeId]) return;
+      removed.push({
+        restaurantId: parsed.restaurantId,
+        role: parsed.role,
+        trIdx: parsed.trIdx,
+        slotKey: slotKey,
+      });
+    });
+    noteRemovedSlotRows(removed);
     setSlotCache(nextSlots);
     setSlotMap(nextMap);
   }
@@ -1333,6 +1393,7 @@
     mergeRemoteSlots: mergeRemoteSlots,
     replaceCellsInRange: replaceCellsInRange,
     replaceActiveSlots: replaceActiveSlots,
+    consumeRemovedSlotRows: consumeRemovedSlotRows,
     pickStableSlotKey: pickStableSlotKey,
     pruneCellsForInactiveSlots: pruneCellsForInactiveSlots,
     activeSlotCount: activeSlotCount,

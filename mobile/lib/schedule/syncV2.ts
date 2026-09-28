@@ -8,11 +8,13 @@ import { readStoredCompanyId, readStoredTeamStateId } from '../companySession';
 import { broadcastScheduleCellsChanged } from '../teamStateSync';
 import { fetchDraftScheduleRowOrderMeta } from '../teamStateColumns';
 import {
+  SCHEDULE_VIEW_WEEK_COUNT,
+  compactAssignmentsAfterDraftSlotDeletes,
   loadDraftFromTeamState,
 } from './engine';
 import { isoAddDaysLocal, isoDaySpanInclusive } from './isoDate';
 import { overlayRemoteDraftRowOrderMeta } from './slotOrder';
-import type { AssignmentStore } from './types';
+import type { AssignmentStore, RoleKey } from './types';
 
 const CELL_SELECT =
   'company_id,restaurant_id,day_iso,role,slot_key,start_hhmm,end_hhmm,worker_id,worker_name,break_annotation,break_paid,deleted,rev,updated_at';
@@ -185,6 +187,181 @@ function slotMapStorageKey(restaurantId: string, role: string, sortOrder: number
   return `${restaurantId}|${role}|${sortOrder}`;
 }
 
+type RemovedSlotRow = {
+  restaurantId: string;
+  role: string;
+  trIdx: number;
+  slotKey: string;
+};
+
+let pendingRemovedSlots: RemovedSlotRow[] = [];
+
+function parseSlotMapStorageKey(
+  mapKey: string
+): { restaurantId: string; role: string; trIdx: number } | null {
+  const last = mapKey.lastIndexOf('|');
+  if (last < 0) return null;
+  const prev = mapKey.lastIndexOf('|', last - 1);
+  if (prev < 0) return null;
+  const trIdx = Number(mapKey.slice(last + 1));
+  if (Number.isNaN(trIdx) || trIdx < 0) return null;
+  return {
+    restaurantId: mapKey.slice(0, prev),
+    role: mapKey.slice(prev + 1, last),
+    trIdx,
+  };
+}
+
+function noteRemovedSlotRows(rows: RemovedSlotRow[]) {
+  rows.forEach((row) => {
+    if (!row.slotKey) return;
+    const dup = pendingRemovedSlots.some(
+      (ex) =>
+        ex.restaurantId === row.restaurantId &&
+        ex.role === row.role &&
+        ex.trIdx === row.trIdx &&
+        ex.slotKey === row.slotKey
+    );
+    if (!dup) pendingRemovedSlots.push(row);
+  });
+}
+
+/** Slot keys that disappeared since the previous bind. Cleared on read. */
+export function consumeRemovedSlotRows(): RemovedSlotRow[] {
+  const rows = pendingRemovedSlots;
+  pendingRemovedSlots = [];
+  return rows;
+}
+
+function activeSlotCountFromMap(
+  slotMap: Record<string, string>,
+  restaurantId: string,
+  role: string
+): number {
+  const prefix = `${restaurantId}|${role}|`;
+  let max = -1;
+  Object.keys(slotMap || {}).forEach((k) => {
+    if (!k.startsWith(prefix)) return;
+    const n = Number(k.slice(prefix.length));
+    if (!Number.isNaN(n) && n > max) max = n;
+  });
+  return max + 1;
+}
+
+function weekHasOwnDraftLayers(draft: unknown, weekIndex: number, restaurantId: string): boolean {
+  if (!draft || typeof draft !== 'object') return false;
+  const byWeek = (draft as { byWeek?: Record<string, unknown> }).byWeek;
+  const entry = byWeek && byWeek[String(weekIndex)];
+  if (!entry || typeof entry !== 'object') return false;
+  const rec = entry as Record<string, unknown>;
+  if (Array.isArray(rec.Bartender) || Array.isArray(rec.Kitchen) || Array.isArray(rec.Server)) {
+    return true;
+  }
+  const per = rec[restaurantId];
+  return !!per && typeof per === 'object';
+}
+
+function roleAssignmentsExtendPast(
+  assign: AssignmentStore,
+  restaurantId: string,
+  weekIndex: number,
+  role: RoleKey,
+  want: number
+): boolean {
+  const roleIdx = role === 'Kitchen' ? 0 : role === 'Bartender' ? 1 : 2;
+  const rs = assign[restaurantId];
+  if (!rs) return false;
+  const weekStart = weekIndex * 7;
+  return Object.keys(rs).some((shiftId) => {
+    const m = /^shift-(\d+)-(\d+)-(\d+)$/.exec(shiftId);
+    if (!m) return false;
+    const gdi = Number(m[1]);
+    if (gdi < weekStart || gdi >= weekStart + 7) return false;
+    if (Number(m[2]) !== roleIdx) return false;
+    return Number(m[3]) >= want;
+  });
+}
+
+/**
+ * Cloud reorder shifts every row under a deleted slot. Move local draft times and
+ * names to those indexes before cell projection, or null worker_name paints them
+ * Unassigned. Weeks already at the new length are skipped.
+ */
+function shiftLocalStoresForPeerSlotDeletes(
+  assign: AssignmentStore,
+  draft: unknown,
+  slotMap: Record<string, string>,
+  removed: RemovedSlotRow[]
+): { assign: AssignmentStore; draft: unknown } {
+  if (!removed.length) return { assign, draft };
+  const groups = new Map<string, { restaurantId: string; role: RoleKey; indices: number[] }>();
+  removed.forEach((row) => {
+    if (row.role !== 'Bartender' && row.role !== 'Kitchen' && row.role !== 'Server') return;
+    const key = `${row.restaurantId}\0${row.role}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { restaurantId: row.restaurantId, role: row.role, indices: [] };
+      groups.set(key, group);
+    }
+    if (!group.indices.includes(row.trIdx)) group.indices.push(row.trIdx);
+  });
+  let nextAssign = assign;
+  const nextDraft: Record<string, unknown> =
+    draft && typeof draft === 'object'
+      ? (JSON.parse(JSON.stringify(draft)) as Record<string, unknown>)
+      : { v: 2, byWeek: {} };
+  groups.forEach((group) => {
+    const want = activeSlotCountFromMap(slotMap, group.restaurantId, group.role);
+    if (want <= 0) return;
+    const indices = group.indices.slice().sort((a, b) => b - a);
+    for (let wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      const own = weekHasOwnDraftLayers(nextDraft, wi, group.restaurantId);
+      const layers = own
+        ? (loadDraftFromTeamState(nextDraft, wi, group.restaurantId) as unknown as Record<
+            string,
+            unknown
+          >)
+        : null;
+      const rows = layers ? layers[group.role] : null;
+      const draftLong = Array.isArray(rows) && rows.length > want;
+      const assignLong = roleAssignmentsExtendPast(
+        nextAssign,
+        group.restaurantId,
+        wi,
+        group.role,
+        want
+      );
+      if (!draftLong && !assignLong) continue;
+      const toDelete: Array<{ role: RoleKey; originalTrIdx: number }> = [];
+      if (draftLong && layers && Array.isArray(rows)) {
+        indices.forEach((tr) => {
+          if (rows.length <= want) return;
+          if (tr < 0 || tr >= rows.length) return;
+          rows.splice(tr, 1);
+          toDelete.push({ role: group.role, originalTrIdx: tr });
+        });
+        if (toDelete.length) {
+          writeWeekRestaurantLayers(nextDraft, wi, group.restaurantId, layers);
+        }
+      }
+      if (!toDelete.length && assignLong) {
+        indices.forEach((tr) => {
+          if (tr < 0) return;
+          toDelete.push({ role: group.role, originalTrIdx: tr });
+        });
+      }
+      if (!toDelete.length) continue;
+      nextAssign = compactAssignmentsAfterDraftSlotDeletes(
+        nextAssign,
+        group.restaurantId,
+        wi,
+        toDelete
+      );
+    }
+  });
+  return { assign: nextAssign, draft: nextDraft };
+}
+
 function liveTimedCellCountForSlotKey(
   cells: Record<string, unknown>[] | undefined,
   slotKey: string
@@ -254,6 +431,29 @@ export async function bindSlotMapFromFetchedSlots(
     const chosen = pickStableSlotKey(mk, bySort[mk], prevMap, timed);
     if (chosen) nextMap[mk] = chosen;
   });
+  const activeKeys = new Set<string>();
+  (slots || []).forEach((row) => {
+    if (!row || row.active === false) return;
+    const rid = String(row.restaurant_id || '');
+    const role = String(row.role || '');
+    const slotKey = String(row.slot_key || '');
+    if (!rid || !role || !slotKey) return;
+    activeKeys.add(`${rid}\0${role}\0${slotKey}`);
+  });
+  const removed: RemovedSlotRow[] = [];
+  Object.keys(prevMap || {}).forEach((mk) => {
+    const parsed = parseSlotMapStorageKey(mk);
+    const slotKey = prevMap[mk] ? String(prevMap[mk]) : '';
+    if (!parsed || !slotKey) return;
+    if (activeKeys.has(`${parsed.restaurantId}\0${parsed.role}\0${slotKey}`)) return;
+    removed.push({
+      restaurantId: parsed.restaurantId,
+      role: parsed.role,
+      trIdx: parsed.trIdx,
+      slotKey,
+    });
+  });
+  noteRemovedSlotRows(removed);
   await writeJson(SLOT_MAP_KEY, nextMap);
   return nextMap;
 }
@@ -988,12 +1188,18 @@ export async function pullCloudCellsOntoStores(
     const cells = cellsRes.rows || [];
     const slots = (slotsRes.data || []) as ScheduleSlotRow[];
     const slotMap = await bindSlotMapFromFetchedSlots(slots, cells);
+    const shifted = shiftLocalStoresForPeerSlotDeletes(
+      opts.liveAssign,
+      opts.liveDraft,
+      slotMap,
+      consumeRemovedSlotRows()
+    );
     const projected = projectCellsOntoLocalStores({
       cells,
       slots,
       weekMeta: opts.weekMeta,
-      liveAssign: opts.liveAssign,
-      liveDraft: opts.liveDraft,
+      liveAssign: shifted.assign,
+      liveDraft: shifted.draft,
       slotMap,
       replaceWeekIndex: opts.fullWindow ? undefined : opts.weekIndex,
       replaceAllWeeks: !!opts.fullWindow,

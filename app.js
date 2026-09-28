@@ -1345,7 +1345,7 @@
   }
 
   /** Write custom order for one week only — also mirrors into legacy for this restaurant. */
-  function setCustomSlotOrderForRole(restaurantId, role, nextOrder, weekMondayIso) {
+  function setCustomSlotOrderForRole(restaurantId, role, nextOrder, weekMondayIso, opts) {
     var rid = resolveDraftRestaurantId(restaurantId != null ? restaurantId : currentRestaurantId);
     var mon = resolveSlotOrderWeekMondayIso(weekMondayIso, null);
     if (!mon) return;
@@ -1365,7 +1365,7 @@
       if (!legacySlotOrderByRestaurantStore[rid]) legacySlotOrderByRestaurantStore[rid] = {};
       legacySlotOrderByRestaurantStore[rid][role] = nextOrder.slice();
     }
-    persistSlotOrderStores();
+    persistSlotOrderStores(opts);
   }
 
   /**
@@ -8379,6 +8379,12 @@
      */
     scheduleCellsPollInFlight = true;
     try {
+      /* Leftover slot removals if an earlier poll fetched slots and returned early. */
+      try {
+        absorbPeerRemovedSlotsIntoLocalSchedule();
+      } catch (_absorbEarly) {
+        /* ignore */
+      }
       scheduleSlotsPollTick += 1;
       var localNeedsSlots =
         !localWeekHasAuthoritativeTimedDraft(targetWi) ||
@@ -8409,6 +8415,16 @@
       }
       var slotsRes = pair[0];
       var cellsRes = pair[1];
+      /*
+       * Shift local rows for slots that just disappeared before any early return.
+       * Cell apply maps by the new sort_order; without this shift, every row under
+       * the deleted slot is painted Unassigned.
+       */
+      try {
+        absorbPeerRemovedSlotsIntoLocalSchedule();
+      } catch (_absorbSlots) {
+        /* ignore */
+      }
       if (slotsRes && slotsRes.ok === false) return false;
       if (cellsRes && cellsRes.ok === false) return false;
       /* Re-check after await — user may have edited / deleted / applied template mid-fetch. */
@@ -8484,6 +8500,11 @@
         !opts._slotRetry
       ) {
         var slotsForced = await v2.fetchSlots(window.gmSupabase, cid);
+        try {
+          absorbPeerRemovedSlotsIntoLocalSchedule();
+        } catch (_absorbForced) {
+          /* ignore */
+        }
         if (gen !== scheduleCellsPollGeneration) return false;
         if (slotsForced && slotsForced.ok === false) return false;
         slotsRes = slotsForced || { ok: true };
@@ -9161,6 +9182,130 @@
       });
       return res || { ok: true };
     });
+  }
+
+  /**
+   * After another device deletes a slot, cloud sort_order shifts every row under it.
+   * Move this device's draft times and assignment names the same way before cells
+   * paint, or those rows are rewritten as Unassigned (names live on the blob, and
+   * the remapped cells usually have a null worker_name).
+   * Already-shifted weeks (draft length <= active slots, no assignment past the
+   * new count) are left alone so the deleting computer does not shift twice.
+   */
+  var scheduleSlotRemovalNameHoldUntil = 0;
+
+  function weekRoleAssignmentsExtendPast(store, restaurantId, weekIndex, role, want) {
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0 || !store || !store[restaurantId]) return false;
+    var weekStart = weekIndex * 7;
+    var rs = store[restaurantId];
+    var found = false;
+    Object.keys(rs).forEach(function (shiftId) {
+      if (found) return;
+      var p = parseShiftIdParts(shiftId);
+      if (!p || p.roleIdx !== roleIdx) return;
+      if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekStart + 7) return;
+      if (p.trIdx >= want) found = true;
+    });
+    return found;
+  }
+
+  function absorbPeerRemovedSlotsIntoLocalSchedule() {
+    var v2 = gmScheduleV2();
+    if (!v2 || typeof v2.consumeRemovedSlotRows !== 'function') return false;
+    var removed = v2.consumeRemovedSlotRows();
+    if (!removed || !removed.length) return false;
+    var groups = {};
+    removed.forEach(function (row) {
+      if (!row || row.trIdx == null || isNaN(Number(row.trIdx))) return;
+      var rid = String(row.restaurantId || '');
+      var role = String(row.role || '');
+      if (!rid || !role) return;
+      var key = rid + '\0' + role;
+      if (!groups[key]) groups[key] = { restaurantId: rid, role: role, indices: [] };
+      var tr = Number(row.trIdx);
+      if (groups[key].indices.indexOf(tr) < 0) groups[key].indices.push(tr);
+    });
+    var any = false;
+    beginTeamStateRemoteApply();
+    try {
+      Object.keys(groups).forEach(function (key) {
+        var group = groups[key];
+        var want =
+          typeof v2.activeSlotCount === 'function'
+            ? Number(v2.activeSlotCount(group.restaurantId, group.role)) || 0
+            : 0;
+        if (want <= 0) return;
+        var indices = group.indices.slice().sort(function (a, b) {
+          return b - a;
+        });
+        var assignStore = loadScheduleAssignmentsStore();
+        for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+          var ownLayers = draftWeekRestaurantHasOwnLayers(wi, group.restaurantId);
+          var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, group.restaurantId));
+          if (!Array.isArray(layers[group.role])) layers[group.role] = [];
+          var rows = layers[group.role];
+          /* Inherited weeks share the template. Splicing that view would shift twice. */
+          var draftLong = ownLayers && rows.length > want;
+          var assignLong = weekRoleAssignmentsExtendPast(
+            assignStore,
+            group.restaurantId,
+            wi,
+            group.role,
+            want
+          );
+          if (!draftLong && !assignLong) continue;
+          var toDelete = [];
+          if (draftLong) {
+            indices.forEach(function (tr) {
+              if (rows.length <= want) return;
+              if (tr < 0 || tr >= rows.length) return;
+              rows.splice(tr, 1);
+              toDelete.push({ role: group.role, originalTrIdx: tr });
+            });
+            if (toDelete.length) {
+              saveDraftScheduleRowsForWeek(wi, layers, group.restaurantId);
+              var preCount = rows.length + toDelete.length;
+              var weekMon = mondayIsoForScheduleWeekIndex(wi);
+              var existingOrder = getCustomSlotOrderForRole(
+                group.restaurantId,
+                group.role,
+                preCount,
+                weekMon
+              );
+              if (existingOrder) {
+                var remapped = existingOrder;
+                toDelete.forEach(function (d) {
+                  remapped = remapSlotOrderAfterDelete(remapped, d.originalTrIdx);
+                });
+                setCustomSlotOrderForRole(group.restaurantId, group.role, remapped, weekMon, {
+                  skipDirty: true,
+                  skipInteractiveMark: true,
+                });
+              }
+            }
+          }
+          if (!toDelete.length && assignLong) {
+            indices.forEach(function (tr) {
+              if (tr < 0) return;
+              toDelete.push({ role: group.role, originalTrIdx: tr });
+            });
+          }
+          if (!toDelete.length) continue;
+          compactAssignmentsAfterDraftSlotDeletes(wi, group.restaurantId, toDelete, {
+            skipDirty: true,
+          });
+          assignStore = loadScheduleAssignmentsStore();
+          any = true;
+        }
+      });
+    } catch (_absorbSlots) {
+      /* ignore */
+    } finally {
+      endTeamStateRemoteApply();
+    }
+    if (any) scheduleSlotRemovalNameHoldUntil = Date.now() + 8000;
+    return any;
   }
 
   /**
@@ -11188,7 +11333,14 @@
           var incomingUnassigned =
             !entry.rowOwner &&
             (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned');
-          if (upsertTimedOnly && prev && incomingUnassigned) {
+          /*
+           * Soft upsert keeps a local name when the cell has no worker_name.
+           * Right after a peer slot delete, trusted replace would wipe the names we
+           * just shifted (callouts still clear names: they set forceDayOffReplace).
+           */
+          var keepShiftedName =
+            scheduleSlotRemovalNameHoldUntil > Date.now() && !opts.forceDayOffReplace;
+          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
@@ -22100,7 +22252,7 @@
   }
 
   /** After slot rows are removed, delete that trIdx and shift higher assignments down. */
-  function compactAssignmentsAfterDraftSlotDeletes(weekIndex, restaurantId, deletes) {
+  function compactAssignmentsAfterDraftSlotDeletes(weekIndex, restaurantId, deletes, opts) {
     if (!deletes || !deletes.length) return false;
     var store = loadScheduleAssignmentsStore();
     var rid = resolveDraftRestaurantId(restaurantId);
@@ -22152,9 +22304,107 @@
       });
     });
     if (changed) {
-      saveScheduleAssignmentsStore(store);
+      saveScheduleAssignmentsStore(
+        store,
+        opts && opts.skipDirty
+          ? { skipDirty: true, skipInteractiveMark: true, skipTimecardsNotify: true }
+          : undefined
+      );
     }
     return changed;
+  }
+
+  /**
+   * Slot rows are global, but a delete used to compact only the open week.
+   * Other weeks kept a hole, so the next cell paint turned every row under the
+   * deleted slot into Unassigned. Shift those weeks once, here, with the undo
+   * snapshot already taken.
+   */
+  function draftWeekRestaurantHasOwnLayers(weekIndex, restaurantId) {
+    var wi = resolveDraftWeekIndex(weekIndex);
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var saved = draftScheduleByWeekStore[String(wi)];
+    if (!saved || typeof saved !== 'object') return false;
+    if (draftScheduleWeekEntryIsPerRestaurant(saved)) {
+      return draftScheduleJsonHasLayers(saved[rid]);
+    }
+    return draftScheduleJsonHasLayers(saved);
+  }
+
+  function shiftOtherDraftWeeksForSlotDeletes(restaurantId, deletes, skipWeekIndex) {
+    if (!deletes || !deletes.length) return;
+    var rid = resolveDraftRestaurantId(restaurantId);
+    var byRole = {};
+    deletes.forEach(function (d) {
+      if (!d || !d.role || d.originalTrIdx == null || isNaN(Number(d.originalTrIdx))) return;
+      if (!byRole[d.role]) byRole[d.role] = [];
+      var tr = Number(d.originalTrIdx);
+      if (byRole[d.role].indexOf(tr) < 0) byRole[d.role].push(tr);
+    });
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      if (wi === skipWeekIndex) continue;
+      /*
+       * Empty weeks inherit the template. That template is already shifted when
+       * it is the week being deleted — splicing the inherited copy would remove
+       * the person who just moved up.
+       */
+      var ownLayers = draftWeekRestaurantHasOwnLayers(wi, rid);
+      var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+      var toDelete = [];
+      if (ownLayers) {
+        Object.keys(byRole).forEach(function (role) {
+          var rows = layers[role];
+          if (!Array.isArray(rows)) return;
+          var indices = byRole[role].slice().sort(function (a, b) {
+            return b - a;
+          });
+          indices.forEach(function (tr) {
+            if (rows.length <= 1) return;
+            if (tr < 0 || tr >= rows.length) return;
+            rows.splice(tr, 1);
+            toDelete.push({ role: role, originalTrIdx: tr });
+          });
+        });
+        if (toDelete.length) saveDraftScheduleRowsForWeek(wi, layers, rid);
+      }
+      if (!toDelete.length) {
+        var assignStore = loadScheduleAssignmentsStore();
+        Object.keys(byRole).forEach(function (role) {
+          var rowCount = Array.isArray(layers[role]) ? layers[role].length : 0;
+          if (!weekRoleAssignmentsExtendPast(assignStore, rid, wi, role, rowCount)) return;
+          byRole[role].forEach(function (tr) {
+            if (tr < 0) return;
+            toDelete.push({ role: role, originalTrIdx: tr });
+          });
+        });
+      }
+      if (!toDelete.length) continue;
+      compactAssignmentsAfterDraftSlotDeletes(wi, rid, toDelete);
+      var weekMon = mondayIsoForScheduleWeekIndex(wi);
+      var byDelRole = {};
+      toDelete.forEach(function (d) {
+        if (!byDelRole[d.role]) byDelRole[d.role] = [];
+        byDelRole[d.role].push(d.originalTrIdx);
+      });
+      Object.keys(byDelRole).forEach(function (role) {
+        var indices = byDelRole[role].slice().sort(function (a, b) {
+          return b - a;
+        });
+        var postCount = Array.isArray(layers[role]) ? layers[role].length : 0;
+        var existingOrder = getCustomSlotOrderForRole(
+          rid,
+          role,
+          postCount + indices.length,
+          weekMon
+        );
+        if (!existingOrder) return;
+        var remapped = existingOrder;
+        indices.forEach(function (deletedTrIdx) {
+          remapped = remapSlotOrderAfterDelete(remapped, deletedTrIdx);
+        });
+        setCustomSlotOrderForRole(rid, role, remapped, weekMon);
+      });
+    }
   }
 
   function persistDraftScheduleRows(nextRows, weekIndex, restaurantId, breakRows, pendingSlotDeletes) {
@@ -22166,6 +22416,9 @@
       compactAssignmentsAfterDraftSlotDeletes(wi, rid, pendingSlotDeletes);
     }
     saveDraftScheduleRowsForWeek(wi, nextRows, rid);
+    if (pendingSlotDeletes && pendingSlotDeletes.length) {
+      shiftOtherDraftWeeksForSlotDeletes(rid, pendingSlotDeletes, wi);
+    }
     /* Remap custom row order after deletes — after undo snapshot so Undo restores prior order.
        Process high→low per role (same as assignment compaction) using original trIdx values. */
     if (pendingSlotDeletes && pendingSlotDeletes.length) {
@@ -22529,15 +22782,7 @@
       showScheduleNotice('Keep at least one slot row per role.', false);
       return;
     }
-    draftModalScratch = rows;
-    var hasContent = draftSlotRowHasContent(role, trIdx, wi, rid);
-    draftModalScratch = null;
-    if (
-      hasContent &&
-      !confirm(gmT('schedule.deleteSlotConfirm', { n: trIdx + 1 }))
-    ) {
-      return;
-    }
+    /* One click removes the row. Undo restores it. */
     rows[role].splice(trIdx, 1);
     /* Slot-order remap runs inside persistDraftScheduleRows after the undo snapshot. */
     persistDraftScheduleRows(rows, wi, rid, null, [{ role: role, originalTrIdx: trIdx }]);
@@ -26136,6 +26381,8 @@
   let scheduleCellDragState = null;
   /** Suppress the click that follows a cell-drag mouseup. */
   let scheduleCellDragSuppressClick = false;
+  /** True after mousedown already deleted a slot, so the following click is ignored. */
+  let scheduleDeleteSlotFromPointer = false;
   /** Last hovered/focused schedule cell (for Option/Alt+Delete without requiring focus). */
   let schedulePointerSlotEl = null;
   let calendarDragListenersBound = false;
@@ -26157,16 +26404,39 @@
     return !!(calendarInlineEditCleanup || calendarInlineOutsideListenerTimer);
   }
 
+  /**
+   * Mousedown on the Person <select> before focus lands, and while the native
+   * menulist is open. Peer paints must not run in that window — replacing the
+   * <select> closes the menu before a name can be clicked.
+   */
+  var calendarPersonSelectHoldUntil = 0;
+
+  function armCalendarPersonSelectHold() {
+    calendarPersonSelectHoldUntil = Date.now() + 4000;
+    setTimeout(function () {
+      if (calendarPersonSelectHoldUntil > Date.now()) return;
+      if (calendarPersonSelectIsOpen()) return;
+      flushDeferredCalendarRemoteRefresh();
+    }, 4200);
+  }
+
+  function clearCalendarPersonSelectHold() {
+    calendarPersonSelectHoldUntil = 0;
+  }
+
   /** True when the schedule Person column native <select> has focus (menulist open). */
   function calendarPersonSelectIsOpen() {
     var ae = document.activeElement;
-    return !!(
+    if (
       ae &&
       ae.classList &&
       ae.classList.contains('calendar-row-person-select') &&
       calendarGrid &&
       calendarGrid.contains(ae)
-    );
+    ) {
+      return true;
+    }
+    return calendarPersonSelectHoldUntil > Date.now();
   }
 
   /** Block DOM rebuilds that would dismiss an open Person select or cell name editor.
@@ -29589,6 +29859,7 @@
     });
     if (!anyShift && !pendingStubIds.length) return;
     /* Blur before force-render so the open menulist does not block the rebuild. */
+    clearCalendarPersonSelectHold();
     var ae = document.activeElement;
     if (ae && ae.classList && ae.classList.contains('calendar-row-person-select') && ae.blur) {
       try {
@@ -30489,10 +30760,10 @@
     opts = opts || {};
     var readOnly = !!opts.readOnly;
     var showDayTotals = opts.showDayTotals !== false;
-    var force = !!opts.force;
     /* Rebuilding the calendar DOM closes an open native Person <select> menulist.
-       Defer remote/periodic refreshes until blur/change unless caller forces (e.g. assign). */
-    if (!readOnly && !force && calendarPersonSelectIsOpen()) {
+       Peer/cell paints pass force:true; that must still wait until the menu closes.
+       The assign path clears the hold and blurs before it paints. */
+    if (!readOnly && calendarPersonSelectIsOpen()) {
       calendarInlineEditDeferredRemoteRefresh = true;
       return;
     }
@@ -32161,7 +32432,8 @@
     ensureScheduleBorrowEmployeeModalWired();
 
     calendarGrid.addEventListener('focusin', function (e) {
-      /* Group-order / net-sales inputs live under #scheduleBelowCalendar. */
+      var sel = e.target && e.target.closest ? e.target.closest('.calendar-row-person-select') : null;
+      if (sel) armCalendarPersonSelectHold();
     });
 
     calendarGrid.addEventListener('change', function (e) {
@@ -32206,6 +32478,11 @@
       if (delBtn) {
         e.preventDefault();
         e.stopPropagation();
+        /* mousedown already deleted this row; the click must not remove the next one. */
+        if (scheduleDeleteSlotFromPointer) {
+          scheduleDeleteSlotFromPointer = false;
+          return;
+        }
         var delRole = delBtn.getAttribute('data-delete-slot-role');
         var delTr = parseInt(delBtn.getAttribute('data-delete-slot-tr'), 10);
         if (delRole && !isNaN(delTr)) deleteScheduleSlotLine(delRole, delTr);
@@ -32318,6 +32595,25 @@
     calendarGrid.addEventListener('mousedown', function (e) {
       if (!managerCanEditCurrentRestaurant()) return;
       if (e.button !== 0) return;
+      /* Delete lives inside .calendar-row-person. Handle it here so the first
+         press removes the row even when a focused Person select or a leftover
+         drag would swallow the following click. */
+      if (e.target.closest('.calendar-row-person-select')) armCalendarPersonSelectHold();
+      var delBtnDown = e.target.closest('[data-delete-slot-role]');
+      if (delBtnDown) {
+        e.preventDefault();
+        e.stopPropagation();
+        scheduleCellDragSuppressClick = false;
+        scheduleDeleteSlotFromPointer = true;
+        var delRoleDown = delBtnDown.getAttribute('data-delete-slot-role');
+        var delTrDown = parseInt(delBtnDown.getAttribute('data-delete-slot-tr'), 10);
+        if (delRoleDown && !isNaN(delTrDown)) deleteScheduleSlotLine(delRoleDown, delTrDown);
+        /* Clear after this gesture's click, even if that click never arrives. */
+        setTimeout(function () {
+          scheduleDeleteSlotFromPointer = false;
+        }, 0);
+        return;
+      }
       if (e.target.closest('.calendar-row-person-select, .calendar-row-person')) return;
       if (e.target.closest('[data-calendar-dayoff], [data-add-slot-role], [data-delete-slot-role], [data-reorder-role]')) {
         /* Stop drag-arming and leftover suppress so the following click always clears. */
