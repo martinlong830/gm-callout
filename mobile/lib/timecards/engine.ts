@@ -75,7 +75,6 @@ import {
 export type { RosterRow, RosterTotals, ShiftDayRow, WeekExtras, TimeClockEntry, PayWeekBounds, EmployeeClockStatus };
 
 const OT_RATE_MULTIPLIER = 1.5;
-const PAY_ROUND_MINUTES = 15;
 /** First 40h of recorded work across all restaurants in the pay week are regular; remainder is overtime. */
 export const WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 const SOH_THRESHOLD_MINUTES = 10 * 60;
@@ -141,19 +140,17 @@ export function roundToNearest5Minutes(mins: number): number {
   return Math.round(m / 5) * 5;
 }
 
-function roundToNearest15Minutes(mins: number): number {
-  const m = Math.max(0, Math.round(Number(mins) || 0));
-  return Math.round(m / PAY_ROUND_MINUTES) * PAY_ROUND_MINUTES;
-}
-
 export type RegOtMinutes = { regMins: number; otMins: number; totalMins: number };
 
-/** Split recorded minutes using remaining weekly regular allowance (chronological). */
+/**
+ * Pay uses the same 5-minute snap as clock-in / clock-out. A 15-minute snap
+ * used to pay a 5-minute-late punch as a full on-time shift.
+ */
 export function allocateRecordedRegOtMinutes(
   recordedMins: number,
   regularRemaining: number
 ): RegOtMinutes & { regularRemaining: number } {
-  const rec = roundToNearest15Minutes(recordedMins);
+  const rec = roundToNearest5Minutes(recordedMins);
   const regMins = Math.min(rec, Math.max(0, regularRemaining));
   const otMins = rec - regMins;
   return {

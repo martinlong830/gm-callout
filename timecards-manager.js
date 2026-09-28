@@ -1610,7 +1610,6 @@
   }
 
   var OT_RATE_MULTIPLIER = 1.5;
-  var PAY_ROUND_MINUTES = 15;
   /** First 40h of recorded work across all restaurants in the pay week are regular; remainder is overtime. */
   var WEEKLY_REGULAR_CAP_MINUTES = 40 * 60;
 
@@ -1619,14 +1618,12 @@
     return Math.round(m / 5) * 5;
   }
 
-  function roundToNearest15Minutes(mins) {
-    var m = Math.max(0, Math.round(Number(mins) || 0));
-    return Math.round(m / PAY_ROUND_MINUTES) * PAY_ROUND_MINUTES;
-  }
-
-  /** Split recorded minutes using remaining weekly regular allowance (chronological). */
+  /**
+   * Pay uses the same 5-minute snap as clock-in / clock-out. A 15-minute snap
+   * used to pay a 5-minute-late punch as a full on-time shift.
+   */
   function allocateRecordedRegOtMinutes(recordedMins, regularRemaining) {
-    var rec = roundToNearest15Minutes(recordedMins);
+    var rec = roundToNearest5Minutes(recordedMins);
     var regMins = Math.min(rec, Math.max(0, regularRemaining));
     var otMins = rec - regMins;
     return {
@@ -1868,7 +1865,7 @@
       otMins: split.otMins,
       totalMins: split.totalMins,
       schedRounded: 0,
-      recRounded: roundToNearest15Minutes(recordedMins),
+      recRounded: roundToNearest5Minutes(recordedMins),
     };
   }
 
