@@ -2190,6 +2190,12 @@
     }
     var leave = getEffectiveDayLeave(empObj || { id: empId }, iso);
     if (leave.vl > 0 || leave.sl > 0) return true;
+    if (empObj) {
+      var scheduled = getWorkerScheduleShifts(empObj);
+      for (var si = 0; si < scheduled.length; si += 1) {
+        if (scheduled[si] && scheduled[si].iso === iso && scheduled[si].shift) return true;
+      }
+    }
     return false;
   }
 
@@ -2765,13 +2771,20 @@
     );
   }
 
+  var tipPoolInputHoldUntil = 0;
+
   function timecardsTipPoolInputIsActive() {
+    if (Date.now() < tipPoolInputHoldUntil) return true;
     var ae = document.activeElement;
     if (!ae || !ae.classList) return false;
     return ae.classList.contains('timecards-tip-input') || ae.classList.contains('timecards-tip-rate-input');
   }
 
   function applyTipPoolInputsFromStore() {
+    if (Date.now() < tipPoolInputHoldUntil) {
+      updateTipPoolSummaryText();
+      return;
+    }
     var pool = getPayrollTipPoolInputs();
     var ae = document.activeElement;
     function setIfIdle(el, val) {
@@ -2816,6 +2829,20 @@
   /** Replace totals cards without destroying live Square/GH/etc inputs (keeps focus). */
   function mountTimecardsGrandTotals(wrap, totals) {
     if (!wrap) return;
+    /*
+     * A roster refresh used to pull Square In House / Pick Up out of the page
+     * while they were focused, so the number rolled back as soon as you typed.
+     */
+    if (timecardsTipPoolInputIsActive()) {
+      var liveHtml = renderGrandTotalsHtml(totals);
+      var liveTotals = wrap.querySelector('.timecards-grand-totals');
+      if (liveTotals) liveTotals.outerHTML = liveHtml;
+      else {
+        var liveTable = wrap.querySelector('.timecards-table-wrap');
+        if (liveTable) liveTable.insertAdjacentHTML('beforebegin', liveHtml);
+      }
+      return;
+    }
     var tips = wrap.querySelector('.timecards-grand-totals-tips');
     if (tips && tips.parentNode) tips.parentNode.removeChild(tips);
     var html = renderGrandTotalsHtml(totals);
@@ -2838,12 +2865,15 @@
       });
       inp.addEventListener('pointerdown', function (ev) {
         ev.stopPropagation();
+        tipPoolInputHoldUntil = Date.now() + 2000;
+      });
+      inp.addEventListener('focus', function () {
+        tipPoolInputHoldUntil = Date.now() + 2000;
       });
       inp.addEventListener('change', persistTipPoolFromInputs);
       inp.addEventListener('blur', persistTipPoolFromInputs);
       inp.addEventListener('input', function () {
         updateTipPoolSummaryText();
-        persistTipPoolFromInputs();
       });
     });
   }
@@ -3588,8 +3618,8 @@
     return el ? normalizeDishwasherTipAmount(el.value) : 0;
   }
 
-  function readShiftDishwasherTipGrossFromForm(emp, restaurantId) {
-    return grossFromNetTip(readShiftDishwasherTipFromForm(), restaurantId, emp);
+  function readShiftDishwasherTipGrossFromForm() {
+    return readShiftDishwasherTipFromForm();
   }
 
   function syncShiftDishwasherTipNetDisplay() {
@@ -3600,10 +3630,17 @@
     var empId = tipEl.getAttribute('data-timecard-employee-id');
     var emp = findEmployeeByIdLocal(empId);
     var pct = tipTakehomePctForDishwasher(emp, rid);
+    var cut = Math.round((100 - pct) * 100) / 100;
+    var gross = normalizeDishwasherTipAmount(tipEl.value);
+    var net = netTipAmount(gross, rid, emp);
     hintEl.textContent =
-      'Net amount paid this day (× ' +
-      String(pct) +
-      '% take-home already applied). Same figure as week totals and the full report.';
+      gross > 0
+        ? 'Pay totals deduct ' +
+          String(cut) +
+          '% of this amount. This day pays ' +
+          formatPayAmount(net) +
+          '.'
+        : 'Enter the delivery tip for this day. Pay totals deduct ' + String(cut) + '%.';
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -3625,7 +3662,7 @@
       setEmployeeDayDishwasherTip(
         emp.id,
         shiftRow.iso,
-        readShiftDishwasherTipGrossFromForm(emp, tipRest),
+        readShiftDishwasherTipGrossFromForm(),
         undefined,
         tipRest
       );
@@ -12430,13 +12467,7 @@
               syncShiftDishwasherTipNetDisplay();
               return;
             }
-            setEmployeeDayDishwasherTip(
-              emp.id,
-              iso,
-              grossFromNetTip(val, rid, emp),
-              undefined,
-              rid
-            );
+            setEmployeeDayDishwasherTip(emp.id, iso, val, undefined, rid);
             syncShiftDishwasherTipNetDisplay();
           }
         } else if (field === 'additionalCashTip') {
@@ -13051,16 +13082,18 @@
               undefined,
               tipRest
             );
-            var netTip;
-            if (grossTip > 0) {
-              netTip = netTipAmount(grossTip, tipRest, emp);
-            } else {
-              netTip = getEmployeeDayDishwasherTipNet(emp, shiftRow.iso);
-            }
+            var tipPct = tipTakehomePctForDishwasher(emp, tipRest);
+            var tipCut = Math.round((100 - tipPct) * 100) / 100;
+            var tipHint =
+              grossTip > 0
+                ? 'Pay totals deduct ' +
+                  String(tipCut) +
+                  '% of this amount. This day pays ' +
+                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
+                  '.'
+                : 'Enter the delivery tip for this day. Pay totals deduct ' + String(tipCut) + '%.';
             return (
-              '<div><dt>' +
-              d().escapeHtml(tcT('timecards.netDeliveryTip')) +
-              '</dt><dd>' +
+              '<div><dt>Delivery tip</dt><dd>' +
               '<input type="number" class="timecards-extra-input timecards-extra-input--money" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
               d().escapeHtml(shiftRow.iso) +
               '" data-timecard-restaurant-id="' +
@@ -13068,14 +13101,10 @@
               '" data-timecard-employee-id="' +
               d().escapeHtml(emp.id) +
               '" min="0" step="0.01" inputmode="decimal" value="' +
-              d().escapeHtml(String(netTip)) +
+              d().escapeHtml(String(grossTip)) +
               '" />' +
               '<p class="calendar-hint timecards-tip-takehome-hint" id="tcDishwasherTipNetHint">' +
-              d().escapeHtml(
-                'Net amount paid this day (× ' +
-                  String(tipTakehomePctForDishwasher(emp, tipRest)) +
-                  '% take-home already applied). Same figure as week totals and the full report.'
-              ) +
+              d().escapeHtml(tipHint) +
               '</p></dd></div>'
             );
           })()

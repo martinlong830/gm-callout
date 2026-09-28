@@ -360,14 +360,27 @@ export function deliveryTipRetentionFactorForEmployee(emp: EmployeeRow | null | 
   return defaultDeliveryTipRetentionForEmployee(emp);
 }
 
-/** Percent (e.g. 95) for dishwasher tip net math / labels. */
+/**
+ * Percent (e.g. 95) for delivery-tip pay. A custom person rate wins. The usual
+ * store default follows the Timecards take-home % so 95% deducts 5% from the
+ * amount entered.
+ */
 export function tipTakehomePctForDishwasherEmployee(
   emp: EmployeeRow | null | undefined,
   restaurantId?: string | null,
   storePctFallback?: number
 ): number {
-  const factor = deliveryTipRetentionFactorForEmployee(emp ?? null);
-  if (factor != null) return Math.round(factor * 10000) / 100;
+  const explicit = normalizeDeliveryTipRetention(
+    emp?.deliveryTipRetention != null
+      ? emp.deliveryTipRetention
+      : emp?.meta?.deliveryTipRetention != null
+        ? emp.meta.deliveryTipRetention
+        : null
+  );
+  const def = emp ? defaultDeliveryTipRetentionForEmployee(emp) : null;
+  if (explicit != null && (def == null || Math.abs(explicit - def) > 0.00005)) {
+    return Math.round(explicit * 10000) / 100;
+  }
   if (storePctFallback != null && Number.isFinite(storePctFallback)) return storePctFallback;
   return restaurantId === 'rp-8' ? 80 : 95;
 }
