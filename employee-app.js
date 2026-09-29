@@ -286,6 +286,9 @@
     }
 
     function showEmpNav(key) {
+      if (window.gmCalloutViewCaptureEnabled && typeof window.gmCalloutCaptureViewScroll === 'function') {
+        window.gmCalloutCaptureViewScroll();
+      }
       if (key !== 'messages') {
         closeThreadView();
       }
@@ -300,6 +303,9 @@
         sec.hidden = k !== key;
       });
       if (screenTitle) screenTitle.textContent = titles[key] || t('title.home');
+      if (typeof window.gmCalloutRememberEmpNav === 'function') {
+        window.gmCalloutRememberEmpNav(key);
+      }
     }
 
     function mapRoleClass(role) {
@@ -1409,8 +1415,35 @@
       else if (navKey === 'messages') renderThreadsList();
     };
 
-    renderHome();
-    showEmpNav('home');
+    var savedEmpView =
+      typeof window.gmCalloutReadViewState === 'function' ? window.gmCalloutReadViewState() : null;
+    var savedEmpNav =
+      savedEmpView && savedEmpView.empNav ? String(savedEmpView.empNav) : 'home';
+    if (savedEmpNav !== 'home' && savedEmpNav !== 'schedule' && savedEmpNav !== 'messages' && savedEmpNav !== 'availability' && savedEmpNav !== 'requests') {
+      savedEmpNav = 'home';
+    }
+    if (savedEmpNav === 'home') renderHome();
+    else if (savedEmpNav === 'schedule') renderMasterScheduleScreen();
+    else if (savedEmpNav === 'messages') {
+      store = loadChatStore();
+      renderThreadsList();
+      closeThreadView();
+    } else if (savedEmpNav === 'availability') {
+      showAvailFeedback('');
+      renderEmployeeAvailabilityTab();
+    } else if (savedEmpNav === 'requests') {
+      populateCalloutShiftSelect();
+      populateSwapShiftOfferSelect();
+      populateAvailableSwapOffersSelect();
+      initTimeoffDateRangeForm();
+      showEmpRequestForm('timeoff');
+      showRequestFeedback('');
+    }
+    showEmpNav(savedEmpNav);
+    window.gmCalloutViewCaptureEnabled = true;
+    if (typeof window.gmCalloutRestoreSavedScroll === 'function') {
+      window.gmCalloutRestoreSavedScroll();
+    }
     if (
       window.gmCalloutNotificationsCenter &&
       typeof window.gmCalloutNotificationsCenter.start === 'function'

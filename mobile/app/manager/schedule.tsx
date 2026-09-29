@@ -196,6 +196,7 @@ import {
   moveTrIdxInSlotOrder,
   patchSlotOrderAfterAdd,
   patchSlotOrderAfterDelete,
+  applyMergedSlotOrderToDraft,
   patchSlotOrderInDraftSchedule,
   readSlotOrderByRestaurantForWeek,
   readSlotOrderByWeek,
@@ -490,6 +491,7 @@ export default function ManagerScheduleScreen() {
   /** True after ↑↓ / add / delete row until a successful draft persist. */
   const slotOrderDirtyRef = useRef(false);
   const slotOrderPushedAtRef = useRef(0);
+  const slotOrderEditAtRef = useRef(0);
   const cloudCellsAppliedRef = useRef(false);
   const blobSeededRef = useRef(false);
 
@@ -593,9 +595,22 @@ export default function ManagerScheduleScreen() {
         const liveAssign = assignmentStoreRef.current;
         const liveDraft =
           draftScheduleRawRef.current ?? teamStateRef.current?.draft_schedule ?? {};
+        const pullStartedAt = Date.now();
+        const rowOrderStillLocal = () =>
+          slotOrderDirtyRef.current || slotOrderEditAtRef.current > pullStartedAt;
         const applyRowOrderMeta =
-          !!opts?.cloudAuthority ||
-          (!slotOrderDirtyRef.current && Date.now() - slotOrderPushedAtRef.current > 4000);
+          !rowOrderStillLocal() &&
+          (!!opts?.cloudAuthority || Date.now() - slotOrderPushedAtRef.current > 4000);
+        const keepLocalRowOrder = (draft: unknown) => {
+          if (!rowOrderStillLocal()) return draft;
+          const live = draftScheduleRawRef.current ?? liveDraft;
+          return applyMergedSlotOrderToDraft(
+            draft,
+            readSlotOrderByWeek(live),
+            readSlotOrderByWeek(draft),
+            'local'
+          );
+        };
         if (opts?.fullWindow) {
           const projected = await pullCloudCellsVisibleThenFull({
             sb: supabase,
@@ -607,11 +622,16 @@ export default function ManagerScheduleScreen() {
             cloudAuthority: !!opts?.cloudAuthority,
             applyRowOrderMeta,
             onVisible: (vis) => {
-              if (opts?.ignoreLocalEdit || !localEditPendingRef.current) applyProjectedStores(vis);
+              if (opts?.ignoreLocalEdit || !localEditPendingRef.current) {
+                applyProjectedStores({ ...vis, draft: keepLocalRowOrder(vis.draft) });
+              }
             },
           });
           if (projected && (opts?.ignoreLocalEdit || !localEditPendingRef.current)) {
-            applyProjectedStores(projected);
+            applyProjectedStores({
+              ...projected,
+              draft: keepLocalRowOrder(projected.draft),
+            });
           }
           return;
         }
@@ -627,7 +647,10 @@ export default function ManagerScheduleScreen() {
           applyRowOrderMeta,
         });
         if (projected && (opts?.ignoreLocalEdit || !localEditPendingRef.current)) {
-          applyProjectedStores(projected);
+          applyProjectedStores({
+            ...projected,
+            draft: keepLocalRowOrder(projected.draft),
+          });
         }
       } catch (err) {
         console.warn('schedule sync v2 hydrate', err);
@@ -663,7 +686,6 @@ export default function ManagerScheduleScreen() {
     () => normalizeCompanyHolidays(teamState?.company_holidays),
     [teamState?.company_holidays]
   );
-  const selectedWeekIsPast = weekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
   const selectedWeekRange = formatScheduleWeekRangeLabel(weekMeta, weekIndex);
   const inboxForSelectedWeek = useMemo(
     () =>
@@ -732,8 +754,15 @@ export default function ManagerScheduleScreen() {
     [saveScheduleTemplates, scheduleTemplates]
   );
 
-  const publishSelectedWeek = useCallback(() => {
-    if (!selectedWeekMonday || !isManagerLikeRole(role) || selectedWeekIsPast) return;
+  const publishSelectedWeek = useCallback((overrideWeekIndex?: number) => {
+    const publishWeekIndex = overrideWeekIndex != null ? overrideWeekIndex : weekIndex;
+    const publishMonday = weekMeta[publishWeekIndex * 7]?.iso || '';
+    const publishIsPast = publishWeekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX;
+    const publishRange = formatScheduleWeekRangeLabel(weekMeta, publishWeekIndex);
+    const publishAlready = !!(
+      publishMonday && isScheduleWeekPublished(publishedMap, publishMonday)
+    );
+    if (!publishMonday || !isManagerLikeRole(role)) return;
     if (!managerCanEditRestaurant(myEmployee, currentRestaurantId, role)) {
       Alert.alert(t('schedule.viewOnlyOtherStore'), t('schedule.viewOnlyOtherStoreHint'));
       return;
@@ -745,16 +774,16 @@ export default function ManagerScheduleScreen() {
         try {
           /* Tile edits are debounced — flush before publish/notify so cloud matches the grid. */
           await flushPendingScheduleEdits();
-          const map = { ...publishedMap, [selectedWeekMonday]: true as const };
+          const map = { ...publishedMap, [publishMonday]: true as const };
           savePublishedWeekSnapshot({
             restaurantId: currentRestaurantId,
-            weekMondayIso: selectedWeekMonday,
-            weekIndex,
+            weekMondayIso: publishMonday,
+            weekIndex: publishWeekIndex,
             draft: draftScheduleRawRef.current ?? {},
             assignments: cloneWeekAssignmentsForRestaurant(
               assignmentStoreRef.current,
               currentRestaurantId,
-              weekIndex
+              publishWeekIndex
             ),
             publishedBy: {
               id: session?.user?.id,
@@ -801,8 +830,8 @@ export default function ManagerScheduleScreen() {
             dedupe: false,
           });
           const notify = await portalNotifySchedulePublished({
-            weekMondayIso: selectedWeekMonday,
-            weekRangeLabel: selectedWeekRange,
+            weekMondayIso: publishMonday,
+            weekRangeLabel: publishRange,
             teamStateId,
             audience,
             restaurantId: currentRestaurantId,
@@ -811,7 +840,7 @@ export default function ManagerScheduleScreen() {
           if (!notify.ok) {
             Alert.alert(
               t('schedule.published'),
-              t('schedule.publishedNotifyFailed', { range: selectedWeekRange, message: notify.message })
+              t('schedule.publishedNotifyFailed', { range: publishRange, message: notify.message })
             );
           } else if (notify.sent > 0) {
             const failNote =
@@ -835,7 +864,7 @@ export default function ManagerScheduleScreen() {
             Alert.alert(
               t('schedule.published'),
               notify.message ||
-                t('schedule.publishedNoPush', { range: selectedWeekRange })
+                t('schedule.publishedNoPush', { range: publishRange })
             );
           }
         } finally {
@@ -844,10 +873,15 @@ export default function ManagerScheduleScreen() {
       })();
     };
 
-    const msg = selectedWeekPublished
-      ? t('schedule.publishConfirmNotify', { range: selectedWeekRange })
-      : t('schedule.publishConfirmPublish', { range: selectedWeekRange });
-    Alert.alert(t('schedule.publishNotify'), msg, [
+    const msg = publishAlready
+      ? t('schedule.publishConfirmNotify', { range: publishRange })
+      : publishIsPast
+        ? t('schedule.publishPastWeekConfirm', { range: publishRange })
+        : t('schedule.publishConfirmPublish', { range: publishRange });
+    Alert.alert(
+      publishIsPast && !publishAlready ? t('schedule.publishPastWeek') : t('schedule.publishNotify'),
+      msg,
+      [
       { text: t('common.cancel'), style: 'cancel' },
       {
         text: t('schedule.publishNotifyAdmins'),
@@ -862,14 +896,11 @@ export default function ManagerScheduleScreen() {
     publishedMap,
     refetch,
     role,
-    selectedWeekIsPast,
-    selectedWeekMonday,
-    selectedWeekPublished,
-    selectedWeekRange,
     session?.user?.id,
     myEmployee,
     currentRestaurantId,
     weekIndex,
+    weekMeta,
     t,
   ]);
 
@@ -2936,6 +2967,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     queuePersist(assignmentStore, draftPayload);
     armCellWriteProtect(30000);
     slotOrderDirtyRef.current = true;
+    slotOrderEditAtRef.current = Date.now();
     if (supabase) {
       void (async () => {
         try {
@@ -2993,6 +3025,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     setRolledDraftRaw(draftPayload);
     applyLocalScheduleAssignments(nextStore, draftPayload);
     slotOrderDirtyRef.current = true;
+    slotOrderEditAtRef.current = Date.now();
     queuePersist(nextStore, draftPayload);
     armCellWriteProtect(15000);
     /*
@@ -3073,6 +3106,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     pushUndoSnapshot();
     suppressHydrateUndoClearRef.current = true;
     slotOrderDirtyRef.current = true;
+    slotOrderEditAtRef.current = Date.now();
     const draftPayload = patchSlotOrderInDraftSchedule(
       draftScheduleRawRef.current ?? draftScheduleRaw,
       selectedWeekMonday,
@@ -4104,17 +4138,30 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 )}
               </ScrollView>
             )}
-            {scheduleEditable && !selectedWeekIsPast ? (
-              <Pressable
-                style={[styles.publishBtn, { marginTop: 10 }]}
-                disabled={publishing || hubBusy}
-                onPress={() => {
-                  setHubOpen(false);
-                  publishSelectedWeek();
-                }}
-              >
-                <Text style={styles.publishBtnText}>{t('schedule.publishHubPublish')}</Text>
-              </Pressable>
+            {scheduleEditable ? (
+              <>
+                {hubWeekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX ? (
+                  <Text style={[styles.modalSub, { marginTop: 10 }]}>
+                    {t('schedule.publishPastWeekHint')}
+                  </Text>
+                ) : null}
+                <Pressable
+                  style={[styles.publishBtn, { marginTop: 10 }]}
+                  disabled={publishing || hubBusy}
+                  onPress={() => {
+                    setHubOpen(false);
+                    publishSelectedWeek(hubWeekIndex);
+                  }}
+                >
+                  <Text style={styles.publishBtnText}>
+                    {hubWeekMonday && isScheduleWeekPublished(publishedMap, hubWeekMonday)
+                      ? t('common.notifyAgain')
+                      : hubWeekIndex < SCHEDULE_TEMPLATE_WEEK_INDEX
+                        ? t('schedule.publishPastWeek')
+                        : t('schedule.publishHubPublish')}
+                  </Text>
+                </Pressable>
+              </>
             ) : null}
             <Pressable style={[styles.undoBtn, { marginTop: 8 }]} onPress={() => setHubOpen(false)}>
               <Text style={styles.undoBtnText}>{t('common.close')}</Text>

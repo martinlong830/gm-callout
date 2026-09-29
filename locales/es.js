@@ -448,7 +448,14 @@ window.GM_I18N_ES = {
   'schedule.deleteSlotTitle': 'Eliminar esta fila de turno',
   'schedule.slotHeader': 'Turno',
   'schedule.pastWeek': 'Semana pasada',
-  'schedule.pastWeekHint': 'No se puede publicar ni avisar una semana que ya pasó',
+  'schedule.pastWeekHint':
+    'Esta semana ya pasó. Publícala si los empleados todavía deben ver esta copia.',
+  'schedule.publishPastWeek': 'Publicar semana pasada',
+  'schedule.publishPastWeekHint':
+    'Esta semana ya pasó. Publícala si los empleados todavía deben ver esta copia.',
+  'schedule.publishPastWeekTitle': 'Publicar esta semana pasada y elegir a quién avisar',
+  'schedule.publishPastWeekMeta':
+    'Publica la semana pasada {range}{storeSuffix} y elige a quién avisar en esta tienda.',
   'schedule.viewOnly': 'Solo lectura',
   'schedule.sendForApproval': 'Enviar para aprobación',
   'schedule.sendForApprovalTitle': 'Enviar el horario de esta semana a un administrador',
@@ -549,6 +556,7 @@ window.GM_I18N_ES = {
   'team.singleStorePayrollHint':
     'Activado: siempre se paga en la tienda principal. Desactivado: se paga en la tienda donde trabaja ese día.',
   'team.employmentStatus': 'Estado laboral',
+  'team.leaveRemaining': 'VL / SL restante',
   'team.partTime': 'Medio tiempo',
   'team.fullTime': 'Tiempo completo',
   'team.accountType': 'Cuenta de la app',

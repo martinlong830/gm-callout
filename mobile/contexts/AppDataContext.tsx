@@ -47,7 +47,7 @@ import { mergeScheduleTemplateLibraries } from '../lib/schedule/templates';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { employeeDisplayName, type EmployeeRow } from '../lib/employees';
 import { migrateTimecardLeaveIntoTeamHistory } from '../lib/employeeLeave';
-import { saveEmployeeRow } from '../lib/employeeSave';
+import { employeeSaveGenerationNow, saveEmployeeRow } from '../lib/employeeSave';
 import { isManagerLikeRole } from '../lib/roles';
 import { useAuth } from './AuthContext';
 
@@ -174,6 +174,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       if (showLoading) setLoading(true);
       setError(null);
       try {
+        const rosterGen = employeeSaveGenerationNow();
         const data = await hydrateFromSupabase(supabase, {
           role,
           userId: session.user.id,
@@ -190,7 +191,9 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
             console.warn('applyTipPayrollFromTeamState', tipErr);
           }
         }
-        setEmployees(data.employees);
+        if (rosterGen === employeeSaveGenerationNow()) {
+          setEmployees(data.employees);
+        }
         setStaffRequests(data.staffRequests);
         const cellsOnly = await writeOnlyCells().catch(() => false);
         const remote = data.teamState;
@@ -386,11 +389,13 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 
   const refreshEmployeesOnly = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase || !session?.user) return;
+    const rosterGen = employeeSaveGenerationNow();
     try {
       const list = await fetchEmployeesOnly(supabase, {
         role,
         userId: session.user.id,
       });
+      if (rosterGen !== employeeSaveGenerationNow()) return;
       setEmployees(list);
     } catch (e) {
       console.warn('employees selective refresh', e);

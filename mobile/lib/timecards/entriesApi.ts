@@ -1,6 +1,53 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { PayWeekBounds, TimecardSchema, TimeClockEntry } from './types';
 
+function punchInstantDedupeKey(iso?: string | null): string {
+  if (!iso) return '';
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return '';
+  return String(Math.round(ms / 300000) * 300000);
+}
+
+function punchEntryIsOpen(entry: TimeClockEntry): boolean {
+  return entry.clock_out_at == null || entry.clock_out_at === '';
+}
+
+/** Same person, same rounded clock-in and clock-out — a second row is an echo, not a second shift. */
+function punchEntriesAreSameShift(a: TimeClockEntry, b: TimeClockEntry): boolean {
+  if (!a?.employee_id || !b?.employee_id) return false;
+  if (String(a.employee_id) !== String(b.employee_id)) return false;
+  if (!a.clock_in_at || !b.clock_in_at) return false;
+  if (punchInstantDedupeKey(a.clock_in_at) !== punchInstantDedupeKey(b.clock_in_at)) return false;
+  const aOpen = punchEntryIsOpen(a);
+  const bOpen = punchEntryIsOpen(b);
+  if (aOpen || bOpen) return aOpen && bOpen;
+  return punchInstantDedupeKey(a.clock_out_at) === punchInstantDedupeKey(b.clock_out_at);
+}
+
+function preferPunchEntry(a: TimeClockEntry, b: TimeClockEntry): TimeClockEntry {
+  const au = String(a.updated_at || '');
+  const bu = String(b.updated_at || '');
+  if (au !== bu) return au > bu ? a : b;
+  const aBreak = Number(a.break_minutes || 0);
+  const bBreak = Number(b.break_minutes || 0);
+  if (aBreak !== bBreak) return aBreak > bBreak ? a : b;
+  return a;
+}
+
+function dedupeSameShiftPunchEntries(entries: TimeClockEntry[]): TimeClockEntry[] {
+  const kept: TimeClockEntry[] = [];
+  for (const entry of entries || []) {
+    if (!entry?.employee_id || !entry.clock_in_at) {
+      if (entry) kept.push(entry);
+      continue;
+    }
+    const matchAt = kept.findIndex((row) => punchEntriesAreSameShift(row, entry));
+    if (matchAt < 0) kept.push(entry);
+    else kept[matchAt] = preferPunchEntry(kept[matchAt], entry);
+  }
+  return kept;
+}
+
 function mergeWeekEntriesById(primary: TimeClockEntry[], extra: TimeClockEntry[]): TimeClockEntry[] {
   const byId: Record<string, TimeClockEntry> = {};
   for (const e of primary) {
@@ -85,6 +132,7 @@ export async function loadWeekEntries(
   if (!openRes.error && openRes.data?.length) {
     entries = mergeWeekEntriesById(entries, openRes.data as unknown as TimeClockEntry[]);
   }
+  entries = dedupeSameShiftPunchEntries(entries);
 
   return { ok: true, entries, schema };
 }

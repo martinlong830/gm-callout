@@ -659,17 +659,11 @@ export function entryExtendsPaidWorkPastSohThreshold(
 }
 
 /**
- * SoH day qualifies when span > 10h and either worked > 10h or paid work extends past the
- * 10h wall-clock point (break-only padding past 10h does not qualify).
- * Juan 11:30–22:00 (10.5h span) → qualifies unless break fills 21:30–22:00 with no work after.
+ * SoH when one shift's clock-in to clock-out, break included, is over 10 hours.
+ * Where the break sits does not matter. A second short shift the same day does not add on.
  */
-export function dayQualifiesForSpreadOfHours(
-  workedMinutesRounded: number,
-  spanMinutes: number,
-  hasPaidWorkPastThreshold: boolean
-): boolean {
-  if (spanMinutes <= SOH_THRESHOLD_MINUTES) return false;
-  return workedMinutesRounded > SOH_THRESHOLD_MINUTES || hasPaidWorkPastThreshold;
+export function dayQualifiesForSpreadOfHours(spanMinutes: number): boolean {
+  return spanMinutes > SOH_THRESHOLD_MINUTES;
 }
 
 export function effectiveBreakMinutes(entry: TimeClockEntry): number {
@@ -1275,9 +1269,7 @@ export function computeSpreadOfHours(
   const bounds = options?.bounds;
   const weekStart = bounds ? isoFromDate(bounds.start) : null;
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
-  const byDay: Record<string, number> = {};
   const spanByDay: Record<string, number> = {};
-  const extendsPastByDay: Record<string, boolean> = {};
   for (const e of entries) {
     if (e.employee_id !== emp.id || !e.clock_in_at) continue;
     if (!e.clock_out_at) continue;
@@ -1290,18 +1282,14 @@ export function computeSpreadOfHours(
     }
     const iso = punchDayIso(e);
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
-    byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
-    spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
-    if (entryExtendsPaidWorkPastSohThreshold(e, null, emp)) extendsPastByDay[iso] = true;
+    const span = recordedSpanMinutesOnClockInDay(e);
+    if (!spanByDay[iso] || span > spanByDay[iso]) spanByDay[iso] = span;
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
-  for (const iso of Object.keys(byDay).sort()) {
-    const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (
-      dayQualifiesForSpreadOfHours(roundedDay, spanByDay[iso] || 0, !!extendsPastByDay[iso])
-    ) {
+  for (const iso of Object.keys(spanByDay).sort()) {
+    if (dayQualifiesForSpreadOfHours(spanByDay[iso] || 0)) {
       count += 1;
       dates.push(iso);
       pay += SOH_PAY_HOURS * getSohRate();
@@ -1399,9 +1387,7 @@ export function computeSpreadOfHoursIndexed(
   const bounds = options?.bounds;
   const weekStart = bounds ? isoFromDate(bounds.start) : null;
   const weekEnd = bounds ? isoFromDate(bounds.end) : null;
-  const byDay: Record<string, number> = {};
   const spanByDay: Record<string, number> = {};
-  const extendsPastByDay: Record<string, boolean> = {};
   for (const e of empEntries) {
     if (!e.clock_in_at || !e.clock_out_at) continue;
     if (
@@ -1413,18 +1399,14 @@ export function computeSpreadOfHoursIndexed(
     }
     const iso = punchDayIso(e);
     if (!iso || (weekStart && weekEnd && (iso < weekStart || iso > weekEnd))) continue;
-    byDay[iso] = (byDay[iso] || 0) + recordedPaidMinutesOnClockInDay(e, null, emp);
-    spanByDay[iso] = (spanByDay[iso] || 0) + recordedSpanMinutesOnClockInDay(e);
-    if (entryExtendsPaidWorkPastSohThreshold(e, null, emp)) extendsPastByDay[iso] = true;
+    const span = recordedSpanMinutesOnClockInDay(e);
+    if (!spanByDay[iso] || span > spanByDay[iso]) spanByDay[iso] = span;
   }
   const dates: string[] = [];
   let count = 0;
   let pay = 0;
-  for (const iso of Object.keys(byDay).sort()) {
-    const roundedDay = roundToNearest5Minutes(byDay[iso]);
-    if (
-      dayQualifiesForSpreadOfHours(roundedDay, spanByDay[iso] || 0, !!extendsPastByDay[iso])
-    ) {
+  for (const iso of Object.keys(spanByDay).sort()) {
+    if (dayQualifiesForSpreadOfHours(spanByDay[iso] || 0)) {
       count += 1;
       dates.push(iso);
       pay += SOH_PAY_HOURS * getSohRate();

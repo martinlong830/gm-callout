@@ -573,6 +573,35 @@ const payrollJ4 = payrollSheet.worksheet.J4;
 if (!payrollJ4 || !payrollJ4.f) {
   throw new Error('Payroll TOTAL GROSS (J4) should be a formula, got ' + JSON.stringify(payrollJ4));
 }
+function payrollGrossWithSohHighlights(ws) {
+  const hits = [];
+  Object.keys(ws || {}).forEach((addr) => {
+    if (!/^A\d+$/.test(addr)) return;
+    const label = String((ws[addr] && ws[addr].v) || '');
+    if (label !== 'TOTAL' && label !== 'GRAND TOTAL') return;
+    const cell = ws['N' + addr.slice(1)];
+    const rgb =
+      cell && cell.s && cell.s.fill && cell.s.fill.fgColor && cell.s.fill.fgColor.rgb;
+    hits.push({ label, rgb });
+  });
+  return hits;
+}
+const sohHighlights = payrollGrossWithSohHighlights(payrollSheet.worksheet);
+const sohTotalRows = sohHighlights.filter((h) => h.label === 'TOTAL');
+const sohGrandRows = sohHighlights.filter((h) => h.label === 'GRAND TOTAL');
+if (sohTotalRows.length < 2 || sohGrandRows.length !== 1) {
+  throw new Error(
+    'Payroll should yellow-highlight TOTAL GROSS WITH SOH on FOH, BOH, and grand totals, got ' +
+      JSON.stringify(sohHighlights)
+  );
+}
+sohHighlights.forEach((h) => {
+  var rgb = String(h.rgb || '').toUpperCase();
+  if (rgb !== 'FFFF00' && rgb !== 'FFFFFF00') {
+    throw new Error('Payroll ' + h.label + ' TOTAL GROSS WITH SOH should be yellow, got ' + h.rgb);
+  }
+});
+console.log('OK: Payroll FOH, BOH, and grand TOTAL GROSS WITH SOH cells are yellow');
 const laborSheet = build.find((s) => s.name === 'Labor Cost');
 const cpaSheet = build.find((s) => s.name === 'CPA');
 const payslipSheet = build.find((s) => s.name === 'Payslip');

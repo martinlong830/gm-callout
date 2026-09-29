@@ -448,7 +448,14 @@ window.GM_I18N_EN = {
   'schedule.deleteSlotTitle': 'Delete this slot row',
   'schedule.slotHeader': 'Slot',
   'schedule.pastWeek': 'Past week',
-  'schedule.pastWeekHint': 'Cannot publish or notify for a week that has already passed',
+  'schedule.pastWeekHint':
+    'This week has already passed. Publish it if employees should still see this copy.',
+  'schedule.publishPastWeek': 'Publish past week',
+  'schedule.publishPastWeekHint':
+    'This week has already passed. Publish it if employees should still see this copy.',
+  'schedule.publishPastWeekTitle': 'Publish this past week and choose who to notify',
+  'schedule.publishPastWeekMeta':
+    'Publish the past week {range}{storeSuffix} and choose who to notify at this store.',
   'schedule.viewOnly': 'View only',
   'schedule.sendForApproval': 'Send for approval',
   'schedule.sendForApprovalTitle': 'Send this week’s schedule to an admin for approval',
@@ -548,6 +555,7 @@ window.GM_I18N_EN = {
   'team.singleStorePayrollHint':
     'On: always paid at the primary store. Off: paid at the store they work each day.',
   'team.employmentStatus': 'Employment status',
+  'team.leaveRemaining': 'VL / SL remaining',
   'team.partTime': 'Part-time',
   'team.fullTime': 'Full-time',
   'team.accountType': 'App account',

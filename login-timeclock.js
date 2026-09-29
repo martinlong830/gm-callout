@@ -330,6 +330,7 @@
 
   function clearIntentionalSignOutForLogin() {
     try {
+      window.__GM_SIGN_OUT_CLICKED__ = false;
       window.__GM_INTENTIONAL_SIGN_OUT__ = false;
       sessionStorage.removeItem('gm-callout-intentional-sign-out');
       localStorage.removeItem('gm-callout-intentional-sign-out');

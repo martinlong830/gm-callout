@@ -1146,7 +1146,9 @@
             var hasUnpushed =
               draftScheduleDirty ||
               teamStateSyncTimer ||
-              teamStatePushInFlight;
+              teamStatePushInFlight ||
+              slotOrderMetaUnpushed ||
+              slotOrderMetaPushInFlight;
             var localAheadOfConfirmed = !!(confJson && locJson !== confJson);
             var peerReorder = !!(confJson && locJson === confJson && remJson !== confJson);
             if (peerReorder && !hasUnpushed && !localAheadOfConfirmed) {
@@ -1277,6 +1279,125 @@
     }
   }
 
+  var slotOrderMetaUnpushed = false;
+  var scheduleSlotOrderEditAt = 0;
+  var slotOrderMetaPushTimer = null;
+  var slotOrderMetaPushInFlight = false;
+  var slotOrderMetaPushQueued = false;
+  var SLOT_ORDER_CONFIRMED_KEY = 'gm-callout-slot-order-confirmed-v1';
+
+  function slotOrderHasUnpushedLocalEdit() {
+    return !!slotOrderMetaUnpushed;
+  }
+
+  function rememberConfirmedSlotOrder(order) {
+    try {
+      localStorage.setItem(
+        SLOT_ORDER_CONFIRMED_KEY,
+        JSON.stringify(sanitizeSlotOrderByWeek(order))
+      );
+    } catch (_slotConf) {
+      /* ignore */
+    }
+  }
+
+  function scheduleSlotOrderMetaPush() {
+    if (slotOrderMetaPushTimer) clearTimeout(slotOrderMetaPushTimer);
+    slotOrderMetaPushTimer = setTimeout(function () {
+      slotOrderMetaPushTimer = null;
+      void flushSlotOrderMetaPushNow();
+    }, 400);
+  }
+
+  async function flushSlotOrderMetaPushNow() {
+    if (slotOrderMetaPushTimer) {
+      clearTimeout(slotOrderMetaPushTimer);
+      slotOrderMetaPushTimer = null;
+    }
+    if (!slotOrderMetaUnpushed) return { ok: true, skipped: 'clean' };
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return { ok: false, reason: 'no_client' };
+    if (slotOrderMetaPushInFlight) {
+      slotOrderMetaPushQueued = true;
+      return { ok: true, queued: true };
+    }
+    slotOrderMetaPushInFlight = true;
+    try {
+      var attempt;
+      for (attempt = 0; attempt < 3; attempt += 1) {
+        var pushed = await pushSlotOrderMetaOnce();
+        if (pushed && pushed.ok) {
+          if (slotOrderMetaPushQueued || slotOrderMetaUnpushed) {
+            slotOrderMetaPushQueued = false;
+            continue;
+          }
+          return pushed;
+        }
+        if (pushed && pushed.conflict && attempt < 2) continue;
+        return pushed || { ok: false };
+      }
+      return { ok: false };
+    } finally {
+      slotOrderMetaPushInFlight = false;
+      if (slotOrderMetaPushQueued) {
+        slotOrderMetaPushQueued = false;
+        scheduleSlotOrderMetaPush();
+      }
+    }
+  }
+
+  async function pushSlotOrderMetaOnce() {
+    var sb = window.gmSupabase;
+    if (!sb) return { ok: false, reason: 'no_client' };
+    var localAtStart = JSON.stringify(sanitizeSlotOrderByWeek(slotOrderByWeekStore));
+    var res = await sb
+      .from('team_state')
+      .select('draft_schedule, updated_at')
+      .eq('id', gmCalloutTeamStateRowId())
+      .maybeSingle();
+    if (res.error || !res.data) return { ok: false, error: res.error || null };
+    var draft =
+      res.data.draft_schedule && typeof res.data.draft_schedule === 'object'
+        ? JSON.parse(JSON.stringify(res.data.draft_schedule))
+        : { v: 2 };
+    var confirmed = {};
+    try {
+      var confirmedRaw = localStorage.getItem(SLOT_ORDER_CONFIRMED_KEY);
+      if (confirmedRaw) confirmed = sanitizeSlotOrderByWeek(JSON.parse(confirmedRaw));
+    } catch (_conf) {
+      confirmed = {};
+    }
+    var merged = mergeSlotOrderByWeekMapsStable(
+      slotOrderByWeekStore,
+      draft.slotOrderByWeek,
+      confirmed
+    );
+    draft.slotOrderByWeek = merged;
+    draft.slotOrderByRestaurant = sanitizeSlotOrderByRestaurant(legacySlotOrderByRestaurantStore);
+    if (!draft.v) draft.v = 2;
+    var upd = await sb
+      .from('team_state')
+      .update({ draft_schedule: draft })
+      .eq('id', gmCalloutTeamStateRowId())
+      .eq('updated_at', res.data.updated_at)
+      .select('updated_at')
+      .maybeSingle();
+    if (upd.error) return { ok: false, error: upd.error };
+    if (!upd.data) return { ok: false, conflict: true };
+    var localNow = JSON.stringify(sanitizeSlotOrderByWeek(slotOrderByWeekStore));
+    if (localNow === localAtStart) {
+      if (JSON.stringify(sanitizeSlotOrderByWeek(merged)) !== localNow) {
+        slotOrderByWeekStore = merged;
+        persistSlotOrderStores({ skipDirty: true, skipInteractiveMark: true });
+      }
+      rememberConfirmedSlotOrder(slotOrderByWeekStore);
+      slotOrderMetaUnpushed = false;
+    } else {
+      slotOrderMetaUnpushed = true;
+    }
+    if (upd.data.updated_at != null) teamStateCachedUpdatedAt = String(upd.data.updated_at);
+    return { ok: true };
+  }
+
   function persistSlotOrderStores(opts) {
     try {
       localStorage.setItem(SLOT_ORDER_BY_WEEK_KEY, JSON.stringify(slotOrderByWeekStore || {}));
@@ -1288,13 +1409,20 @@
         );
       }
       if (!(opts && opts.skipDirty) && GM_SUPABASE_DATA && window.gmSupabase) {
+        if (!(opts && opts.skipInteractiveMark)) markScheduleInteractiveEdit();
         if (!scheduleSyncV2WriteOnly()) {
           draftScheduleDirty = true;
-          if (!(opts && opts.skipInteractiveMark)) markScheduleInteractiveEdit();
           persistTeamStateDirtyFlags();
           scheduleTeamStateDebouncedSync();
-        } else if (!(opts && opts.skipInteractiveMark)) {
-          markScheduleInteractiveEdit();
+        } else {
+          /*
+           * Cells own times. Row order still has to reach cloud or the next
+           * device (and this computer's next order fetch) puts the old ↑↓ back.
+           * Patch only slotOrderByWeek — do not upsert the whole draft blob.
+           */
+          scheduleSlotOrderEditAt = Date.now();
+          slotOrderMetaUnpushed = true;
+          scheduleSlotOrderMetaPush();
         }
       }
     } catch (_e) {
@@ -4554,19 +4682,34 @@
         gmT('schedule.publishHubApplyPublish') || 'Apply to live & publish';
     }
     if (hubPublish) {
-      hubPublish.hidden = mode === 'compose' || !canEditStore || past;
+      hubPublish.hidden = mode === 'compose' || !canEditStore;
       hubPublish.disabled = false;
       var already = isScheduleWeekIndexPublished(selectedWi);
       hubPublish.textContent = already
         ? gmT('common.notifyAgain') || 'Notify again'
-        : gmT('schedule.publishHubPublish') || 'Publish & notify';
+        : past
+          ? gmT('schedule.publishPastWeek') || 'Publish past week'
+          : gmT('schedule.publishHubPublish') || 'Publish & notify';
+      hubPublish.title = past
+        ? gmT('schedule.publishPastWeekHint') ||
+          'This week has already passed. Publish it if employees should still see this copy.'
+        : '';
     }
     syncScheduleHubTabs();
     if (publishedTab) {
       if (hint) {
-        hint.textContent = scheduleReviewUi && scheduleReviewUi.review
+        var publishedHint = scheduleReviewUi && scheduleReviewUi.review
           ? 'This is the saved published copy for the selected week. Use Pending edits to apply a proposal, then publish.'
           : '';
+        if (past) {
+          var pastChoice = gmT('schedule.publishPastWeekHint');
+          if (!pastChoice || pastChoice === 'schedule.publishPastWeekHint') {
+            pastChoice =
+              'This week has already passed. Publish it if employees should still see this copy.';
+          }
+          publishedHint = publishedHint ? publishedHint + ' ' + pastChoice : pastChoice;
+        }
+        hint.textContent = publishedHint;
       }
       return;
     }
@@ -4663,6 +4806,16 @@
         hint.textContent =
           gmT('schedule.reviewInboxEmptyHint') ||
           'When a manager sends a week for approval, it will show up here.';
+      }
+      if (past && hubPublish && !hubPublish.hidden) {
+        var pastChoiceHint = gmT('schedule.publishPastWeekHint');
+        if (!pastChoiceHint || pastChoiceHint === 'schedule.publishPastWeekHint') {
+          pastChoiceHint =
+            'This week has already passed. Publish it if employees should still see this copy.';
+        }
+        hint.textContent = hint.textContent
+          ? hint.textContent + ' ' + pastChoiceHint
+          : pastChoiceHint;
       }
     }
   }
@@ -5479,10 +5632,13 @@
     if (hubPublish) {
       hubPublish.addEventListener('click', function () {
         if (!managerCanEditCurrentRestaurant()) return;
-        if (isScheduleWeekIndexPast(scheduleHubWeekIndex())) return;
+        var publishWi = scheduleHubWeekIndex();
         closeScheduleReviewModal();
-        if (!openSchedulePublishNotifyModal()) {
-          void publishSelectedWeekScheduleAndNotify({ audience: 'employees' });
+        if (!openSchedulePublishNotifyModal({ weekIndex: publishWi })) {
+          void publishSelectedWeekScheduleAndNotify({
+            audience: 'employees',
+            weekIndex: publishWi,
+          });
         }
       });
     }
@@ -5569,11 +5725,7 @@
       !managerCanEditCurrentRestaurant();
     if (btn) {
       btn.hidden = true;
-      if (past) {
-        btn.textContent = gmT('schedule.pastWeek');
-        btn.disabled = true;
-        btn.title = gmT('schedule.pastWeekHint');
-      } else if (otherStore) {
+      if (otherStore) {
         btn.textContent = gmT('schedule.viewOnly');
         btn.disabled = true;
         btn.title = gmT('schedule.viewOnlyOtherStoreHint');
@@ -5583,16 +5735,21 @@
           ? gmT('common.publishing')
           : published
             ? gmT('common.notifyAgain')
-            : gmT('schedule.publishNotify');
+            : past
+              ? gmT('schedule.publishPastWeek') || 'Publish past week'
+              : gmT('schedule.publishNotify');
         btn.disabled = forceDisabled;
         btn.title = published
           ? gmT('schedule.notifyAgainHint', { range: range })
-          : gmT('schedule.publishHint', { range: range });
+          : past
+            ? gmT('schedule.publishPastWeekHint') ||
+              'This week has already passed. Publish it if employees should still see this copy.'
+            : gmT('schedule.publishHint', { range: range });
       }
     }
     var hubPublish = document.getElementById('scheduleHubPublishBtn');
     if (hubPublish && scheduleReviewModalIsOpen()) {
-      hubPublish.disabled = !!forceDisabled || past || otherStore;
+      hubPublish.disabled = !!forceDisabled || otherStore;
     }
   }
 
@@ -5691,6 +5848,8 @@
       });
   }
 
+  var schedulePublishTargetWeekIndex = null;
+
   async function publishSelectedWeekScheduleAndNotify(opts) {
     opts = opts || {};
     var audience = opts.audience === 'admins' ? 'admins' : 'employees';
@@ -5698,11 +5857,12 @@
       showScheduleNotice('You can only publish your own store’s schedule.', false);
       return { ok: false };
     }
-    var wi = scheduleCalendarWeekIndex;
-    if (isScheduleWeekIndexPast(wi)) {
-      showScheduleNotice('Cannot publish a past week.', false);
-      return { ok: false };
-    }
+    var wi =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex)
+        : schedulePublishTargetWeekIndex != null
+          ? schedulePublishTargetWeekIndex
+          : scheduleCalendarWeekIndex;
     var weekIso = mondayIsoForScheduleWeekIndex(wi);
     if (!weekIso) {
       showScheduleNotice('Could not resolve this week’s start date.', false);
@@ -5834,23 +5994,33 @@
     }
   }
 
-  function openSchedulePublishNotifyModal() {
+  function openSchedulePublishNotifyModal(opts) {
+    opts = opts || {};
     var modal = document.getElementById('schedulePublishNotifyModal');
     var title = document.getElementById('schedulePublishNotifyModalTitle');
     var meta = document.getElementById('schedulePublishNotifyModalMeta');
     if (!modal) return false;
-    var wi = scheduleCalendarWeekIndex;
+    var wi =
+      opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
+        ? Number(opts.weekIndex)
+        : scheduleCalendarWeekIndex;
+    schedulePublishTargetWeekIndex = wi;
     var weekIso = mondayIsoForScheduleWeekIndex(wi);
     var already = weekIso && isScheduleWeekPublished(weekIso);
+    var past = isScheduleWeekIndexPast(wi);
     var range = formatScheduleWeekRangeLabel(wi);
     if (title) {
       title.textContent = already
         ? typeof gmT === 'function'
           ? gmT('schedule.notifyAgainTitle')
           : 'Notify again'
-        : typeof gmT === 'function'
-          ? gmT('schedule.publishNotify')
-          : 'Publish / Notify';
+        : past
+          ? typeof gmT === 'function'
+            ? gmT('schedule.publishPastWeekTitle')
+            : 'Publish this past week and choose who to notify'
+          : typeof gmT === 'function'
+            ? gmT('schedule.publishNotifyTitle')
+            : 'Publish this week’s schedule and choose who to notify';
     }
     if (meta) {
       var store =
@@ -5864,9 +6034,13 @@
         ? typeof gmT === 'function'
           ? gmT('schedule.notifyAgainMeta', { range: range, storeSuffix: storeSuffix })
           : 'Send another notification for ' + range + storeSuffix + '.'
-        : typeof gmT === 'function'
-          ? gmT('schedule.publishNotifyMeta', { range: range, storeSuffix: storeSuffix })
-          : 'Publish ' + range + storeSuffix + ' and choose who to notify.';
+        : past
+          ? typeof gmT === 'function'
+            ? gmT('schedule.publishPastWeekMeta', { range: range, storeSuffix: storeSuffix })
+            : 'Publish the past week ' + range + storeSuffix + ' and choose who to notify.'
+          : typeof gmT === 'function'
+            ? gmT('schedule.publishNotifyMeta', { range: range, storeSuffix: storeSuffix })
+            : 'Publish ' + range + storeSuffix + ' and choose who to notify.';
     }
     modal.hidden = false;
     document.body.classList.add('availability-modal-open');
@@ -5877,6 +6051,7 @@
     var modal = document.getElementById('schedulePublishNotifyModal');
     if (modal) modal.hidden = true;
     document.body.classList.remove('availability-modal-open');
+    schedulePublishTargetWeekIndex = null;
   }
 
   function mondayIsoDiffWeeks(fromIso, toIso) {
@@ -6502,6 +6677,96 @@
     if (employeeNameDefaultsSingleStorePayroll(emp)) {
       emp.meta.singleStorePayroll = true;
     }
+  }
+
+  var SINGLE_STORE_PAYROLL_PENDING_KEY = 'gm-callout-single-store-payroll-pending-v1';
+  var SINGLE_STORE_PAYROLL_PENDING_MS = 10 * 60 * 1000;
+  var employeeSingleStorePayrollPendingById = null;
+  var employeeSingleStorePayrollRetryAt = Object.create(null);
+
+  function explicitSingleStorePayrollMeta(emp) {
+    var meta = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    var v = meta.singleStorePayroll;
+    if (v === true || v === 'true' || v === 1) return true;
+    if (v === false || v === 'false' || v === 0) return false;
+    return null;
+  }
+
+  function readSingleStorePayrollPendingMap() {
+    if (employeeSingleStorePayrollPendingById) return employeeSingleStorePayrollPendingById;
+    employeeSingleStorePayrollPendingById = Object.create(null);
+    try {
+      var raw = localStorage.getItem(SINGLE_STORE_PAYROLL_PENDING_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') {
+        Object.keys(parsed).forEach(function (id) {
+          var row = parsed[id];
+          if (!row || (row.value !== true && row.value !== false)) return;
+          if (!row.at || Date.now() - Number(row.at) > SINGLE_STORE_PAYROLL_PENDING_MS) return;
+          employeeSingleStorePayrollPendingById[id] = { value: row.value, at: Number(row.at) };
+        });
+      }
+    } catch (_pendingRead) {
+      /* ignore */
+    }
+    return employeeSingleStorePayrollPendingById;
+  }
+
+  function writeSingleStorePayrollPendingMap() {
+    try {
+      localStorage.setItem(
+        SINGLE_STORE_PAYROLL_PENDING_KEY,
+        JSON.stringify(readSingleStorePayrollPendingMap())
+      );
+    } catch (_pendingWrite) {
+      /* ignore */
+    }
+  }
+
+  function rememberSingleStorePayrollPending(empId, enabled) {
+    if (!empId) return;
+    var map = readSingleStorePayrollPendingMap();
+    map[String(empId)] = { value: !!enabled, at: Date.now() };
+    writeSingleStorePayrollPendingMap();
+  }
+
+  function queueSingleStorePayrollCloudRetry(emp) {
+    if (!emp || !emp.id || typeof syncSingleEmployeeToSupabase !== 'function') return;
+    var id = String(emp.id);
+    var now = Date.now();
+    if (employeeSingleStorePayrollRetryAt[id] && now - employeeSingleStorePayrollRetryAt[id] < 8000) {
+      return;
+    }
+    employeeSingleStorePayrollRetryAt[id] = now;
+    void syncSingleEmployeeToSupabase(emp);
+  }
+
+  /**
+   * Keep a Team toggle that has not echoed from cloud yet. A roster refresh was
+   * replacing the row before the upsert landed, then the name default (Irineo on)
+   * came back.
+   */
+  function overlayPendingSingleStorePayroll(emp, opts) {
+    opts = opts || {};
+    if (!emp || !emp.id) return false;
+    var map = readSingleStorePayrollPendingMap();
+    var id = String(emp.id);
+    var row = map[id];
+    if (!row) return false;
+    if (!row.at || Date.now() - row.at > SINGLE_STORE_PAYROLL_PENDING_MS) {
+      delete map[id];
+      writeSingleStorePayrollPendingMap();
+      return false;
+    }
+    if (explicitSingleStorePayrollMeta(emp) === row.value) {
+      delete map[id];
+      writeSingleStorePayrollPendingMap();
+      return false;
+    }
+    emp.meta = emp.meta && typeof emp.meta === 'object' ? emp.meta : {};
+    emp.meta.singleStorePayroll = row.value;
+    if (opts.resync) queueSingleStorePayrollCloudRetry(emp);
+    return true;
   }
 
   /**
@@ -7572,6 +7837,11 @@
   }
 
   var gmEmployeeProfileSaveInFlight = false;
+  /** Bumped on every Team save so a roster fetch that started earlier cannot roll it back. */
+  var employeesRemoteSnapshotGen = 0;
+  function bumpEmployeesRemoteSnapshotGen() {
+    employeesRemoteSnapshotGen += 1;
+  }
   /** empId → timestamp while leaveBalance is being upserted (block roster clobber). */
   var employeeAvailabilityPendingById = Object.create(null);
   var EMPLOYEE_AVAILABILITY_CLOUD_GUARD_MS = 20000;
@@ -7776,6 +8046,7 @@
           e.meta.leaveBalance = keep;
         }
       }
+      overlayPendingSingleStorePayroll(e, { resync: true });
       var availPend = employeeAvailabilityPendingById[id];
       if (availPend && Date.now() - availPend.at < EMPLOYEE_AVAILABILITY_CLOUD_GUARD_MS) {
         var remoteWeek = e.meta && e.meta.availabilityByWeek ? e.meta.availabilityByWeek : null;
@@ -7953,6 +8224,7 @@
       employeesRemoteRefreshPending = true;
       return { ok: false, reason: 'save_in_flight' };
     }
+    var rosterGen = employeesRemoteSnapshotGen;
     var sb = window.gmSupabase;
     var sessRes = await sb.auth.getSession();
     if (!sessRes.data || !sessRes.data.session) return { ok: false, reason: 'no_session' };
@@ -7960,6 +8232,11 @@
     if (res.error) {
       console.warn('gm-callout: employees refresh', res.error);
       return { ok: false, error: res.error };
+    }
+    if (rosterGen !== employeesRemoteSnapshotGen || gmEmployeeProfileSaveInFlight) {
+      employeesRemoteRefreshPending = true;
+      queueEmployeesRemoteRefresh();
+      return { ok: false, reason: 'stale_roster' };
     }
     if (Array.isArray(res.data)) {
       if (res.data.length) {
@@ -11989,6 +12266,74 @@
     scheduleDocumentNeedsCloudSoT = false;
   }
 
+  /**
+   * ↑↓ row order only — not the huge draft_schedule.byWeek blob.
+   * Same query Manual Refresh uses so a stale personal-computer cache cannot
+   * leave names in the wrong rows until someone hits Refresh.
+   */
+  async function fetchScheduleRowOrderMetaFromCloud() {
+    if (!window.gmSupabase) return { ok: false };
+    try {
+      var slim = await window.gmSupabase
+        .from('team_state')
+        .select(
+          'updated_at,slotOrderByWeek:draft_schedule->slotOrderByWeek,groupOrderPotentialByWeek:draft_schedule->groupOrderPotentialByWeek,scheduleNetSalesByWeek:draft_schedule->scheduleNetSalesByWeek,windowMondayIso:draft_schedule->windowMondayIso,slotOrderByRestaurant:draft_schedule->slotOrderByRestaurant'
+        )
+        .eq('id', gmCalloutTeamStateRowId())
+        .maybeSingle();
+      if (!slim.error && slim.data) {
+        return {
+          ok: true,
+          draft: {
+            slotOrderByWeek: slim.data.slotOrderByWeek,
+            groupOrderPotentialByWeek: slim.data.groupOrderPotentialByWeek,
+            scheduleNetSalesByWeek: slim.data.scheduleNetSalesByWeek,
+            windowMondayIso: slim.data.windowMondayIso,
+            slotOrderByRestaurant: slim.data.slotOrderByRestaurant,
+          },
+        };
+      }
+      var res = await selectTeamStateRow(window.gmSupabase, 'draft_schedule,updated_at');
+      if (res.error) {
+        console.warn('gm-callout: schedule row-order refresh', res.error);
+        return { ok: false, error: res.error };
+      }
+      return { ok: true, draft: res.data && res.data.draft_schedule };
+    } catch (_ord) {
+      return { ok: false };
+    }
+  }
+
+  function applyCloudScheduleRowOrder(orderRes, opts) {
+    opts = opts || {};
+    if (!orderRes || !orderRes.ok || !orderRes.draft) return false;
+    if (opts.fetchedAt && scheduleSlotOrderEditAt > opts.fetchedAt) return false;
+    if (hasInteractiveScheduleEditsThisSession()) return false;
+    if (slotOrderHasUnpushedLocalEdit()) return false;
+    try {
+      var applied = !!applyDraftRowOrderMetaFromRemote(orderRes.draft, {
+        takeRemoteOrder: true,
+        replaceGroupSales: false,
+      });
+      if (applied) rememberConfirmedSlotOrder(slotOrderByWeekStore);
+      return applied;
+    } catch (_ordApply) {
+      return false;
+    }
+  }
+
+  function repaintScheduleAfterCloudRowOrder() {
+    if (currentScreen !== 1) return;
+    if (!scheduleCellsHydratedOk && !scheduleVisibleWeekFetchDone) return;
+    if (hasInteractiveScheduleEditsThisSession()) return;
+    paintVisibleScheduleWeekFast({
+      weekIndex: scheduleCalendarWeekIndex,
+      forcePaint: true,
+      fast: true,
+      forceInitial: true,
+    });
+  }
+
   async function hydrateScheduleSyncV2FromCloud(opts) {
     opts = opts || {};
     var authority = !!opts.cloudAuthorityReplace || !!scheduleDocumentNeedsCloudSoT;
@@ -12048,9 +12393,15 @@
         return;
       }
       /*
-       * Fast path: slots + visible week only. Local UI already painted; only update
-       * if cloud coverage is rich enough (see cloudWeekReplaceIsSafe).
+       * Fast path: slots + visible week only. Row order rides along so the first
+       * paint matches the shared ↑↓ order instead of a stale cache on this computer.
        */
+      var orderFetchStartedAt = Date.now();
+      var orderMetaP = fetchScheduleRowOrderMetaFromCloud();
+      void orderMetaP.then(function (orderRes) {
+        if (!applyCloudScheduleRowOrder(orderRes, { fetchedAt: orderFetchStartedAt })) return;
+        repaintScheduleAfterCloudRowOrder();
+      });
       var pair = await Promise.all([
         v2.fetchSlots(window.gmSupabase, cid),
         v2.fetchCellsRange(window.gmSupabase, cid, weekFrom, weekTo, {
@@ -12156,6 +12507,19 @@
         clearPhantomRowOwnersForEmptySlots(wi, currentRestaurantId);
       } catch (_hydTrim2) {
         /* ignore */
+      }
+      try {
+        var orderNow = await Promise.race([
+          orderMetaP,
+          new Promise(function (resolve) {
+            setTimeout(function () {
+              resolve(null);
+            }, 450);
+          }),
+        ]);
+        if (orderNow) applyCloudScheduleRowOrder(orderNow, { fetchedAt: orderFetchStartedAt });
+      } catch (_ordBoot) {
+        /* Cells still paint; a late order repaints once. */
       }
       if (currentScreen === 1) {
         ensureVisibleWeekPaintedFromCells(wi, timedForPaint);
@@ -15325,6 +15689,11 @@
       /* ignore */
     }
     persistTeamStateDirtyFlags();
+    try {
+      await flushSlotOrderMetaPushNow();
+    } catch (_slotFlush) {
+      /* Refresh still loads cells if the row-order patch fails. */
+    }
     /*
      * Fast Refresh: paint the on-screen week as soon as its cells + ↑↓ order arrive.
      * Other weeks + tip/VL hydrate in the background (used to block on all 15 weeks).
@@ -15332,43 +15701,6 @@
     var prevCached = teamStateCachedUpdatedAt;
     teamStateCachedUpdatedAt = null;
     var refreshWi = scheduleCalendarWeekIndex;
-
-    async function fetchScheduleRowOrderMetaFromCloud() {
-      if (!window.gmSupabase) return { ok: false };
-      try {
-        /*
-         * Skip draft_schedule.byWeek (huge times blob — cells are SoT). Only ↑↓ /
-         * group-order / sales meta is needed so Refresh is not blocked on megabytes.
-         */
-        var slim = await window.gmSupabase
-          .from('team_state')
-          .select(
-            'updated_at,slotOrderByWeek:draft_schedule->slotOrderByWeek,groupOrderPotentialByWeek:draft_schedule->groupOrderPotentialByWeek,scheduleNetSalesByWeek:draft_schedule->scheduleNetSalesByWeek,windowMondayIso:draft_schedule->windowMondayIso,slotOrderByRestaurant:draft_schedule->slotOrderByRestaurant'
-          )
-          .eq('id', gmCalloutTeamStateRowId())
-          .maybeSingle();
-        if (!slim.error && slim.data) {
-          return {
-            ok: true,
-            draft: {
-              slotOrderByWeek: slim.data.slotOrderByWeek,
-              groupOrderPotentialByWeek: slim.data.groupOrderPotentialByWeek,
-              scheduleNetSalesByWeek: slim.data.scheduleNetSalesByWeek,
-              windowMondayIso: slim.data.windowMondayIso,
-              slotOrderByRestaurant: slim.data.slotOrderByRestaurant,
-            },
-          };
-        }
-        var res = await selectTeamStateRow(window.gmSupabase, 'draft_schedule,updated_at');
-        if (res.error) {
-          console.warn('gm-callout: schedule row-order refresh', res.error);
-          return { ok: false, error: res.error };
-        }
-        return { ok: true, draft: res.data && res.data.draft_schedule };
-      } catch (_ord) {
-        return { ok: false };
-      }
-    }
 
     void refreshTeamStateTipPayrollFromRemote({ force: true });
     var visCellsP = pollVisibleScheduleCellsFromCloud({
@@ -15415,10 +15747,10 @@
       if (!(orderRes && orderRes.ok)) return false;
       try {
         return !!applyDraftRowOrderMetaFromRemote(orderRes.draft, {
-          takeRemoteOrder: true,
-          forceAccept: true,
+          takeRemoteOrder: !slotOrderHasUnpushedLocalEdit(),
+          forceAccept: !slotOrderHasUnpushedLocalEdit(),
           replaceGroupSales: false,
-          force: true,
+          force: !slotOrderHasUnpushedLocalEdit(),
         });
       } catch (_ordApply) {
         return false;
@@ -17390,9 +17722,10 @@
     }
     var takeRemoteOrder = !!opts.forceAccept || !!opts.takeRemoteOrder;
     var replaceGroupSales = !!opts.replaceGroupSales;
-    var nextSlot = takeRemoteOrder
-      ? remoteSlotOnly
-      : mergeSlotOrderByWeekMapsStable(slotOrderByWeekStore, remoteSlotOnly, {});
+    var nextSlot =
+      takeRemoteOrder && Object.keys(remoteSlotOnly).length
+        ? remoteSlotOnly
+        : mergeSlotOrderByWeekMapsStable(slotOrderByWeekStore, remoteSlotOnly, {});
     /*
      * Soft peer applies used takeRemoteOrder for ↑↓ rows AND replaced group-order /
      * net-sales with a possibly empty blob — values vanished after typing.
@@ -17427,6 +17760,9 @@
       JSON.stringify(ongiFlagsByWeekStore) !== JSON.stringify(nextOngi);
     if (!changed) return false;
     slotOrderByWeekStore = nextSlot;
+    if (takeRemoteOrder && !slotOrderHasUnpushedLocalEdit()) {
+      rememberConfirmedSlotOrder(nextSlot);
+    }
     groupOrderPotentialByWeekStore = nextGroup;
     scheduleNetSalesByWeekStore = nextSales;
     ongiFlagsByWeekStore = nextOngi;
@@ -17749,8 +18085,9 @@
       if (
         applyDraftRowOrderMetaFromRemote(row.draft_schedule, {
           takeRemoteOrder:
-            !!forceAccept ||
+            (!slotOrderHasUnpushedLocalEdit() && !!forceAccept) ||
             (!hasInteractiveScheduleEditsThisSession() &&
+              !slotOrderHasUnpushedLocalEdit() &&
               remoteTeamStateIsStrictlyNewer(row)),
           forceAccept: forceAccept,
           replaceGroupSales: false,
@@ -20385,6 +20722,7 @@
 
   function saveEmployees(opts) {
     opts = opts || {};
+    bumpEmployeesRemoteSnapshotGen();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
     } catch (err) {
@@ -20404,6 +20742,9 @@
   }
 
   let employees = loadEmployees();
+  employees.forEach(function (emp) {
+    overlayPendingSingleStorePayroll(emp);
+  });
 
   const empLeaveBalanceMount = document.getElementById('empLeaveBalanceMount');
 
@@ -24752,10 +25093,11 @@
     }
     if (!emp.meta || typeof emp.meta !== 'object') emp.meta = {};
     emp.meta.singleStorePayroll = next;
+    rememberSingleStorePayrollPending(emp.id, next);
     saveEmployees({ singleEmployee: emp });
     employeeListPhotoStableUntil = Date.now() + 4000;
-    if (window.gmCalloutTimecards && typeof window.gmCalloutTimecards.onScheduleChanged === 'function') {
-      window.gmCalloutTimecards.onScheduleChanged();
+    if (typeof notifyTimecardsEmployeesChanged === 'function') {
+      notifyTimecardsEmployeesChanged();
     }
     if (opts.skipListRender) return true;
     if (currentScreen === 5) patchEmployeeSingleStorePayrollToggle(emp);
@@ -28896,6 +29238,144 @@
     }
   }
 
+  var GM_VIEW_STATE_KEY = 'gm-callout-view-v1';
+  var gmViewRestoreToken = 0;
+  var gmViewRestoreActive = false;
+  window.gmCalloutViewCaptureEnabled = false;
+
+  function gmCalloutReadViewState() {
+    try {
+      var raw = sessionStorage.getItem(GM_VIEW_STATE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_viewRead) {
+      return null;
+    }
+  }
+
+  function gmCalloutWriteViewState(patch) {
+    var prev = gmCalloutReadViewState() || {};
+    var next = {
+      screen: patch.screen != null ? patch.screen : prev.screen,
+      empNav: patch.empNav != null ? patch.empNav : prev.empNav,
+      scrolls: patch.scrolls || prev.scrolls || {},
+    };
+    try {
+      sessionStorage.setItem(GM_VIEW_STATE_KEY, JSON.stringify(next));
+    } catch (_viewWrite) {
+      /* ignore */
+    }
+  }
+
+  function gmCalloutNavScreenForRestore(num) {
+    var n = parseInt(num, 10);
+    if (n === 6) return 5;
+    if (n === 11 || n === 12) return 10;
+    if (n === 2 || n === 3 || n === 4 || n === 7) return 1;
+    if (n === 14 && gmCalloutSessionIsAdmin) return 1;
+    if (n === 1 || n === 5 || n === 8 || n === 9 || n === 10 || n === 13 || n === 14) return n;
+    return 1;
+  }
+
+  function gmCalloutViewScrollEl() {
+    var root = document.documentElement;
+    if (root.classList.contains('employee-app')) {
+      var scheduleWrap = document.querySelector('#empScreenSchedule:not([hidden]) .emp-schedule-wrap');
+      if (scheduleWrap) return scheduleWrap;
+      return document.querySelector('.main.emp-main > .emp-screen:not([hidden])');
+    }
+    return document.querySelector('.main > .screen.active');
+  }
+
+  function gmCalloutViewScrollKey() {
+    if (document.documentElement.classList.contains('employee-app')) {
+      var activeNav = document.querySelector('[data-emp-nav].active');
+      var key = activeNav ? activeNav.getAttribute('data-emp-nav') : 'home';
+      return 'e:' + (key || 'home');
+    }
+    return 'm:' + String(currentScreen || 1);
+  }
+
+  function gmCalloutCaptureViewScroll() {
+    if (window.__GM_SIGN_OUT_CLICKED__ || gmViewRestoreActive) return;
+    var el = gmCalloutViewScrollEl();
+    var key = gmCalloutViewScrollKey();
+    var prev = gmCalloutReadViewState() || {};
+    var scrolls = prev.scrolls || {};
+    scrolls[key] = {
+      top: el ? el.scrollTop || 0 : 0,
+      left: el ? el.scrollLeft || 0 : 0,
+      winX: typeof window.scrollX === 'number' ? window.scrollX : window.pageXOffset || 0,
+      winY: typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset || 0,
+    };
+    var patch = { scrolls: scrolls };
+    if (document.documentElement.classList.contains('employee-app')) {
+      var activeNav = document.querySelector('[data-emp-nav].active');
+      patch.empNav = activeNav ? activeNav.getAttribute('data-emp-nav') : 'home';
+    } else {
+      patch.screen = currentScreen;
+    }
+    gmCalloutWriteViewState(patch);
+  }
+
+  function gmCalloutRememberManagerScreen(num) {
+    gmCalloutWriteViewState({ screen: num });
+  }
+
+  function gmCalloutRememberEmpNav(key) {
+    gmCalloutWriteViewState({ empNav: key || 'home' });
+  }
+
+  function gmCalloutCancelViewScrollRestore() {
+    gmViewRestoreToken += 1;
+    gmViewRestoreActive = false;
+  }
+
+  function gmCalloutRestoreSavedScroll() {
+    var state = gmCalloutReadViewState();
+    if (!state || !state.scrolls) return;
+    var key = gmCalloutViewScrollKey();
+    var saved = state.scrolls[key];
+    if (!saved) return;
+    var token = ++gmViewRestoreToken;
+    gmViewRestoreActive = true;
+    var delays = [0, 40, 120, 280, 600, 1200, 2200, 4000];
+    function apply(attempt) {
+      if (token !== gmViewRestoreToken) return;
+      var el = gmCalloutViewScrollEl();
+      if (el) {
+        if (saved.left) el.scrollLeft = saved.left;
+        if (saved.top) el.scrollTop = saved.top;
+      }
+      if ((saved.winX || saved.winY) && typeof window.scrollTo === 'function') {
+        window.scrollTo(saved.winX || 0, saved.winY || 0);
+      }
+      var next = attempt + 1;
+      var tallEnough = true;
+      if (el && saved.top > 0) {
+        tallEnough = el.scrollHeight - el.clientHeight + 2 >= saved.top;
+      }
+      if (tallEnough && attempt >= 2) {
+        gmViewRestoreActive = false;
+        return;
+      }
+      if (attempt + 1 >= delays.length) {
+        gmViewRestoreActive = false;
+        return;
+      }
+      setTimeout(function () {
+        apply(next);
+      }, delays[next] - delays[attempt]);
+    }
+    apply(0);
+  }
+
+  window.gmCalloutReadViewState = gmCalloutReadViewState;
+  window.gmCalloutCaptureViewScroll = gmCalloutCaptureViewScroll;
+  window.gmCalloutRememberEmpNav = gmCalloutRememberEmpNav;
+  window.gmCalloutRestoreSavedScroll = gmCalloutRestoreSavedScroll;
+
   function showScreen(num) {
     if (typeof gmCalloutIsTimeclockKiosk === 'function' && gmCalloutIsTimeclockKiosk()) {
       if (typeof gmCalloutPinTimeclockShell === 'function') gmCalloutPinTimeclockShell();
@@ -28917,7 +29397,11 @@
       closeScheduleAddLocationModal();
     }
     var prevScreen = currentScreen;
+    if (window.gmCalloutViewCaptureEnabled && prevScreen !== num) {
+      gmCalloutCaptureViewScroll();
+    }
     currentScreen = num;
+    gmCalloutRememberManagerScreen(num);
     document.querySelectorAll('.screen').forEach(function (s) {
       s.classList.toggle('active', parseInt(s.dataset.screen, 10) === num);
     });
@@ -37977,7 +38461,6 @@
   var schedulePublishNotifyBtn = document.getElementById('schedulePublishNotifyBtn');
   if (schedulePublishNotifyBtn) {
     schedulePublishNotifyBtn.addEventListener('click', function () {
-      if (isScheduleWeekIndexPast(scheduleCalendarWeekIndex)) return;
       if (!managerCanEditCurrentRestaurant()) {
         showScheduleNotice('You can only publish your own store’s schedule.', false);
         return;
@@ -38093,8 +38576,9 @@
     schedulePublishNotifyModal.querySelectorAll('[data-publish-audience]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var audience = btn.getAttribute('data-publish-audience') === 'admins' ? 'admins' : 'employees';
+        var publishWi = schedulePublishTargetWeekIndex;
         closeSchedulePublishNotifyModal();
-        void publishSelectedWeekScheduleAndNotify({ audience: audience });
+        void publishSelectedWeekScheduleAndNotify({ audience: audience, weekIndex: publishWi });
       });
     });
   }
@@ -39108,6 +39592,7 @@
         if (rec.meta.primaryRestaurantId) delete rec.meta.primaryRestaurantId;
       }
       rec.meta.singleStorePayroll = !!(empSingleStorePayroll && empSingleStorePayroll.checked);
+      rememberSingleStorePayrollPending(rec.id, rec.meta.singleStorePayroll);
       if (empEmergencyContact) {
         var emergVal = String(empEmergencyContact.value || '').trim();
         if (emergVal) rec.meta.emergencyContact = emergVal;
@@ -40313,7 +40798,11 @@
       return false;
     }
     if (gmCalloutIsIntentionalSignOut()) {
-      return false;
+      if (!window.__GM_SIGN_OUT_CLICKED__ && gmCalloutHasLiveSupabaseAuthToken()) {
+        gmCalloutClearIntentionalSignOut();
+      } else {
+        return false;
+      }
     }
     if (!GM_SUPABASE_DATA || !window.gmSupabase) {
       return false;
@@ -40515,6 +41004,7 @@
      */
     var scheduleHydrateCols =
       TEAM_STATE_SCHEDULE_COLUMNS + ',current_restaurant_id,callout_history';
+    var rosterGenAtFetch = employeesRemoteSnapshotGen;
     try {
       var batch = await Promise.all([
         employeesSelectWithEmailFallback(sb),
@@ -40597,8 +41087,19 @@
       /* ignore */
     }
 
-    if (empRes.data && empRes.data.length && !gmEmployeeProfileSaveInFlight) {
+    if (
+      empRes.data &&
+      empRes.data.length &&
+      !gmEmployeeProfileSaveInFlight &&
+      rosterGenAtFetch === employeesRemoteSnapshotGen
+    ) {
       applyEmployeesFromRemoteDbRows(empRes.data, { force: true });
+    } else if (
+      rosterGenAtFetch !== employeesRemoteSnapshotGen ||
+      gmEmployeeProfileSaveInFlight
+    ) {
+      employeesRemoteRefreshPending = true;
+      queueEmployeesRemoteRefresh();
     } else if (
       !empRes.error &&
       Array.isArray(empRes.data) &&
@@ -40900,10 +41401,16 @@
     }
     renderEmployeeList();
     if (!gmManagerShellBootstrapped) {
-      if (opts.navigateToSchedule || currentScreen === 1 || gmCalloutSessionIsAdmin) {
+      if (opts.navigateToSchedule) {
         showScreen(1);
+      } else {
+        var savedView = gmCalloutReadViewState();
+        var savedScreen = gmCalloutNavScreenForRestore(savedView && savedView.screen);
+        showScreen(savedScreen);
+        gmCalloutRestoreSavedScroll();
       }
       gmManagerShellBootstrapped = true;
+      window.gmCalloutViewCaptureEnabled = true;
     } else if (opts.navigateToSchedule) {
       showScreen(1);
     }
@@ -41048,7 +41555,35 @@
   var gmCalloutSignedOutRecovering = false;
   var gmCalloutProactiveRefreshTimer = null;
 
+  function gmCalloutReadStoredSupabaseAuth() {
+    function scan(store) {
+      try {
+        for (var i = 0; i < store.length; i += 1) {
+          var k = store.key(i);
+          if (!k || k.indexOf('sb-') !== 0 || k.indexOf('-auth-token') === -1) continue;
+          var raw = store.getItem(k);
+          if (!raw) continue;
+          var parsed = JSON.parse(raw);
+          if (parsed && parsed.access_token && parsed.refresh_token) return parsed;
+        }
+      } catch (_scan) {
+        /* ignore */
+      }
+      return null;
+    }
+    try {
+      return scan(localStorage) || scan(sessionStorage);
+    } catch (_both) {
+      return null;
+    }
+  }
+
+  function gmCalloutHasLiveSupabaseAuthToken() {
+    return !!gmCalloutReadStoredSupabaseAuth();
+  }
+
   function gmCalloutIsIntentionalSignOut() {
+    if (window.__GM_SIGN_OUT_CLICKED__) return true;
     if (window.__GM_INTENTIONAL_SIGN_OUT__) return true;
     try {
       if (sessionStorage.getItem(GM_INTENTIONAL_SIGN_OUT_KEY) === '1') return true;
@@ -41072,6 +41607,7 @@
 
   function gmCalloutClearIntentionalSignOut() {
     window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+    window.__GM_SIGN_OUT_CLICKED__ = false;
     try {
       sessionStorage.removeItem(GM_INTENTIONAL_SIGN_OUT_KEY);
       localStorage.removeItem(GM_INTENTIONAL_SIGN_OUT_KEY);
@@ -41090,22 +41626,26 @@
       return;
     }
     if (gmCalloutIsIntentionalSignOut() && !window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
-      gmCalloutMarkIntentionalSignOut();
-      gmCalloutClearAuthSessionBackup();
-      gmCalloutStopSessionKeepAlive();
-      document.documentElement.classList.remove(
-        'authed',
-        'manager-app',
-        'employee-app',
-        'timeclock-app'
-      );
-      gmCalloutSetLoginGateOpen(true);
-      if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
-        window.gmCalloutEnsureLoginPanelVisible();
-      } else if (typeof window.gmCalloutShowLandingPanel === 'function') {
-        window.gmCalloutShowLandingPanel();
+      if (!window.__GM_SIGN_OUT_CLICKED__ && gmCalloutHasLiveSupabaseAuthToken()) {
+        gmCalloutClearIntentionalSignOut();
+      } else {
+        gmCalloutMarkIntentionalSignOut();
+        gmCalloutClearAuthSessionBackup();
+        gmCalloutStopSessionKeepAlive();
+        document.documentElement.classList.remove(
+          'authed',
+          'manager-app',
+          'employee-app',
+          'timeclock-app'
+        );
+        gmCalloutSetLoginGateOpen(true);
+        if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+          window.gmCalloutEnsureLoginPanelVisible();
+        } else if (typeof window.gmCalloutShowLandingPanel === 'function') {
+          window.gmCalloutShowLandingPanel();
+        }
+        return;
       }
-      return;
     }
     var hadStoredSessionHint = false;
     try {
@@ -41368,6 +41908,27 @@
       return null;
     }
     if (!bak || !bak.access_token || !bak.refresh_token) return null;
+    /*
+     * Never replay an older refresh token over the one Supabase already stored.
+     * Refresh tokens are single-use; setSession(backup) after a rotation revokes
+     * the session and the next page load asks for a password.
+     */
+    var liveTok = gmCalloutReadStoredSupabaseAuth();
+    if (liveTok && liveTok.refresh_token && liveTok.refresh_token !== bak.refresh_token) {
+      try {
+        var liveSet = await window.gmSupabase.auth.setSession({
+          access_token: liveTok.access_token,
+          refresh_token: liveTok.refresh_token,
+        });
+        if (liveSet.data && liveSet.data.session) {
+          gmCalloutBackupAuthSession(liveSet.data.session);
+          return liveSet.data.session;
+        }
+      } catch (_liveSet) {
+        /* ignore */
+      }
+      return null;
+    }
     /* Ignore backups older than 14 days. */
     if (bak.saved_at && Date.now() - Number(bak.saved_at) > 14 * 24 * 60 * 60 * 1000) {
       gmCalloutClearAuthSessionBackup();
@@ -41479,7 +42040,8 @@
       // Any re-entrant auth/realtime call inside this callback can hang forever.
       if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) {
         setTimeout(function () {
-          if (gmCalloutIsIntentionalSignOut()) return;
+          if (window.__GM_SIGN_OUT_CLICKED__) return;
+          if (gmCalloutIsIntentionalSignOut()) gmCalloutClearIntentionalSignOut();
           gmCalloutBackupAuthSession(session);
           gmCalloutStopSessionKeepAlive();
         }, 0);
@@ -41695,10 +42257,7 @@
         if (window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
           gmCalloutClearIntentionalSignOut();
         }
-        if (
-          gmCalloutIsIntentionalSignOut() &&
-          !window.__GM_PORTAL_LOGIN_IN_FLIGHT__
-        ) {
+        if (window.__GM_SIGN_OUT_CLICKED__ && !window.__GM_PORTAL_LOGIN_IN_FLIGHT__) {
           /*
            * User clicked Sign Out — never restore shell from a leftover token /
            * backup setSession. Force local sign-out again.
@@ -41847,17 +42406,36 @@
       }
     });
     window.addEventListener('pagehide', function () {
+      if (window.gmCalloutViewCaptureEnabled) gmCalloutCaptureViewScroll();
       persistTeamStateDirtyFlags();
       persistSchedulePushGuard();
       flushTipPayrollPushToSupabase();
+      void flushSlotOrderMetaPushNow();
       void flushTeamStateSyncNow();
     });
     window.addEventListener('beforeunload', function () {
+      if (window.gmCalloutViewCaptureEnabled) gmCalloutCaptureViewScroll();
       persistTeamStateDirtyFlags();
       persistSchedulePushGuard();
       flushTipPayrollPushToSupabase();
+      void flushSlotOrderMetaPushNow();
       void flushTeamStateSyncNow();
     });
+    var gmViewScrollTimer = null;
+    document.addEventListener(
+      'scroll',
+      function () {
+        if (!window.gmCalloutViewCaptureEnabled) return;
+        if (gmViewScrollTimer) return;
+        gmViewScrollTimer = setTimeout(function () {
+          gmViewScrollTimer = null;
+          gmCalloutCaptureViewScroll();
+        }, 150);
+      },
+      true
+    );
+    document.addEventListener('wheel', gmCalloutCancelViewScrollRestore, { capture: true, passive: true });
+    document.addEventListener('touchmove', gmCalloutCancelViewScrollRestore, { capture: true, passive: true });
   }
 
   window.gmCalloutOnLocaleChange = function (_locale) {

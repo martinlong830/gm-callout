@@ -71,10 +71,23 @@ export function employeeToDbRow(
   return row;
 }
 
+let employeeSaveGeneration = 0;
+
+/** A roster download that started before this must not replace the save. */
+export function noteEmployeeSaveStarted(): number {
+  employeeSaveGeneration += 1;
+  return employeeSaveGeneration;
+}
+
+export function employeeSaveGenerationNow(): number {
+  return employeeSaveGeneration;
+}
+
 export async function saveEmployeeRow(
   sb: SupabaseClient,
   emp: EmployeeRow
 ): Promise<{ ok: true } | { ok: false; message: string }> {
+  noteEmployeeSaveStarted();
   const row = employeeToDbRow(emp, emp.companyId || undefined);
   let { error } = await sb.from('employees').upsert(row, { onConflict: 'id' });
   if (error && /email/i.test(error.message || '') && 'email' in row) {

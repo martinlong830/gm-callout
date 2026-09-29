@@ -493,6 +493,11 @@ const EN: Dict = {
   'schedule.personHeader': 'PERSON',
   'schedule.rowAssignee': 'Row assignee',
   'schedule.pastWeek': 'Past week',
+  'schedule.publishPastWeek': 'Publish past week',
+  'schedule.publishPastWeekHint':
+    'This week has already passed. Publish it if employees should still see this copy.',
+  'schedule.publishPastWeekConfirm':
+    'Publish the past week {range} and choose who to notify?',
   'schedule.viewOnly': 'View only',
   'schedule.viewOnlyOtherStore': 'Other store — view only',
   'schedule.viewOnlyOtherStoreHint':
@@ -1379,6 +1384,11 @@ const ES: Dict = {
   'schedule.personHeader': 'PERSONA',
   'schedule.rowAssignee': 'Asignado a la fila',
   'schedule.pastWeek': 'Semana pasada',
+  'schedule.publishPastWeek': 'Publicar semana pasada',
+  'schedule.publishPastWeekHint':
+    'Esta semana ya pasó. Publícala si los empleados todavía deben ver esta copia.',
+  'schedule.publishPastWeekConfirm':
+    '¿Publicar la semana pasada {range} y elegir a quién avisar?',
   'schedule.viewOnly': 'Solo lectura',
   'schedule.viewOnlyOtherStore': 'Otra tienda — solo lectura',
   'schedule.viewOnlyOtherStoreHint':

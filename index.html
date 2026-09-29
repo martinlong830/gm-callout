@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shiflow</title>
-  <link rel="stylesheet" href="styles.css?v=perf-368" />
+  <link rel="stylesheet" href="styles.css?v=perf-373" />
   <!-- Prefetch auth client first. Do NOT prefetch 1.4MB app.js while logged out — that
        starved iPhone Chrome during Red Poke sign-in (resolve + Auth). -->
   <link rel="prefetch" href="/vendor/supabase-js.js?v=perf-2" as="script" />
@@ -18,7 +18,7 @@
     })();
   </script>
   <script>
-    window.__GM_ASSET_V = 'perf-368';
+    window.__GM_ASSET_V = 'perf-378';
     window.gmLoadScript = function (src, opts) {
       opts = opts || {};
       var bare = String(src || '').split('?')[0];
@@ -116,22 +116,46 @@
     window.gmPrefetchManagerAppBundle = function () {
       void window.gmEnsureManagerAppLoaded();
     };
-    function gmLikelyHasStoredSession() {
-      try {
-        if (
-          sessionStorage.getItem('gm-callout-intentional-sign-out') === '1' ||
-          localStorage.getItem('gm-callout-intentional-sign-out') === '1'
-        ) {
-          return false;
+    function gmBootHasLiveSupabaseToken() {
+      function scan(store) {
+        try {
+          for (var i = 0; i < store.length; i += 1) {
+            var k = store.key(i);
+            if (!k || k.indexOf('sb-') !== 0 || k.indexOf('-auth-token') === -1) continue;
+            var raw = store.getItem(k) || '';
+            if (raw.indexOf('refresh_token') !== -1 && raw.indexOf('access_token') !== -1) return true;
+          }
+        } catch (_scan) {
+          /* ignore */
         }
-      } catch (_iso) {
-        /* ignore */
+        return false;
       }
+      try {
+        return scan(localStorage) || scan(sessionStorage);
+      } catch (_both) {
+        return false;
+      }
+    }
+    function gmLikelyHasStoredSession() {
       try {
         if (/[?&]signedout=/.test(String(location.search || ''))) return false;
       } catch (_q) {
         /* ignore */
       }
+      /*
+       * A leftover sign-out flag must not hide a session that is still stored.
+       * Refresh was deleting that session and dropping Mark Ong (and anyone else)
+       * back on the sign-in card. Only an explicit ?signedout= load ignores it.
+       */
+      var signOutFlag = false;
+      try {
+        signOutFlag =
+          sessionStorage.getItem('gm-callout-intentional-sign-out') === '1' ||
+          localStorage.getItem('gm-callout-intentional-sign-out') === '1';
+      } catch (_iso) {
+        signOutFlag = false;
+      }
+      if (signOutFlag && !gmBootHasLiveSupabaseToken()) return false;
       try {
         if (sessionStorage.getItem('gm-callout-session')) return true;
       } catch (_ss) {
@@ -225,6 +249,21 @@
         flagged = false;
       }
       if (!fromQuery && !flagged) return;
+      /*
+       * Refresh keeps a stored Supabase session. The sign-out flag used to delete
+       * sb-*-auth-token on every load, so the next paint always asked for a password.
+       * A real Sign out already removed that token; only then do we stay signed out.
+       */
+      if (!fromQuery && flagged && gmBootHasLiveSupabaseToken()) {
+        window.__GM_INTENTIONAL_SIGN_OUT__ = false;
+        try {
+          sessionStorage.removeItem(INTENT_KEY);
+          localStorage.removeItem(INTENT_KEY);
+        } catch (_keep) {
+          /* ignore */
+        }
+        return;
+      }
       window.__GM_INTENTIONAL_SIGN_OUT__ = true;
       try {
         sessionStorage.setItem(INTENT_KEY, '1');
@@ -234,6 +273,7 @@
       }
       try {
         sessionStorage.removeItem('gm-callout-session');
+        sessionStorage.removeItem('gm-callout-view-v1');
         sessionStorage.removeItem('gm-callout-employee-display-name');
         sessionStorage.removeItem('gm-callout-auth-session-backup');
         localStorage.removeItem('gm-callout-auth-session-backup');
@@ -241,10 +281,10 @@
       } catch (_clr) {
         /* ignore */
       }
-      try {
+      function stripAuthKeys(store) {
         var toRemove = [];
-        for (var i = 0; i < localStorage.length; i += 1) {
-          var k = localStorage.key(i);
+        for (var i = 0; i < store.length; i += 1) {
+          var k = store.key(i);
           if (!k) continue;
           if (
             (k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) ||
@@ -254,9 +294,17 @@
           }
         }
         toRemove.forEach(function (key) {
-          localStorage.removeItem(key);
+          store.removeItem(key);
         });
+      }
+      try {
+        stripAuthKeys(localStorage);
       } catch (_sb) {
+        /* ignore */
+      }
+      try {
+        stripAuthKeys(sessionStorage);
+      } catch (_sbSs) {
         /* ignore */
       }
       try {
@@ -2872,7 +2920,7 @@
       }
     })();
   </script>
-  <script src="locales/en.js?v=perf-334"></script>
+  <script src="locales/en.js?v=perf-377"></script>
   <script src="i18n.js?v=perf-3"></script>
   <script>
     /* Load Spanish dictionary only when needed (saves ~28KB on English sessions). */
@@ -2884,7 +2932,7 @@
         return;
       }
       var s = document.createElement('script');
-      s.src = 'locales/es.js?v=perf-349';
+      s.src = 'locales/es.js?v=perf-377';
       document.head.appendChild(s);
     })();
   </script>
@@ -3502,6 +3550,7 @@
         }
         /* Successful login cancels intentional sign-out hold. */
         try {
+          window.__GM_SIGN_OUT_CLICKED__ = false;
           window.__GM_INTENTIONAL_SIGN_OUT__ = false;
           sessionStorage.removeItem('gm-callout-intentional-sign-out');
           localStorage.removeItem('gm-callout-intentional-sign-out');
@@ -4519,6 +4568,7 @@
                 await whenPortalAuthReady();
                 /* Clear intentional sign-out before auth so SIGNED_IN is not rejected. */
                 try {
+                  window.__GM_SIGN_OUT_CLICKED__ = false;
                   window.__GM_INTENTIONAL_SIGN_OUT__ = false;
                   sessionStorage.removeItem('gm-callout-intentional-sign-out');
                   localStorage.removeItem('gm-callout-intentional-sign-out');
@@ -4871,10 +4921,10 @@
        * Clear portal + auth storage synchronously and show the login card immediately.
        */
       function clearSupabaseAuthStorageSync() {
-        try {
+        function strip(store) {
           var toRemove = [];
-          for (var i = 0; i < localStorage.length; i += 1) {
-            var k = localStorage.key(i);
+          for (var i = 0; i < store.length; i += 1) {
+            var k = store.key(i);
             if (!k) continue;
             if (
               (k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) ||
@@ -4884,14 +4934,23 @@
             }
           }
           toRemove.forEach(function (key) {
-            localStorage.removeItem(key);
+            store.removeItem(key);
           });
+        }
+        try {
+          strip(localStorage);
         } catch (_ls) {
+          /* ignore */
+        }
+        try {
+          strip(sessionStorage);
+        } catch (_ssAuth) {
           /* ignore */
         }
       }
 
       function hardSignOutNow() {
+        window.__GM_SIGN_OUT_CLICKED__ = true;
         window.__GM_INTENTIONAL_SIGN_OUT__ = true;
         try {
           sessionStorage.setItem('gm-callout-intentional-sign-out', '1');
@@ -4912,6 +4971,7 @@
         /* Drop portal role immediately so provisional shell cannot re-paint authed. */
         try {
           sessionStorage.removeItem(SESSION_KEY);
+          sessionStorage.removeItem('gm-callout-view-v1');
           sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
           sessionStorage.removeItem('gm-callout-timeclock-kiosk');
         } catch (_ssEarly) {
@@ -4948,6 +5008,7 @@
           try {
             sessionStorage.removeItem(SESSION_KEY);
             sessionStorage.removeItem(SESSION_EMPLOYEE_DISPLAY_NAME_KEY);
+            sessionStorage.removeItem('gm-callout-view-v1');
             sessionStorage.removeItem('gm-callout-auth-session-backup');
             localStorage.removeItem('gm-callout-auth-session-backup');
             sessionStorage.removeItem('gm-callout-timeclock-kiosk');
@@ -5134,9 +5195,9 @@
     })();
   </script>
   <script defer src="/vendor/supabase-js.js?v=perf-2"></script>
-  <script defer src="gm-supabase-init.js?v=perf-3"></script>
+  <script defer src="gm-supabase-init.js?v=perf-372"></script>
   <script defer src="portal-auth-client.js?v=perf-349"></script>
-  <script defer src="login-timeclock.js?v=perf-349"></script>
+  <script defer src="login-timeclock.js?v=perf-372"></script>
   <script>
     window.__GM_SCHEDULE_SYNC_V2 = true;
     window.__GM_SCHEDULE_SYNC_V2_WRITE_ONLY = true;
