@@ -41865,7 +41865,37 @@
       /* ignore */
     }
     gmCalloutScheduleProactiveTokenRefresh(session);
+    window.__GM_LAST_PORTAL_SESSION__ = {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    };
   }
+
+  /**
+   * Kiosk PIN pad can stay up after the device session is gone. Staff then see
+   * "Not signed in" on every code. Show the time-clock device login instead.
+   */
+  function gmCalloutPromptTimeclockDeviceSignIn() {
+    if (gmCalloutIsIntentionalSignOut() || window.__GM_SIGN_OUT_CLICKED__) return;
+    var root = document.documentElement;
+    var tcApp = document.getElementById('appTimeclock');
+    if (tcApp) tcApp.hidden = true;
+    gmCalloutClearTimeclockKiosk();
+    root.classList.remove('authed', 'manager-app', 'employee-app', 'timeclock-app');
+    gmCalloutSetLoginGateOpen(true);
+    if (typeof window.gmCalloutShowTimeclockLoginPanel === 'function') {
+      window.gmCalloutShowTimeclockLoginPanel();
+    } else if (typeof window.gmCalloutEnsureLoginPanelVisible === 'function') {
+      window.gmCalloutEnsureLoginPanelVisible();
+    }
+    var err = document.getElementById('timeclockLoginError');
+    if (err) {
+      err.hidden = false;
+      err.textContent =
+        'Time clock signed out. Sign in with the device name and password, then staff can use their PIN.';
+    }
+  }
+  window.gmCalloutPromptTimeclockDeviceSignIn = gmCalloutPromptTimeclockDeviceSignIn;
 
   function gmCalloutClearAuthSessionBackup() {
     try {
@@ -42087,20 +42117,22 @@
             }
             if (liveKiosk && !gmCalloutIsIntentionalSignOut()) {
               gmCalloutPinTimeclockShell();
-              var keepTc = window.__GM_LAST_PORTAL_SESSION__;
-              if (
-                keepTc &&
-                keepTc.access_token &&
-                keepTc.refresh_token &&
-                window.gmSupabase &&
-                window.gmSupabase.auth &&
-                typeof window.gmSupabase.auth.setSession === 'function'
-              ) {
-                void window.gmSupabase.auth.setSession({
-                  access_token: keepTc.access_token,
-                  refresh_token: keepTc.refresh_token
+              /*
+               * Do not setSession() with the token from this morning's login.
+               * Refresh tokens are single-use; replaying the old one revokes the
+               * device and every later PIN returns "Not signed in".
+               */
+              void (async function () {
+                var restored = await gmCalloutAttemptSessionRecoverOnce();
+                if (restored || gmCalloutIsIntentionalSignOut()) return;
+                await new Promise(function (resolve) {
+                  setTimeout(resolve, 1200);
                 });
-              }
+                if (gmCalloutIsIntentionalSignOut()) return;
+                restored = await gmCalloutAttemptSessionRecoverOnce();
+                if (restored) return;
+                gmCalloutPromptTimeclockDeviceSignIn();
+              })();
               return;
             }
             var intentional = gmCalloutIsIntentionalSignOut();

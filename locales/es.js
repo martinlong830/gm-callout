@@ -706,6 +706,8 @@ window.GM_I18N_ES = {
   'timeclock.pinNotRecognized': 'PIN no reconocido. Pregunta a tu gerente.',
   'timeclock.enterFourDigit': 'Ingresa un PIN de 4 dígitos.',
   'timeclock.couldNotVerify': 'No se pudo verificar el PIN.',
+  'timeclock.deviceSignedOut':
+    'El reloj cerró sesión. Entra con el nombre y la contraseña del dispositivo y vuelve a poner el PIN.',
   'timeclock.checkingPin': 'Verificando PIN…',
   'timeclock.confirmClockIn': 'Confirma la entrada para comenzar tu turno.',
   'timeclock.chooseOutOrBreakEnd': 'Elige salida o terminar descanso.',

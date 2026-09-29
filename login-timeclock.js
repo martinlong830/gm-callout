@@ -50,6 +50,7 @@
       window.gmCalloutUpdateLoginBranding();
     }
   }
+  window.gmCalloutShowTimeclockLoginPanel = showTimeclockLoginPanel;
 
   function scheduleMatchApi() {
     return window.gmTimeclockScheduleMatch || null;

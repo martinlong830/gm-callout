@@ -703,6 +703,8 @@ window.GM_I18N_EN = {
   'timeclock.pinNotRecognized': 'PIN not recognized. Ask your manager.',
   'timeclock.enterFourDigit': 'Enter a 4-digit PIN.',
   'timeclock.couldNotVerify': 'Could not verify PIN.',
+  'timeclock.deviceSignedOut':
+    'Time clock signed out. Sign in with the device name and password, then enter the PIN again.',
   'timeclock.checkingPin': 'Checking PIN…',
   'timeclock.confirmClockIn': 'Confirm clock in to start your shift.',
   'timeclock.chooseOutOrBreakEnd': 'Choose clock out or end break.',

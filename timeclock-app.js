@@ -396,10 +396,50 @@
     resetToEnter();
   }
 
+  async function ensureKioskSession() {
+    if (typeof window.gmCalloutAttemptSessionRecoverOnce === 'function') {
+      try {
+        var recovered = await window.gmCalloutAttemptSessionRecoverOnce();
+        if (recovered && recovered.access_token) return true;
+      } catch (_rec) {
+        /* fall through */
+      }
+    }
+    var client = sb();
+    if (!client || !client.auth) return false;
+    try {
+      var sess = await client.auth.getSession();
+      return !!(sess.data && sess.data.session && sess.data.session.access_token);
+    } catch (_gs) {
+      return false;
+    }
+  }
+
+  function kioskSignedOutMessage() {
+    var msg = t('timeclock.deviceSignedOut');
+    if (!msg || msg === 'timeclock.deviceSignedOut') {
+      msg =
+        'Time clock signed out. Sign in with the device name and password, then enter the PIN again.';
+    }
+    return msg;
+  }
+
+  function promptKioskDeviceSignIn() {
+    setStatus(kioskSignedOutMessage(), 'err');
+    if (typeof window.gmCalloutPromptTimeclockDeviceSignIn === 'function') {
+      window.gmCalloutPromptTimeclockDeviceSignIn();
+    }
+  }
+
   async function lookupPin() {
     var client = sb();
     if (!client) {
       setStatus(t('timeclock.supabaseMissing'), 'err');
+      clearPinSoon(4000);
+      return;
+    }
+    if (!(await ensureKioskSession())) {
+      promptKioskDeviceSignIn();
       clearPinSoon(4000);
       return;
     }
@@ -408,6 +448,16 @@
     try {
       await ensureScheduleContext();
       var res = await rpcWithTimeout(client, 'timeclock_lookup_pin', { pin_input: pinBuffer });
+      if (res.error && /not signed in/i.test(res.error.message || '')) {
+        if (await ensureKioskSession()) {
+          res = await rpcWithTimeout(client, 'timeclock_lookup_pin', { pin_input: pinBuffer });
+        }
+      }
+      if (res.error && /not signed in/i.test(res.error.message || '')) {
+        promptKioskDeviceSignIn();
+        clearPinSoon(4000);
+        return;
+      }
       if (res.error) {
         setStatus(res.error.message || t('timeclock.couldNotVerify'), 'err');
         clearPinSoon(4000);
@@ -451,6 +501,10 @@
       setStatus(t('timeclock.supabaseMissing'), 'err');
       return;
     }
+    if (!(await ensureKioskSession())) {
+      promptKioskDeviceSignIn();
+      return;
+    }
     setBusy(true);
     if (actionBtnsEl) {
       actionBtnsEl.querySelectorAll('button').forEach(function (btn) {
@@ -489,6 +543,10 @@
         /timeclock_punch_with_action|schema cache|function/i.test(res.error.message || '')
       ) {
         res = await rpcWithTimeout(client, 'timeclock_punch', { pin_input: pinBuffer });
+      }
+      if (res.error && /not signed in/i.test(res.error.message || '')) {
+        promptKioskDeviceSignIn();
+        return;
       }
       if (res.error) {
         setStatus(res.error.message || 'Punch failed.', 'err');
