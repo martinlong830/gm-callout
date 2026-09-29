@@ -361,6 +361,9 @@ export function rosterAggregationLocationFilter(
   ) {
     return 'all';
   }
+  if (locationFilter !== 'all' && employeeHasSingleStorePayroll(emp)) {
+    return locationFilter;
+  }
   if (locationFilter !== 'all' && employeeHomeRestaurant(emp) === 'both') return 'all';
   return locationFilter;
 }

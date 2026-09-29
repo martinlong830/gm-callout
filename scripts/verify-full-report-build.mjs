@@ -1765,6 +1765,27 @@ await verifyPayslipPatchedExport();
   T.setEmployeeDayLeave('eboth', '2026-05-24', 8, 0);
   T.setEmployeeDayLeave('e-split', '2026-05-24', 8, 0);
   T.invalidateWeekExtrasSliceCache();
+  localStorage.setItem(
+    'gm-timecard-week-tip-pool-v1',
+    JSON.stringify({
+      '2026-05-18_2026-05-24|rp-8': {
+        cashTip: 1000,
+        squareTips: 0,
+        squarePickup: 0,
+        doordash: 0,
+        uber: 0,
+        manual: true,
+      },
+      '2026-05-18_2026-05-24|rp-9': {
+        cashTip: 1000,
+        squareTips: 0,
+        squarePickup: 0,
+        doordash: 0,
+        uber: 0,
+        manual: true,
+      },
+    })
+  );
 
   function payrollByEmp(loc) {
     T.setTimecardsLocationFilterForTest(loc);
@@ -1872,8 +1893,141 @@ await verifyPayslipPatchedExport();
     throw new Error('Labor Cost must match Payroll gross on the 8th sheet');
   }
 
-  T.setWeekEntriesForTest([]);
+  /* Single-store visitor: wages + the other store's tip share on the home paycheck.
+     The other store's Payroll tab lists them at $0 wage so that tip-point split is shown.
+     Other tabs omit them unless they are on that store's schedule. */
+  function payrollSheetPeople(loc) {
+    T.setTimecardsLocationFilterForTest(loc);
+    T.buildFullReportSheets({ forceFresh: true });
+    const sections = T.payrollSectionRows();
+    const people = {};
+    sections.foh.concat(sections.boh).forEach(function (row) {
+      if (!row || !row.emp || !row.emp.id || row.isOngiManagement) return;
+      people[row.emp.id] = { row: row, metrics: T.computePayrollRowMetrics(row) };
+    });
+    return people;
+  }
+  function assertClose(actual, expected, label) {
+    if (Math.abs((actual || 0) - expected) > 0.51) {
+      throw new Error(label + ' expected ' + expected + ', got ' + actual);
+    }
+  }
+  const ninthSheet = payrollSheetPeople('rp-9');
+  const eighthSheet = payrollSheetPeople('rp-8');
+  const ebothEmp = mockEmployees.find((e) => e.id === 'eboth');
+  const eboth8Emp = mockEmployees.find((e) => e.id === 'eboth8');
+  T.setTimecardsLocationFilterForTest('rp-8');
+  if (!T.employeeVisibleAtCurrentLocation(ebothEmp)) {
+    throw new Error('single-store 9th employee must stay on the 8th timecards page while working there');
+  }
   T.setTimecardsLocationFilterForTest('rp-9');
+  if (!T.employeeVisibleAtCurrentLocation(eboth8Emp)) {
+    throw new Error('single-store 8th employee must stay on the 9th timecards page while working there');
+  }
+
+  if (!ninthSheet.eboth || ninthSheet.eboth.row.isTipBorrowRow) {
+    throw new Error('9th Payroll must list single-store BOTH STORES as a paycheck row');
+  }
+  assertClose(ninthSheet.eboth.metrics.otherStoreTips, 400, '9th paycheck tips from 8th tip points');
+  if (!eighthSheet.eboth || !eighthSheet.eboth.row.isTipBorrowRow) {
+    throw new Error('8th Payroll must list BOTH STORES only as a tip-point row');
+  }
+  if (eighthSheet.eboth.metrics.rate != null || Math.abs(eighthSheet.eboth.metrics.regH) > 0.01) {
+    throw new Error('8th tip-point row must have no wage and no paid hours');
+  }
+  assertClose(eighthSheet.eboth.metrics.totalTipPoints, 64, '8th tip points for BOTH STORES');
+  if (Math.abs(eighthSheet.eboth.metrics.gross || 0) > 0.01) {
+    throw new Error('8th tip-point row gross must be 0, got ' + eighthSheet.eboth.metrics.gross);
+  }
+
+  if (!eighthSheet.eboth8 || eighthSheet.eboth8.row.isTipBorrowRow) {
+    throw new Error('8th Payroll must list single-store BOTH EIGHTH as a paycheck row');
+  }
+  assertClose(eighthSheet.eboth8.metrics.otherStoreTips, 300, '8th paycheck tips from 9th tip points');
+  if (!ninthSheet.eboth8 || !ninthSheet.eboth8.row.isTipBorrowRow) {
+    throw new Error('9th Payroll must list BOTH EIGHTH only as a tip-point row');
+  }
+  if (ninthSheet.eboth8.metrics.rate != null || Math.abs(ninthSheet.eboth8.metrics.gross || 0) > 0.01) {
+    throw new Error('9th tip-point row for BOTH EIGHTH must have no wage');
+  }
+  assertClose(ninthSheet.eboth8.metrics.totalTipPoints, 96, '9th tip points for BOTH EIGHTH');
+
+  function sheetsOmitPaycheckName(loc, person) {
+    T.setTimecardsLocationFilterForTest(loc);
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Information', 'Published schedule', 'Updated schedule'].forEach(
+      function (name) {
+        const text = worksheetText((sheets.find((s) => s.name === name) || {}).worksheet);
+        if (text.indexOf(person) >= 0) {
+          throw new Error(loc + ' ' + name + ' must not list ' + person);
+        }
+      }
+    );
+    const payrollText = worksheetText((sheets.find((s) => s.name === 'Payroll') || {}).worksheet);
+    if (payrollText.indexOf(person) < 0) {
+      throw new Error(loc + ' Payroll must list ' + person + ' for the tip-point split');
+    }
+  }
+  sheetsOmitPaycheckName('rp-8', 'BOTH STORES');
+  sheetsOmitPaycheckName('rp-9', 'BOTH EIGHTH');
+
+  deps.__scheduleSnapshotRows.push({
+    id: 'shift-borrow-both',
+    restaurantId: 'rp-8',
+    restaurantName: 'Red Poke 885 8th Ave',
+    day: 'Fri May 22',
+    trIdx: 4,
+    role: 'Bartender',
+    start: '11:00',
+    end: '19:00',
+    timeLabel: '11:00AM - 7:00PM',
+    redPokeBreak: '',
+    redPokeHours: '8',
+    workers: ['BOTH STORES'],
+  });
+  deps.__scheduleSnapshotRows.push({
+    id: 'shift-borrow-eighth',
+    restaurantId: 'rp-9',
+    restaurantName: 'Red Poke 598 9th Ave',
+    day: 'Mon May 18',
+    trIdx: 4,
+    role: 'Kitchen',
+    start: '11:00',
+    end: '19:00',
+    timeLabel: '11:00AM - 7:00PM',
+    redPokeBreak: '',
+    redPokeHours: '8',
+    workers: ['BOTH EIGHTH'],
+  });
+  T.invalidatePayWeekScheduleCache();
+  function scheduleLists(loc, person) {
+    T.setTimecardsLocationFilterForTest(loc);
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    ['Published schedule', 'Updated schedule'].forEach(function (name) {
+      const text = worksheetText((sheets.find((s) => s.name === name) || {}).worksheet);
+      if (text.indexOf(person) < 0) throw new Error(loc + ' ' + name + ' should list scheduled ' + person);
+    });
+    ['Labor Cost', 'CPA', 'Payslip', 'PTO', 'Employee Information'].forEach(function (name) {
+      const text = worksheetText((sheets.find((s) => s.name === name) || {}).worksheet);
+      if (text.indexOf(person) >= 0) {
+        throw new Error(loc + ' ' + name + ' must still omit ' + person + ' when they are only scheduled there');
+      }
+    });
+  }
+  scheduleLists('rp-8', 'BOTH STORES');
+  scheduleLists('rp-9', 'BOTH EIGHTH');
+  deps.__scheduleSnapshotRows.pop();
+  deps.__scheduleSnapshotRows.pop();
+  T.invalidatePayWeekScheduleCache();
+
+  T.setWeekEntriesForTest([]);
+  T.setTimecardsLocationFilterForTest('rp-8');
+  if (T.employeeVisibleAtCurrentLocation(ebothEmp)) {
+    throw new Error('single-store 9th employee must hide from 8th timecards when they did not work there');
+  }
+  T.setTimecardsLocationFilterForTest('rp-9');
+  localStorage.setItem('gm-timecard-week-tip-pool-v1', '{}');
   console.log('OK: full-report payroll hours/pay follow single-store vs working-location punches');
+  console.log('OK: single-store cross-store tips stay on the home paycheck; other store payroll shows tip points only');
 }
 

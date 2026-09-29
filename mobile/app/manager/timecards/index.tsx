@@ -34,7 +34,10 @@ import {
   TIMECARDS_LOCATION_OPTIONS,
   type SelectedRestaurant,
 } from '../../../lib/timecards/locationFilter';
-import { rosterRowVisibleAtLocation } from '../../../lib/timecards/restaurantAttribution';
+import {
+  rosterRowHasLocationActivity,
+  rosterRowVisibleAtLocation,
+} from '../../../lib/timecards/restaurantAttribution';
 import { getEmployeeBorrowedRestaurantSync } from '../../../lib/timecards/weekBorrow';
 import type { EmployeeLite } from '../../../lib/schedule/types';
 import {
@@ -63,6 +66,7 @@ import {
   DEFAULT_TIP_TAKEHOME_PCT,
 } from '../../../lib/timecards/tipTakehome';
 import {
+  employeeHasSingleStorePayroll,
   managerManagedRestaurantId,
   type EmployeeRow,
 } from '../../../lib/employees';
@@ -405,11 +409,17 @@ export default function TimecardsRosterScreen() {
     return built.filter((row) => {
       const emp = employeeById[row.empId];
       if (!emp) return true;
-      return rosterRowVisibleAtLocation(
-        emp,
-        locationFilter,
-        getEmployeeBorrowedRestaurantSync(emp.id, weekSlices.extras)
-      );
+      if (
+        rosterRowVisibleAtLocation(
+          emp,
+          locationFilter,
+          getEmployeeBorrowedRestaurantSync(emp.id, weekSlices.extras)
+        )
+      ) {
+        return true;
+      }
+      /* Single-store pay stays on the home store, but hours are edited where they worked. */
+      return employeeHasSingleStorePayroll(emp) && rosterRowHasLocationActivity(row);
     });
   }, [
     dataReady,

@@ -510,13 +510,52 @@
     return false;
   }
 
+  /**
+   * Paycheck sheets (Labor, CPA, Payslip, PTO, Employee Information) list a
+   * single-store employee only on their primary store. The other store still
+   * shows them on the timecards page and on the Payroll tab for tip points.
+   */
+  function employeePaycheckOnCurrentSheet(emp) {
+    var loc = effectiveLocationFilter();
+    if (loc === 'all') return true;
+    if (!emp) return false;
+    if (employeeHasSingleStorePayroll(emp)) {
+      var home = employeePayrollHomeRestaurantId(emp);
+      return !home || home === loc;
+    }
+    return true;
+  }
+
+  function employeeListedOnFullReportPaySheet(emp) {
+    return (
+      employeePaycheckOnCurrentSheet(emp) &&
+      employeeVisibleAtCurrentLocation(emp) &&
+      employeeOnFullReportThisWeek(emp)
+    );
+  }
+
+  /** Published / Updated schedule: cross-store single-payroll staff only if they are on that store's schedule. */
+  function employeeListedOnScheduleSheet(emp) {
+    var loc = effectiveLocationFilter();
+    if (employeeHasSingleStorePayroll(emp) && loc !== 'all') {
+      var home = employeePayrollHomeRestaurantId(emp);
+      if (home && home !== loc) return employeeScheduledAtLocation(emp, loc);
+    }
+    return employeeVisibleAtCurrentLocation(emp) && employeeOnFullReportThisWeek(emp);
+  }
+
   function employeeVisibleAtCurrentLocation(emp) {
     if (timecardsLocationFilter === 'all') return true;
     if (!emp) return false;
     if (employeeHasSingleStorePayroll(emp)) {
       var payrollHome = employeePayrollHomeRestaurantId(emp);
-      if (!payrollHome) return false;
-      return payrollHome === timecardsLocationFilter;
+      if (payrollHome && payrollHome === timecardsLocationFilter) return true;
+      /* Hours are still edited on the store they are working, even when pay rolls to the other store. */
+      if (employeeScheduledAtLocation(emp, timecardsLocationFilter)) return true;
+      if (employeeHasPunchAtLocation(emp, timecardsLocationFilter)) return true;
+      var borrowedHere = getEmployeeBorrowedRestaurant(emp && emp.id);
+      if (borrowedHere && borrowedHere === timecardsLocationFilter) return true;
+      return false;
     }
     if (employeeScheduledAtLocation(emp, timecardsLocationFilter)) return true;
     if (employeeHasPunchAtLocation(emp, timecardsLocationFilter)) return true;
@@ -4298,12 +4337,20 @@
     });
   }
 
-  /** Roster rows for Excel full-report sheets: location-visible AND (on main schedule OR payable this week). */
+  /**
+   * Paycheck roster for Labor, CPA, Payslip, PTO, and Employee Information.
+   * Single-store staff who only worked the other store stay off this list;
+   * Payroll adds a wage-free tip-point row for them separately.
+   */
   function fullReportRosterRows() {
     if (!rosterCache || !rosterCache.rows || !rosterCache.rows.length) return [];
     return rosterCache.rows
       .filter(function (row) {
-        return rosterRowVisibleAtLocation(row) && employeeOnFullReportThisWeek(row.emp, row);
+        return (
+          rosterRowVisibleAtLocation(row) &&
+          employeePaycheckOnCurrentSheet(row && row.emp) &&
+          employeeOnFullReportThisWeek(row.emp, row)
+        );
       })
       .sort(compareMainScheduleOrderRows);
   }
@@ -5512,11 +5559,24 @@
     return cachedOtherStoreTipDist;
   }
 
-  function otherStoreTipAmountForEmployee(_emp) {
-    /* Tip pool dollars are paid on the store sheet where the hours were worked.
-       Single-store staff who worked the other store are added to that sheet, so this
-       paycheck must not also pay the same pool. */
-    return 0;
+  /**
+   * Single-store paycheck (the primary store) includes the other store's tip-pool
+   * share for hours worked there. The other store's Payroll tab still lists them
+   * at $0 wages so that pool's tip-point split is visible and adds up.
+   * Working-location staff are paid tips on each store's own sheet, so this stays 0.
+   */
+  function otherStoreTipAmountForEmployee(emp) {
+    if (!emp || !employeeHasSingleStorePayroll(emp)) return 0;
+    var loc = effectiveLocationFilter();
+    if (loc !== 'rp-8' && loc !== 'rp-9') return 0;
+    var home = employeePayrollHomeRestaurantId(emp);
+    if (!home || home !== loc) return 0;
+    var otherLoc = siblingTimecardsLocationId(loc);
+    if (tipPaidMinsAtLocation(emp, otherLoc) <= 0) return 0;
+    var dist = getOtherStoreTipDistribution();
+    var amount = dist[emp.id];
+    if (amount == null || Number.isNaN(amount) || amount <= 0) return 0;
+    return amount;
   }
 
   var PAYROLL_TIP_LABEL_COL = 23;
@@ -5961,7 +6021,7 @@
     var missedH = isOngi ? 0 : row.missingHours || 0;
     var tipPt = employeeTipPointNumber(emp);
     var totalH = regH + otH + vlH + slH + missedH;
-    var rate = employeeHourlyRate(emp);
+    var rate = row.isTipBorrowRow ? null : employeeHourlyRate(emp);
     // VL/SL are straight-time add-ons (not in the 40h OT bucket) — include in TOTAL GROSS.
     var vlPayAmt =
       row.vlPay != null ? row.vlPay : vlH > 0 && rate != null ? vlH * rate : 0;
@@ -8243,10 +8303,7 @@
   }
 
   function buildPayslipWorksheet() {
-    var payslipBase = fullReportRosterRows();
-    var sorted = payslipBase
-      .concat(singleStoreTipBorrowRows(payslipBase))
-      .sort(compareMainScheduleOrderRows);
+    var sorted = fullReportRosterRows().slice().sort(compareMainScheduleOrderRows);
     if (!sorted.length) return null;
     var ws = {};
     var merges = [];
@@ -8805,11 +8862,7 @@
   function scheduleSectionEmployees(staffType) {
     return d()
       .employees.filter(function (emp) {
-        return (
-          emp.staffType === staffType &&
-          employeeVisibleAtCurrentLocation(emp) &&
-          employeeOnFullReportThisWeek(emp)
-        );
+        return emp.staffType === staffType && employeeListedOnScheduleSheet(emp);
       })
       .sort(function (a, b) {
         return compareMainScheduleOrderRows(
@@ -10602,11 +10655,7 @@
     sections.forEach(function (section) {
       var emps = d()
         .employees.filter(function (emp) {
-          return (
-            emp.staffType === section.staffType &&
-            employeeVisibleAtCurrentLocation(emp) &&
-            employeeOnFullReportThisWeek(emp)
-          );
+          return emp.staffType === section.staffType && employeeListedOnFullReportPaySheet(emp);
         })
         .slice()
         .sort(function (a, b) {
@@ -14390,6 +14439,7 @@
       employeeOnFullReportThisWeek: employeeOnFullReportThisWeek,
       rosterRowHasPayableActivity: rosterRowHasPayableActivity,
       fullReportRosterRows: fullReportRosterRows,
+      payrollSectionRows: payrollSectionRows,
       payslipShiftRowHasPayableActivity: payslipShiftRowHasPayableActivity,
       applyActualPunchesToUpdatedScheduleModel: applyActualPunchesToUpdatedScheduleModel,
       formatUpdatedSchedulePunchBreakLabel: formatUpdatedSchedulePunchBreakLabel,
