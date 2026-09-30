@@ -308,14 +308,49 @@
     writeJson(SLOT_MAP_KEY, map || {});
   }
 
-  function ensureSlotKey(restaurantId, role, trIdx) {
+  function slotRecordIsActive(restaurantId, role, slotKey) {
+    if (!slotKey) return false;
+    var slots = getSlotCache();
+    var hit = null;
+    Object.keys(slots || {}).forEach(function (pk) {
+      var s = slots[pk];
+      if (!s || String(s.slot_key) !== String(slotKey)) return;
+      if (String(s.restaurant_id) !== String(restaurantId)) return;
+      if (String(s.role) !== String(role)) return;
+      hit = s;
+    });
+    if (!hit) return true;
+    return hit.active !== false;
+  }
+
+  function activeSlotKeysForRole(restaurantId, role) {
+    var slots = getSlotCache();
+    var keys = [];
+    Object.keys(slots || {}).forEach(function (pk) {
+      var s = slots[pk];
+      if (!s || s.active === false || !s.slot_key) return;
+      if (String(s.restaurant_id) !== String(restaurantId)) return;
+      if (String(s.role) !== String(role)) return;
+      if (isLocallyDeactivatedSlot(restaurantId, role, s.slot_key)) return;
+      keys.push(String(s.slot_key));
+    });
+    keys.sort();
+    return keys;
+  }
+
+  /**
+   * Row → slot key. Never mint a second UUID for a role that already has cloud
+   * slots: that fork left duplicate Unassigned / day-off rows on every week.
+   * opts.allowMint is only for an explicit "add person row".
+   */
+  function ensureSlotKey(restaurantId, role, trIdx, opts) {
+    opts = opts || {};
     var map = getSlotMap();
     var k = slotMapKey(restaurantId, role, trIdx);
-    if (map[k]) return map[k];
-    /* Prefer an existing server slot for this row so devices do not fork UUIDs. */
+    if (map[k] && slotRecordIsActive(restaurantId, role, map[k])) return map[k];
     var slots = getSlotCache();
     var candidates = [];
-    Object.keys(slots).forEach(function (pk) {
+    Object.keys(slots || {}).forEach(function (pk) {
       var s = slots[pk];
       if (!s || s.active === false) return;
       if (String(s.restaurant_id) !== String(restaurantId)) return;
@@ -331,6 +366,21 @@
       setSlotMap(map);
       return candidates[0];
     }
+    var used = Object.create(null);
+    Object.keys(map).forEach(function (mk) {
+      if (mk.indexOf(String(restaurantId) + '|' + String(role) + '|') === 0 && map[mk]) {
+        used[String(map[mk])] = true;
+      }
+    });
+    var free = activeSlotKeysForRole(restaurantId, role).filter(function (sk) {
+      return !used[sk];
+    });
+    if (free.length) {
+      map[k] = free[0];
+      setSlotMap(map);
+      return free[0];
+    }
+    if (activeSlotKeysForRole(restaurantId, role).length && !opts.allowMint) return null;
     var sk = uuid();
     map[k] = sk;
     setSlotMap(map);
@@ -341,7 +391,7 @@
   function resolveSlotKey(restaurantId, role, trIdx) {
     var map = getSlotMap();
     var k = slotMapKey(restaurantId, role, trIdx);
-    if (map[k]) return map[k];
+    if (map[k] && slotRecordIsActive(restaurantId, role, map[k])) return map[k];
     var slots = getSlotCache();
     var candidates = [];
     Object.keys(slots).forEach(function (pk) {

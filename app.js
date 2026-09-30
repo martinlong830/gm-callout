@@ -10274,6 +10274,7 @@
         if (!picked) {
           picked = v2.ensureSlotKey(rid, role, trIdx);
         }
+        if (!picked) continue;
         keepKeys.push(picked);
         used[picked] = true;
       }
@@ -10344,6 +10345,7 @@
           var n = slotCountForRole(role, wi, rid);
           for (var trIdx = 0; trIdx < n; trIdx += 1) {
             var slotKey = v2.ensureSlotKey(rid, role, trIdx);
+            if (!slotKey) continue;
             ops.push(v2.opAddSlot(rid, role, slotKey, trIdx, null));
             for (var di = 0; di < 7; di += 1) {
               var dayIso = dayIsoForScheduleWeekDay(wi, di);
@@ -23198,7 +23200,7 @@
           armScheduleLocalAuthority(30000);
           var slotKey =
             (v2add.resolveSlotKey && v2add.resolveSlotKey(rid, role, newTrIdx)) ||
-            (v2add.ensureSlotKey && v2add.ensureSlotKey(rid, role, newTrIdx));
+            (v2add.ensureSlotKey && v2add.ensureSlotKey(rid, role, newTrIdx, { allowMint: true }));
           if (!slotKey) return;
           enqueueScheduleV2Ops([v2add.opAddSlot(rid, role, slotKey, newTrIdx, null)], {
             conscious: true,
