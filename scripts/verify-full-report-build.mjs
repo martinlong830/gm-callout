@@ -496,7 +496,7 @@ const tipHeaderNeedles = [
   'Square Pick Up Tips:',
   'Square In House Tips:',
   'DoorDash Tips:',
-  'Uber Tips:',
+  'GrubHub Tips:',
   'Cash Tips:',
   'Total tips:',
 ];
@@ -552,7 +552,7 @@ function payrollTipCellHasOutline(cell) {
     throw new Error('Payroll tip cell ' + addr + ' should not have black outlines');
   }
 });
-console.log('OK: Payroll tip header is Pick Up / In House / DD / Uber / Cash / Total (no net rows)');
+console.log('OK: Payroll tip header is Pick Up / In House / DD / GrubHub / Cash / Total (no net rows)');
 
 function sheetFormulas(ws) {
   return Object.keys(ws || {})
@@ -607,6 +607,64 @@ const cpaSheet = build.find((s) => s.name === 'CPA');
 const payslipSheet = build.find((s) => s.name === 'Payslip');
 assertFormulaContains(sheetFormulas(laborSheet.worksheet), 'Payroll!', 'Labor Cost');
 assertFormulaContains(sheetFormulas(cpaSheet.worksheet), 'Payroll!', 'CPA');
+if (sandbox.__gmTimecardsTest.netTipAmount(100) !== 95) {
+  throw new Error(
+    'Delivery tip of 100 should pay 95, got ' + sandbox.__gmTimecardsTest.netTipAmount(100)
+  );
+}
+const cpaWs = cpaSheet.worksheet;
+Object.keys(cpaWs).forEach((addr) => {
+  const val = cpaWs[addr] && cpaWs[addr].v != null ? String(cpaWs[addr].v) : '';
+  if (val.indexOf('SALVATIERRA') < 0 && val.indexOf('EIGHTH') < 0) return;
+  const rowNum = addr.replace(/^[A-Z]+/, '');
+  const gross = cpaWs['M' + rowNum];
+  const formula = gross && gross.f ? String(gross.f) : '';
+  if (!formula) throw new Error('CPA gross formula missing for ' + val);
+  if (/Payroll!M\d+/.test(formula)) {
+    throw new Error('CPA gross for ' + val + ' still adds SoH: ' + formula);
+  }
+  const isDelivery = val.indexOf('SALVATIERRA') >= 0;
+  if (isDelivery && /Payroll!U\d+/.test(formula)) {
+    throw new Error('CPA gross for delivery staff still adds tips: ' + formula);
+  }
+  if (!isDelivery && formula.indexOf('Payroll!U') < 0) {
+    throw new Error('CPA gross for ' + val + ' should still add coverage-side delivery column: ' + formula);
+  }
+});
+function excelColNum(letters) {
+  let n = 0;
+  for (let i = 0; i < letters.length; i += 1) n = n * 26 + (letters.charCodeAt(i) - 64);
+  return n;
+}
+function excelColLetters(n) {
+  let s = '';
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+let paidChecks = 0;
+Object.keys(payslipSheet.worksheet).forEach((addr) => {
+  const cell = payslipSheet.worksheet[addr];
+  if (!cell || cell.v !== 'Total Paid') return;
+  const m = addr.match(/^([A-Z]+)(\d+)$/);
+  if (!m) return;
+  const paidAddr = excelColLetters(excelColNum(m[1]) + 2) + m[2];
+  const paid = payslipSheet.worksheet[paidAddr];
+  const formula = paid && paid.f ? String(paid.f) : '';
+  const normalized = formula.charAt(0) === '=' ? formula.slice(1) : formula;
+  if (normalized.indexOf('SUM(') !== 0) {
+    throw new Error('Payslip Total Paid formula missing at ' + paidAddr + ': ' + formula);
+  }
+  const inner = normalized.slice(4, -1);
+  if (inner.split(',').length !== 2) {
+    throw new Error('Payslip Total Paid should be wages plus VL/SL only: ' + formula);
+  }
+  paidChecks += 1;
+});
+if (paidChecks < 1) throw new Error('Payslip Total Paid cell not found');
 assertFormulaContains(sheetFormulas(payslipSheet.worksheet), 'Payroll!', 'Payslip');
 console.log('OK: Labor Cost, CPA, Payslip, and Payroll derived cells use Excel formulas');
 

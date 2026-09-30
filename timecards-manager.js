@@ -328,6 +328,48 @@
     return timecardsLocationFilter;
   }
 
+  function uniqueShiftRestaurantIds(matches) {
+    var ids = [];
+    (matches || []).forEach(function (m) {
+      var id = shiftRestaurantId(m);
+      if (id && ids.indexOf(id) < 0) ids.push(id);
+    });
+    ids.sort();
+    return ids;
+  }
+
+  /**
+   * Which store a punch belongs to for tip points.
+   * Must not follow the store chip: the same punch has to count toward 8th Ave
+   * on both the 8th Ave tip split and the 9th Ave paycheck.
+   */
+  function tipEntryRestaurantId(emp, entry) {
+    if (!entry || !emp) return 'rp-9';
+    if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
+      return entry.clock_restaurant_id;
+    }
+    var matches = [];
+    var sid = entry.schedule_shift_id;
+    var name = d().employeeDisplayName(emp);
+    if (sid) {
+      scheduleSnapshotForPayWeek().forEach(function (s) {
+        if (s && s.id === sid && d().shiftRowIncludesWorker(s, name)) matches.push(s);
+      });
+    }
+    if (!matches.length) matches = findScheduleShiftsForEntry(emp, entry);
+    var ids = uniqueShiftRestaurantIds(matches);
+    if (ids.length === 1) return ids[0];
+    if (ids.length > 1 && employeeHasSingleStorePayroll(emp)) {
+      var home = employeePayrollHomeRestaurantId(emp);
+      var others = ids.filter(function (id) {
+        return id !== home;
+      });
+      if (others.length === 1) return others[0];
+    }
+    if (ids.length) return ids[0];
+    return punchDayRestaurantId(emp, punchDayIso(entry));
+  }
+
   function preferRestaurantAmongMatches(emp, matches) {
     if (!matches || !matches.length) return null;
     if (matches.length === 1) return shiftRestaurantId(matches[0]);
@@ -822,11 +864,11 @@
     return (
       '<div class="timecards-tip-rates-panel">' +
       '<h5 class="timecards-tip-panel-title">Platform keep rates</h5>' +
-      '<p class="calendar-hint">Share left after Square, DoorDash, and Uber fees. Used for the payroll tip pool.</p>' +
+      '<p class="calendar-hint">Share left after Square, DoorDash, and GrubHub fees. Used for the payroll tip pool.</p>' +
       '<div class="timecards-tip-rates-grid">' +
       renderTipRateFieldHtml('tcTipRateSquare', 'Square keep rate', pool.squareNetRate) +
       renderTipRateFieldHtml('tcTipRateDoordash', 'DoorDash keep rate', pool.doordashNetRate) +
-      renderTipRateFieldHtml('tcTipRateUber', 'Uber keep rate', pool.uberNetRate) +
+      renderTipRateFieldHtml('tcTipRateUber', 'GrubHub keep rate', pool.uberNetRate) +
       '</div></div>'
     );
   }
@@ -1495,7 +1537,9 @@
 
   function parseBreakMinutesFromAnnotation(text) {
     var s = String(text || '').toLowerCase();
-    if (!s || s.indexOf('no break') !== -1 || s.indexOf('office') !== -1) return 0;
+    if (!s || s.indexOf('no break') !== -1 || s.indexOf('office') !== -1 || s.indexOf('oficina') !== -1) {
+      return 0;
+    }
     var m = s.match(/(\d+)\s*(?:min|minute)/);
     if (m) return parseInt(m[1], 10) || 0;
     if (s.indexOf('break') !== -1) return 30;
@@ -2856,7 +2900,7 @@
       tipField('tcTipSquarePickup', 'Square Pick Up Tips', pool.squarePickup) +
       tipField('tcTipSquareInHouse', 'Square In House Tips', pool.squareTips) +
       tipField('tcTipDoordash', 'DoorDash Tips', pool.doordash) +
-      tipField('tcTipUber', 'Uber Tips', pool.uber) +
+      tipField('tcTipUber', 'GrubHub Tips', pool.uber) +
       tipField('tcTipCash', 'Cash Tips', pool.cashTip) +
       '</div>' +
       '<p class="calendar-hint timecards-tip-pool-summary" id="timecardsTipPoolSummary">' +
@@ -5431,11 +5475,28 @@
     return effectiveLocationFilter(locationFilter) === 'rp-8' ? 'rp-9' : 'rp-8';
   }
 
-  /** Paid reg+OT minutes at one store (company-wide OT allocation, then location filter). */
+  /**
+   * Paid minutes at one store for the tip pool.
+   * Uses the punch's own store, not whichever store chip is open, so a 9th Ave
+   * paycheck still sees hours worked at 8th Ave.
+   */
   function tipPaidMinsAtLocation(emp, locationFilter) {
     if (!emp) return 0;
-    var split = sumRegOtFromByKey(weekRegOtForEmployee(emp, locationFilter));
-    return (split.regMins || 0) + (split.otMins || 0);
+    var loc = effectiveLocationFilter(locationFilter);
+    if (loc !== 'rp-8' && loc !== 'rp-9') {
+      var splitAll = sumRegOtFromByKey(weekRegOtForEmployee(emp, locationFilter));
+      return (splitAll.regMins || 0) + (splitAll.otMins || 0);
+    }
+    var list = weekEntriesByEmpId && emp.id ? weekEntriesByEmpId[emp.id] || [] : weekEntries;
+    var mins = 0;
+    list.forEach(function (e) {
+      if (!e || !e.clock_in_at) return;
+      var iso = punchDayIso(e);
+      if (!entryHasMeaningfulPunch(e, iso)) return;
+      if (tipEntryRestaurantId(emp, e) !== loc) return;
+      mins += recordedPaidMinutes(e, null, emp);
+    });
+    return mins;
   }
 
   /**
@@ -5603,12 +5664,15 @@
   var PAYROLL_COL_OTHER_STORE_TIPS = 21;
   var PAYROLL_COL_TOTAL_TIPS = 22;
 
-  function payrollTotalTipsFormula(r) {
+  function payrollTotalTipsFormula(r, opts) {
+    var other =
+      opts && opts.omitOtherStore
+        ? ''
+        : '+' + payrollExcelNumber(r, PAYROLL_COL_OTHER_STORE_TIPS);
     return (
       '=' +
       payrollExcelNumber(r, PAYROLL_COL_TIP) +
-      '+' +
-      payrollExcelNumber(r, PAYROLL_COL_OTHER_STORE_TIPS) +
+      other +
       '+' +
       payrollExcelNumber(r, PAYROLL_COL_DELIVERY)
     );
@@ -5876,7 +5940,7 @@
     xlSet(ws, PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL, Number(ddR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_DOORDASH_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
 
-    xlSet(ws, PAYROLL_ROW_UBER_GROSS, lbl, 'Uber Tips:', S.tipLabel);
+    xlSet(ws, PAYROLL_ROW_UBER_GROSS, lbl, 'GrubHub Tips:', S.tipLabel);
     xlSetMoney(ws, PAYROLL_ROW_UBER_GROSS, val, defaults.uber || 0, S.tipValue);
     xlSet(ws, PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL, Number(ubR), S.tipValue);
     ws[xlEncode(PAYROLL_ROW_UBER_GROSS, PAYROLL_TIP_RATE_COL)].z = '0.00';
@@ -6066,11 +6130,8 @@
     var totalTipPoints = (tipMins / 60) * tipPt;
     var otherStoreTips = isOngi ? 0 : otherStoreTipAmountForEmployee(emp);
     var deliveryLoc = rosterAggregationLocationFilter(emp, tipLoc);
-    var dishwasherTipsPay = isOngi
-      ? 0
-      : row.dishwasherTipsPay != null
-        ? row.dishwasherTipsPay
-        : sumEmployeeWeekDishwasherTips(emp, undefined, deliveryLoc);
+    var dishwasherTipsPay =
+      isOngi || row.isTipBorrowRow ? 0 : sumEmployeeWeekDishwasherTips(emp, undefined, deliveryLoc);
     return {
       row: row,
       emp: emp,
@@ -6163,25 +6224,35 @@
       S.num2,
       '0.00'
     );
-    xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
-    xlSetFormula(
-      ws,
-      r,
-      PAYROLL_COL_TIP,
-      '=IF(OR(' +
-        tipPtsCell +
-        '="",' +
-        tipPtsCell +
-        '=0),"",ROUND(' +
-        tip.total +
-        '*' +
-        tipPtsCell +
-        '/' +
-        grandTipPts +
-        ',0))',
-      S.money,
-      PAYROLL_MONEY_Z
-    );
+    var otherStoreOnly = (m.otherStoreTips || 0) > 0.004 && !(tipPtsValue > 0.0001);
+    if (otherStoreOnly) {
+      xlSet(ws, r, PAYROLL_COL_TIP_CALC, '', S.money);
+    } else {
+      xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
+    }
+    if (otherStoreOnly) {
+      /* Home sheet has no tip points of its own. Show the other store's share in TIP. */
+      xlSetMoney(ws, r, PAYROLL_COL_TIP, m.otherStoreTips, S.money);
+    } else {
+      xlSetFormula(
+        ws,
+        r,
+        PAYROLL_COL_TIP,
+        '=IF(OR(' +
+          tipPtsCell +
+          '="",' +
+          tipPtsCell +
+          '=0),"",ROUND(' +
+          tip.total +
+          '*' +
+          tipPtsCell +
+          '/' +
+          grandTipPts +
+          ',0))',
+        S.money,
+        PAYROLL_MONEY_Z
+      );
+    }
     if (tipLayout && tipPtsValue > 0.0001) {
       tipLayout.tipperRows.push({ row: r, empId: m.emp && m.emp.id });
     }
@@ -6196,10 +6267,17 @@
       ws,
       r,
       PAYROLL_COL_OTHER_STORE_TIPS,
-      m.otherStoreTips > 0 ? m.otherStoreTips : null,
+      !otherStoreOnly && m.otherStoreTips > 0 ? m.otherStoreTips : null,
       S.money
     );
-    xlSetFormula(ws, r, PAYROLL_COL_TOTAL_TIPS, payrollTotalTipsFormula(r), S.money, PAYROLL_MONEY_Z);
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_TOTAL_TIPS,
+      payrollTotalTipsFormula(r, otherStoreOnly ? { omitOtherStore: true } : null),
+      S.money,
+      PAYROLL_MONEY_Z
+    );
 
     layout.firstEmpRow = layout.firstEmpRow == null ? r : layout.firstEmpRow;
     layout.lastEmpRow = r;
@@ -6899,7 +6977,6 @@
     var missedPay = row.missingPay != null ? row.missingPay : 0;
     var payrollHours = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_H);
     var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_TIPS);
-    var payrollSoh = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_SOH);
     var payrollGross = payrollSheetNumberExpr(row.emp, PAYROLL_COL_GROSS);
     var payrollDelivery = payrollSheetNumberExpr(row.emp, PAYROLL_COL_DELIVERY);
     var payrollCoverage = payrollSheetNumberExpr(row.emp, PAYROLL_COL_COVERAGE);
@@ -6951,18 +7028,17 @@
     }
     xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
     if (payrollGross) {
-      var grossFormula =
-        '=' +
-        payrollGross +
-        '+' +
-        (payrollSoh || '0') +
-        '+' +
-        (payrollDelivery || '0') +
-        '+' +
-        (payrollCoverage || '0');
+      /* Gross pay is wages (and coverage). SoH is listed beside it and is not added in.
+         Delivery staff tips are listed in TIPS and are not added into gross either. */
+      var grossFormula = '=' + payrollGross + '+' + (payrollCoverage || '0');
+      if (!isDeliveryDishwasherStaff(row.emp)) {
+        grossFormula += '+' + (payrollDelivery || '0');
+      }
       xlSetFormula(ws, r, CPA_COL_GROSS, grossFormula, S.cellRight, PAYROLL_MONEY_Z);
     } else {
-      var extraPay = (row.dishwasherTipsPay || 0) + (row.additionalCashTip || 0);
+      var extraPay = isDeliveryDishwasherStaff(row.emp)
+        ? row.additionalCashTip || 0
+        : (row.dishwasherTipsPay || 0) + (row.additionalCashTip || 0);
       var fallbackGross =
         '=' +
         payrollExcelNumber(r, 4) +
@@ -6980,13 +7056,6 @@
         payrollExcelNumber(r, 3) +
         '+' +
         payrollExcelNumber(r, CPA_COL_MISSED_PAY);
-      if (row.sohCount > 0) {
-        fallbackGross +=
-          '+' +
-          payrollExcelNumber(r, CPA_COL_SOH_TOTAL) +
-          '*' +
-          String(xlPayAmount(getSohRate()) || 0);
-      }
       if (extraPay > 0.005) fallbackGross += '+' + String(xlPayAmount(extraPay));
       xlSetFormula(ws, r, CPA_COL_GROSS, fallbackGross, S.cellRight, PAYROLL_MONEY_Z);
     }
@@ -8270,26 +8339,9 @@
       xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
     }
 
+    /* Total Paid is wages plus VL/SL. SoH stays on its own line. Delivery tips stay on their own line. */
     var totalPaidFormula =
-      '=SUM(' +
-      payStubAbsRef(vlSlRow, DC(3)) +
-      ',' +
-      payStubAbsRef(sohRow, DC(3)) +
-      ',' +
-      totalPayCell +
-      ')';
-    if (dishwasherTipsRow != null) {
-      totalPaidFormula =
-        '=SUM(' +
-        payStubAbsRef(vlSlRow, DC(3)) +
-        ',' +
-        payStubAbsRef(sohRow, DC(3)) +
-        ',' +
-        payStubAbsRef(dishwasherTipsRow, DC(3)) +
-        ',' +
-        totalPayCell +
-        ')';
-    }
+      '=SUM(' + payStubAbsRef(vlSlRow, DC(3)) + ',' + totalPayCell + ')';
     xlSetFormula(ws, headerPaidRow, DC(10), totalPaidFormula, S.moneyUnderline, PAY_STUB_AMOUNT_Z);
 
     var reportBottom = r;
@@ -14462,6 +14514,7 @@
       invalidateWeekExtrasSliceCache: invalidateWeekExtrasSliceCache,
       ptoBalanceForEmployee: ptoBalanceForEmployee,
       computePayrollRowMetrics: computePayrollRowMetrics,
+      netTipAmount: netTipAmount,
       computeMissingHoursPay: computeMissingHoursPay,
       buildLaborExportAoa: buildLaborExportAoa,
       setWeekEntriesForTest: function (entries) {

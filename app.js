@@ -18739,7 +18739,9 @@
   /** Unpaid break minutes from schedule annotation. OFFICE is paid work time, not a break. */
   function parseBreakMinutesFromAnnotation(text) {
     var s = String(text || '').toLowerCase();
-    if (!s || s.indexOf('no break') !== -1 || s.indexOf('office') !== -1) return 0;
+    if (!s || s.indexOf('no break') !== -1 || s.indexOf('office') !== -1 || s.indexOf('oficina') !== -1) {
+      return 0;
+    }
     var m = s.match(/(\d+)\s*(?:min|minute)/);
     if (m) return parseInt(m[1], 10) || 0;
     if (s.indexOf('break') !== -1) return 30;
@@ -19445,9 +19447,13 @@
                 workers: staffedWorkers.slice(),
               };
             }
-            var hours = Number(shift.redPokeHours);
-            if (!Number.isFinite(hours) || hours <= 0) {
-              hours = redPokeShiftHoursDecimal(shift.start, shift.end) || 0;
+            var hours = 0;
+            if (shift.start && shift.end) {
+              hours = parseFloat(redPokeShiftHoursDecimal(shift.start, shift.end)) || 0;
+            }
+            if (!(hours > 0)) {
+              hours = Number(shift.redPokeHours);
+              if (!Number.isFinite(hours) || hours <= 0) hours = 0;
             }
             var breakMin = 0;
             try {
