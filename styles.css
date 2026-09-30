@@ -9116,6 +9116,71 @@ html.authed.manager-app #screen-schedule.active .schedule-page-chrome {
   font-size: 0.8125rem;
 }
 
+.tc-sched-info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-left: 6px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.tc-sched-info-mark {
+  transform: translateY(-0.5px);
+}
+
+.tc-sched-info-bubble {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: 16rem;
+  padding: 8px 10px;
+  background: #1f2937;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-style: normal;
+  line-height: 1.35;
+  white-space: normal;
+  z-index: 30;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.tc-sched-info-bubble::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 10px;
+  border: 6px solid transparent;
+  border-top-color: #1f2937;
+}
+
+.tc-sched-info:hover .tc-sched-info-bubble,
+.tc-sched-info:focus .tc-sched-info-bubble,
+.tc-sched-info:focus-visible .tc-sched-info-bubble {
+  display: block;
+}
+
+.timecards-edit-form .timecards-input.timecards-input--schedule-off {
+  color: #b42318;
+  font-weight: 650;
+  border-color: #b42318;
+}
+
 .timecards-table--wide {
   min-width: 1180px;
 }

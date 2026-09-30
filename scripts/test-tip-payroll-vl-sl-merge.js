@@ -29,11 +29,12 @@ function isTipPayrollLeaveZeroRow(row) {
   return tipPayrollLeaveHoursTotal(row) <= 0;
 }
 
-function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice, pendingDayMap) {
+function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice, pendingDayMap, opts) {
   localSlice = localSlice && typeof localSlice === 'object' ? localSlice : {};
   remoteSlice = remoteSlice && typeof remoteSlice === 'object' ? remoteSlice : {};
   baselineSlice = baselineSlice && typeof baselineSlice === 'object' ? baselineSlice : {};
   pendingDayMap = pendingDayMap && typeof pendingDayMap === 'object' ? pendingDayMap : null;
+  opts = opts || {};
   var merged = Object.assign({}, remoteSlice);
   var keys = Object.create(null);
   Object.keys(localSlice).forEach(function (k) {
@@ -48,6 +49,13 @@ function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice,
     var localVal = localHas ? localSlice[k] : undefined;
     var baseVal = baseHas ? baselineSlice[k] : undefined;
     if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
+      if (
+        opts.keepLocalWhenRemoteOmits &&
+        localHas &&
+        !Object.prototype.hasOwnProperty.call(remoteSlice, k)
+      ) {
+        merged[k] = localVal;
+      }
       return;
     }
     if (isTipPayrollLeaveDayKey(k)) {
@@ -494,6 +502,23 @@ function grossFromNetTipTest(net, pct) {
     );
   });
 });
+
+var tipKey = 'emp1|2026-05-18|rp-8';
+var savedTipWeek = {};
+savedTipWeek[tipKey] = 100;
+var staleRemoteWeek = {};
+var keptTip = mergeTipPayrollWeekSliceForPush(
+  savedTipWeek,
+  staleRemoteWeek,
+  savedTipWeek,
+  null,
+  { keepLocalWhenRemoteOmits: true }
+);
+assert(keptTip[tipKey] === 100, 'saved delivery tip survives a cloud row that omitted it');
+var cleared = mergeTipPayrollWeekSliceForPush({}, { [tipKey]: 100 }, savedTipWeek, null, {
+  keepLocalWhenRemoteOmits: true,
+});
+assert(cleared[tipKey] == null, 'clearing a delivery tip still removes it');
 
 assert(isTipPayrollLeaveDayKey(leaveKey), 'leave key helper matches empId@date');
 assert(!isTipPayrollLeaveDayKey('tipDay'), 'leave key helper rejects non-leave keys');

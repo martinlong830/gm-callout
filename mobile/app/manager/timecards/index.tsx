@@ -67,6 +67,7 @@ import {
 } from '../../../lib/timecards/tipTakehome';
 import {
   employeeHasSingleStorePayroll,
+  employeeIsDeactivated,
   managerManagedRestaurantId,
   type EmployeeRow,
 } from '../../../lib/employees';
@@ -409,6 +410,7 @@ export default function TimecardsRosterScreen() {
     return built.filter((row) => {
       const emp = employeeById[row.empId];
       if (!emp) return true;
+      if (employeeIsDeactivated(emp)) return false;
       if (
         rosterRowVisibleAtLocation(
           emp,

@@ -17,6 +17,7 @@ import { useI18n } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
   employeeDisplayName,
+  employeeIsDeactivated,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
 } from '../lib/employees';
@@ -239,6 +240,7 @@ export function MessagesScreen() {
     const scope = isManagerLikeRole(role) ? managerManagedRestaurantId(myEmployee, role) : null;
     const selfLower = displayName.trim().toLowerCase();
     for (const e of employees) {
+      if (employeeIsDeactivated(e)) continue;
       if (isManagerLikeRole(role) && !employeeVisibleInManagerStoreScope(e, scope)) continue;
       const n = employeeDisplayName(e);
       if (role === 'employee' && n.trim().toLowerCase() === selfLower) continue;

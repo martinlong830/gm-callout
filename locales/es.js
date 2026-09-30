@@ -538,10 +538,10 @@ window.GM_I18N_ES = {
   'team.deactivate': 'Desactivar empleado',
   'team.reactivate': 'Reactivar empleado',
   'team.deactivateHint':
-    'Oculta a esta persona del equipo y de asignaciones nuevas. Los turnos y las tarjetas de tiempo existentes se conservan. Esto no es una eliminación.',
-  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo y en las asignaciones nuevas.',
+    'Oculta a esta persona de las tarjetas de tiempo, la nómina, los mensajes y las asignaciones nuevas. Solo aparece en Equipo si activas Mostrar desactivados. Los turnos ya puestos en el horario se quedan hasta que los cambies. Esto no es una eliminación.',
+  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo, las tarjetas de tiempo y las asignaciones nuevas.',
   'team.deactivateConfirm':
-    '¿Desactivar a "{name}"?\n\nQuedará oculta en Equipo hasta que actives Mostrar desactivados y la reactives. Los turnos y las tarjetas de tiempo existentes se conservan.',
+    '¿Desactivar a "{name}"?\n\nQuedará oculta en las tarjetas de tiempo y en el resto de la app. Activa Mostrar desactivados en Equipo para reactivarla. Los turnos ya puestos en el horario se quedan hasta que los cambies.',
   'team.employeeForm': 'Empleado',
   'team.restaurantFilter': 'Restaurante',
   'team.roleFilter': 'Rol',

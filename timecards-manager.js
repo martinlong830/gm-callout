@@ -586,7 +586,15 @@
     return employeeVisibleAtCurrentLocation(emp) && employeeOnFullReportThisWeek(emp);
   }
 
+  function employeeIsDeactivated(emp) {
+    var m = emp && emp.meta && typeof emp.meta === 'object' ? emp.meta : null;
+    if (!m) return false;
+    var v = m.deactivated;
+    return v === true || v === 'true' || v === 1;
+  }
+
   function employeeVisibleAtCurrentLocation(emp) {
+    if (employeeIsDeactivated(emp)) return false;
     if (timecardsLocationFilter === 'all') return true;
     if (!emp) return false;
     if (employeeHasSingleStorePayroll(emp)) {
@@ -2296,12 +2304,8 @@
     var rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
     var key = dishwasherTipStorageKey(empId, iso, rid);
     var val = normalizeDishwasherTipAmount(amount);
-    Object.keys(slice).forEach(function (k) {
-      if (k === key) return;
-      var parsed = parseDishwasherTipStorageKey(k);
-      if (parsed && parsed.empId === empId && parsed.iso === iso) delete slice[k];
-    });
-    delete slice[empId + '@' + iso];
+    /* Drop only the legacy unscoped key. Other-store tips for this day must stay. */
+    if (rid === 'rp-9') delete slice[empId + '@' + iso];
     if (val <= 0) delete slice[key];
     else slice[key] = val;
     saveDishwasherTipsMap(bounds, slice);
@@ -2551,6 +2555,191 @@
     rebuildWeekEntriesIndex();
   }
 
+  var publishedScheduleModelCache = { key: '', model: null };
+  var shiftScheduleExpect = null;
+
+  /** Clock time inside a break annotation, plus how long that break lasts. Office is not a break. */
+  function parseBreakClockRange(text) {
+    var s = String(text || '');
+    if (!s || /no break/i.test(s) || /office/i.test(s) || /oficina/i.test(s)) return null;
+    var m = s.match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
+    if (!m) return null;
+    var h = parseInt(m[1], 10);
+    var min = parseInt(m[2], 10);
+    var ap = String(m[3] || '').toUpperCase();
+    if (ap === 'PM' && h !== 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+    var duration = parseBreakMinutesFromAnnotation(s);
+    if (!(duration > 0)) duration = 30;
+    return { startMins: h * 60 + min, duration: duration };
+  }
+
+  function clockInstantOnShiftDay(iso, hhmm, startHhmm) {
+    var hm = normalizeShiftDayHHMM(hhmm);
+    if (!iso || !hm || !d().scheduledShiftStartAt) return null;
+    var at = d().scheduledShiftStartAt(iso, hm);
+    if (!at) return null;
+    var startHm = normalizeShiftDayHHMM(startHhmm);
+    if (startHm && hm !== startHm) {
+      var startAt = d().scheduledShiftStartAt(iso, startHm);
+      if (startAt && at.getTime() <= startAt.getTime()) {
+        at = new Date(at.getTime() + 24 * 60 * 60 * 1000);
+      }
+    }
+    return at;
+  }
+
+  function publishedWorkCellForEmployeeDay(emp, shiftRow) {
+    try {
+      if (!emp || !shiftRow || !shiftRow.shift || !shiftRow.iso) return null;
+      if (isOffScheduleShiftDayRow(shiftRow)) return null;
+      if (typeof d().getPublishedWeekSnapshot !== 'function') return null;
+      if (typeof d().buildScheduleCalendarExportModel !== 'function') return null;
+      if (typeof d().weekIndexForPayWeekStartIso !== 'function') return null;
+      var rid = shiftRestaurantId(shiftRow.shift);
+      if (!rid || rid === 'all') return null;
+      var weekIso = isoFromDate(payWeekBoundsForDayIso(shiftRow.iso).start);
+      var snap = d().getPublishedWeekSnapshot(rid, weekIso);
+      if (!snap || !snap.draft) return null;
+      var cacheKey = rid + '|' + weekIso + '|' + String(snap.publishedAt || '');
+      if (publishedScheduleModelCache.key !== cacheKey) {
+        publishedScheduleModelCache = {
+          key: cacheKey,
+          model: d().buildScheduleCalendarExportModel(
+            d().weekIndexForPayWeekStartIso(weekIso),
+            rid,
+            { snapshot: snap }
+          ),
+        };
+      }
+      var model = publishedScheduleModelCache.model;
+      if (!model || !model.days) return null;
+      var dayIdx = -1;
+      model.days.forEach(function (day, i) {
+        if (String(day && day.iso ? day.iso : '').slice(0, 10) === shiftRow.iso) dayIdx = i;
+      });
+      if (dayIdx < 0) return null;
+      var nameKey = d().normNameKey(d().employeeDisplayName(emp));
+      var liveStart = normalizeShiftDayHHMM(shiftRow.shift.start);
+      var match = null;
+      (model.sections || []).forEach(function (sec) {
+        (sec.rows || []).forEach(function (row) {
+          if (!row || d().normNameKey(row.personName) !== nameKey) return;
+          var cell = row.days && row.days[dayIdx];
+          if (!cell || cell.kind !== 'work' || !cell.start || !cell.end) return;
+          if (!match) match = cell;
+          if (liveStart && normalizeShiftDayHHMM(cell.start) === liveStart) match = cell;
+        });
+      });
+      return match;
+    } catch (_pub) {
+      return null;
+    }
+  }
+
+  function buildShiftScheduleExpect(emp, shiftRow) {
+    if (!shiftRow || !shiftRow.shift || !shiftRow.iso || isOffScheduleShiftDayRow(shiftRow)) {
+      return null;
+    }
+    var published = publishedWorkCellForEmployeeDay(emp, shiftRow);
+    var start = published ? published.start : shiftRow.shift.start;
+    var end = published ? published.end : shiftRow.shift.end;
+    var breakText = published ? published.breakText : shiftRow.shift.redPokeBreak;
+    if (!normalizeShiftDayHHMM(start) || !normalizeShiftDayHHMM(end)) return null;
+    var clockIn = clockInstantOnShiftDay(shiftRow.iso, start, null);
+    var clockOut = clockInstantOnShiftDay(shiftRow.iso, end, start);
+    var breakStart = null;
+    var breakEnd = null;
+    var br = parseBreakClockRange(breakText);
+    if (br && clockIn) {
+      var breakHm =
+        String(Math.floor(br.startMins / 60)).padStart(2, '0') +
+        ':' +
+        String(br.startMins % 60).padStart(2, '0');
+      breakStart = clockInstantOnShiftDay(shiftRow.iso, breakHm, start);
+      if (breakStart) breakEnd = new Date(breakStart.getTime() + br.duration * 60 * 1000);
+    }
+    return {
+      source: published ? 'Published' : 'Scheduled',
+      clockIn: clockIn,
+      clockOut: clockOut,
+      breakStart: breakStart,
+      breakEnd: breakEnd,
+    };
+  }
+
+  function formatExpectClock(date) {
+    if (!date || Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function clockVarianceAgainstExpected(actualIso, expectedDate) {
+    if (!expectedDate) return null;
+    if (!actualIso) return { delta: null, off: false };
+    var actual = new Date(actualIso);
+    if (Number.isNaN(actual.getTime())) return { delta: null, off: false };
+    var delta = Math.round((actual.getTime() - expectedDate.getTime()) / 60000);
+    return { delta: delta, off: Math.abs(delta) >= 30 };
+  }
+
+  function clockVarianceBubbleText(actualIso, expectedDate, sourceLabel) {
+    if (!expectedDate) return '';
+    var expectedLabel = formatExpectClock(expectedDate);
+    var variance = clockVarianceAgainstExpected(actualIso, expectedDate);
+    if (!variance || variance.delta == null) {
+      return sourceLabel + ' ' + expectedLabel + '. No time recorded yet.';
+    }
+    var recorded = formatExpectClock(new Date(actualIso));
+    if (variance.delta === 0) return 'On time. ' + sourceLabel + ' ' + expectedLabel + '.';
+    var gap = Math.abs(variance.delta);
+    var direction = variance.delta > 0 ? 'later' : 'earlier';
+    return (
+      gap +
+      ' min ' +
+      direction +
+      ' than ' +
+      sourceLabel.toLowerCase() +
+      ' ' +
+      expectedLabel +
+      ' (recorded ' +
+      recorded +
+      ').'
+    );
+  }
+
+  function syncPunchScheduleVariance() {
+    var expect = shiftScheduleExpect;
+    var shiftIso =
+      timecardState.shiftRow && timecardState.shiftRow.iso ? timecardState.shiftRow.iso : null;
+    var fields = [
+      { prefix: 'tcClockIn', expected: expect && expect.clockIn },
+      { prefix: 'tcClockOut', expected: expect && expect.clockOut },
+      { prefix: 'tcBreakStart', expected: expect && expect.breakStart },
+      { prefix: 'tcBreakEnd', expected: expect && expect.breakEnd },
+    ];
+    fields.forEach(function (field) {
+      var info = document.querySelector('[data-tc-sched-info="' + field.prefix + '"]');
+      var bubble = info ? info.querySelector('.tc-sched-info-bubble') : null;
+      var dateEl = document.getElementById(field.prefix + 'Date');
+      var timeEl = document.getElementById(field.prefix + 'Time');
+      var actual = field.expected ? readPunchDateTimeField(field.prefix, shiftIso) : null;
+      var variance = field.expected ? clockVarianceAgainstExpected(actual, field.expected) : null;
+      var off = !!(variance && variance.off);
+      if (dateEl) dateEl.classList.toggle('timecards-input--schedule-off', off);
+      if (timeEl) timeEl.classList.toggle('timecards-input--schedule-off', off);
+      if (!info) return;
+      if (!field.expected) {
+        info.hidden = true;
+        if (bubble) bubble.textContent = '';
+        return;
+      }
+      info.hidden = false;
+      var text = clockVarianceBubbleText(actual, field.expected, expect.source || 'Scheduled');
+      if (bubble) bubble.textContent = text;
+      info.setAttribute('aria-label', text);
+    });
+  }
+
   function renderDateTimeField(label, prefix, optional) {
     var opt = optional
       ? ' <span class="timecards-field-optional">(optional)</span>'
@@ -2560,7 +2749,12 @@
       '<span class="form-label">' +
       label +
       opt +
-      '</span>' +
+      '<span class="tc-sched-info" data-tc-sched-info="' +
+      prefix +
+      '" tabindex="0" hidden>' +
+      '<span class="tc-sched-info-mark" aria-hidden="true">i</span>' +
+      '<span class="tc-sched-info-bubble" role="tooltip"></span>' +
+      '</span></span>' +
       '<div class="timecards-datetime-row">' +
       '<input type="date" id="' +
       prefix +
@@ -3713,14 +3907,16 @@
     return byEmp;
   }
 
-  /** Repaint per-employee and roster grand totals after per-day extras change (tips, VL/SL). */
+  /** Repaint the open employee summary. The full roster rebuild waits until that screen is showing. */
   function refreshTimecardGrandTotals(emp) {
     if (!emp) return;
+    rosterCacheRowsDirty = true;
     var summaryMount = document.getElementById('timecardsEmployeeSummary');
-    if (summaryMount) {
+    if (summaryMount && timecardsEmployeeScreenActive()) {
       summaryMount.innerHTML = renderEmployeeWeekSummary(emp);
       wireEmployeeBorrowToggle(emp);
     }
+    if (!timecardsRosterScreenActive()) return;
     if (!rosterCache && timecardsModuleScreenActive()) {
       buildRosterCacheFromCurrentWeek();
     }
@@ -3758,28 +3954,24 @@
   }
 
   function readShiftDishwasherTipGrossFromForm() {
-    return readShiftDishwasherTipFromForm();
+    var el = document.getElementById('tcDishwasherTip');
+    if (!el) return 0;
+    var rid = el.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
+    var emp = findEmployeeByIdLocal(el.getAttribute('data-timecard-employee-id'));
+    return grossFromNetTip(normalizeDishwasherTipAmount(el.value), rid, emp);
   }
 
   function syncShiftDishwasherTipNetDisplay() {
     var hintEl = document.getElementById('tcDishwasherTipNetHint');
     var tipEl = document.getElementById('tcDishwasherTip');
     if (!hintEl || !tipEl) return;
-    var rid = tipEl.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
-    var empId = tipEl.getAttribute('data-timecard-employee-id');
-    var emp = findEmployeeByIdLocal(empId);
-    var pct = DISHWASHER_TIP_TAKEHOME_PCT;
-    var cut = Math.round((100 - pct) * 100) / 100;
-    var gross = normalizeDishwasherTipAmount(tipEl.value);
-    var net = netTipAmount(gross, rid, emp);
+    var net = normalizeDishwasherTipAmount(tipEl.value);
     hintEl.textContent =
-      gross > 0
-        ? 'Pay totals deduct ' +
-          String(cut) +
-          '% of this amount. This day pays ' +
+      net > 0
+        ? 'Net after the 5% cut. Grand totals and the full report use ' +
           formatPayAmount(net) +
           '.'
-        : 'Enter the delivery tip for this day. Pay totals deduct ' + String(cut) + '%.';
+        : 'Enter the delivery tip after the 5% cut. Grand totals and the full report use this net amount.';
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -6042,6 +6234,7 @@
     var extra = [];
     (d().employees || []).forEach(function (emp) {
       if (!emp || !emp.id || seen[String(emp.id)]) return;
+      if (employeeIsDeactivated(emp)) return;
       if (!employeeHasSingleStorePayroll(emp)) return;
       if (employeePayrollHomeRestaurantId(emp) === loc) return;
       if (employeeTipPointNumber(emp) <= 0) return;
@@ -7028,8 +7221,8 @@
     }
     xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
     if (payrollGross) {
-      /* Gross pay is wages (and coverage). SoH is listed beside it and is not added in.
-         Delivery staff tips are listed in TIPS and are not added into gross either. */
+      /* Wages plus coverage. SoH (Payroll TOTAL SOH / GROSS WITH SOH) stays off this total
+         at every store. Delivery tips stay in TIPS and stay off gross for delivery staff. */
       var grossFormula = '=' + payrollGross + '+' + (payrollCoverage || '0');
       if (!isDeliveryDishwasherStaff(row.emp)) {
         grossFormula += '+' + (payrollDelivery || '0');
@@ -8339,9 +8532,9 @@
       xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
     }
 
-    /* Total Paid is wages plus VL/SL. SoH stays on its own line. Delivery tips stay on their own line. */
+    /* Total Paid is wages plus VL/SL only. The SoH line above is not part of this sum. */
     var totalPaidFormula =
-      '=SUM(' + payStubAbsRef(vlSlRow, DC(3)) + ',' + totalPayCell + ')';
+      '=' + payStubAbsRef(vlSlRow, DC(3)) + '+' + totalPayCell;
     xlSetFormula(ws, headerPaidRow, DC(10), totalPaidFormula, S.moneyUnderline, PAY_STUB_AMOUNT_Z);
 
     var reportBottom = r;
@@ -12313,9 +12506,22 @@
       break_end_at: row.break_end_at || null,
       break_paid: row.break_paid,
       schedule_shift_id: row.schedule_shift_id || null,
+      clock_restaurant_id: row.clock_restaurant_id || null,
       edit_history: row.edit_history || [],
       updated_at: new Date().toISOString(),
     };
+  }
+
+  function removeLocalWeekEntry(entryId) {
+    if (!entryId) return;
+    var id = String(entryId);
+    weekEntries = (weekEntries || []).filter(function (e) {
+      return !e || String(e.id) !== id;
+    });
+    var cacheKey = activeWeekEntriesCacheKey || weekExtrasStorageKey(payWeekBounds());
+    weekEntriesCacheByKey[cacheKey] = weekEntries.slice();
+    activeWeekEntriesCacheKey = cacheKey;
+    rebuildWeekEntriesIndex();
   }
 
   /**
@@ -12732,7 +12938,13 @@
               syncShiftDishwasherTipNetDisplay();
               return;
             }
-            setEmployeeDayDishwasherTip(emp.id, iso, val, undefined, rid);
+            setEmployeeDayDishwasherTip(
+              emp.id,
+              iso,
+              grossFromNetTip(val, rid, emp),
+              undefined,
+              rid
+            );
             syncShiftDishwasherTipNetDisplay();
           }
         } else if (field === 'additionalCashTip') {
@@ -13341,24 +13553,15 @@
       (isDeliveryDishwasherStaff(emp)
         ? (function () {
             var tipRest = dishwasherTipRestaurantForShiftRow(shiftRow, emp);
-            var grossTip = getEmployeeDayDishwasherTip(
-              emp,
-              shiftRow.iso,
-              undefined,
-              tipRest
-            );
-            var tipPct = DISHWASHER_TIP_TAKEHOME_PCT;
-            var tipCut = Math.round((100 - tipPct) * 100) / 100;
+            var netTip = getEmployeeDayDishwasherTipNet(emp, shiftRow.iso, undefined, tipRest);
             var tipHint =
-              grossTip > 0
-                ? 'Pay totals deduct ' +
-                  String(tipCut) +
-                  '% of this amount. This day pays ' +
-                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
+              netTip > 0
+                ? 'Net after the 5% cut. Grand totals and the full report use ' +
+                  formatPayAmount(netTip) +
                   '.'
-                : 'Enter the delivery tip for this day. Pay totals deduct ' + String(tipCut) + '%.';
+                : 'Enter the delivery tip after the 5% cut. Grand totals and the full report use this net amount.';
             return (
-              '<div><dt>Delivery tip</dt><dd>' +
+              '<div><dt>Net delivery tip</dt><dd>' +
               '<input type="number" class="timecards-extra-input timecards-extra-input--money" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
               d().escapeHtml(shiftRow.iso) +
               '" data-timecard-restaurant-id="' +
@@ -13366,7 +13569,7 @@
               '" data-timecard-employee-id="' +
               d().escapeHtml(emp.id) +
               '" min="0" step="0.01" inputmode="decimal" value="' +
-              d().escapeHtml(String(grossTip)) +
+              d().escapeHtml(String(netTip || 0)) +
               '" />' +
               '<p class="calendar-hint timecards-tip-takehome-hint" id="tcDishwasherTipNetHint">' +
               d().escapeHtml(tipHint) +
@@ -13472,6 +13675,7 @@
       histHtml +
       '</ul></section></div>';
 
+    shiftScheduleExpect = buildShiftScheduleExpect(emp, shiftRow);
     loadPunchIntoForm(editingEntry, shiftRow, schedBreak);
     var form = document.getElementById('timecardsShiftForm');
     if (form) {
@@ -13636,6 +13840,7 @@
   }
 
   function updateRecordedPreview() {
+    syncPunchScheduleVariance();
     var prev = document.getElementById('timecardsRecordedPreview');
     if (!prev) return;
     var shiftIso =
@@ -13923,6 +14128,7 @@
     setSaveStatus('Saving…', false);
     if (saveBtn) saveBtn.disabled = true;
     timeClockSaveInFlight = true;
+    var punchWriteInBackground = false;
     try {
     /* Do not full-reload the week before save — that alone could take 10–20s. */
     var editingId = timecardState.entryId;
@@ -14123,47 +14329,60 @@
     }
     row.edit_history = hist;
 
-    var rpcRes = await callManagerSaveRpc(sb, row, editingId, br, breakStartIso, breakEndIso);
-    if (rpcRes.error) {
-      var errMsg = managerSaveErrorMessage(rpcRes);
-      alert(errMsg);
-      setSaveStatus(errMsg, true);
-      return;
+    if (priorEntry && priorEntry.clock_restaurant_id && !row.clock_restaurant_id) {
+      row.clock_restaurant_id = priorEntry.clock_restaurant_id;
     }
-    if (!rpcRes.data || rpcRes.data.ok !== true) {
-      var rpcErr = managerSaveErrorMessage(rpcRes);
-      alert(rpcErr);
-      setSaveStatus(rpcErr, true);
-      return;
-    }
-    if (rpcRes.data.id) {
-      timecardState.entryId = rpcRes.data.id;
-    }
-    var localEntry = entryFromManagerSave(rpcRes.data, row);
-    if (localEntry) upsertLocalWeekEntry(localEntry);
-    var pendingLeave = readShiftDayLeaveFromForm(emp, shiftRow.iso);
+    var timesUnchanged =
+      priorEntry &&
+      (priorEntry.clock_in_at || null) === (inIso || null) &&
+      (priorEntry.clock_out_at || null) === (outIso || null) &&
+      Number(priorEntry.break_minutes || 0) === br &&
+      (priorEntry.break_start_at || null) === (breakStartIso || null) &&
+      (priorEntry.break_end_at || null) === (breakEndIso || null) &&
+      (priorEntry.break_paid == null ? breakPaidOverride == null : priorEntry.break_paid === breakPaidOverride);
+    var pendingLeaveNow = readShiftDayLeaveFromForm(emp, shiftRow.iso);
     persistShiftDayTipsFromForm(emp, shiftRow);
-    setEmployeeDayLeave(emp.id, shiftRow.iso, pendingLeave.vl, pendingLeave.sl);
-    if (typeof d().flushTimecardPayrollSync === 'function') {
-      d().flushTimecardPayrollSync();
-    }
-    /*
-     * Persist tips/VL/SL before leaving the form so the week list and a later
-     * cloud poll cannot snapshot the previous net delivery tip.
-     */
+    setEmployeeDayLeave(emp.id, shiftRow.iso, pendingLeaveNow.vl, pendingLeaveNow.sl);
+    var optimisticId = editingId || 'local-' + emp.id + '-' + shiftRow.iso;
+    upsertLocalWeekEntry(entryFromManagerSave({ id: optimisticId }, row));
     setSaveStatus('Saved.', false);
     syncRosterRowForEmployee(emp);
     returnToEmployeeShifts(emp);
-    /* Background SoT reconcile — do not block the Save button on a full-week refetch. */
-    void loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
+    setTimeout(function () {
+      if (typeof d().flushTimecardPayrollSync === 'function') d().flushTimecardPayrollSync();
+    }, 0);
+    if (timesUnchanged) return;
+    punchWriteInBackground = true;
+    void (async function () {
+      try {
+        var rpcRes = await callManagerSaveRpc(sb, row, editingId, br, breakStartIso, breakEndIso);
+        if (rpcRes.error || !rpcRes.data || rpcRes.data.ok !== true) {
+          var errMsg = managerSaveErrorMessage(rpcRes);
+          alert(errMsg);
+          return;
+        }
+        if (rpcRes.data.id && String(rpcRes.data.id) !== String(optimisticId)) {
+          removeLocalWeekEntry(optimisticId);
+        }
+        var savedEntry = entryFromManagerSave(rpcRes.data, row);
+        if (savedEntry) upsertLocalWeekEntry(savedEntry);
+        await loadWeekEntries({ force: true, skipPrior: true, skipOpen: true });
+      } finally {
+        timeClockSaveInFlight = false;
+        flushDeferredTimeClockRemoteRefresh();
+      }
+    })();
     } catch (ex) {
+      punchWriteInBackground = false;
       var errMsg = (ex && ex.message) || 'Save failed.';
       alert(errMsg);
       setSaveStatus(errMsg, true);
     } finally {
-      timeClockSaveInFlight = false;
       if (saveBtn) saveBtn.disabled = false;
-      flushDeferredTimeClockRemoteRefresh();
+      if (!punchWriteInBackground) {
+        timeClockSaveInFlight = false;
+        flushDeferredTimeClockRemoteRefresh();
+      }
     }
   }
 
@@ -14486,6 +14705,8 @@
       },
       timecardsExportFileBase: timecardsExportFileBase,
       employeeVisibleAtCurrentLocation: employeeVisibleAtCurrentLocation,
+      clockVarianceAgainstExpected: clockVarianceAgainstExpected,
+      grossFromNetTip: grossFromNetTip,
       employeePrimaryLocationId: employeePrimaryLocationId,
       employeeOnMainScheduleThisWeek: employeeOnMainScheduleThisWeek,
       employeeOnFullReportThisWeek: employeeOnFullReportThisWeek,

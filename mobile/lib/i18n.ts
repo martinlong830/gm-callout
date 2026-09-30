@@ -595,10 +595,10 @@ const EN: Dict = {
   'team.deactivate': 'Deactivate employee',
   'team.reactivate': 'Reactivate employee',
   'team.deactivateHint':
-    'Hides this person from Team and new schedule assignments. Existing shifts and timecards stay. This is not deletion.',
-  'team.reactivateHint': 'Shows this person on Team and in new schedule assignments again.',
+    'Hides this person from timecards, payroll, messages, and new assignments. They stay on Team only when Show deactivated is on. Existing schedule tiles stay until you change them. This is not deletion.',
+  'team.reactivateHint': 'Shows this person on Team, timecards, and new schedule assignments again.',
   'team.deactivateConfirm':
-    'Deactivate "{name}"? They will be hidden from Team until you turn on Show deactivated and reactivate them. Existing shifts and timecards stay.',
+    'Deactivate "{name}"? They will be hidden from timecards and the rest of the app. Turn on Show deactivated on Team to reactivate them. Existing schedule tiles stay until you change them.',
 
   'requests.searchEmployee': 'Search employee name',
   'requests.employeeCallout': 'Employee call-out',
@@ -1486,10 +1486,10 @@ const ES: Dict = {
   'team.deactivate': 'Desactivar empleado',
   'team.reactivate': 'Reactivar empleado',
   'team.deactivateHint':
-    'Oculta a esta persona del equipo y de asignaciones nuevas. Los turnos y las tarjetas de tiempo existentes se conservan. Esto no es una eliminación.',
-  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo y en las asignaciones nuevas.',
+    'Oculta a esta persona de las tarjetas de tiempo, la nómina, los mensajes y las asignaciones nuevas. Solo aparece en Equipo si activas Mostrar desactivados. Los turnos ya puestos en el horario se quedan hasta que los cambies. Esto no es una eliminación.',
+  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo, las tarjetas de tiempo y las asignaciones nuevas.',
   'team.deactivateConfirm':
-    '¿Desactivar a "{name}"? Quedará oculta en Equipo hasta que actives Mostrar desactivados y la reactives. Los turnos y las tarjetas de tiempo existentes se conservan.',
+    '¿Desactivar a "{name}"? Quedará oculta en las tarjetas de tiempo y en el resto de la app. Activa Mostrar desactivados en Equipo para reactivarla. Los turnos ya puestos en el horario se quedan hasta que los cambies.',
 
   'requests.searchEmployee': 'Buscar nombre de empleado',
   'requests.employeeCallout': 'Falta de empleado',

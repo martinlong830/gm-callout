@@ -168,10 +168,11 @@ export function ManagerFileStaffRequest({
   ]);
 
   const swapCoworkers = useMemo(() => {
-    const pool =
+    const pool = (
       storeFilter === 'all'
         ? employees
-        : employees.filter((e) => employeeMatchesUsualLocation(e.usualRestaurant, storeFilter));
+        : employees.filter((e) => employeeMatchesUsualLocation(e.usualRestaurant, storeFilter))
+    ).filter((e) => !employeeIsDeactivated(e));
     return coworkerSwapTargets(pool, workerName, selected?.id);
   }, [employees, workerName, selected?.id, storeFilter]);
 

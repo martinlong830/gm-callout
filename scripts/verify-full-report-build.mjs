@@ -655,12 +655,9 @@ Object.keys(payslipSheet.worksheet).forEach((addr) => {
   const paid = payslipSheet.worksheet[paidAddr];
   const formula = paid && paid.f ? String(paid.f) : '';
   const normalized = formula.charAt(0) === '=' ? formula.slice(1) : formula;
-  if (normalized.indexOf('SUM(') !== 0) {
-    throw new Error('Payslip Total Paid formula missing at ' + paidAddr + ': ' + formula);
-  }
-  const inner = normalized.slice(4, -1);
-  if (inner.split(',').length !== 2) {
-    throw new Error('Payslip Total Paid should be wages plus VL/SL only: ' + formula);
+  const parts = normalized.split('+').map((p) => p.trim()).filter(Boolean);
+  if (parts.length !== 2 || /Payroll!\$?[MN]\d/.test(formula)) {
+    throw new Error('Payslip Total Paid should be wages plus VL/SL only, with no SoH: ' + formula);
   }
   paidChecks += 1;
 });
@@ -1982,6 +1979,22 @@ await verifyPayslipPatchedExport();
   if (!T.employeeVisibleAtCurrentLocation(eboth8Emp)) {
     throw new Error('single-store 8th employee must stay on the 9th timecards page while working there');
   }
+  const deactivatedEmp = {
+    id: 'natalio-off',
+    firstName: 'Natalio',
+    lastName: 'Off',
+    staffType: 'Kitchen',
+    usualRestaurant: 'rp-9',
+    meta: { deactivated: true },
+  };
+  T.setTimecardsLocationFilterForTest('all');
+  if (T.employeeVisibleAtCurrentLocation(deactivatedEmp)) {
+    throw new Error('deactivated employee must be hidden from timecards');
+  }
+  T.setTimecardsLocationFilterForTest('rp-9');
+  if (T.employeeVisibleAtCurrentLocation(deactivatedEmp)) {
+    throw new Error('deactivated employee must be hidden from the home-store timecards page');
+  }
 
   if (!ninthSheet.eboth || ninthSheet.eboth.row.isTipBorrowRow) {
     throw new Error('9th Payroll must list single-store BOTH STORES as a paycheck row');
@@ -2085,6 +2098,55 @@ await verifyPayslipPatchedExport();
   }
   T.setTimecardsLocationFilterForTest('rp-9');
   localStorage.setItem('gm-timecard-week-tip-pool-v1', '{}');
+  const noon = new Date(2026, 4, 18, 12, 0, 0, 0);
+  const late29 = new Date(2026, 4, 18, 12, 29, 0, 0).toISOString();
+  const late30 = new Date(2026, 4, 18, 12, 30, 0, 0).toISOString();
+  const early30 = new Date(2026, 4, 18, 11, 30, 0, 0).toISOString();
+  const v29 = T.clockVarianceAgainstExpected(late29, noon);
+  const v30 = T.clockVarianceAgainstExpected(late30, noon);
+  const vEarly = T.clockVarianceAgainstExpected(early30, noon);
+  if (!v29 || v29.off || v29.delta !== 29) {
+    throw new Error('29 min late must stay unhighlighted, got ' + JSON.stringify(v29));
+  }
+  if (!v30 || !v30.off || v30.delta !== 30) {
+    throw new Error('30 min late must highlight, got ' + JSON.stringify(v30));
+  }
+  if (!vEarly || !vEarly.off || vEarly.delta !== -30) {
+    throw new Error('30 min early must highlight, got ' + JSON.stringify(vEarly));
+  }
+  const gross100 = T.grossFromNetTip(95);
+  if (T.netTipAmount(gross100) !== 95) {
+    throw new Error('Net delivery tip 95 must round-trip through storage, got gross ' + gross100);
+  }
+  ['rp-9', 'rp-8'].forEach(function (loc) {
+    T.setTimecardsLocationFilterForTest(loc);
+    T.invalidateFullReportSheetsCache();
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    const cpa = (sheets.find((s) => s.name === 'CPA') || {}).worksheet || {};
+    const slip = (sheets.find((s) => s.name === 'Payslip') || {}).worksheet || {};
+    Object.keys(cpa).forEach(function (addr) {
+      const cell = cpa[addr];
+      if (!cell || !cell.f || addr.replace(/\d+/g, '') !== 'M') return;
+      const formula = String(cell.f);
+      if (/Payroll!\$?[MN]\d/.test(formula)) {
+        throw new Error(loc + ' CPA gross still adds SoH: ' + formula);
+      }
+    });
+    Object.keys(slip).forEach(function (addr) {
+      const cell = slip[addr];
+      if (!cell || cell.v !== 'Total Paid') return;
+      const m = addr.match(/^([A-Z]+)(\d+)$/);
+      if (!m) return;
+      const paidAddr = excelColLetters(excelColNum(m[1]) + 2) + m[2];
+      const formula = slip[paidAddr] && slip[paidAddr].f ? String(slip[paidAddr].f) : '';
+      if (/Payroll!\$?[MN]\d/.test(formula)) {
+        throw new Error(loc + ' payslip Total Paid still adds SoH: ' + formula);
+      }
+    });
+  });
+  T.setTimecardsLocationFilterForTest('rp-9');
+  console.log('OK: delivery tip net round-trips and SoH stays off CPA and payslip at both stores');
+  console.log('OK: punch times 30 min or more off schedule are flagged');
   console.log('OK: full-report payroll hours/pay follow single-store vs working-location punches');
   console.log('OK: single-store cross-store tips stay on the home paycheck; other store payroll shows tip points only');
 }

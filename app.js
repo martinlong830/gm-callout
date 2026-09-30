@@ -14398,11 +14398,12 @@
     return tipPayrollLeaveHoursTotal(row) <= 0;
   }
 
-  function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice, pendingDayMap) {
+  function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice, pendingDayMap, opts) {
     localSlice = localSlice && typeof localSlice === 'object' ? localSlice : {};
     remoteSlice = remoteSlice && typeof remoteSlice === 'object' ? remoteSlice : {};
     baselineSlice = baselineSlice && typeof baselineSlice === 'object' ? baselineSlice : {};
     pendingDayMap = pendingDayMap && typeof pendingDayMap === 'object' ? pendingDayMap : null;
+    opts = opts || {};
     var merged = Object.assign({}, remoteSlice);
     var keys = Object.create(null);
     Object.keys(localSlice).forEach(function (k) {
@@ -14417,6 +14418,17 @@
       var localVal = localHas ? localSlice[k] : undefined;
       var baseVal = baseHas ? baselineSlice[k] : undefined;
       if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
+        /*
+         * A stale cloud blob can omit a tip this browser already saved. Keep the
+         * local amount instead of treating that omission as a delete.
+         */
+        if (
+          opts.keepLocalWhenRemoteOmits &&
+          localHas &&
+          !Object.prototype.hasOwnProperty.call(remoteSlice, k)
+        ) {
+          merged[k] = localVal;
+        }
         return;
       }
       /*
@@ -14470,14 +14482,16 @@
     Object.keys(localDw).forEach(function (key) {
       var slice = localDw[key];
       if (!slice || typeof slice !== 'object') return;
-      if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
+      /* Always merge delivery tips. Skipping an unchanged week let a stale cloud
+         row that omitted a saved tip overwrite it on the next push. */
       mergedDw[key] = mergeTipPayrollWeekSliceForPush(
         slice,
         remoteDw[key],
         baseDw[key],
         tipPayrollPendingAckDishwasher[key] && typeof tipPayrollPendingAckDishwasher[key] === 'object'
           ? tipPayrollPendingAckDishwasher[key]
-          : null
+          : null,
+        { keepLocalWhenRemoteOmits: true }
       );
     });
     var mergedExtras = Object.assign({}, remoteExtras);
@@ -14824,6 +14838,7 @@
           localDwPush,
           tipPayrollPendingAckDishwasher
         );
+        retainLocalDishwasherTips(merged.dishwasher, localDwPush);
         restoreTipPayrollPendingAckTipPool(merged.tipPool, localTipPush, tipPayrollPendingAckTipPool);
         persistTimecardWeekTipPoolStore(merged.tipPool);
         persistTimecardDishwasherTipsStore(merged.dishwasher);
@@ -15279,6 +15294,29 @@
    * Never merge stale localStorage 0/0 over remote SL (iPhone Chrome bug).
    * Only pending-ack keys (conscious unacked edits) overlay remote.
    */
+  /** Saved delivery tips stay if a stale cloud row omitted them. */
+  function retainLocalDishwasherTips(nextDw, localDw) {
+    if (!nextDw || !localDw || typeof localDw !== 'object') return nextDw;
+    Object.keys(localDw).forEach(function (weekKey) {
+      var localWeek = localDw[weekKey];
+      if (!localWeek || typeof localWeek !== 'object') return;
+      var nextWeek =
+        nextDw[weekKey] && typeof nextDw[weekKey] === 'object'
+          ? Object.assign({}, nextDw[weekKey])
+          : {};
+      var touched = false;
+      Object.keys(localWeek).forEach(function (dayKey) {
+        if (Object.prototype.hasOwnProperty.call(nextWeek, dayKey)) return;
+        var amount = parseFloat(localWeek[dayKey]);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        nextWeek[dayKey] = localWeek[dayKey];
+        touched = true;
+      });
+      if (touched) nextDw[weekKey] = nextWeek;
+    });
+    return nextDw;
+  }
+
   function applyTipPayrollCloudAuthority(row, hasTipPool, hasDishwasher, hasWeekExtras, remoteTip, remoteDw, remoteExtras) {
     var localTip0 = loadTimecardWeekTipPoolStore();
     var localDw0 = loadTimecardDishwasherTipsStore();
@@ -15297,6 +15335,7 @@
     if (hasDishwasher) {
       nextDw = JSON.parse(JSON.stringify(nextDw || {}));
       restoreTipPayrollPendingAckKeys(nextDw, localDw0, tipPayrollPendingAckDishwasher);
+      retainLocalDishwasherTips(nextDw, localDw0);
     }
     var changed = false;
     if (hasTipPool) {
@@ -15423,6 +15462,7 @@
     );
     restoreTipPayrollPendingAckKeys(merged.weekExtras, localExtras, tipPayrollPendingAckExtras);
     restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
+    retainLocalDishwasherTips(merged.dishwasher, localDw);
     restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
     var changed = false;
     if (hasTipPool && remoteTip && Object.keys(remoteTip).length > 0) {
@@ -26324,6 +26364,7 @@
     const displayRole = STAFF_TYPE_LABELS[role] || role;
     return employees
       .filter(function (e) {
+        if (employeeIsDeactivated(e)) return false;
         return (normalizeEmployeeStaffType(e.staffType) || e.staffType) === role;
       })
       .map(function (emp) {
@@ -33461,9 +33502,9 @@
     if (hint) {
       hint.textContent = off
         ? gmT('team.reactivateHint') ||
-          'Shows this person on Team and in new schedule assignments again.'
+          'Shows this person on Team, timecards, and new schedule assignments again.'
         : gmT('team.deactivateHint') ||
-          'Hides this person from Team and new schedule assignments. Existing shifts and timecards stay. This is not deletion.';
+          'Hides this person from timecards, payroll, messages, and new assignments. They stay on Team only when Show deactivated is on. Existing schedule tiles stay until you change them. This is not deletion.';
     }
   }
 
@@ -33857,6 +33898,7 @@
   function listPendingAvailabilityEmployees(weekIndex) {
     return employeesInManagerStoreScope()
       .filter(function (emp) {
+        if (employeeIsDeactivated(emp)) return false;
         return getEmployeeAvailabilityWeekEntry(emp, weekIndex).status === 'submitted';
       })
       .sort(function (a, b) {
@@ -34028,6 +34070,9 @@
     });
     var prev = mgrAvailEmployeeId || sel.value || '';
     sel.innerHTML = sorted
+      .filter(function (emp) {
+        return !employeeIsDeactivated(emp);
+      })
       .map(function (emp) {
         return (
           '<option value="' +
@@ -36057,6 +36102,7 @@
       if (!name || name === 'Unassigned') return false;
       var emp = employeeByDisplayName(name);
       if (!emp) return true;
+      if (employeeIsDeactivated(emp)) return false;
       return employeeMatchesSlotStaffFilter(emp);
     });
     var q = String(searchQueryOpt || '').trim().toLowerCase();
@@ -39336,12 +39382,14 @@
           gmT('team.deactivateConfirm', { name: label }) ||
             'Deactivate "' +
               label +
-              '"?\n\nThey will be hidden from Team until you turn on Show deactivated and reactivate them. Existing shifts and timecards stay.'
+              '"?\n\nThey will be hidden from timecards and the rest of the app. Turn on Show deactivated on Team to reactivate them. Existing schedule tiles stay until you change them.'
         );
         if (!ok) return;
       }
       setEmployeeDeactivatedFlag(emp, nextOff);
       deactivateEmployeeBtn.disabled = true;
+      rebuildEmployeeDerivedData();
+      notifyTimecardsEmployeesChanged();
       void Promise.resolve(saveEmployees({ singleEmployee: emp })).then(function () {
         deactivateEmployeeBtn.disabled = false;
         syncEmployeeDeactivateButton(emp);
@@ -40604,6 +40652,7 @@
       var scope = !isEmp && gmCalloutSessionIsManager ? currentManagerStoreScope() : null;
       employees.forEach(function (e) {
         if (!e) return;
+        if (employeeIsDeactivated(e)) return;
         if (scope && !employeeVisibleInManagerStoreScope(e, scope)) return;
         var n = employeeDisplayName(e);
         if (isEmp && n === selfName) return;

@@ -62,7 +62,8 @@ function mergeTipPayrollWeekSliceForPush(
   localSlice: Record<string, unknown>,
   remoteSlice: Record<string, unknown>,
   baselineSlice: Record<string, unknown>,
-  pendingDayMap?: Record<string, true> | null
+  pendingDayMap?: Record<string, true> | null,
+  opts?: { keepLocalWhenRemoteOmits?: boolean }
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...remoteSlice };
   const keys = new Set([...Object.keys(localSlice), ...Object.keys(baselineSlice)]);
@@ -72,6 +73,13 @@ function mergeTipPayrollWeekSliceForPush(
     const localVal = localHas ? localSlice[k] : undefined;
     const baseVal = baseHas ? baselineSlice[k] : undefined;
     if (localHas === baseHas && tipPayrollSliceJson(localVal) === tipPayrollSliceJson(baseVal)) {
+      if (
+        opts?.keepLocalWhenRemoteOmits &&
+        localHas &&
+        !Object.prototype.hasOwnProperty.call(remoteSlice, k)
+      ) {
+        merged[k] = localVal;
+      }
       continue;
     }
     if (isTipPayrollLeaveDayKey(k)) {
@@ -116,12 +124,12 @@ function mergeTipPayrollStoresForPush(
   Object.keys(localDw).forEach((key) => {
     const slice = localDw[key];
     if (!isRecord(slice)) return;
-    if (tipPayrollSliceJson(slice) === tipPayrollSliceJson(baseDw[key])) return;
     mergedDw[key] = mergeTipPayrollWeekSliceForPush(
       slice,
       isRecord(remoteDw[key]) ? (remoteDw[key] as Record<string, unknown>) : {},
       isRecord(baseDw[key]) ? (baseDw[key] as Record<string, unknown>) : {},
-      tipPayrollPendingAckDishwasher[key] || null
+      tipPayrollPendingAckDishwasher[key] || null,
+      { keepLocalWhenRemoteOmits: true }
     );
   });
   const mergedExtras = { ...remoteExtras };
@@ -354,6 +362,29 @@ function cloneTipPayrollStore(store: Record<string, unknown>): Record<string, un
   }
 }
 
+/** Saved delivery tips stay if a stale cloud row omitted them. */
+function retainLocalDishwasherTips(
+  nextDw: Record<string, unknown>,
+  localDw: Record<string, unknown>
+): Record<string, unknown> {
+  if (!nextDw || !localDw) return nextDw;
+  Object.keys(localDw).forEach((weekKey) => {
+    const localWeek = localDw[weekKey];
+    if (!isRecord(localWeek)) return;
+    const nextWeek = isRecord(nextDw[weekKey]) ? { ...nextDw[weekKey] } : {};
+    let touched = false;
+    Object.keys(localWeek).forEach((dayKey) => {
+      if (Object.prototype.hasOwnProperty.call(nextWeek, dayKey)) return;
+      const amount = parseFloat(String(localWeek[dayKey]));
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      nextWeek[dayKey] = localWeek[dayKey];
+      touched = true;
+    });
+    if (touched) nextDw[weekKey] = nextWeek;
+  });
+  return nextDw;
+}
+
 /**
  * Cloud tip/VL/SL as SoT: first hydrate, Refresh, and open-tile.
  * Never merge stale AsyncStorage 0s over remote Square/DD/dishwasher amounts.
@@ -384,6 +415,7 @@ async function applyTipPayrollCloudAuthority(
   if (hasDishwasher) {
     nextDw = cloneTipPayrollStore(nextDw);
     restoreTipPayrollPendingAckKeys(nextDw, localDw0, tipPayrollPendingAckDishwasher);
+    retainLocalDishwasherTips(nextDw, localDw0);
   }
   let changed = false;
   if (hasTipPool) {
@@ -490,6 +522,7 @@ export async function applyTipPayrollFromTeamState(
   restoreTipPayrollPendingAckKeys(merged.weekExtras, localExtras, tipPayrollPendingAckExtras);
   restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
   restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
+  retainLocalDishwasherTips(merged.dishwasher, localDw);
   const nextBaseline = {
     tipPool: tipPayrollRemoteBaseline.tipPool,
     dishwasher: tipPayrollRemoteBaseline.dishwasher,
@@ -613,6 +646,7 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
       restoreTipPayrollPendingAckKeys(merged.weekExtras, localExtras, tipPayrollPendingAckExtras);
       restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
       restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
+      retainLocalDishwasherTips(merged.dishwasher, localDw);
       await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
       await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
       await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));

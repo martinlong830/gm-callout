@@ -28,6 +28,7 @@ import {
 import { saveEmployeeRow } from '../lib/employeeSave';
 import {
   employeeDisplayName,
+  employeeIsDeactivated,
   employeeVisibleInManagerStoreScope,
   managerManagedRestaurantId,
   type EmployeeRow,
@@ -91,8 +92,10 @@ export function AvailabilityScreen({ mode, selfEmployee }: Props) {
     const scope = mode === 'manager' ? managerManagedRestaurantId(myEmployee, role) : null;
     const list =
       mode === 'manager'
-        ? employees.filter((e) => employeeVisibleInManagerStoreScope(e, scope))
-        : employees;
+        ? employees.filter(
+            (e) => !employeeIsDeactivated(e) && employeeVisibleInManagerStoreScope(e, scope)
+          )
+        : employees.filter((e) => !employeeIsDeactivated(e));
     return [...list].sort(compareEmployeesByScheduleOrder);
   }, [employees, mode, myEmployee, role]);
 

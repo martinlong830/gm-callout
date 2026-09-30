@@ -537,10 +537,10 @@ window.GM_I18N_EN = {
   'team.deactivate': 'Deactivate employee',
   'team.reactivate': 'Reactivate employee',
   'team.deactivateHint':
-    'Hides this person from Team and new schedule assignments. Existing shifts and timecards stay. This is not deletion.',
-  'team.reactivateHint': 'Shows this person on Team and in new schedule assignments again.',
+    'Hides this person from timecards, payroll, messages, and new assignments. They stay on Team only when Show deactivated is on. Existing schedule tiles stay until you change them. This is not deletion.',
+  'team.reactivateHint': 'Shows this person on Team, timecards, and new schedule assignments again.',
   'team.deactivateConfirm':
-    'Deactivate "{name}"?\n\nThey will be hidden from Team until you turn on Show deactivated and reactivate them. Existing shifts and timecards stay.',
+    'Deactivate "{name}"?\n\nThey will be hidden from timecards and the rest of the app. Turn on Show deactivated on Team to reactivate them. Existing schedule tiles stay until you change them.',
   'team.employeeForm': 'Employee',
   'team.restaurantFilter': 'Restaurant',
   'team.roleFilter': 'Role',
