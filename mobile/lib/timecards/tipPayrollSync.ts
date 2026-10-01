@@ -63,7 +63,7 @@ function mergeTipPayrollWeekSliceForPush(
   remoteSlice: Record<string, unknown>,
   baselineSlice: Record<string, unknown>,
   pendingDayMap?: Record<string, true> | null,
-  opts?: { keepLocalWhenRemoteOmits?: boolean }
+  opts?: { keepLocalWhenRemoteOmits?: boolean; keepPositiveRemoteUnlessPendingDelete?: boolean }
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...remoteSlice };
   const keys = new Set([...Object.keys(localSlice), ...Object.keys(baselineSlice)]);
@@ -86,8 +86,18 @@ function mergeTipPayrollWeekSliceForPush(
       const leavePending = !!(pendingDayMap && pendingDayMap[k]);
       if (!leavePending) continue;
     }
-    if (!localHas) delete merged[k];
-    else merged[k] = localVal;
+    if (!localHas) {
+      if (opts?.keepPositiveRemoteUnlessPendingDelete) {
+        const pendingDelete = !!(pendingDayMap && pendingDayMap[k]);
+        if (!pendingDelete) {
+          const keptAmt = parseFloat(String(merged[k]));
+          if (Number.isFinite(keptAmt) && keptAmt > 0) continue;
+        }
+      }
+      delete merged[k];
+      continue;
+    }
+    merged[k] = localVal;
   }
   return merged;
 }
@@ -129,7 +139,7 @@ function mergeTipPayrollStoresForPush(
       isRecord(remoteDw[key]) ? (remoteDw[key] as Record<string, unknown>) : {},
       isRecord(baseDw[key]) ? (baseDw[key] as Record<string, unknown>) : {},
       tipPayrollPendingAckDishwasher[key] || null,
-      { keepLocalWhenRemoteOmits: true }
+      { keepLocalWhenRemoteOmits: true, keepPositiveRemoteUnlessPendingDelete: true }
     );
   });
   const mergedExtras = { ...remoteExtras };
@@ -362,6 +372,61 @@ function cloneTipPayrollStore(store: Record<string, unknown>): Record<string, un
   }
 }
 
+function dishwasherTipAmountPositive(val: unknown): number {
+  const n = typeof val === 'number' ? val : parseFloat(String(val));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Keep a delivery tip already stored on this device when a stale snapshot omits it. */
+function absorbPositiveDishwasherTips(
+  intoStore: Record<string, unknown>,
+  fromStore: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  if (!intoStore || !fromStore) return intoStore;
+  Object.keys(fromStore).forEach((weekKey) => {
+    const fromWeek = fromStore[weekKey];
+    if (!isRecord(fromWeek)) return;
+    const intoWeek = isRecord(intoStore[weekKey])
+      ? (intoStore[weekKey] as Record<string, unknown>)
+      : {};
+    let touched = false;
+    Object.keys(fromWeek).forEach((dayKey) => {
+      if (Object.prototype.hasOwnProperty.call(intoWeek, dayKey)) return;
+      if (dishwasherTipAmountPositive(fromWeek[dayKey]) <= 0) return;
+      intoWeek[dayKey] = fromWeek[dayKey];
+      touched = true;
+    });
+    if (touched) intoStore[weekKey] = intoWeek;
+  });
+  return intoStore;
+}
+
+function markPositiveDishwasherTipsOmittedByRemote(
+  store: Record<string, unknown> | null | undefined,
+  remoteStore: Record<string, unknown> | null | undefined
+): boolean {
+  let marked = false;
+  const local = isRecord(store) ? store : {};
+  const remote = isRecord(remoteStore) ? remoteStore : {};
+  Object.keys(local).forEach((weekKey) => {
+    const week = local[weekKey];
+    if (!isRecord(week)) return;
+    const remoteWeek = isRecord(remote[weekKey]) ? (remote[weekKey] as Record<string, unknown>) : {};
+    Object.keys(week).forEach((dayKey) => {
+      if (dishwasherTipAmountPositive(week[dayKey]) <= 0) return;
+      if (
+        Object.prototype.hasOwnProperty.call(remoteWeek, dayKey) &&
+        tipPayrollSliceJson(remoteWeek[dayKey]) === tipPayrollSliceJson(week[dayKey])
+      ) {
+        return;
+      }
+      markTipPayrollPendingAckMap(tipPayrollPendingAckDishwasher, weekKey, dayKey);
+      marked = true;
+    });
+  });
+  return marked;
+}
+
 /** Saved delivery tips stay if a stale cloud row omitted them. */
 function retainLocalDishwasherTips(
   nextDw: Record<string, unknown>,
@@ -423,7 +488,9 @@ async function applyTipPayrollCloudAuthority(
     changed = true;
   }
   if (hasDishwasher) {
+    absorbPositiveDishwasherTips(nextDw, localDw0);
     await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(nextDw));
+    markPositiveDishwasherTipsOmittedByRemote(nextDw, remoteDw || {});
     changed = true;
   }
   if (hasWeekExtras) {
@@ -432,7 +499,7 @@ async function applyTipPayrollCloudAuthority(
   }
   tipPayrollRemoteBaseline = {
     tipPool: hasTipPool ? remoteTip || {} : tipPayrollRemoteBaseline.tipPool || {},
-    dishwasher: hasDishwasher ? remoteDw || {} : tipPayrollRemoteBaseline.dishwasher || {},
+    dishwasher: hasDishwasher ? cloneTipPayrollStore(nextDw) : tipPayrollRemoteBaseline.dishwasher || {},
     weekExtras: hasWeekExtras ? remoteExtras || {} : tipPayrollRemoteBaseline.weekExtras || {},
   };
   tipPayrollBaselineReady = true;
@@ -523,6 +590,7 @@ export async function applyTipPayrollFromTeamState(
   restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
   restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
   retainLocalDishwasherTips(merged.dishwasher, localDw);
+  if (hasDishwasher) markPositiveDishwasherTipsOmittedByRemote(merged.dishwasher, remoteDw || {});
   const nextBaseline = {
     tipPool: tipPayrollRemoteBaseline.tipPool,
     dishwasher: tipPayrollRemoteBaseline.dishwasher,
@@ -539,8 +607,13 @@ export async function applyTipPayrollFromTeamState(
     changed = true;
   }
   if (hasDishwasher && remoteDw && Object.keys(remoteDw).length > 0) {
+    absorbPositiveDishwasherTips(merged.dishwasher, localDw);
     await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
     nextBaseline.dishwasher = remoteDw;
+    changed = true;
+  } else if (hasDishwasher && tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)) {
+    absorbPositiveDishwasherTips(merged.dishwasher, localDw);
+    await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
     changed = true;
   }
   if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {
@@ -647,6 +720,7 @@ export async function pushTipPayrollToSupabase(sb: SupabaseClient): Promise<void
       restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
       restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
       retainLocalDishwasherTips(merged.dishwasher, localDw);
+      absorbPositiveDishwasherTips(merged.dishwasher, await loadDishwasherTipsStore());
       await AsyncStorage.setItem(TIMECARD_WEEK_TIP_POOL_KEY, JSON.stringify(merged.tipPool));
       await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(merged.dishwasher));
       await AsyncStorage.setItem(TIMECARD_WEEK_EXTRAS_KEY, JSON.stringify(merged.weekExtras));

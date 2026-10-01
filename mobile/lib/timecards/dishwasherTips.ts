@@ -1,13 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isSupabaseConfigured, supabase } from '../supabase';
-import { entryHasMeaningfulPunch } from './offScheduleShift';
 import { isoFromDate, weekBoundsStorageKey } from './payWeek';
 import {
   queueTipPayrollPushToSupabase,
   markTimecardDishwasherTipPendingAck,
   TIMECARD_DISHWASHER_TIPS_KEY,
 } from './tipPayrollSync';
-import { getEmployeeDayLeaveSync, type WeekExtrasSlice } from './weekExtras';
+import type { WeekExtrasSlice } from './weekExtras';
 import type { LocationFilter } from './restaurantAttribution';
 import { netTipAmount, tipTakehomePctForRestaurant } from './tipTakehome';
 import type { PayWeekBounds, TimeClockEntry } from './types';
@@ -66,23 +65,6 @@ function parseDishwasherTipStorageKey(key: string): {
   const at = key.indexOf('@');
   if (at < 0) return null;
   return { restaurantId: 'rp-9', empId: key.slice(0, at), iso: key.slice(at + 1) };
-}
-
-function dayHasBackingShiftForDishwasherTips(
-  empId: string,
-  iso: string,
-  entries?: TimeClockEntry[],
-  extrasSlice?: WeekExtrasSlice
-): boolean {
-  if (!empId || !iso) return false;
-  for (const e of entries ?? []) {
-    if (e.employee_id !== empId || !e.clock_in_at) continue;
-    const punchIso = isoFromDate(new Date(e.clock_in_at));
-    if (punchIso === iso && entryHasMeaningfulPunch(e, iso)) return true;
-  }
-  const leave = getEmployeeDayLeaveSync(empId, iso, extrasSlice ?? {});
-  if (leave.vl > 0 || leave.sl > 0) return true;
-  return false;
 }
 
 function normalizeTipAmount(val: unknown): number {
@@ -152,7 +134,17 @@ export function getEmployeeDayDishwasherTipSync(
     const legacy = slice[`${empId}@${iso}`];
     if (legacy != null) return normalizeTipAmount(legacy);
   }
-  return 0;
+  let only = 0;
+  let onlyCount = 0;
+  for (const k of Object.keys(slice)) {
+    const parsed = parseDishwasherTipStorageKey(k);
+    if (!parsed || parsed.empId !== empId || parsed.iso !== iso) continue;
+    const amt = normalizeTipAmount(slice[k]);
+    if (amt <= 0) continue;
+    onlyCount += 1;
+    only = amt;
+  }
+  return onlyCount === 1 ? only : 0;
 }
 
 /** Apply take-home % once per restaurant on summed gross (avoids penny drift from daily nets). */
@@ -219,14 +211,35 @@ export async function setEmployeeDayDishwasherTip(
   const rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
   const key = dayDishwasherTipStorageKey(empId, iso, rid);
   const val = normalizeTipAmount(amount);
-  for (const k of Object.keys(slice)) {
-    if (k === key) continue;
+  const priorAmt = normalizeTipAmount(slice[key]);
+  const others = Object.keys(slice).filter((k) => {
+    if (k === key) return false;
     const parsed = parseDishwasherTipStorageKey(k);
-    if (parsed && parsed.empId === empId && parsed.iso === iso) delete slice[k];
+    return !!(parsed && parsed.empId === empId && parsed.iso === iso);
+  });
+  const touched = [key];
+  let siblingKeys = others;
+  if (rid === 'rp-9') {
+    const legacyKey = `${empId}@${iso}`;
+    if (Object.prototype.hasOwnProperty.call(slice, legacyKey)) {
+      delete slice[legacyKey];
+      touched.push(legacyKey);
+      siblingKeys = others.filter((k) => k !== legacyKey);
+    }
   }
-  delete slice[`${empId}@${iso}`];
-  if (val <= 0) delete slice[key];
-  else slice[key] = val;
+  if (val > 0) {
+    slice[key] = val;
+    if (priorAmt <= 0 && siblingKeys.length === 1) {
+      delete slice[siblingKeys[0]];
+      touched.push(siblingKeys[0]);
+    }
+  } else {
+    delete slice[key];
+    if (siblingKeys.length === 1) {
+      delete slice[siblingKeys[0]];
+      touched.push(siblingKeys[0]);
+    }
+  }
   try {
     const raw = await AsyncStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
@@ -234,7 +247,8 @@ export async function setEmployeeDayDishwasherTip(
     await AsyncStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(next));
     cachedDishwasherTipsKey = weekBoundsStorageKey(bounds);
     cachedDishwasherTipsSlice = slice;
-    markTimecardDishwasherTipPendingAck(weekBoundsStorageKey(bounds), key);
+    const weekKey = weekBoundsStorageKey(bounds);
+    touched.forEach((k) => markTimecardDishwasherTipPendingAck(weekKey, k));
     if (isSupabaseConfigured && supabase) {
       queueTipPayrollPushToSupabase(supabase);
     }
@@ -271,12 +285,6 @@ export function sumEmployeeWeekDishwasherTipsSync(
     if (!parsed || parsed.empId !== empId) continue;
     if (parsed.iso < weekStart || parsed.iso > weekEnd) continue;
     if (locationFilter !== 'all' && parsed.restaurantId !== locationFilter) continue;
-    if (
-      options &&
-      !dayHasBackingShiftForDishwasherTips(empId, parsed.iso, options.entries, options.extrasSlice)
-    ) {
-      continue;
-    }
     const gross = normalizeTipAmount(slice[k]);
     if (asNet) {
       grossByRestaurant[parsed.restaurantId] =

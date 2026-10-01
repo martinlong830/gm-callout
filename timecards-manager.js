@@ -2273,7 +2273,18 @@
       var legacy = slice[emp.id + '@' + iso];
       if (legacy != null) return normalizeDishwasherTipAmount(legacy);
     }
-    return 0;
+    /* A tip saved under the other store (or a legacy key) still shows on this shift. */
+    var only = 0;
+    var onlyCount = 0;
+    Object.keys(slice).forEach(function (k) {
+      var parsed = parseDishwasherTipStorageKey(k);
+      if (!parsed || parsed.empId !== emp.id || parsed.iso !== iso) return;
+      var amt = normalizeDishwasherTipAmount(slice[k]);
+      if (amt <= 0) return;
+      onlyCount += 1;
+      only = amt;
+    });
+    return onlyCount === 1 ? only : 0;
   }
 
   function getEmployeeDayDishwasherTipNet(emp, iso, bounds, restaurantId) {
@@ -2297,6 +2308,15 @@
     return netFromGrossByRestaurant(grossByRestaurant, emp);
   }
 
+  function dishwasherTipKeysForEmployeeDay(slice, empId, iso) {
+    var keys = [];
+    Object.keys(slice || {}).forEach(function (k) {
+      var parsed = parseDishwasherTipStorageKey(k);
+      if (parsed && parsed.empId === empId && parsed.iso === iso) keys.push(k);
+    });
+    return keys;
+  }
+
   function setEmployeeDayDishwasherTip(empId, iso, amount, bounds, restaurantId) {
     bounds = bounds || payWeekBounds();
     if (!empId || !iso) return;
@@ -2304,13 +2324,41 @@
     var rid = restaurantId || RP2_DELIVERY_TIP_LOCATION;
     var key = dishwasherTipStorageKey(empId, iso, rid);
     var val = normalizeDishwasherTipAmount(amount);
-    /* Drop only the legacy unscoped key. Other-store tips for this day must stay. */
-    if (rid === 'rp-9') delete slice[empId + '@' + iso];
-    if (val <= 0) delete slice[key];
-    else slice[key] = val;
+    var weekKey = weekExtrasStorageKey(bounds);
+    var touched = [key];
+    var priorAmt = normalizeDishwasherTipAmount(slice[key]);
+    var others = dishwasherTipKeysForEmployeeDay(slice, empId, iso).filter(function (k) {
+      return k !== key;
+    });
+    if (rid === 'rp-9') {
+      var legacyKey = empId + '@' + iso;
+      if (Object.prototype.hasOwnProperty.call(slice, legacyKey)) {
+        delete slice[legacyKey];
+        touched.push(legacyKey);
+        others = others.filter(function (k) {
+          return k !== legacyKey;
+        });
+      }
+    }
+    if (val > 0) {
+      slice[key] = val;
+      /* The field showed the only other-store copy. Move it here so it is not counted twice. */
+      if (priorAmt <= 0 && others.length === 1) {
+        delete slice[others[0]];
+        touched.push(others[0]);
+      }
+    } else {
+      delete slice[key];
+      if (others.length === 1) {
+        delete slice[others[0]];
+        touched.push(others[0]);
+      }
+    }
     saveDishwasherTipsMap(bounds, slice);
     if (d().markTimecardDishwasherTipPendingAck) {
-      d().markTimecardDishwasherTipPendingAck(weekExtrasStorageKey(bounds), key);
+      touched.forEach(function (k) {
+        d().markTimecardDishwasherTipPendingAck(weekKey, k);
+      });
     }
   }
 
@@ -2359,7 +2407,6 @@
       if (!parsed || parsed.empId !== emp.id) return;
       if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
       if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
-      if (!dayHasBackingShiftForDishwasherTips(emp.id, parsed.iso)) return;
       grossByRestaurant[parsed.restaurantId] =
         (grossByRestaurant[parsed.restaurantId] || 0) + normalizeDishwasherTipAmount(slice[k]);
     });
@@ -2379,7 +2426,6 @@
       if (!parsed) return;
       if (parsed.iso < weekStart || parsed.iso > weekEnd) return;
       if (!dishwasherTipMatchesLocationFilter(parsed, loc)) return;
-      if (!dayHasBackingShiftForDishwasherTips(parsed.empId, parsed.iso)) return;
       if (!grossByEmpRid[parsed.empId]) grossByEmpRid[parsed.empId] = Object.create(null);
       grossByEmpRid[parsed.empId][parsed.restaurantId] =
         (grossByEmpRid[parsed.empId][parsed.restaurantId] || 0) +
@@ -5570,7 +5616,7 @@
     return n == null ? 0 : n;
   }
 
-  var PAYROLL_COLS = 23;
+  var PAYROLL_COLS = 22;
   var PAYROLL_COL_GROSS = 9;
   var PAYROLL_COL_SPREAD_HOURS = 10;
   var PAYROLL_COL_SOH_HR = 11;
@@ -5601,11 +5647,10 @@
     'TOTAL TIP POINT',
     'TIP CALCULATION',
     'TIP',
-    'NET DELIVERY TIP / RP2',
-    'OTHER STORE TIPS',
+    'NET DELIVERY TIP / OTHER STORE TIP',
     'TOTAL TIPS',
   ];
-  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 14, 12, 12];
+  var PAYROLL_COL_WIDTHS = [22, 11, 9, 12, 13, 9, 11, 11, 8, 12, 11, 8, 10, 16, 12, 10, 16, 12, 15, 8, 22, 12];
   var PAYROLL_HEADER_ROW_HPT = 42;
 
   function payrollSpreadHoursValue(m) {
@@ -5727,7 +5772,7 @@
     return rows;
   }
 
-  /** Whole-dollar shares that sum exactly to the distributable tip pool. */
+  /** Each person's share, rounded to the nearest dollar. Does not plug leftover cents onto the last person. */
   function distributePayrollTipPool(poolTotal, rows, locationFilter) {
     var dist = {};
     if (!rows.length || poolTotal == null || Number.isNaN(poolTotal) || Math.abs(poolTotal) < 0.0001) {
@@ -5739,22 +5784,12 @@
     });
     if (sumPts <= 0) return dist;
     var totalDollars = Math.round(poolTotal * 100) / 100;
-    var rounded = [];
-    var roundedSum = 0;
     rows.forEach(function (row) {
+      var empId = row.emp && row.emp.id;
+      if (!empId) return;
       var pts = payrollRosterRowTipPoints(row, locationFilter);
-      var exact = (totalDollars * pts) / sumPts;
-      var dollars = Math.round(exact);
-      rounded.push({ empId: row.emp && row.emp.id, dollars: dollars });
-      roundedSum += dollars;
-    });
-    var remainder = Math.round((totalDollars - roundedSum) * 100) / 100;
-    if (rounded.length && Math.abs(remainder) >= 0.005) {
-      rounded[rounded.length - 1].dollars =
-        Math.round((rounded[rounded.length - 1].dollars + remainder) * 100) / 100;
-    }
-    rounded.forEach(function (item) {
-      if (item.empId) dist[item.empId] = item.dollars;
+      if (pts <= 0) return;
+      dist[empId] = Math.round((totalDollars * pts) / sumPts);
     });
     return dist;
   }
@@ -5829,12 +5864,12 @@
     var dist = getOtherStoreTipDistribution();
     var amount = dist[emp.id];
     if (amount == null || Number.isNaN(amount) || amount <= 0) return 0;
-    return amount;
+    return Math.round(amount);
   }
 
-  var PAYROLL_TIP_LABEL_COL = 23;
-  var PAYROLL_TIP_VALUE_COL = 24;
-  var PAYROLL_TIP_RATE_COL = 25;
+  var PAYROLL_TIP_LABEL_COL = 22;
+  var PAYROLL_TIP_VALUE_COL = 23;
+  var PAYROLL_TIP_RATE_COL = 24;
   var PAYROLL_ROW_TIP_HEADER = 0;
   var PAYROLL_ROW_SQ_PICKUP_GROSS = 1;
   var PAYROLL_ROW_SQ_INHOUSE_GROSS = 2;
@@ -5853,18 +5888,12 @@
   var PAYROLL_COL_TIP_CALC = 18;
   var PAYROLL_COL_TIP = 19;
   var PAYROLL_COL_DELIVERY = 20;
-  var PAYROLL_COL_OTHER_STORE_TIPS = 21;
-  var PAYROLL_COL_TOTAL_TIPS = 22;
+  var PAYROLL_COL_TOTAL_TIPS = 21;
 
-  function payrollTotalTipsFormula(r, opts) {
-    var other =
-      opts && opts.omitOtherStore
-        ? ''
-        : '+' + payrollExcelNumber(r, PAYROLL_COL_OTHER_STORE_TIPS);
+  function payrollTotalTipsFormula(r) {
     return (
       '=' +
       payrollExcelNumber(r, PAYROLL_COL_TIP) +
-      other +
       '+' +
       payrollExcelNumber(r, PAYROLL_COL_DELIVERY)
     );
@@ -5913,7 +5942,7 @@
       'CHECK (BEFORE TAX)': 'CHECK\n(BEFORE TAX)',
       'TOTAL TIP POINT': 'TOTAL TIP\nPOINT',
       'TIP CALCULATION': 'TIP\nCALCULATION',
-      'NET DELIVERY TIP / RP2': 'NET DELIVERY TIP\n/ RP2',
+      'NET DELIVERY TIP / OTHER STORE TIP': 'NET DELIVERY TIP\n/ OTHER STORE TIP',
       'TOTAL TIPS': 'TOTAL\nTIPS',
     };
     return breaks[label] || label;
@@ -6417,57 +6446,44 @@
       S.num2,
       '0.00'
     );
-    var otherStoreOnly = (m.otherStoreTips || 0) > 0.004 && !(tipPtsValue > 0.0001);
-    if (otherStoreOnly) {
-      xlSet(ws, r, PAYROLL_COL_TIP_CALC, '', S.money);
-    } else {
-      xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
-    }
-    if (otherStoreOnly) {
-      /* Home sheet has no tip points of its own. Show the other store's share in TIP. */
-      xlSetMoney(ws, r, PAYROLL_COL_TIP, m.otherStoreTips, S.money);
-    } else {
-      xlSetFormula(
-        ws,
-        r,
-        PAYROLL_COL_TIP,
-        '=IF(OR(' +
-          tipPtsCell +
-          '="",' +
-          tipPtsCell +
-          '=0),"",ROUND(' +
-          tip.total +
-          '*' +
-          tipPtsCell +
-          '/' +
-          grandTipPts +
-          ',0))',
-        S.money,
-        PAYROLL_MONEY_Z
-      );
-    }
+    /* Full share stays in TIP CALCULATION. TIP is that share rounded to the nearest dollar. */
+    xlSetFormula(ws, r, PAYROLL_COL_TIP_CALC, '=' + tipShare, S.money, PAYROLL_MONEY_Z);
+    xlSetFormula(
+      ws,
+      r,
+      PAYROLL_COL_TIP,
+      '=IF(OR(' +
+        tipPtsCell +
+        '="",' +
+        tipPtsCell +
+        '=0),"",ROUND(' +
+        tip.total +
+        '*' +
+        tipPtsCell +
+        '/' +
+        grandTipPts +
+        ',0))',
+      S.money,
+      PAYROLL_MONEY_Z
+    );
     if (tipLayout && tipPtsValue > 0.0001) {
       tipLayout.tipperRows.push({ row: r, empId: m.emp && m.emp.id });
     }
+    /* Net delivery tips and the other store's nearest-dollar share share one column. */
+    var otherStoreRounded = m.otherStoreTips > 0.004 ? Math.round(m.otherStoreTips) : 0;
+    var deliveryAmount = (m.dishwasherTipsPay > 0 ? m.dishwasherTipsPay : 0) + otherStoreRounded;
     xlSetMoney(
       ws,
       r,
       PAYROLL_COL_DELIVERY,
-      m.dishwasherTipsPay > 0 ? m.dishwasherTipsPay : null,
-      S.money
-    );
-    xlSetMoney(
-      ws,
-      r,
-      PAYROLL_COL_OTHER_STORE_TIPS,
-      !otherStoreOnly && m.otherStoreTips > 0 ? m.otherStoreTips : null,
+      deliveryAmount > 0.004 ? deliveryAmount : null,
       S.money
     );
     xlSetFormula(
       ws,
       r,
       PAYROLL_COL_TOTAL_TIPS,
-      payrollTotalTipsFormula(r, otherStoreOnly ? { omitOtherStore: true } : null),
+      payrollTotalTipsFormula(r),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -6476,37 +6492,8 @@
     layout.lastEmpRow = r;
   }
 
-  /** Last tip-eligible row absorbs rounding so individual TIP cells sum to the pool total. */
-  function finalizePayrollTipRemainder(ws, tipLayout, S) {
-    if (!tipLayout || !tipLayout.tipperRows.length) return;
-    var tip = payrollTipPoolAddrs();
-    var last = tipLayout.tipperRows[tipLayout.tipperRows.length - 1];
-    var others = tipLayout.tipperRows.slice(0, -1);
-    var r = last.row;
-    var tipPtsCell = xlA1(r, PAYROLL_COL_TOTAL_TIP_PT);
-    var formula;
-    if (!others.length) {
-      formula =
-        '=IF(OR(' + tipPtsCell + '="",' + tipPtsCell + '=0),"",' + tip.total + ')';
-    } else {
-      var otherRefs = others
-        .map(function (t) {
-          return xlA1(t.row, PAYROLL_COL_TIP);
-        })
-        .join(',');
-      formula =
-        '=IF(OR(' +
-        tipPtsCell +
-        '="",' +
-        tipPtsCell +
-        '=0),"",' +
-        tip.total +
-        '-SUM(' +
-        otherRefs +
-        '))';
-    }
-    xlSetFormula(ws, r, PAYROLL_COL_TIP, formula, S.money, PAYROLL_MONEY_Z);
-  }
+  /** TIP stays each person's own nearest-dollar share. Leftover cents are not assigned to the last row. */
+  function finalizePayrollTipRemainder(_ws, _tipLayout, _S) {}
 
   function payrollRoleLabel(emp) {
     return d().STAFF_TYPE_LABELS[emp.staffType] || emp.staffType || '';
@@ -7224,7 +7211,8 @@
       /* Wages plus coverage. SoH (Payroll TOTAL SOH / GROSS WITH SOH) stays off this total
          at every store. Delivery tips stay in TIPS and stay off gross for delivery staff. */
       var grossFormula = '=' + payrollGross + '+' + (payrollCoverage || '0');
-      if (!isDeliveryDishwasherStaff(row.emp)) {
+      /* Delivery tips and other-store tips stay in the tip column, not in wages. */
+      if (!isDeliveryDishwasherStaff(row.emp) && otherStoreTipAmountForEmployee(row.emp) <= 0.004) {
         grossFormula += '+' + (payrollDelivery || '0');
       }
       xlSetFormula(ws, r, CPA_COL_GROSS, grossFormula, S.cellRight, PAYROLL_MONEY_Z);
@@ -7542,14 +7530,6 @@
     xlSetFormula(
       ws,
       r,
-      PAYROLL_COL_OTHER_STORE_TIPS,
-      '=' + payrollSumFormula(PAYROLL_COL_OTHER_STORE_TIPS, sumFirst, sumLast),
-      S.money,
-      PAYROLL_MONEY_Z
-    );
-    xlSetFormula(
-      ws,
-      r,
       PAYROLL_COL_TOTAL_TIPS,
       '=' + payrollSumFormula(PAYROLL_COL_TOTAL_TIPS, sumFirst, sumLast),
       S.moneyHighlight,
@@ -7733,15 +7713,6 @@
       grandRow,
       PAYROLL_COL_DELIVERY,
       '=' + payrollGrandTotalFromSectionsFormula(PAYROLL_COL_DELIVERY, fohTotalRow, bohTotalRow),
-      S.money,
-      PAYROLL_MONEY_Z
-    );
-    xlSetFormula(
-      ws,
-      grandRow,
-      PAYROLL_COL_OTHER_STORE_TIPS,
-      '=' +
-        payrollGrandTotalFromSectionsFormula(PAYROLL_COL_OTHER_STORE_TIPS, fohTotalRow, bohTotalRow),
       S.money,
       PAYROLL_MONEY_Z
     );
@@ -7960,6 +7931,12 @@
 
   function payStubPayrollRef(payrollRow, col) {
     return 'Payroll!' + xlA1(payrollRow, col, { absCol: true, absRow: true });
+  }
+
+  /** Payroll money/hours often display "-". That text makes payslip + and * return #VALUE!. */
+  function payStubPayrollNumber(payrollRow, col) {
+    var addr = payStubPayrollRef(payrollRow, col);
+    return 'IF(ISNUMBER(' + addr + '),' + addr + ',0)';
   }
 
   function payrollSheetRefForEmp(emp, col) {
@@ -8255,7 +8232,7 @@
         ws,
         r,
         DC(10),
-        '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_WAGE),
+        '=' + payStubPayrollNumber(payrollRow, PAYROLL_COL_WAGE),
         S.moneyUnderline,
         PAY_STUB_MONEY_Z
       );
@@ -8460,10 +8437,10 @@
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
 
     var regHoursRef = payrollRow != null
-      ? payStubPayrollRef(payrollRow, PAYROLL_COL_REG_H)
+      ? payStubPayrollNumber(payrollRow, PAYROLL_COL_REG_H)
       : payStubAbsRef(workTotRow, DC(2));
     var otHoursRef = payrollRow != null
-      ? payStubPayrollRef(payrollRow, PAYROLL_COL_OT_H)
+      ? payStubPayrollNumber(payrollRow, PAYROLL_COL_OT_H)
       : payStubAbsRef(payTotalPayRow, DC(0));
     var regHoursCell = payStubAbsRef(workTotRow, DC(2));
     var regRateCell = payStubAbsRef(workTotRow, DC(3));
@@ -8532,9 +8509,19 @@
       xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
     }
 
-    /* Total Paid is wages plus VL/SL only. The SoH line above is not part of this sum. */
+    /* Total Paid is wages plus VL/SL only. The SoH line above is not part of this sum.
+       VL/SL pay is "" when there is no leave, and payroll "-" is text — raw + is #VALUE!. */
+    var vlSlPayCell = payStubAbsRef(vlSlRow, DC(3));
     var totalPaidFormula =
-      '=' + payStubAbsRef(vlSlRow, DC(3)) + '+' + totalPayCell;
+      '=IF(ISNUMBER(' +
+      vlSlPayCell +
+      '),' +
+      vlSlPayCell +
+      ',0)+IF(ISNUMBER(' +
+      totalPayCell +
+      '),' +
+      totalPayCell +
+      ',0)';
     xlSetFormula(ws, headerPaidRow, DC(10), totalPaidFormula, S.moneyUnderline, PAY_STUB_AMOUNT_Z);
 
     var reportBottom = r;
@@ -11504,7 +11491,7 @@
   }
 
   function dayHasDishwasherTipActivity(empId, iso) {
-    if (!empId || !iso || !dayHasBackingShiftForDishwasherTips(empId, iso)) return false;
+    if (!empId || !iso) return false;
     var slice = getDishwasherTipsSlice();
     var found = false;
     Object.keys(slice).forEach(function (k) {

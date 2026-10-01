@@ -14298,8 +14298,44 @@
     }
   }
 
+  function dishwasherTipAmountPositive(val) {
+    var n = typeof val === 'number' ? val : parseFloat(val);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  /** Keep a delivery tip that is already in localStorage when a stale snapshot omits it. */
+  function absorbPositiveDishwasherTips(intoStore, fromStore) {
+    if (!intoStore || !fromStore || typeof fromStore !== 'object') return intoStore;
+    Object.keys(fromStore).forEach(function (weekKey) {
+      var fromWeek = fromStore[weekKey];
+      if (!fromWeek || typeof fromWeek !== 'object') return;
+      var intoWeek =
+        intoStore[weekKey] && typeof intoStore[weekKey] === 'object' ? intoStore[weekKey] : null;
+      var nextWeek = intoWeek ? intoWeek : {};
+      var touched = false;
+      Object.keys(fromWeek).forEach(function (dayKey) {
+        if (Object.prototype.hasOwnProperty.call(nextWeek, dayKey)) return;
+        if (dishwasherTipAmountPositive(fromWeek[dayKey]) <= 0) return;
+        nextWeek[dayKey] = fromWeek[dayKey];
+        touched = true;
+      });
+      if (touched) intoStore[weekKey] = nextWeek;
+    });
+    return intoStore;
+  }
+
   function persistTimecardDishwasherTipsStore(store) {
-    tipPayrollDishwasherMemory = store && typeof store === 'object' ? store : {};
+    store = store && typeof store === 'object' ? store : {};
+    try {
+      var raw = localStorage.getItem(TIMECARD_DISHWASHER_TIPS_KEY);
+      if (raw) {
+        var current = JSON.parse(raw);
+        if (current && typeof current === 'object') absorbPositiveDishwasherTips(store, current);
+      }
+    } catch (_dwAbsorb) {
+      /* ignore */
+    }
+    tipPayrollDishwasherMemory = store;
     try {
       localStorage.setItem(TIMECARD_DISHWASHER_TIPS_KEY, JSON.stringify(tipPayrollDishwasherMemory));
     } catch (_dwSet) {
@@ -14439,8 +14475,23 @@
         var leavePending = !!(pendingDayMap && pendingDayMap[k]);
         if (!leavePending) return;
       }
-      if (!localHas) delete merged[k];
-      else merged[k] = localVal;
+      if (!localHas) {
+        /*
+         * Delivery tips: a missing local key is not a delete. A stale browser
+         * whose baseline still listed the tip was wiping cloud (and then every
+         * reload) after a code change. Only a pending-ack clear removes it.
+         */
+        if (opts.keepPositiveRemoteUnlessPendingDelete) {
+          var pendingDelete = !!(pendingDayMap && pendingDayMap[k]);
+          if (!pendingDelete) {
+            var keptAmt = parseFloat(merged[k]);
+            if (Number.isFinite(keptAmt) && keptAmt > 0) return;
+          }
+        }
+        delete merged[k];
+        return;
+      }
+      merged[k] = localVal;
     });
     return merged;
   }
@@ -14491,7 +14542,7 @@
         tipPayrollPendingAckDishwasher[key] && typeof tipPayrollPendingAckDishwasher[key] === 'object'
           ? tipPayrollPendingAckDishwasher[key]
           : null,
-        { keepLocalWhenRemoteOmits: true }
+        { keepLocalWhenRemoteOmits: true, keepPositiveRemoteUnlessPendingDelete: true }
       );
     });
     var mergedExtras = Object.assign({}, remoteExtras);
@@ -14730,9 +14781,10 @@
     });
   }
 
-  function markPendingAckDiffsFromBaseline(localStore, baselineStore, pendingMap) {
+  function markPendingAckDiffsFromBaseline(localStore, baselineStore, pendingMap, opts) {
     localStore = localStore && typeof localStore === 'object' ? localStore : {};
     baselineStore = baselineStore && typeof baselineStore === 'object' ? baselineStore : {};
+    opts = opts || {};
     Object.keys(localStore).forEach(function (weekKey) {
       var localWeek = localStore[weekKey];
       if (!localWeek || typeof localWeek !== 'object') return;
@@ -14751,6 +14803,9 @@
         markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
       });
     });
+    /* Delivery tips: a missing local key is not a delete. Conscious clears already
+       mark pending. Auto-pending here wiped last week's tips on the next push. */
+    if (opts.skipMissingLocalKeys) return;
     Object.keys(baselineStore).forEach(function (weekKey) {
       var baseWeek = baselineStore[weekKey];
       if (!baseWeek || typeof baseWeek !== 'object') return;
@@ -14812,7 +14867,9 @@
       var localDwPush = loadTimecardDishwasherTipsStore();
       var localTipPush = loadTimecardWeekTipPoolStore();
       markPendingAckDiffsFromBaseline(localExtrasPush, baseExtrasBefore, tipPayrollPendingAckExtras);
-      markPendingAckDiffsFromBaseline(localDwPush, baseDwBefore, tipPayrollPendingAckDishwasher);
+      markPendingAckDiffsFromBaseline(localDwPush, baseDwBefore, tipPayrollPendingAckDishwasher, {
+        skipMissingLocalKeys: true,
+      });
       markPendingAckTipPoolDiffsFromBaseline(localTipPush, baseTipBefore, tipPayrollPendingAckTipPool);
 
       var merged = null;
@@ -15317,6 +15374,31 @@
     return nextDw;
   }
 
+  /** Queue a push for delivery tips this browser has that cloud does not. */
+  function markPositiveDishwasherTipsOmittedByRemote(store, remoteStore) {
+    var marked = false;
+    store = store && typeof store === 'object' ? store : {};
+    remoteStore = remoteStore && typeof remoteStore === 'object' ? remoteStore : {};
+    Object.keys(store).forEach(function (weekKey) {
+      var week = store[weekKey];
+      if (!week || typeof week !== 'object') return;
+      var remoteWeek =
+        remoteStore[weekKey] && typeof remoteStore[weekKey] === 'object' ? remoteStore[weekKey] : {};
+      Object.keys(week).forEach(function (dayKey) {
+        if (dishwasherTipAmountPositive(week[dayKey]) <= 0) return;
+        if (
+          Object.prototype.hasOwnProperty.call(remoteWeek, dayKey) &&
+          tipPayrollSliceJson(remoteWeek[dayKey]) === tipPayrollSliceJson(week[dayKey])
+        ) {
+          return;
+        }
+        markTipPayrollPendingAckMap(tipPayrollPendingAckDishwasher, weekKey, dayKey);
+        marked = true;
+      });
+    });
+    return marked;
+  }
+
   function applyTipPayrollCloudAuthority(row, hasTipPool, hasDishwasher, hasWeekExtras, remoteTip, remoteDw, remoteExtras) {
     var localTip0 = loadTimecardWeekTipPoolStore();
     var localDw0 = loadTimecardDishwasherTipsStore();
@@ -15344,15 +15426,25 @@
     }
     if (hasDishwasher) {
       persistTimecardDishwasherTipsStore(nextDw);
+      /* Cloud is missing these saved tips — push them so the next reload keeps them. */
+      markPositiveDishwasherTipsOmittedByRemote(nextDw, remoteDw || {});
       changed = true;
     }
     if (hasWeekExtras) {
       persistTimecardWeekExtrasStore(nextExtras);
       changed = true;
     }
+    var dishwasherBaseline = tipPayrollRemoteBaseline.dishwasher || {};
+    if (hasDishwasher) {
+      try {
+        dishwasherBaseline = JSON.parse(JSON.stringify(nextDw || {}));
+      } catch (_dwBase) {
+        dishwasherBaseline = nextDw || {};
+      }
+    }
     tipPayrollRemoteBaseline = {
       tipPool: hasTipPool ? remoteTip || {} : tipPayrollRemoteBaseline.tipPool || {},
-      dishwasher: hasDishwasher ? remoteDw || {} : tipPayrollRemoteBaseline.dishwasher || {},
+      dishwasher: dishwasherBaseline,
       weekExtras: hasWeekExtras ? remoteExtras || {} : tipPayrollRemoteBaseline.weekExtras || {},
     };
     tipPayrollBaselineReady = true;
@@ -15463,6 +15555,7 @@
     restoreTipPayrollPendingAckKeys(merged.weekExtras, localExtras, tipPayrollPendingAckExtras);
     restoreTipPayrollPendingAckKeys(merged.dishwasher, localDw, tipPayrollPendingAckDishwasher);
     retainLocalDishwasherTips(merged.dishwasher, localDw);
+    if (hasDishwasher) markPositiveDishwasherTipsOmittedByRemote(merged.dishwasher, remoteDw || {});
     restoreTipPayrollPendingAckTipPool(merged.tipPool, localTip, tipPayrollPendingAckTipPool);
     var changed = false;
     if (hasTipPool && remoteTip && Object.keys(remoteTip).length > 0) {
@@ -15477,6 +15570,10 @@
     if (hasDishwasher && remoteDw && Object.keys(remoteDw).length > 0) {
       persistTimecardDishwasherTipsStore(merged.dishwasher);
       nextBaseline.dishwasher = remoteDw;
+      changed = true;
+    } else if (hasDishwasher && tipPayrollPendingAckNonEmpty(tipPayrollPendingAckDishwasher)) {
+      /* Remote omitted saved delivery tips. Keep them locally and push until cloud echoes. */
+      persistTimecardDishwasherTipsStore(merged.dishwasher);
       changed = true;
     }
     if (hasWeekExtras && remoteExtras && Object.keys(remoteExtras).length > 0) {

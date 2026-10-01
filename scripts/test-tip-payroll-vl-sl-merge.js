@@ -58,12 +58,22 @@ function mergeTipPayrollWeekSliceForPush(localSlice, remoteSlice, baselineSlice,
       }
       return;
     }
-    if (isTipPayrollLeaveDayKey(k)) {
-      var leavePending = !!(pendingDayMap && pendingDayMap[k]);
-      if (!leavePending) return;
-    }
-    if (!localHas) delete merged[k];
-    else merged[k] = localVal;
+      if (isTipPayrollLeaveDayKey(k)) {
+        var leavePending = !!(pendingDayMap && pendingDayMap[k]);
+        if (!leavePending) return;
+      }
+      if (!localHas) {
+        if (opts.keepPositiveRemoteUnlessPendingDelete) {
+          var pendingDelete = !!(pendingDayMap && pendingDayMap[k]);
+          if (!pendingDelete) {
+            var keptAmt = parseFloat(merged[k]);
+            if (Number.isFinite(keptAmt) && keptAmt > 0) return;
+          }
+        }
+        delete merged[k];
+        return;
+      }
+      merged[k] = localVal;
   });
   return merged;
 }
@@ -74,9 +84,10 @@ function markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey) {
   pendingMap[weekKey][dayKey] = true;
 }
 
-function markPendingAckDiffsFromBaseline(localStore, baselineStore, pendingMap) {
+function markPendingAckDiffsFromBaseline(localStore, baselineStore, pendingMap, opts) {
   localStore = localStore && typeof localStore === 'object' ? localStore : {};
   baselineStore = baselineStore && typeof baselineStore === 'object' ? baselineStore : {};
+  opts = opts || {};
   Object.keys(localStore).forEach(function (weekKey) {
     var localWeek = localStore[weekKey];
     if (!localWeek || typeof localWeek !== 'object') return;
@@ -86,11 +97,12 @@ function markPendingAckDiffsFromBaseline(localStore, baselineStore, pendingMap) 
         : {};
     Object.keys(localWeek).forEach(function (dayKey) {
       if (tipPayrollSliceJson(localWeek[dayKey]) === tipPayrollSliceJson(baseWeek[dayKey])) return;
-      if (isTipPayrollLeaveDayKey(dayKey)) return;
-      markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
-    });
+    if (isTipPayrollLeaveDayKey(dayKey)) return;
+    markTipPayrollPendingAckMap(pendingMap, weekKey, dayKey);
   });
-  Object.keys(baselineStore).forEach(function (weekKey) {
+});
+if (opts.skipMissingLocalKeys) return;
+Object.keys(baselineStore).forEach(function (weekKey) {
     var baseWeek = baselineStore[weekKey];
     if (!baseWeek || typeof baseWeek !== 'object') return;
     var localWeek =
@@ -512,13 +524,34 @@ var keptTip = mergeTipPayrollWeekSliceForPush(
   staleRemoteWeek,
   savedTipWeek,
   null,
-  { keepLocalWhenRemoteOmits: true }
+  { keepLocalWhenRemoteOmits: true, keepPositiveRemoteUnlessPendingDelete: true }
 );
 assert(keptTip[tipKey] === 100, 'saved delivery tip survives a cloud row that omitted it');
-var cleared = mergeTipPayrollWeekSliceForPush({}, { [tipKey]: 100 }, savedTipWeek, null, {
+var staleClear = mergeTipPayrollWeekSliceForPush({}, { [tipKey]: 100 }, savedTipWeek, null, {
   keepLocalWhenRemoteOmits: true,
+  keepPositiveRemoteUnlessPendingDelete: true,
 });
-assert(cleared[tipKey] == null, 'clearing a delivery tip still removes it');
+assert(
+  staleClear[tipKey] === 100,
+  'a browser that lost the local tip must not wipe the saved cloud delivery tip'
+);
+var pendingClear = {};
+pendingClear[tipKey] = true;
+var cleared = mergeTipPayrollWeekSliceForPush({}, { [tipKey]: 100 }, savedTipWeek, pendingClear, {
+  keepLocalWhenRemoteOmits: true,
+  keepPositiveRemoteUnlessPendingDelete: true,
+});
+assert(cleared[tipKey] == null, 'a pending-ack clear still removes a delivery tip');
+var emptyLocalWeek = { '2026-05-18_2026-05-24': {} };
+var baselineWithTip = { '2026-05-18_2026-05-24': savedTipWeek };
+var noAutoDelete = {};
+markPendingAckDiffsFromBaseline(emptyLocalWeek, baselineWithTip, noAutoDelete, {
+  skipMissingLocalKeys: true,
+});
+assert(
+  !noAutoDelete['2026-05-18_2026-05-24'],
+  'a missing local delivery tip is not auto-marked as a delete'
+);
 
 assert(isTipPayrollLeaveDayKey(leaveKey), 'leave key helper matches empId@date');
 assert(!isTipPayrollLeaveDayKey('tipDay'), 'leave key helper rejects non-leave keys');

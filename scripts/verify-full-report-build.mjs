@@ -511,43 +511,49 @@ if (payrollText.indexOf('Square In House (Net)') >= 0) {
 if (payrollText.indexOf('SQ/GH/DD (Net)') >= 0) {
   throw new Error('Payroll tip header still has SQ/GH/DD (Net)');
 }
-const tipAmountHeader = payrollSheet.worksheet.Y1;
-const keepRateHeader = payrollSheet.worksheet.Z1;
-const pickupLabel = payrollSheet.worksheet.X2;
-const inHouseLabel = payrollSheet.worksheet.X3;
-const totalLabel = payrollSheet.worksheet.X8;
+const tipAmountHeader = payrollSheet.worksheet.X1;
+const keepRateHeader = payrollSheet.worksheet.Y1;
+const pickupLabel = payrollSheet.worksheet.W2;
+const inHouseLabel = payrollSheet.worksheet.W3;
+const totalLabel = payrollSheet.worksheet.W8;
 if (!tipAmountHeader || String(tipAmountHeader.v) !== 'Tip Amount') {
-  throw new Error('Payroll Y1 should be Tip Amount, got ' + (tipAmountHeader && tipAmountHeader.v));
+  throw new Error('Payroll X1 should be Tip Amount, got ' + (tipAmountHeader && tipAmountHeader.v));
 }
 if (!tipAmountHeader.s || !tipAmountHeader.s.font || !tipAmountHeader.s.font.bold) {
-  throw new Error('Payroll Y1 Tip Amount should be bold');
+  throw new Error('Payroll X1 Tip Amount should be bold');
 }
 if (!keepRateHeader || String(keepRateHeader.v) !== 'Keep rate') {
-  throw new Error('Payroll Z1 should be Keep rate, got ' + (keepRateHeader && keepRateHeader.v));
+  throw new Error('Payroll Y1 should be Keep rate, got ' + (keepRateHeader && keepRateHeader.v));
 }
 if (!pickupLabel || String(pickupLabel.v) !== 'Square Pick Up Tips:') {
-  throw new Error('Payroll X2 should be Square Pick Up Tips, got ' + (pickupLabel && pickupLabel.v));
+  throw new Error('Payroll W2 should be Square Pick Up Tips, got ' + (pickupLabel && pickupLabel.v));
 }
 if (!inHouseLabel || String(inHouseLabel.v) !== 'Square In House Tips:') {
-  throw new Error('Payroll X3 should be Square In House Tips, got ' + (inHouseLabel && inHouseLabel.v));
+  throw new Error('Payroll W3 should be Square In House Tips, got ' + (inHouseLabel && inHouseLabel.v));
 }
 if (!totalLabel || String(totalLabel.v) !== 'Total tips:') {
-  throw new Error('Payroll X8 should be Total tips, got ' + (totalLabel && totalLabel.v));
+  throw new Error('Payroll W8 should be Total tips, got ' + (totalLabel && totalLabel.v));
 }
-const totalFormula = payrollSheet.worksheet.Y8;
-const squareKeep = payrollSheet.worksheet.Z2;
+const totalFormula = payrollSheet.worksheet.X8;
+const squareKeep = payrollSheet.worksheet.Y2;
 if (!squareKeep || Number(squareKeep.v) !== 0.97) {
-  throw new Error('Payroll Square keep rate Z2 should be 0.97, got ' + (squareKeep && squareKeep.v));
+  throw new Error('Payroll Square keep rate Y2 should be 0.97, got ' + (squareKeep && squareKeep.v));
 }
-if (!totalFormula || String(totalFormula.f || '').indexOf('$Z$2') < 0) {
-  throw new Error('Payroll Total tips formula should multiply by Square keep Z2, got ' + (totalFormula && totalFormula.f));
+if (!totalFormula || String(totalFormula.f || '').indexOf('$Y$2') < 0) {
+  throw new Error('Payroll Total tips formula should multiply by Square keep Y2, got ' + (totalFormula && totalFormula.f));
+}
+if (payrollText.indexOf('OTHER STORE TIPS') >= 0) {
+  throw new Error('Payroll should not have a separate Other store tips column');
+}
+if (payrollText.indexOf('NET DELIVERY TIP') < 0 || payrollText.indexOf('OTHER STORE TIP') < 0) {
+  throw new Error('Payroll column should be Net delivery tip / other store tip');
 }
 function payrollTipCellHasOutline(cell) {
   const b = cell && cell.s && cell.s.border;
   if (!b) return false;
   return !!(b.top || b.bottom || b.left || b.right);
 }
-['Y1', 'Z1', 'Y2', 'Z2', 'Y6', 'Y8', 'X2'].forEach((addr) => {
+['X1', 'Y1', 'X2', 'Y2', 'X6', 'X8', 'W2'].forEach((addr) => {
   if (payrollTipCellHasOutline(payrollSheet.worksheet[addr])) {
     throw new Error('Payroll tip cell ' + addr + ' should not have black outlines');
   }
@@ -656,8 +662,11 @@ Object.keys(payslipSheet.worksheet).forEach((addr) => {
   const formula = paid && paid.f ? String(paid.f) : '';
   const normalized = formula.charAt(0) === '=' ? formula.slice(1) : formula;
   const parts = normalized.split('+').map((p) => p.trim()).filter(Boolean);
-  if (parts.length !== 2 || /Payroll!\$?[MN]\d/.test(formula)) {
-    throw new Error('Payslip Total Paid should be wages plus VL/SL only, with no SoH: ' + formula);
+  if (parts.length !== 2 || /Payroll!\$?[MN]\d/.test(formula) || formula.indexOf('ISNUMBER') < 0) {
+    throw new Error(
+      'Payslip Total Paid should be wages plus VL/SL only, coercing blanks so Excel does not #VALUE!: ' +
+        formula
+    );
   }
   paidChecks += 1;
 });
@@ -2000,6 +2009,76 @@ await verifyPayslipPatchedExport();
     throw new Error('9th Payroll must list single-store BOTH STORES as a paycheck row');
   }
   assertClose(ninthSheet.eboth.metrics.otherStoreTips, 400, '9th paycheck tips from 8th tip points');
+  /* Zeferino pattern: paid on 9th, tip points only at 8th. Rounded 8th share belongs in Net delivery tip / other store tip. */
+  deps.employees.push({
+    id: 'e-zef',
+    firstName: 'ZEFERINO',
+    lastName: 'FLORES',
+    staffType: 'Kitchen',
+    phone: '',
+    usualRestaurant: 'rp-9',
+    hourlyRate: 17,
+    tipPoint: 2,
+    weeklyGrid: {},
+    meta: { primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9', singleStorePayroll: true },
+  });
+  punches.push(punchAt('p-zef', 'e-zef', 2026, 5, 22, 11, 19, 'rp-8'));
+  T.setWeekEntriesForTest(punches);
+  function payrollNamedCell(loc, person, col) {
+    T.setTimecardsLocationFilterForTest(loc);
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    const ws = (sheets.find((s) => s.name === 'Payroll') || {}).worksheet || {};
+    let rowNum = null;
+    Object.keys(ws).forEach(function (addr) {
+      const val = ws[addr] && ws[addr].v != null ? String(ws[addr].v).toUpperCase() : '';
+      if (val !== person) return;
+      const m = addr.match(/^[A-Z]+(\d+)$/);
+      if (m) rowNum = m[1];
+    });
+    if (!rowNum) throw new Error(loc + ' payroll row missing for ' + person);
+    return ws[col + rowNum] || null;
+  }
+  const homeRp2 = payrollNamedCell('rp-9', 'ZEFERINO FLORES', 'U');
+  const zefShare = Math.round((1000 * 16) / (64 + 48 + 48 + 16));
+  if (!homeRp2 || Number(homeRp2.v) !== zefShare) {
+    throw new Error(
+      '9th Net delivery tip / other store tip should be the rounded 8th Ave tip ' +
+        zefShare +
+        ', got ' +
+        (homeRp2 && homeRp2.v)
+    );
+  }
+  const homeTip = payrollNamedCell('rp-9', 'ZEFERINO FLORES', 'T');
+  const homeTipFormula = homeTip && homeTip.f ? String(homeTip.f) : '';
+  if (homeTip && homeTip.v === 400) {
+    throw new Error('9th TIP column should not hold the other-store amount; it belongs in Net delivery tip / other store tip');
+  }
+  if (homeTipFormula.indexOf('ROUND(') < 0) {
+    throw new Error('9th TIP formula should still round a local share, got ' + homeTipFormula);
+  }
+  const borrowCalc = payrollNamedCell('rp-8', 'BOTH STORES', 'S');
+  const borrowTip = payrollNamedCell('rp-8', 'BOTH STORES', 'T');
+  const borrowCalcFormula = borrowCalc && borrowCalc.f ? String(borrowCalc.f) : '';
+  const borrowTipFormula = borrowTip && borrowTip.f ? String(borrowTip.f) : '';
+  if (borrowCalcFormula.indexOf('ROUND(') >= 0 || borrowCalcFormula.indexOf('*') < 0) {
+    throw new Error('8th TIP CALCULATION should stay the full unrounded share, got ' + borrowCalcFormula);
+  }
+  if (borrowTipFormula.indexOf('ROUND(') < 0 || borrowTipFormula.indexOf('-SUM(') >= 0) {
+    throw new Error('8th TIP should be that share rounded to the nearest dollar, got ' + borrowTipFormula);
+  }
+  ['rp-9', 'rp-8'].forEach(function (loc) {
+    T.setTimecardsLocationFilterForTest(loc);
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    const ws = (sheets.find((s) => s.name === 'Payroll') || {}).worksheet || {};
+    Object.keys(ws).forEach(function (addr) {
+      if (!/^T\d+$/.test(addr)) return;
+      const formula = ws[addr] && ws[addr].f ? String(ws[addr].f) : '';
+      if (!formula || formula.indexOf('ROUND(') < 0) return;
+      if (formula.indexOf('-SUM(') >= 0) {
+        throw new Error(loc + ' TIP ' + addr + ' is not a nearest-dollar share: ' + formula);
+      }
+    });
+  });
   if (!eighthSheet.eboth || !eighthSheet.eboth.row.isTipBorrowRow) {
     throw new Error('8th Payroll must list BOTH STORES only as a tip-point row');
   }
