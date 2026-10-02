@@ -8732,6 +8732,21 @@
      * may apply — older responses must not stomp the week the user is viewing.
      */
     scheduleCellsPollInFlight = true;
+    var droppedFutureShell = false;
+    if (targetWi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      try {
+        droppedFutureShell = !!dropEmptyFutureWeekDraftShells(targetWi);
+      } catch (_dropFuturePoll) {
+        droppedFutureShell = false;
+      }
+      if (droppedFutureShell && currentScreen === 1 && !opts.skipPaint) {
+        paintVisibleScheduleWeekFast({
+          weekIndex: targetWi,
+          fast: true,
+          forcePaint: true,
+        });
+      }
+    }
     try {
       /* Leftover slot removals if an earlier poll fetched slots and returned early. */
       try {
@@ -9077,11 +9092,22 @@
        * One recovery pass: dense cloud still not in local draft → refetch slots and
        * trusted-replace (projection often failed on a cold/stale slot map).
        */
+      var futureBackfillNamed = 0;
+      if (targetWi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+        fetchRows.forEach(function (row) {
+          if (!row || row.deleted) return;
+          var iso = String(row.day_iso || '').slice(0, 10);
+          if (!iso || iso < visFromIso || iso > visToIso) return;
+          var name = row.worker_name && String(row.worker_name).trim();
+          if (name && name !== 'Unassigned') futureBackfillNamed += 1;
+        });
+      }
       if (
         !interactiveHold &&
         cloudTimedVisible >= 4 &&
         countLocalTimedDraftWeek(targetWi) < 4 &&
-        !opts._slotRetry
+        !opts._slotRetry &&
+        !(targetWi > SCHEDULE_TEMPLATE_WEEK_INDEX && futureBackfillNamed < 4)
       ) {
         try {
           await v2.fetchSlots(window.gmSupabase, cid);
@@ -9107,10 +9133,10 @@
        * Manual Refresh skips this paint so it can re-apply ↑↓ order first, then
        * remount the grid once (a fast paint left stale Person selects until reload).
        */
-      if (applied || trimmed) {
+      if (applied || trimmed || droppedFutureShell) {
         if (timecardsScreenActive()) notifyTimecardsScheduleChanged();
       }
-      if ((applied || trimmed) && currentScreen === 1 && !opts.skipPaint) {
+      if ((applied || trimmed || droppedFutureShell) && currentScreen === 1 && !opts.skipPaint) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
@@ -9134,7 +9160,7 @@
         scheduleUiAwaitingInitialCloudHydrate = false;
         if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
       }
-      return !!(applied || trimmed);
+      return !!(applied || trimmed || droppedFutureShell);
     } catch (_poll) {
       return false;
     } finally {
@@ -9706,6 +9732,13 @@
       if (!store[rid]) store[rid] = {};
       var rs = store[rid];
       for (var wi = wiStart; wi < wiEnd; wi += 1) {
+        /*
+         * Future weeks inherit this week. Saving that copy as their own draft
+         * is what let the later poll treat Oct 5–11 as a local week and blank it.
+         */
+        if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !draftWeekRestaurantHasOwnLayers(wi, rid)) {
+          continue;
+        }
         var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
         var layerChanged = false;
         roles.forEach(function (role) {
@@ -9838,6 +9871,9 @@
     if (!store[rid]) store[rid] = {};
     var rs = store[rid];
     var weekStart = wi * 7;
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !draftWeekRestaurantHasOwnLayers(wi, rid)) {
+      return false;
+    }
     var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
     var changed = false;
 
@@ -11015,12 +11051,60 @@
   }
 
   /**
+   * Named cloud cells on one week. The Oct 5–11 backfill has clock times and no
+   * people; a real edit stores worker names.
+   */
+  function patchWeekNamedWorkerCount(patch, weekIndex) {
+    var wi = Number(weekIndex);
+    if (!patch || isNaN(wi)) return 0;
+    var weekStart = wi * 7;
+    var weekEnd = weekStart + 7;
+    var n = 0;
+    Object.keys(patch).forEach(function (rid) {
+      var cells = patch[rid] || {};
+      Object.keys(cells).forEach(function (shiftId) {
+        var p = parseShiftIdParts(shiftId);
+        if (!p || p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+        var c = cells[shiftId];
+        if (!c) return;
+        var name =
+          (c.rowOwner && c.rowOwner !== 'Unassigned' && c.rowOwner) ||
+          (c.workers && c.workers[0] && c.workers[0] !== 'Unassigned' && c.workers[0]) ||
+          '';
+        if (name) n += 1;
+      });
+    });
+    return n;
+  }
+
+  /**
+   * Next week inherits this week until someone actually staffs it. The partial
+   * unnamed cell backfill must not replace or blank that inherited grid.
+   */
+  function futureWeekCloudBackfillMustNotReplace(weekIndex, patch) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi <= SCHEDULE_TEMPLATE_WEEK_INDEX || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return false;
+    }
+    if (!patch) return !localWeekHasAuthoritativeTimedDraft(wi);
+    return patchWeekNamedWorkerCount(patch, wi) < 4;
+  }
+
+  /**
    * Visible week looks like an empty / all-DAY-OFF shell — soft upsert alone cannot
    * rebuild draft rows, so peers stay desynced until a trusted replace.
    */
   function scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimedCount) {
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
     var cloudTimed = Number(cloudTimedCount) || 0;
+    /*
+     * An unfilled future week has no saved draft of its own — it inherits this
+     * week. That is not an empty shell. Treating it as one made the idle poll
+     * replace Oct 5–11 with the unnamed backfill a few seconds after opening it.
+     */
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !localWeekHasAuthoritativeTimedDraft(wi)) {
+      return false;
+    }
     if (cloudTimed < 4) return false;
     /*
      * DEFAULT / unpersisted fallback times are not real local authority — peers
@@ -11129,6 +11213,7 @@
     if (scheduleLocalAuthorityActive()) return false;
     if (schedulePersonRowProtectActive(currentRestaurantId, weekIndex)) return false;
     if (hasInteractiveScheduleEditsThisSession()) return false;
+    if (futureWeekCloudBackfillMustNotReplace(weekIndex, patch)) return false;
     if (scheduleVisibleWeekNeedsTrustedCloudReplace(weekIndex, cloudTimedCount)) {
       return true;
     }
@@ -11284,12 +11369,14 @@
         if (opts.cloudAuthorityReplace || opts.noSoftFallback) {
           /* Explicit Refresh: every week in the fetched window, including empty cloud weeks. */
           for (var wiAll = 0; wiAll < SCHEDULE_VIEW_WEEK_COUNT; wiAll += 1) {
+            if (futureWeekCloudBackfillMustNotReplace(wiAll, patch)) continue;
             if (cloudWeekReplaceIsSafe(wiAll, patch, opts)) {
               replaceWeeks[wiAll] = true;
             }
           }
         } else {
           Object.keys(timedWeeks).forEach(function (k) {
+            if (futureWeekCloudBackfillMustNotReplace(Number(k), patch)) return;
             if (cloudWeekReplaceIsSafe(Number(k), patch, opts)) {
               replaceWeeks[k] = true;
             }
@@ -11304,7 +11391,8 @@
           (timedWeeks[replaceWi] ||
             opts.allowEmptyReplace ||
             opts.forceDayOffReplace) &&
-          cloudWeekReplaceIsSafe(replaceWi, patch, opts)
+          cloudWeekReplaceIsSafe(replaceWi, patch, opts) &&
+          !futureWeekCloudBackfillMustNotReplace(replaceWi, patch)
         ) {
           replaceWeeks[replaceWi] = true;
         }
@@ -11339,7 +11427,11 @@
       var forceFetchDense = Number.isFinite(forceFetch) && forceFetch >= 4;
       var forceBroken =
         forceFetchDense && forceTimed < Math.max(4, Math.floor(forceFetch * 0.5));
-      if (!forceBroken && (timedWeeks[forceWi] || forceTimed > 0 || opts.forceDayOffReplace)) {
+      if (
+        !forceBroken &&
+        !futureWeekCloudBackfillMustNotReplace(forceWi, patch) &&
+        (timedWeeks[forceWi] || forceTimed > 0 || opts.forceDayOffReplace)
+      ) {
         replaceWeeks[forceWi] = true;
         upsertTimedOnly = false;
       } else if (
@@ -11466,6 +11558,7 @@
           var p = parseShiftIdParts(shiftId);
           if (!p) return;
           var wi = Math.floor(p.globalDayIdx / 7);
+          if (futureWeekCloudBackfillMustNotReplace(wi, patch)) return;
           /*
            * Never paint day-off / Unassigned cells onto weeks with ZERO timed cloud
            * cells. Incomplete past-week sync used to wipe every peer to day-off.
@@ -11987,6 +12080,8 @@
           if (!p) return;
           var wi = Math.floor(p.globalDayIdx / 7);
           if (replaceWeeks[wi]) return;
+          /* Unnamed future-week backfill must not clear inherited shift times. */
+          if (futureWeekCloudBackfillMustNotReplace(wi, patch)) return;
           var cell = cells[shiftId];
           var softDayOffGrow =
             upsertTimedOnly &&
