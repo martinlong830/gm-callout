@@ -11397,6 +11397,9 @@
       var store = loadScheduleAssignmentsStore();
       /* Replace only weeks that have real timed cloud cells — never wipe past weeks empty. */
       Object.keys(replaceWeeks).forEach(function (wiStr) {
+        dropEmptyFutureWeekDraftShells(Number(wiStr));
+      });
+      Object.keys(replaceWeeks).forEach(function (wiStr) {
         var wi = Number(wiStr);
         var weekStart = wi * 7;
         var weekEnd = weekStart + 7;
@@ -11411,6 +11414,12 @@
             if (cellHasTimed(patchCells[shiftId])) ridTimed += 1;
           });
           var localRidTimed = countLocalTimedDraftWeek(wi, rid);
+          /*
+           * Next week often has only a partial unnamed cell backfill (or none).
+           * Replacing the whole grid with that turns every other shift into
+           * DAY-OFF / Unassigned and then Refresh shows the shell.
+           */
+          if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && ridTimed < 4) return;
           /* Sparse cloud for this store must not delete a staffed local week — unless Refresh SoT. */
           if (!cloudAuthorityWeek) {
             if (ridTimed < 4 && localRidTimed >= 4) return;
@@ -11686,6 +11695,23 @@
             !entry.rowOwner &&
             (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned');
           /*
+           * Future-week cells from the old backfill have times and no names.
+           * Saving Unassigned here blocks the current week's people, so the grid
+           * looks wiped. Leave the name off the key so this week's person shows.
+           */
+          if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && incomingUnassigned) {
+            var prevNormFuture = prev ? normalizeScheduleAssignment(prev) : null;
+            var prevNamedFuture =
+              prevNormFuture &&
+              (scheduleAssignmentHasStaffedWorkers(prevNormFuture) ||
+                (prevNormFuture.rowOwner && prevNormFuture.rowOwner !== 'Unassigned'));
+            if (!prevNamedFuture && prev != null) {
+              delete store[rid][shiftId];
+              changed = true;
+            }
+            return;
+          }
+          /*
            * Soft upsert keeps a local name when the cell has no worker_name.
            * Right after a peer slot delete, trusted replace would wipe the names we
            * just shifted (callouts still clear names: they set forceDayOffReplace).
@@ -11819,6 +11845,7 @@
             if (cellHasTimed(patchCells[shiftId])) ridTimed += 1;
           });
           var localRidTimed = countLocalTimedDraftWeek(wi, rid);
+          if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && ridTimed < 4) return;
           if (!cloudAuthorityWeek) {
             if (ridTimed < 4 && localRidTimed >= 4) {
               return;
@@ -11925,6 +11952,17 @@
                   cell && !cell.dayOff && cell.start && cell.end
                     ? [String(cell.start), String(cell.end)]
                     : null;
+                /*
+                 * No cloud row for this future shift is "not saved yet", not a
+                 * day off. Blanking it saved an all-DAY-OFF week.
+                 */
+                if (
+                  !nextCell &&
+                  !cell &&
+                  wi > SCHEDULE_TEMPLATE_WEEK_INDEX
+                ) {
+                  continue;
+                }
                 var prevCell = row[di];
                 var same =
                   (!nextCell && !prevCell) ||
@@ -22891,6 +22929,101 @@
    * deleted slot into Unassigned. Shift those weeks once, here, with the undo
    * snapshot already taken.
    */
+  /**
+   * Opening next week materialized a blank DAY-OFF copy (cloud only had a partial
+   * unnamed backfill). That copy then survived Refresh. An unfilled future week
+   * should inherit this week until someone actually edits it. Local only — never
+   * pushed to cloud.
+   */
+  function futureWeekDraftShellIsEmpty(layers) {
+    if (!layers || typeof layers !== 'object') return true;
+    var roles = ['Bartender', 'Kitchen', 'Server'];
+    for (var i = 0; i < roles.length; i += 1) {
+      var rows = layers[roles[i]];
+      if (!rows || !rows.length) continue;
+      for (var r = 0; r < rows.length; r += 1) {
+        var row = rows[r];
+        if (!row) continue;
+        for (var d = 0; d < row.length; d += 1) {
+          var cell = row[d];
+          if (cell && cell[0] && cell[1]) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function futureWeekHasStaffedAssignments(restaurantId, weekIndex) {
+    var store = loadScheduleAssignmentsStore();
+    var rs = store && store[restaurantId];
+    if (!rs) return false;
+    var start = weekIndex * 7;
+    var end = start + 7;
+    var ids = Object.keys(rs);
+    for (var i = 0; i < ids.length; i += 1) {
+      var p = parseShiftIdParts(ids[i]);
+      if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) continue;
+      var ent = normalizeScheduleAssignment(rs[ids[i]]);
+      if (scheduleAssignmentHasStaffedWorkers(ent)) return true;
+      if (ent && ent.rowOwner && ent.rowOwner !== 'Unassigned') return true;
+    }
+    return false;
+  }
+
+  function dropEmptyFutureWeekDraftShells(weekIndex) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi <= SCHEDULE_TEMPLATE_WEEK_INDEX || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return false;
+    }
+    var weekKey = String(wi);
+    var weekEntry = draftScheduleByWeekStore[weekKey];
+    if (!weekEntry || typeof weekEntry !== 'object') return false;
+    var changed = false;
+    restaurantsList.forEach(function (rest) {
+      if (!draftWeekRestaurantHasOwnLayers(wi, rest.id)) return;
+      if (futureWeekHasStaffedAssignments(rest.id, wi)) return;
+      var own = draftLayersFromWeekEntry(weekEntry, rest.id);
+      if (!futureWeekDraftShellIsEmpty(own)) return;
+      if (draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
+        delete weekEntry[rest.id];
+      } else {
+        draftScheduleByWeekStore[weekKey] = {};
+        weekEntry = draftScheduleByWeekStore[weekKey];
+      }
+      var assignStore = loadScheduleAssignmentsStore();
+      var rs = assignStore && assignStore[rest.id];
+      if (rs) {
+        var weekStart = wi * 7;
+        var weekEnd = weekStart + 7;
+        Object.keys(rs).forEach(function (shiftId) {
+          var parts = parseShiftIdParts(shiftId);
+          if (!parts || parts.globalDayIdx < weekStart || parts.globalDayIdx >= weekEnd) return;
+          var ent = normalizeScheduleAssignment(rs[shiftId]);
+          if (scheduleAssignmentHasStaffedWorkers(ent)) return;
+          if (ent && ent.rowOwner && ent.rowOwner !== 'Unassigned') return;
+          delete rs[shiftId];
+        });
+        saveScheduleAssignmentsStore(assignStore, {
+          skipDirty: true,
+          skipInteractiveMark: true,
+          skipTimecardsNotify: true,
+        });
+      }
+      invalidateDraftLayersMemo(wi, rest.id);
+      changed = true;
+    });
+    if (!changed) return false;
+    if (draftScheduleWeekEntryIsPerRestaurant(weekEntry) && !Object.keys(weekEntry).length) {
+      delete draftScheduleByWeekStore[weekKey];
+    }
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+    } catch (_dropFuture) {
+      /* ignore */
+    }
+    return true;
+  }
+
   function draftWeekRestaurantHasOwnLayers(weekIndex, restaurantId) {
     var wi = resolveDraftWeekIndex(weekIndex);
     var rid = resolveDraftRestaurantId(restaurantId);
@@ -24247,6 +24380,14 @@
     updateScheduleWeekNav({ lite: true });
     updateEmpScheduleWeekNav();
     try {
+      /*
+       * A future week that was never filled used to get saved as all DAY-OFF /
+       * Unassigned the first time it was opened. Drop that empty shell so the
+       * current week's shifts show again, without writing them to cloud.
+       */
+      if (w > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+        dropEmptyFutureWeekDraftShells(w);
+      }
       /*
        * Cells are SoT. Do not stamp leftover local row-primary names onto every
        * timed cell (that changed Eugene until Refresh + a hard page reload).
