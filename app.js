@@ -238,7 +238,7 @@
   /** Weeks before the current Mon–Sun block shown in the schedule navigator. */
   const SCHEDULE_PAST_WEEK_COUNT = 12;
   /** Weeks after the current block (not counting the current week). */
-  const SCHEDULE_FUTURE_WEEK_COUNT = 2;
+  const SCHEDULE_FUTURE_WEEK_COUNT = 1;
   const SCHEDULE_VIEW_WEEK_COUNT = SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
   /** Index in WEEK_META for this calendar week; also the replication template week. */
   const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
@@ -1688,6 +1688,11 @@
       var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
       layers = draftLayersFromWeekEntry(tplSaved, rid);
       if (layers) {
+        /*
+         * Clone. Returning this week's rows by reference let a poll null those
+         * cells while the future week was on screen, so the copy became day-off.
+         */
+        layers = cloneDraftSchedule(layers);
         draftLayersMemo[memoKey] = layers;
         return layers;
       }
@@ -1713,6 +1718,23 @@
     var rid = resolveDraftRestaurantId(restaurantId);
     var weekKey = String(wi);
     var sanitized = sanitizeDraftScheduleLayers(nextRows);
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      /*
+       * An unfilled future week is only a copy of this week. Cloud apply must
+       * not store that copy or an all-day-off shell as the week's own schedule.
+       * A manager edit is not inside remote apply, so that save still sticks.
+       */
+      if (
+        teamStateRemoteApplyActive() &&
+        futureWeekStoredDraftShouldInherit(wi, rid, sanitized)
+      ) {
+        return;
+      }
+      if (futureWeekDraftShellIsEmpty(sanitized)) {
+        dropEmptyFutureWeekDraftShells(wi);
+        return;
+      }
+    }
     var weekEntry = draftScheduleByWeekStore[weekKey];
     if (!draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
       var perRest = {};
@@ -9753,8 +9775,9 @@
          * Future weeks inherit this week. Saving that copy as their own draft
          * is what let the later poll treat Oct 5–11 as a local week and blank it.
          */
-        if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !draftWeekRestaurantHasOwnLayers(wi, rid)) {
-          continue;
+        if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+          var ownInherit = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
+          if (!ownInherit || futureWeekStoredDraftShouldInherit(wi, rid, ownInherit)) continue;
         }
         var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
         var layerChanged = false;
@@ -9888,8 +9911,9 @@
     if (!store[rid]) store[rid] = {};
     var rs = store[rid];
     var weekStart = wi * 7;
-    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !draftWeekRestaurantHasOwnLayers(wi, rid)) {
-      return false;
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      var ownTrim = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
+      if (!ownTrim || futureWeekStoredDraftShouldInherit(wi, rid, ownTrim)) return false;
     }
     var layers = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
     var changed = false;
@@ -11528,6 +11552,7 @@
            * Replacing the whole grid with that turns every other shift into
            * DAY-OFF / Unassigned and then Refresh shows the shell.
            */
+          if (futureWeekCloudBackfillMustNotReplace(wi, patch)) return;
           if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && ridTimed < 4) return;
           /* Sparse cloud for this store must not delete a staffed local week — unless Refresh SoT. */
           if (!cloudAuthorityWeek) {
@@ -11955,6 +11980,7 @@
             if (cellHasTimed(patchCells[shiftId])) ridTimed += 1;
           });
           var localRidTimed = countLocalTimedDraftWeek(wi, rid);
+          if (futureWeekCloudBackfillMustNotReplace(wi, patch)) return;
           if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && ridTimed < 4) return;
           if (!cloudAuthorityWeek) {
             if (ridTimed < 4 && localRidTimed >= 4) {
@@ -25183,8 +25209,8 @@
   }
 
   /**
-   * Rolling 2 future weeks: on load / Monday roll, shift the window if needed and ensure W+2
-   * is a fresh copy of current week W when that furthest week is new.
+   * Rolling 1 future week: on load / Monday roll, shift the window if needed and ensure
+   * that next week is a fresh copy of the current week when it is new.
    * Window Monday is shared via draft_schedule.windowMondayIso so multi-device rolls do not double-shift.
    */
   function ensureRollingFutureScheduleWeeks() {

@@ -126,6 +126,33 @@ async function persistDayLeave(
   await setEmployeeDayLeave(emp.id, dayIso, vl, sl, weekBounds);
 }
 
+function clockOnShiftDay(iso: string, hm: string, nextDay: boolean): Date | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || '').trim());
+  if (!m || !iso) return null;
+  const parts = iso.split('-').map((n) => Number(n));
+  if (parts.length < 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+  const dt = new Date(parts[0], parts[1] - 1, parts[2], Number(m[1]), Number(m[2]), 0, 0);
+  if (nextDay) dt.setDate(dt.getDate() + 1);
+  return dt;
+}
+
+function describePunchVariance(
+  actual: Date | null,
+  expected: Date | null,
+  t: (key: string, params?: Record<string, string | number>) => string
+): { text: string; off: boolean } | null {
+  if (!expected || Number.isNaN(expected.getTime())) return null;
+  const time = expected.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (!actual || Number.isNaN(actual.getTime())) {
+    return { text: t('timecards.varianceEmpty', { time }), off: false };
+  }
+  const delta = Math.round((actual.getTime() - expected.getTime()) / 60000);
+  if (delta === 0) return { text: t('timecards.varianceOnTime', { time }), off: false };
+  const gap = Math.abs(delta);
+  const direction = delta > 0 ? t('timecards.varianceLater') : t('timecards.varianceEarlier');
+  return { text: t('timecards.varianceGap', { gap, direction, time }), off: gap >= 30 };
+}
+
 export default function TimecardsShiftScreen() {
   const { t } = useI18n();
   const { employeeId, shiftId, iso } = useLocalSearchParams<{
@@ -168,6 +195,32 @@ export default function TimecardsShiftScreen() {
     }
     return null;
   }, [emp, weekShifts, shiftId, iso]);
+
+  const scheduleExpect = useMemo(() => {
+    if (!shiftRow || isOffScheduleShiftDayRow(shiftRow)) return null;
+    const start = shiftRow.shift.start;
+    const end = shiftRow.shift.end;
+    const clockIn = clockOnShiftDay(shiftRow.iso, start, false);
+    if (!clockIn) return null;
+    let clockOut = clockOnShiftDay(shiftRow.iso, end, false);
+    if (clockOut && clockOut.getTime() <= clockIn.getTime()) {
+      clockOut = clockOnShiftDay(shiftRow.iso, end, true);
+    }
+    let breakStart: Date | null = null;
+    let breakEnd: Date | null = null;
+    const br = /^(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/.exec(shiftRow.shift.redPokeBreak || '');
+    if (br) {
+      breakStart = clockOnShiftDay(shiftRow.iso, br[1], false);
+      if (breakStart && breakStart.getTime() < clockIn.getTime()) {
+        breakStart = clockOnShiftDay(shiftRow.iso, br[1], true);
+      }
+      breakEnd = clockOnShiftDay(shiftRow.iso, br[2], false);
+      if (breakStart && breakEnd && breakEnd.getTime() <= breakStart.getTime()) {
+        breakEnd = clockOnShiftDay(shiftRow.iso, br[2], true);
+      }
+    }
+    return { clockIn, clockOut, breakStart, breakEnd };
+  }, [shiftRow]);
 
   const dayEntries = useMemo(() => {
     if (!emp || !iso) return [];
@@ -617,6 +670,12 @@ export default function TimecardsShiftScreen() {
   const sohDay = isSoHDateForEmployee(emp, iso || '', previewEntries, { bounds, scheduleCtx });
   const schedHrs = parseScheduledHoursDecimal(s);
 
+  function punchVarianceNote(actual: Date | null, expected: Date | null) {
+    const v = describePunchVariance(actual, expected, t);
+    if (!v) return null;
+    return <Text style={[styles.hint, v.off && styles.varianceOff]}>{v.text}</Text>;
+  }
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
@@ -730,6 +789,7 @@ export default function TimecardsShiftScreen() {
         allowClear
         clearLabel={t('timecards.noClockIn')}
       />
+      {punchVarianceNote(clockInDate, scheduleExpect?.clockIn ?? null)}
 
       <DateTimePickerField
         label={t('timecards.clockOut')}
@@ -740,6 +800,7 @@ export default function TimecardsShiftScreen() {
         allowClear
         clearLabel={t('timecards.stillClockedIn')}
       />
+      {punchVarianceNote(clockOutDate, scheduleExpect?.clockOut ?? null)}
 
       <Pressable style={styles.btnSecondary} onPress={() => setClockOutDate(new Date())}>
         <Text style={styles.btnSecondaryText}>{t('timecards.endPunchNow')}</Text>
@@ -754,6 +815,7 @@ export default function TimecardsShiftScreen() {
         allowClear
         clearLabel={t('timecards.noBreak')}
       />
+      {punchVarianceNote(breakStartDate, scheduleExpect?.breakStart ?? null)}
 
       <DateTimePickerField
         label={t('timecards.breakEnd')}
@@ -764,6 +826,7 @@ export default function TimecardsShiftScreen() {
         allowClear
         clearLabel={t('timecards.onBreakNoEnd')}
       />
+      {punchVarianceNote(breakEndDate, scheduleExpect?.breakEnd ?? null)}
 
       <Pressable style={styles.btnSecondary} onPress={() => setBreakEndDate(new Date())}>
         <Text style={styles.btnSecondaryText}>End break now</Text>
@@ -962,6 +1025,7 @@ const styles = StyleSheet.create({
   punchTitle: { fontSize: 14, fontWeight: '600', color: '#0f172a' },
   punchSub: { fontSize: 13, color: '#64748b', marginTop: 4 },
   hint: { fontSize: 12, color: '#888', marginBottom: 4 },
+  varianceOff: { color: '#b91c1c', fontWeight: '700' },
   fieldLabel: { fontSize: 12, fontWeight: '600', color: '#64748b', marginBottom: 4, marginTop: 4 },
   input: {
     borderWidth: 1,

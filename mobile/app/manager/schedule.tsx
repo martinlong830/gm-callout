@@ -1095,7 +1095,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
   );
   draftScheduleRawRef.current = draftScheduleRaw;
   const draftRows = useMemo(() => {
-    const grid = loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId);
+    const grid = loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId, {
+      assignmentStore: assignmentStoreRef.current,
+    });
     const preserve = preserveEmptyTailRef.current;
     const keepRole =
       preserve && preserve.week === weekIndex && Date.now() < preserve.until
@@ -1627,7 +1629,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
           if (!supabase) return;
           const rolesLoop = ROLE_DEFS;
           const ops: ScheduleOp[] = [];
-          const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId);
+          const draft = loadDraftFromTeamState(nextDraft, weekIndex, currentRestaurantId, {
+            inheritUnfilledFuture: false,
+          });
           const rs = nextStore[currentRestaurantId] || {};
           const companyId = (await readStoredCompanyId()) || '';
           const slotsRes = companyId ? await fetchSlots(supabase, companyId) : { data: [] };
@@ -1648,6 +1652,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 trIdx,
                 knownSlots
               );
+              if (!slotKey) continue;
               ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
               for (let di = 0; di < 7; di += 1) {
                 const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
@@ -1880,7 +1885,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 }
                 /* Seed Unassigned, then overlay revision week keys. */
                 (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIndex) => {
-                  const draft = loadDraftFromTeamState(nextDraft, wi, rid);
+                  const draft = loadDraftFromTeamState(nextDraft, wi, rid, {
+                    inheritUnfilledFuture: false,
+                  });
                   const n = slotCountForRole(draft, roleKey);
                   for (let trIdx = 0; trIdx < n; trIdx += 1) {
                     for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
@@ -1971,7 +1978,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                   const rolesLoop = ROLE_DEFS;
                   const ops: ScheduleOp[] = [];
                   const rs = nextAssign[rid] || {};
-                  const draft = loadDraftFromTeamState(nextDraft, wi, rid);
+                  const draft = loadDraftFromTeamState(nextDraft, wi, rid, {
+                    inheritUnfilledFuture: false,
+                  });
                   const companyIdHr = (await readStoredCompanyId()) || '';
                   const slotsResHr = companyIdHr
                     ? await fetchSlots(sb, companyIdHr)
@@ -1988,6 +1997,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                     const n = slotCountForRole(draft, roleKey);
                     for (let trIdx = 0; trIdx < n; trIdx += 1) {
                       const slotKey = await ensureSlotKey(rid, roleKey, trIdx, knownSlotsHr);
+                      if (!slotKey) continue;
                       ops.push(opAddSlot(rid, roleKey, slotKey, trIdx));
                       for (let di = 0; di < 7; di += 1) {
                         const dayIso = weekMeta[wi * 7 + di]?.iso;
@@ -2564,6 +2574,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             opts.role,
             opts.trIdx
           );
+          if (!slotKey) return;
           const ops: ScheduleOp[] = [opAddSlot(currentRestaurantId, opts.role, slotKey, opts.trIdx)];
           if (opts.isDayOff) {
             ops.push(
@@ -2975,8 +2986,10 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             supabase,
             currentRestaurantId,
             roleKey,
-            newTrIdx
+            newTrIdx,
+            { allowMint: true }
           );
+          if (!slotKey) return;
           await enqueueOps([opAddSlot(currentRestaurantId, roleKey, slotKey, newTrIdx)]);
           await flushOutbox(supabase);
         } catch {
@@ -3176,6 +3189,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             target.role,
             target.trIdx
           );
+          if (!slotKey) return;
           const draft = loadDraftFromTeamState(
             draftScheduleRawRef.current,
             weekIndex,

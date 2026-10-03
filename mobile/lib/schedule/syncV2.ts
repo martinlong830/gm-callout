@@ -8,6 +8,7 @@ import { readStoredCompanyId, readStoredTeamStateId } from '../companySession';
 import { broadcastScheduleCellsChanged } from '../teamStateSync';
 import { fetchDraftScheduleRowOrderMeta } from '../teamStateColumns';
 import {
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   compactAssignmentsAfterDraftSlotDeletes,
   loadDraftFromTeamState,
@@ -384,10 +385,9 @@ function shiftLocalStoresForPeerSlotDeletes(
     for (let wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
       const own = weekHasOwnDraftLayers(nextDraft, wi, group.restaurantId);
       const layers = own
-        ? (loadDraftFromTeamState(nextDraft, wi, group.restaurantId) as unknown as Record<
-            string,
-            unknown
-          >)
+        ? (loadDraftFromTeamState(nextDraft, wi, group.restaurantId, {
+            inheritUnfilledFuture: false,
+          }) as unknown as Record<string, unknown>)
         : null;
       const rows = layers ? layers[group.role] : null;
       const draftLong = Array.isArray(rows) && rows.length > want;
@@ -602,20 +602,23 @@ export async function ensureSlotKey(
     slot_key?: string;
     sort_order?: number;
     active?: boolean;
-  }[]
-): Promise<string> {
+  }[],
+  opts?: { allowMint?: boolean }
+): Promise<string | null> {
+  const allowMint = !!(opts && opts.allowMint);
   const map = await readJson<Record<string, string>>(SLOT_MAP_KEY, {});
   const k = `${restaurantId}|${role}|${trIdx}`;
-  const candidates = (knownSlots || [])
-    .filter(
-      (s) =>
-        s &&
-        s.active !== false &&
-        String(s.restaurant_id || '') === String(restaurantId) &&
-        String(s.role || '') === String(role) &&
-        Number(s.sort_order) === Number(trIdx) &&
-        s.slot_key
-    )
+  const active = (knownSlots || []).filter(
+    (s) =>
+      s &&
+      s.active !== false &&
+      String(s.restaurant_id || '') === String(restaurantId) &&
+      String(s.role || '') === String(role) &&
+      s.slot_key
+  );
+  const activeKeys = new Set(active.map((s) => String(s.slot_key)));
+  const candidates = active
+    .filter((s) => Number(s.sort_order) === Number(trIdx))
     .map((s) => String(s.slot_key));
   if (candidates.length) {
     const chosen = pickStableSlotKey(k, candidates, map, () => 0);
@@ -625,7 +628,17 @@ export async function ensureSlotKey(
       return chosen;
     }
   }
-  if (map[k]) return map[k];
+  const mapped = map[k] ? String(map[k]) : '';
+  if (mapped && (!activeKeys.size || activeKeys.has(mapped))) return mapped;
+  const used = new Set(Object.keys(map).map((key) => String(map[key] || '')));
+  const unused = active.find((s) => s.slot_key && !used.has(String(s.slot_key)));
+  if (unused?.slot_key) {
+    map[k] = String(unused.slot_key);
+    await writeJson(SLOT_MAP_KEY, map);
+    return map[k];
+  }
+  /* Role already has rows — do not mint a second UUID for the same line. */
+  if (active.length && !allowMint) return null;
   const sk = uuid();
   map[k] = sk;
   await writeJson(SLOT_MAP_KEY, map);
@@ -840,8 +853,9 @@ export async function ensureBoundSlotKey(
   sb: SupabaseClient,
   restaurantId: string,
   role: string,
-  trIdx: number
-): Promise<string> {
+  trIdx: number,
+  opts?: { allowMint?: boolean }
+): Promise<string | null> {
   const companyId = await readStoredCompanyId();
   let known: ScheduleSlotRow[] = [];
   if (companyId) {
@@ -849,7 +863,88 @@ export async function ensureBoundSlotKey(
     known = (slotsRes.data || []) as ScheduleSlotRow[];
     await bindSlotMapFromFetchedSlots(known);
   }
-  return ensureSlotKey(restaurantId, role, trIdx, known);
+  return ensureSlotKey(restaurantId, role, trIdx, known, opts);
+}
+
+function weekIsoSet(weekMeta: { iso?: string }[], weekIndex: number): Set<string> {
+  const isos = new Set<string>();
+  for (let di = 0; di < 7; di += 1) {
+    const iso = weekMeta[weekIndex * 7 + di]?.iso;
+    if (iso) isos.add(String(iso).slice(0, 10));
+  }
+  return isos;
+}
+
+/** Future week whose cloud cells are an unnamed backfill (fewer than 4 people). */
+function futureWeekCloudBackfillMustNotReplace(
+  cells: Record<string, unknown>[],
+  weekMeta: { iso?: string }[],
+  weekIndex: number,
+  restaurantId: string
+): boolean {
+  if (weekIndex <= SCHEDULE_TEMPLATE_WEEK_INDEX) return false;
+  const isos = weekIsoSet(weekMeta, weekIndex);
+  const names = new Set<string>();
+  (cells || []).forEach((cell) => {
+    if (!cell || cell.deleted) return;
+    if (String(cell.restaurant_id || '') !== restaurantId) return;
+    const day = String(cell.day_iso || '').slice(0, 10);
+    if (!isos.has(day)) return;
+    const name = cell.worker_name ? String(cell.worker_name).trim() : '';
+    if (name && name !== 'Unassigned') names.add(name.toLowerCase());
+  });
+  return names.size < 4;
+}
+
+function draftLayersHaveClockTimes(layers: Record<string, unknown> | null | undefined): boolean {
+  if (!layers) return false;
+  return (['Kitchen', 'Bartender', 'Server'] as const).some((role) => {
+    const rows = layers[role];
+    if (!Array.isArray(rows)) return false;
+    return rows.some(
+      (row) =>
+        Array.isArray(row) &&
+        row.some((cell) => Array.isArray(cell) && cell[0] && cell[1])
+    );
+  });
+}
+
+function assignmentWeekHasStaffedName(
+  assign: AssignmentStore,
+  restaurantId: string,
+  weekIndex: number
+): boolean {
+  const rs = assign?.[restaurantId] || {};
+  const start = weekIndex * 7;
+  const end = start + 7;
+  return Object.keys(rs).some((shiftId) => {
+    const m = /^shift-(\d+)-/.exec(shiftId);
+    if (!m) return false;
+    const gdi = Number(m[1]);
+    if (gdi < start || gdi >= end) return false;
+    return !!staffedAssignmentName(rs[shiftId]);
+  });
+}
+
+function dropWeekRestaurantLayers(
+  draft: Record<string, unknown>,
+  weekIndex: number,
+  restaurantId: string
+): void {
+  const byWeek = draft.byWeek as Record<string, unknown> | undefined;
+  if (!byWeek || typeof byWeek !== 'object') return;
+  const key = String(weekIndex);
+  const weekEntry = byWeek[key];
+  if (!weekEntry || typeof weekEntry !== 'object') return;
+  const rec = weekEntry as Record<string, unknown>;
+  const shared =
+    Array.isArray(rec.Bartender) || Array.isArray(rec.Kitchen) || Array.isArray(rec.Server);
+  if (shared) {
+    delete byWeek[key];
+    return;
+  }
+  delete rec[restaurantId];
+  if (!Object.keys(rec).length) delete byWeek[key];
 }
 
 /**
@@ -905,7 +1000,9 @@ export function projectCellsOntoLocalStores(opts: {
     const ck = `${wi}|${rid}`;
     let layers = layersCache.get(ck);
     if (!layers) {
-      layers = loadDraftFromTeamState(nextDraft, wi, rid) as unknown as Record<string, unknown>;
+      layers = loadDraftFromTeamState(nextDraft, wi, rid, {
+        inheritUnfilledFuture: false,
+      }) as unknown as Record<string, unknown>;
       layersCache.set(ck, layers);
     }
     return layers;
@@ -957,8 +1054,15 @@ export function projectCellsOntoLocalStores(opts: {
       }
       return;
     }
+    const wi = Math.floor(gdi / 7);
+    const di = gdi % 7;
+    if (futureWeekCloudBackfillMustNotReplace(opts.cells || [], opts.weekMeta || [], wi, rid)) {
+      return;
+    }
     projected.add(projKey);
     projectedRev.set(projKey, remoteRev);
+    /* Unnamed day-off must not clear a real shift on any week. */
+    if (!(start && end) && !named) return;
     const already = staffedAssignmentName(nextAssign[rid][shiftId]);
     const person = named || already;
     const entry: Record<string, unknown> = { workers: ['Unassigned'] };
@@ -974,8 +1078,6 @@ export function projectCellsOntoLocalStores(opts: {
     }
     nextAssign[rid][shiftId] = entry as AssignmentStore[string][string];
 
-    const wi = Math.floor(gdi / 7);
-    const di = gdi % 7;
     const layers = layersFor(wi, rid);
     if (!layers[role as 'Bartender' | 'Kitchen' | 'Server']) {
       layers[role] = [];
@@ -1017,6 +1119,9 @@ export function projectCellsOntoLocalStores(opts: {
         const gdi = Number(m[1]);
         const wi = Math.floor(gdi / 7);
         if (!weekSet.has(wi)) return;
+        if (futureWeekCloudBackfillMustNotReplace(opts.cells || [], opts.weekMeta || [], wi, rid)) {
+          return;
+        }
         if (!projected.has(`${rid}\0${shiftId}`)) {
           delete rs[shiftId];
         }
@@ -1030,10 +1135,15 @@ export function projectCellsOntoLocalStores(opts: {
       ]);
       rids.forEach((rid) => {
         if (!rid) return;
+        if (futureWeekCloudBackfillMustNotReplace(opts.cells || [], opts.weekMeta || [], wi, rid)) {
+          return;
+        }
         const ck = `${wi}|${rid}`;
         const layers =
           layersCache.get(ck) ||
-          (loadDraftFromTeamState(nextDraft, wi, rid) as unknown as Record<string, unknown>);
+          (loadDraftFromTeamState(nextDraft, wi, rid, {
+            inheritUnfilledFuture: false,
+          }) as unknown as Record<string, unknown>);
         layersCache.set(ck, layers);
         (['Kitchen', 'Bartender', 'Server'] as const).forEach((role) => {
           const rows = layers[role] as unknown[];
@@ -1056,6 +1166,34 @@ export function projectCellsOntoLocalStores(opts: {
         });
         writeWeekRestaurantLayers(nextDraftObj, wi, rid, layers);
       });
+    });
+  }
+  /*
+   * An unfilled future week must not keep an all-day-off (or unnamed) copy.
+   * Drop that local shell so the screen shows this week. Do not write cells.
+   */
+  const weekCount = Math.floor((opts.weekMeta || []).length / 7);
+  for (let wi = SCHEDULE_TEMPLATE_WEEK_INDEX + 1; wi < weekCount; wi += 1) {
+    const ridSet = new Set<string>([
+      ...Object.keys(opts.liveAssign || {}),
+      ...Object.keys(nextAssign || {}),
+    ]);
+    ridSet.forEach((rid) => {
+      if (!rid) return;
+      if (!futureWeekCloudBackfillMustNotReplace(opts.cells || [], opts.weekMeta || [], wi, rid)) {
+        return;
+      }
+      const stored = loadDraftFromTeamState(opts.liveDraft, wi, rid, {
+        inheritUnfilledFuture: false,
+      }) as unknown as Record<string, unknown>;
+      if (
+        draftLayersHaveClockTimes(stored) &&
+        assignmentWeekHasStaffedName(opts.liveAssign, rid, wi)
+      ) {
+        return;
+      }
+      dropWeekRestaurantLayers(nextDraftObj, wi, rid);
+      layersCache.delete(`${wi}|${rid}`);
     });
   }
   nextDraft = nextDraftObj;

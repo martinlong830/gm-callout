@@ -29,13 +29,13 @@ function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
 /** Matches web portal `SCHEDULE_PAST_WEEK_COUNT` / anchor week grid. */
 export const SCHEDULE_PAST_WEEK_COUNT = 12;
 /** Weeks after the current block (not counting the current week). */
-export const SCHEDULE_FUTURE_WEEK_COUNT = 2;
+export const SCHEDULE_FUTURE_WEEK_COUNT = 1;
 export const SCHEDULE_VIEW_WEEK_COUNT =
   SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
 /** Index in `WEEK_META` for this calendar week; also the replication template week. */
 export const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
-/** Employee portal shows current pay week + next 2 future weeks. */
-export const EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT = 3;
+/** Employee portal shows current pay week + the next future week. */
+export const EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT = 2;
 export const WEEKDAY_KEYS: WeekdayKey[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const SCHEDULE_GRID_ROLE_ORDER: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -482,7 +482,12 @@ function draftLayersFromWeekEntry(weekEntry: unknown, restaurantId?: string): Dr
   return null;
 }
 
-export function loadDraftFromTeamState(raw: unknown, weekIndex?: number, restaurantId?: string): DraftGrid {
+export function loadDraftFromTeamState(
+  raw: unknown,
+  weekIndex?: number,
+  restaurantId?: string,
+  opts?: { inheritUnfilledFuture?: boolean; assignmentStore?: AssignmentStore }
+): DraftGrid {
   const base = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   if (!raw || typeof raw !== 'object') return base;
   const p = raw as Record<string, unknown>;
@@ -492,17 +497,27 @@ export function loadDraftFromTeamState(raw: unknown, weekIndex?: number, restaur
       weekIndex != null && !Number.isNaN(weekIndex)
         ? String(weekIndex)
         : String(SCHEDULE_TEMPLATE_WEEK_INDEX);
+    const weekNum = Number(wi);
+    const inheritFuture = opts?.inheritUnfilledFuture !== false;
     const weekLayers = byWeek[wi];
     const layers = draftLayersFromWeekEntry(weekLayers, restaurantId);
-    if (layers) return layers;
     /*
-     * Future empty weeks may inherit structure from the rolling "this week" draft.
-     * Past weeks must NOT — same as web getDraftScheduleRowsForWeek.
+     * An unfilled future week (no shift times) shows this week. Display only —
+     * cell writers pass inheritUnfilledFuture: false so they do not upload it.
+     * Past weeks must NOT inherit.
      */
-    if (Number(wi) > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+    const unstaffedFuture =
+      !!opts?.assignmentStore &&
+      !futureWeekHasStaffedPeople(opts.assignmentStore, restaurantId, weekNum);
+    const ignoreOwn =
+      inheritFuture &&
+      weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX &&
+      (!layers || draftGridHasNoClockTimes(layers) || unstaffedFuture);
+    if (layers && !ignoreOwn) return layers;
+    if (weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX && inheritFuture) {
       const tplLayers = byWeek[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
       const tplDraft = draftLayersFromWeekEntry(tplLayers, restaurantId);
-      if (tplDraft) return tplDraft;
+      if (tplDraft) return cloneDraftSchedule(tplDraft);
     }
     return base;
   }
@@ -583,6 +598,35 @@ export function slotCountForRoleWithAssignments(
 function draftRowHasClockTimes(row: unknown): boolean {
   if (!Array.isArray(row)) return false;
   return row.some((cell) => Array.isArray(cell) && cell[0] && cell[1]);
+}
+
+function draftGridHasNoClockTimes(grid: DraftGrid): boolean {
+  return (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).every((role) => {
+    const rows = grid[role] || [];
+    return rows.every((row) => !draftRowHasClockTimes(row));
+  });
+}
+
+function futureWeekHasStaffedPeople(
+  store: AssignmentStore | null | undefined,
+  restaurantId: string | undefined,
+  weekIndex: number
+): boolean {
+  if (!store || weekIndex == null || Number.isNaN(weekIndex)) return false;
+  const start = weekIndex * 7;
+  const end = start + 7;
+  const rids = restaurantId ? [restaurantId] : Object.keys(store);
+  return rids.some((rid) => {
+    const rs = store[rid];
+    if (!rs) return false;
+    return Object.keys(rs).some((shiftId) => {
+      const p = parseShiftIdParts(shiftId);
+      if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return false;
+      const ent = normalizeScheduleAssignment(rs[shiftId]);
+      if (ent.rowOwner && ent.rowOwner !== 'Unassigned') return true;
+      return scheduleAssignmentHasStaffedWorkers(ent);
+    });
+  });
 }
 
 function assignmentRowHasPerson(
@@ -834,6 +878,10 @@ export function lookupScheduleAssignment(
   if (p && p.globalDayIdx < tplStart) {
     if (stored[shiftId] == null) return null;
     return mergeScheduleAssignmentEntries(direct, pattern);
+  }
+  /* Unassigned keys on a future week must not hide this week's people. */
+  if (p && p.globalDayIdx >= tplStart + 7 && !scheduleAssignmentHasStaffedWorkers(direct)) {
+    return pattern;
   }
   return mergeScheduleAssignmentEntries(direct, pattern);
 }

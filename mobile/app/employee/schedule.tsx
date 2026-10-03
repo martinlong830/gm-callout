@@ -374,8 +374,11 @@ export default function EmployeeScheduleScreen() {
   const assignmentStore = hydrated.store;
   const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
   const draftRows = useMemo(
-    () => loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId),
-    [draftScheduleRaw, weekIndex, currentRestaurantId]
+    () =>
+      loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId, {
+        assignmentStore,
+      }),
+    [assignmentStore, draftScheduleRaw, weekIndex, currentRestaurantId]
   );
 
   useEffect(() => {

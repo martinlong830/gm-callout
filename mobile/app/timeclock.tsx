@@ -78,6 +78,7 @@ export default function TimeclockScreen() {
   const [lookup, setLookup] = useState<LookupData | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const [sessionLost, setSessionLost] = useState(false);
   const [statusKind, setStatusKind] = useState<'ok' | 'err' | ''>('');
   const [recent, setRecent] = useState<string[]>([]);
   const [loginName, setLoginName] = useState('');
@@ -135,14 +136,34 @@ export default function TimeclockScreen() {
     return t('clock.punchFailed');
   }
 
+  async function ensureClockSession(): Promise<boolean> {
+    if (!supabase) return false;
+    const { data } = await supabase.auth.getSession();
+    if (data.session) return true;
+    setSessionLost(true);
+    setPhase('enter');
+    setLookup(null);
+    lookupPinRef.current = '';
+    setPin('');
+    setStatus(t('clock.signInHint'));
+    setStatusKind('err');
+    return false;
+  }
+
   async function lookupPin(nextPin: string) {
+    if (!(await ensureClockSession())) return;
     setBusy(true);
     setStatus(t('clock.checking'));
     setStatusKind('');
     const res = await rpc<LookupData>('timeclock_lookup_pin', { pin_input: nextPin });
     setBusy(false);
     if (res.error) {
-      setStatus(res.error === 'timeout' ? t('clock.timeout') : res.error);
+      if (/not signed in|jwt|session/i.test(res.error)) {
+        setSessionLost(true);
+        setStatus(t('clock.signInHint'));
+      } else {
+        setStatus(res.error === 'timeout' ? t('clock.timeout') : res.error);
+      }
       setStatusKind('err');
       scheduleReset(4000);
       return;
@@ -160,6 +181,7 @@ export default function TimeclockScreen() {
 
   async function confirm(action: PunchAction) {
     if (!lookup || busy) return;
+    if (!(await ensureClockSession())) return;
     setBusy(true);
     setStatus(t('clock.saving'));
     setStatusKind('');
@@ -176,7 +198,12 @@ export default function TimeclockScreen() {
     }
     setBusy(false);
     if (res.error) {
-      setStatus(res.error === 'timeout' ? t('clock.timeout') : res.error);
+      if (/not signed in|jwt|session/i.test(res.error)) {
+        setSessionLost(true);
+        setStatus(t('clock.signInHint'));
+      } else {
+        setStatus(res.error === 'timeout' ? t('clock.timeout') : res.error);
+      }
       setStatusKind('err');
       return;
     }
@@ -258,13 +285,14 @@ export default function TimeclockScreen() {
       return;
     }
     setPassword('');
+    setSessionLost(false);
     if (!canUseTimeclock(res.role)) {
       setStatus(t('clock.notAllowed'));
       setStatusKind('err');
     }
   }
 
-  const ready = canUseTimeclock(role);
+  const ready = canUseTimeclock(role) && !sessionLost;
   const actions = lookup ? actionsFor(lookup) : [];
   const hint =
     actions.length === 1 && actions[0] === 'in'

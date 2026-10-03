@@ -38,7 +38,9 @@ export async function enqueueRestaurantWeekCellOps(opts: {
   assignmentStore: AssignmentStore;
 }): Promise<void> {
   const { sb, companyId, restaurantId, weekIndex, weekMeta, draftRaw, assignmentStore } = opts;
-  const draft = loadDraftFromTeamState(draftRaw, weekIndex, restaurantId) as DraftGrid;
+  const draft = loadDraftFromTeamState(draftRaw, weekIndex, restaurantId, {
+    inheritUnfilledFuture: false,
+  }) as DraftGrid;
   const rs = assignmentStore[restaurantId] || {};
   const weekStart = weekIndex * 7;
   const slotsRes = companyId ? await fetchSlots(sb, companyId) : { data: [] as unknown[] };
@@ -56,6 +58,7 @@ export async function enqueueRestaurantWeekCellOps(opts: {
     const n = Math.max(rows.length, 1);
     for (let trIdx = 0; trIdx < n; trIdx += 1) {
       const slotKey = await ensureSlotKey(restaurantId, roleKey, trIdx, knownSlots);
+      if (!slotKey) continue;
       ops.push(opAddSlot(restaurantId, roleKey, slotKey, trIdx));
       for (let di = 0; di < 7; di += 1) {
         const dayIso = weekMeta[weekStart + di]?.iso;
@@ -134,6 +137,7 @@ export async function enqueueCellOpsForShiftTargets(opts: {
     const dayIso = weekMeta[p.globalDayIdx]?.iso;
     if (!dayIso) continue;
     const slotKey = await ensureSlotKey(t.restaurantId, roleKey, p.trIdx, knownSlots);
+    if (!slotKey) continue;
     const slotSig = `${t.restaurantId}|${roleKey}|${slotKey}`;
     if (!seenSlots.has(slotSig)) {
       seenSlots.add(slotSig);
@@ -141,7 +145,9 @@ export async function enqueueCellOpsForShiftTargets(opts: {
     }
     const wi = Math.floor(p.globalDayIdx / 7);
     const di = p.globalDayIdx % 7;
-    const draft = loadDraftFromTeamState(opts.draftRaw, wi, t.restaurantId) as DraftGrid;
+    const draft = loadDraftFromTeamState(opts.draftRaw, wi, t.restaurantId, {
+      inheritUnfilledFuture: false,
+    }) as DraftGrid;
     const tr = draftTimeSlotFor(draft, roleKey, WEEKDAY_KEYS[di], p.trIdx);
     const raw = opts.assignmentStore?.[t.restaurantId]?.[t.shiftId];
     const entry = normalizeScheduleAssignment(raw);
