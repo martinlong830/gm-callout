@@ -1657,7 +1657,16 @@
     var wi = resolveDraftWeekIndex(weekIndex);
     var rid = resolveDraftRestaurantId(restaurantId);
     var memoKey = draftLayersMemoKey(wi, rid);
-    if (draftLayersMemo[memoKey]) return draftLayersMemo[memoKey];
+    if (draftLayersMemo[memoKey]) {
+      /*
+       * A poll can memoize the all-DAY-OFF copy it just saved. That skipped
+       * inheritance for the rest of the session, so a week left open went blank.
+       */
+      if (!futureWeekStoredDraftShouldInherit(wi, rid, draftLayersMemo[memoKey])) {
+        return draftLayersMemo[memoKey];
+      }
+      delete draftLayersMemo[memoKey];
+    }
     var saved = draftScheduleByWeekStore[String(wi)];
     var layers = draftLayersFromWeekEntry(saved, rid);
     /*
@@ -1718,7 +1727,9 @@
     }
     weekEntry[rid] = sanitized;
     invalidateDraftLayersMemo(wi);
-    draftLayersMemo[draftLayersMemoKey(wi, rid)] = sanitized;
+    if (!futureWeekStoredDraftShouldInherit(wi, rid, sanitized)) {
+      draftLayersMemo[draftLayersMemoKey(wi, rid)] = sanitized;
+    }
     try {
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
       if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
@@ -12055,11 +12066,24 @@
                  * No cloud row for this future shift is "not saved yet", not a
                  * day off. Blanking it saved an all-DAY-OFF week.
                  */
+                var namedCloudPerson =
+                  cell &&
+                  ((cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+                    (cell.workers &&
+                      cell.workers[0] &&
+                      cell.workers[0] !== 'Unassigned'));
+                /*
+                 * No cloud row, or a future-week cell with no person, is not a
+                 * day off. Writing null here blanked the week after it sat open.
+                 */
                 if (
                   !nextCell &&
-                  !cell &&
-                  wi > SCHEDULE_TEMPLATE_WEEK_INDEX
+                  wi > SCHEDULE_TEMPLATE_WEEK_INDEX &&
+                  !namedCloudPerson
                 ) {
+                  continue;
+                }
+                if (!nextCell && !cell) {
                   continue;
                 }
                 var prevCell = row[di];
@@ -12143,6 +12167,14 @@
               if (scheduleProtectLocalTimedFromSoftDayOff()) {
                 return;
               }
+              /*
+               * Unnamed day-off cells are the old backfill, not a person marked
+               * off. Clearing them blanked whatever week was left on screen.
+               */
+              var namedDayOff =
+                (cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+                (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned');
+              if (!namedDayOff && !softDayOffGrow) return;
               var weekTimedNDraft = countTimedCellsInPatchWeek(patch, wi);
               if (softDayOffGrow || weekTimedNDraft >= 4 || !!opts.cloudAuthorityReplace) {
                 row[di] = null;
@@ -12196,7 +12228,15 @@
       if (changed) {
         Object.keys(draftsByWeekRid).forEach(function (draftKey) {
           var bits = draftKey.split('\0');
-          saveDraftScheduleRowsForWeek(Number(bits[0]), draftsByWeekRid[draftKey], bits[1]);
+          var wiSave = Number(bits[0]);
+          var layersSave = draftsByWeekRid[draftKey];
+          if (
+            wiSave > SCHEDULE_TEMPLATE_WEEK_INDEX &&
+            futureWeekDraftShellIsEmpty(layersSave)
+          ) {
+            return;
+          }
+          saveDraftScheduleRowsForWeek(wiSave, layersSave, bits[1]);
         });
       }
       Object.keys(replaceWeeks).forEach(function (wiStr) {
@@ -23074,6 +23114,12 @@
       return false;
     }
     if (!layers) return false;
+    /*
+     * An all-DAY-OFF copy is never the real week, even after the poll copies
+     * this week's names onto it. Inherit until that week has actual shift times
+     * and people of its own.
+     */
+    if (futureWeekDraftShellIsEmpty(layers)) return true;
     if (futureWeekHasStaffedAssignments(restaurantId, wi)) return false;
     return true;
   }
@@ -23085,8 +23131,15 @@
       return false;
     }
     var rid = currentRestaurantId;
-    if (futureWeekHasStaffedAssignments(rid, wi)) return false;
     if (!localWeekHasTimedDraft(SCHEDULE_TEMPLATE_WEEK_INDEX, rid)) return false;
+    var ownLayers = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
+    if (
+      ownLayers &&
+      !futureWeekDraftShellIsEmpty(ownLayers) &&
+      futureWeekHasStaffedAssignments(rid, wi)
+    ) {
+      return false;
+    }
     try {
       return restaurantWeekHasStaffedAssignments(
         getCurrentRestaurantAssignments(),
