@@ -12062,10 +12062,6 @@
                   cell && !cell.dayOff && cell.start && cell.end
                     ? [String(cell.start), String(cell.end)]
                     : null;
-                /*
-                 * No cloud row for this future shift is "not saved yet", not a
-                 * day off. Blanking it saved an all-DAY-OFF week.
-                 */
                 var namedCloudPerson =
                   cell &&
                   ((cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
