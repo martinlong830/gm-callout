@@ -98,13 +98,35 @@ export function getOngiFlag(
   return parsed === 1 || parsed === 2 || parsed === 3 ? parsed : 0;
 }
 
+export type OngiMergeOpts = {
+  /**
+   * A cleared flag (false) must stick. Local false is never replaced by a remote
+   * store. Remote false clears a stale local store unless this device turned that
+   * cell on since the last confirmed snapshot, or keepLocalOngi is set for a save.
+   */
+  honorTombstones?: boolean;
+  /** This device's draft is being saved — do not let a remote off wipe a store it still has. */
+  keepLocalOngi?: boolean;
+  confirmed?: unknown;
+};
+
+function ongiCellOn(v: OngiCellValue | null): boolean {
+  return v === 1 || v === 2 || v === 3;
+}
+
+function ongiCellSame(a: OngiCellValue | null, b: OngiCellValue | null): boolean {
+  return a === b;
+}
+
 export function mergeOngiFlagsByWeekMaps(
   localRaw: unknown,
   remoteRaw: unknown,
-  preferWhenBoth: 'local' | 'remote' = 'remote'
+  preferWhenBoth: 'local' | 'remote' = 'remote',
+  opts?: OngiMergeOpts
 ): OngiFlagsByWeek {
   const local = sanitizeOngiFlagsByWeek(localRaw);
   const remote = sanitizeOngiFlagsByWeek(remoteRaw);
+  const confirmed = opts?.honorTombstones ? sanitizeOngiFlagsByWeek(opts.confirmed) : null;
   const out: OngiFlagsByWeek = {};
   const weekKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
   weekKeys.forEach((mon) => {
@@ -120,7 +142,23 @@ export function mergeOngiFlagsByWeekMaps(
       keys.forEach((cellKey) => {
         const lv = Object.prototype.hasOwnProperty.call(lCells, cellKey) ? lCells[cellKey] : null;
         const rv = Object.prototype.hasOwnProperty.call(rCells, cellKey) ? rCells[cellKey] : null;
-        if (lv != null && rv != null) cellOut[cellKey] = preferWhenBoth === 'local' ? lv : rv;
+        const cv =
+          confirmed && confirmed[mon] && confirmed[mon][rid] && confirmed[mon][rid][cellKey] != null
+            ? confirmed[mon][rid][cellKey]
+            : null;
+        const localChanged = confirmed ? !ongiCellSame(lv, cv) : false;
+        if (opts?.honorTombstones && lv === false) {
+          cellOut[cellKey] = false;
+        } else if (
+          opts?.honorTombstones &&
+          rv === false &&
+          lv != null &&
+          (opts.keepLocalOngi || (ongiCellOn(lv) && confirmed && localChanged))
+        ) {
+          cellOut[cellKey] = lv;
+        } else if (opts?.honorTombstones && rv === false) {
+          cellOut[cellKey] = false;
+        } else if (lv != null && rv != null) cellOut[cellKey] = preferWhenBoth === 'local' ? lv : rv;
         else if (lv != null) cellOut[cellKey] = lv;
         else if (rv != null) cellOut[cellKey] = rv;
       });

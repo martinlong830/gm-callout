@@ -460,6 +460,8 @@ export default function ManagerScheduleScreen() {
   const pendingStoreRef = useRef<AssignmentStore | null>(null);
   /** True from a manager edit until its save is confirmed — hydrate must not overwrite it. */
   const localEditPendingRef = useRef(false);
+  /** Last team_state updated_at this phone successfully wrote. Stops the next save from colliding with its own echo and flashing Saving…. */
+  const lastPushedUpdatedAtRef = useRef<string | null>(null);
   /**
    * After an intentional cell write (edit/add/delete/person/template), refuse cloud
    * cell apply until replica lag settles — same idea as web scheduleLocalAuthority.
@@ -1168,10 +1170,19 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     ) => {
       if (!supabase || !isManagerLikeRole(role)) return;
       setSchedulePushInFlight(true);
-      /* Delay saving chrome so fast saves do not re-render the whole schedule grid. */
-      const savingTimer = setTimeout(() => {
-        setSaving(true);
-      }, 450);
+      const storeAtStart = pendingStoreRef.current;
+      const draftAtStart = pendingDraftRef.current;
+      /*
+       * Delay saving chrome so a fast save does not re-render the grid.
+       * Only a manager edit shows it — retries of an already-sent save were
+       * turning the label on and off beside Refresh.
+       */
+      const showSavingChrome = localEditPendingRef.current;
+      const savingTimer = showSavingChrome
+        ? setTimeout(() => {
+            setSaving(true);
+          }, 450)
+        : null;
       try {
         let toSave = JSON.parse(JSON.stringify(store)) as AssignmentStore;
         purgeDefaultUnassignedRestaurantAssignments(toSave, restaurants);
@@ -1181,9 +1192,11 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
          * cache — otherwise every keystroke-save paid for a full schedule download.
          */
         const managedScope = managerManagedRestaurantId(myEmployee, role);
+        const stateAt = teamState?.updated_at != null ? String(teamState.updated_at) : '';
+        const rememberedAt = lastPushedUpdatedAtRef.current || '';
+        const knownAt = (stateAt > rememberedAt ? stateAt : rememberedAt) || null;
         if (managedScope === 'rp-8' || managedScope === 'rp-9') {
           try {
-            const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
             const remoteAt = await fetchTeamStateUpdatedAt(supabase, teamStateId);
             if (remoteAt && knownAt && remoteAt > knownAt) {
               const remoteRes = await supabase
@@ -1229,13 +1242,6 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
         if (!fields.length) {
           return;
         }
-        const pushedAssignJson = fields.includes('schedule_assignments')
-          ? JSON.stringify(toSave)
-          : null;
-        const pushedDraftJson = fields.includes('draft_schedule')
-          ? JSON.stringify(payload.draft_schedule ?? draftToSave ?? null)
-          : null;
-        const knownAt = teamState?.updated_at != null ? String(teamState.updated_at) : null;
         let up = knownAt
           ? await supabase
               .from('team_state')
@@ -1288,6 +1294,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 remoteRes.data?.draft_schedule,
                 {
                   keepLocalByWeek: true,
+                  keepLocalOngi: true,
                   preferWhenBoth: slotOrderDirtyRef.current ? 'local' : 'remote',
                 }
               );
@@ -1308,10 +1315,13 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
         } else {
           const pushedUpdatedAt =
             up.data?.updated_at != null ? String(up.data.updated_at) : undefined;
+          if (pushedUpdatedAt) lastPushedUpdatedAtRef.current = pushedUpdatedAt;
           const draftForHash =
-            draftToSave !== undefined
-              ? draftToSave
-              : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
+            payload.draft_schedule !== undefined
+              ? payload.draft_schedule
+              : draftToSave !== undefined
+                ? draftToSave
+                : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {};
           const pushHash = hashScheduleBundle(toSave, draftForHash);
           noteLocalSchedulePush({ hash: pushHash, updatedAt: pushedUpdatedAt });
           void broadcastTeamStateChanged(
@@ -1321,27 +1331,21 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             session?.user?.id
           );
           /*
-           * Only clear dirty/pending when local SoT still matches what we just pushed.
-           * An edit during the upsert must keep dirty=true and re-arm the timer —
-           * otherwise a remote echo of the older snapshot rolls assignments back.
+           * A conflict merge rewrites the uploaded draft (Ongi tombstones, row order)
+           * so its JSON no longer matches the object we started with. That mismatch
+           * used to re-arm this save forever and flash Saving…. Only a new edit that
+           * replaced the pending refs during the request needs another save.
            */
-          const liveStore = pendingStoreRef.current ?? toSave;
-          const liveDraft =
-            pendingDraftRef.current !== undefined ? pendingDraftRef.current : draftToSave;
-          const assignStillDirty = JSON.stringify(liveStore) !== pushedAssignJson;
-          const draftStillDirty =
-            pushedDraftJson != null && JSON.stringify(liveDraft ?? null) !== pushedDraftJson;
+          const editedDuring =
+            pendingStoreRef.current !== storeAtStart ||
+            pendingDraftRef.current !== draftAtStart;
           suppressHydrateUndoClearRef.current = true;
-          if (assignStillDirty || draftStillDirty) {
+          if (editedDuring) {
             localEditPendingRef.current = true;
+            const liveStore = pendingStoreRef.current ?? toSave;
+            const liveDraft =
+              pendingDraftRef.current !== undefined ? pendingDraftRef.current : draftToSave;
             if (!pendingStoreRef.current) pendingStoreRef.current = liveStore;
-            if (
-              draftStillDirty &&
-              pendingDraftRef.current === undefined &&
-              liveDraft !== undefined
-            ) {
-              pendingDraftRef.current = liveDraft;
-            }
             applyLocalScheduleAssignments(liveStore, liveDraft, {
               markDirty: true,
               pushedUpdatedAt,
@@ -1354,7 +1358,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             slotOrderDirtyRef.current = false;
             slotOrderPushedAtRef.current = Date.now();
             setAssignmentStore(assignmentShell(restaurantsRef.current));
-            applyLocalScheduleAssignments(toSave, draftToSave, {
+            const savedDraft =
+              payload.draft_schedule !== undefined ? payload.draft_schedule : draftToSave;
+            applyLocalScheduleAssignments(toSave, savedDraft, {
               markDirty: false,
               pushedUpdatedAt,
             });
@@ -1365,15 +1371,15 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
               source: 'persist',
               assignments: toSave,
               draft:
-                draftToSave !== undefined
-                  ? draftToSave
+                savedDraft !== undefined
+                  ? savedDraft
                   : draftScheduleRawRef.current ?? teamState?.draft_schedule ?? {},
               published: teamState?.schedule_published ?? null,
             });
           }
         }
       } finally {
-        clearTimeout(savingTimer);
+        if (savingTimer) clearTimeout(savingTimer);
         setSchedulePushInFlight(false);
         setSaving(false);
       }
@@ -2203,8 +2209,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
   );
 
   /*
-   * Person column reads this week only. The full blob is not copied into React
-   * state — that copy, and the cell poll after it, froze the phone on Unassigned.
+   * Person column reads the visible week, plus this week's keys when a future
+   * week is open so those rows can keep this week's people. The full blob is
+   * not copied into React state — that copy froze the phone on Unassigned.
    */
   const gridStore = useMemo(() => {
     const start = weekIndex * 7;
@@ -2214,7 +2221,12 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
         ? (teamState.schedule_assignments as AssignmentStore)
         : null;
     const out: AssignmentStore = {};
-    const copyWeek = (src: AssignmentStore | null | undefined, overlay: boolean) => {
+    const copyWeek = (
+      src: AssignmentStore | null | undefined,
+      overlay: boolean,
+      rangeStart: number,
+      rangeEnd: number
+    ) => {
       if (!src) return;
       Object.keys(src).forEach((rid) => {
         const rs = src[rid];
@@ -2223,7 +2235,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
           const m = /^shift-(\d+)-/.exec(shiftId);
           if (!m) return;
           const gdi = Number(m[1]);
-          if (gdi < start || gdi >= end) return;
+          if (gdi < rangeStart || gdi >= rangeEnd) return;
           const entry = rs[shiftId];
           if (!out[rid]) out[rid] = {};
           if (!overlay) {
@@ -2256,8 +2268,18 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
         });
       });
     };
-    copyWeek(blob, false);
-    copyWeek(assignmentStore, true);
+    copyWeek(blob, false, start, end);
+    copyWeek(assignmentStore, true, start, end);
+    /*
+     * Next week inherits this week's people. The slice used to drop this week's
+     * keys, so a poll that wrote Unassigned had nothing to fall back to and the
+     * row flipped between the name and Unassigned.
+     */
+    if (weekIndex > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      const tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
+      copyWeek(blob, false, tplStart, tplStart + 7);
+      copyWeek(assignmentStore, true, tplStart, tplStart + 7);
+    }
     return out;
   }, [assignmentStore, teamState?.schedule_assignments, weekIndex]);
 

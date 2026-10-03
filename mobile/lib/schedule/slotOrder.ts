@@ -263,7 +263,12 @@ export function mergePendingDraftWithHydrated(pending: unknown, hydrated: unknow
   );
   if (Object.keys(mergedSales).length) p.scheduleNetSalesByWeek = mergedSales;
   else delete p.scheduleNetSalesByWeek;
-  const mergedOngi = mergeOngiFlagsByWeekMaps(readOngiFlagsByWeek(p), readOngiFlagsByWeek(h), 'local');
+  const mergedOngi = mergeOngiFlagsByWeekMaps(
+    readOngiFlagsByWeek(p),
+    readOngiFlagsByWeek(h),
+    'local',
+    { honorTombstones: true, keepLocalOngi: true }
+  );
   if (Object.keys(mergedOngi).length) p.ongiFlagsByWeek = mergedOngi;
   else delete p.ongiFlagsByWeek;
   const hWin = h.windowMondayIso != null ? String(h.windowMondayIso).slice(0, 10) : '';
@@ -280,6 +285,8 @@ export type DraftSlotOrderMergeOpts = {
    * from remote. Default false starts from remote (legacy blob SoT).
    */
   keepLocalByWeek?: boolean;
+  /** Saving this device's draft: a cleared or set Ongi cell must not be replaced. */
+  keepLocalOngi?: boolean;
 };
 
 /**
@@ -293,6 +300,7 @@ export function mergeDraftScheduleSlotOrderFromRemote(
 ): unknown {
   const preferWhenBoth = opts?.preferWhenBoth ?? 'remote';
   const keepLocalByWeek = opts?.keepLocalByWeek === true;
+  const keepLocalOngi = opts?.keepLocalOngi === true;
   if (!remoteDraft || typeof remoteDraft !== 'object') return localDraft;
   if (!localDraft || typeof localDraft !== 'object') {
     return JSON.parse(JSON.stringify(remoteDraft));
@@ -333,7 +341,8 @@ export function mergeDraftScheduleSlotOrderFromRemote(
   const mergedOngi = mergeOngiFlagsByWeekMaps(
     readOngiFlagsByWeek(localDraft),
     readOngiFlagsByWeek(remoteDraft),
-    preferWhenBoth
+    preferWhenBoth,
+    { honorTombstones: true, keepLocalOngi }
   );
   if (Object.keys(mergedOngi).length) merged.ongiFlagsByWeek = mergedOngi;
   else delete merged.ongiFlagsByWeek;

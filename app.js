@@ -880,10 +880,16 @@
     return out;
   }
 
-  function mergeOngiFlagsByWeekMaps(localMap, remoteMap, preferWhenBoth) {
+  function ongiFlagCellOn(v) {
+    return v === 1 || v === 2 || v === 3;
+  }
+
+  function mergeOngiFlagsByWeekMaps(localMap, remoteMap, preferWhenBoth, opts) {
     preferWhenBoth = preferWhenBoth === 'local' ? 'local' : 'remote';
+    opts = opts && typeof opts === 'object' ? opts : {};
     var local = sanitizeOngiFlagsByWeek(localMap);
     var remote = sanitizeOngiFlagsByWeek(remoteMap);
+    var confirmed = opts.honorTombstones ? sanitizeOngiFlagsByWeek(opts.confirmed) : null;
     var out = {};
     var weekKeys = {};
     Object.keys(local).forEach(function (k) {
@@ -917,7 +923,23 @@
         Object.keys(cellKeys).forEach(function (cellKey) {
           var lv = Object.prototype.hasOwnProperty.call(lCells, cellKey) ? lCells[cellKey] : null;
           var rv = Object.prototype.hasOwnProperty.call(rCells, cellKey) ? rCells[cellKey] : null;
-          if (lv != null && rv != null) cellOut[cellKey] = preferWhenBoth === 'local' ? lv : rv;
+          var cv = null;
+          if (confirmed && confirmed[mon] && confirmed[mon][rid] && confirmed[mon][rid][cellKey] != null) {
+            cv = confirmed[mon][rid][cellKey];
+          }
+          var localChanged = confirmed ? lv !== cv : false;
+          /*
+           * false is an explicit off. A phone delete must clear the website even
+           * when this computer still has the old flag and other draft edits are
+           * unsaved. A flag turned on here since the last confirm is kept.
+           */
+          if (opts.honorTombstones && lv === false) {
+            cellOut[cellKey] = false;
+          } else if (opts.honorTombstones && rv === false && ongiFlagCellOn(lv) && confirmed && localChanged) {
+            cellOut[cellKey] = lv;
+          } else if (opts.honorTombstones && rv === false) {
+            cellOut[cellKey] = false;
+          } else if (lv != null && rv != null) cellOut[cellKey] = preferWhenBoth === 'local' ? lv : rv;
           else if (lv != null) cellOut[cellKey] = lv;
           else if (rv != null) cellOut[cellKey] = rv;
         });
@@ -12480,7 +12502,7 @@
       var slim = await window.gmSupabase
         .from('team_state')
         .select(
-          'updated_at,slotOrderByWeek:draft_schedule->slotOrderByWeek,groupOrderPotentialByWeek:draft_schedule->groupOrderPotentialByWeek,scheduleNetSalesByWeek:draft_schedule->scheduleNetSalesByWeek,windowMondayIso:draft_schedule->windowMondayIso,slotOrderByRestaurant:draft_schedule->slotOrderByRestaurant'
+          'updated_at,slotOrderByWeek:draft_schedule->slotOrderByWeek,groupOrderPotentialByWeek:draft_schedule->groupOrderPotentialByWeek,scheduleNetSalesByWeek:draft_schedule->scheduleNetSalesByWeek,ongiFlagsByWeek:draft_schedule->ongiFlagsByWeek,windowMondayIso:draft_schedule->windowMondayIso,slotOrderByRestaurant:draft_schedule->slotOrderByRestaurant'
         )
         .eq('id', gmCalloutTeamStateRowId())
         .maybeSingle();
@@ -12491,6 +12513,7 @@
             slotOrderByWeek: slim.data.slotOrderByWeek,
             groupOrderPotentialByWeek: slim.data.groupOrderPotentialByWeek,
             scheduleNetSalesByWeek: slim.data.scheduleNetSalesByWeek,
+            ongiFlagsByWeek: slim.data.ongiFlagsByWeek,
             windowMondayIso: slim.data.windowMondayIso,
             slotOrderByRestaurant: slim.data.slotOrderByRestaurant,
           },
@@ -12510,6 +12533,12 @@
   function applyCloudScheduleRowOrder(orderRes, opts) {
     opts = opts || {};
     if (!orderRes || !orderRes.ok || !orderRes.draft) return false;
+    /* Ongi clears must land even while a shift edit blocks row-order replacement. */
+    try {
+      applyRemoteOngiFlagsFromDraft(orderRes.draft);
+    } catch (_ongiEarly) {
+      /* ignore */
+    }
     if (opts.fetchedAt && scheduleSlotOrderEditAt > opts.fetchedAt) return false;
     if (hasInteractiveScheduleEditsThisSession()) return false;
     if (slotOrderHasUnpushedLocalEdit()) return false;
@@ -17563,6 +17592,24 @@
        * roll back cell SoT — it must not silence the push path.
        */
       if (pushScheduleBundle) {
+        /*
+         * A phone can clear an Ongi flag between this computer's edits. Fold that
+         * off into the draft before upload so this save does not put the flag back.
+         */
+        try {
+          var ongiBeforePush = await sb
+            .from('team_state')
+            .select('ongiFlagsByWeek:draft_schedule->ongiFlagsByWeek')
+            .eq('id', gmCalloutTeamStateRowId())
+            .maybeSingle();
+          if (!ongiBeforePush.error && ongiBeforePush.data) {
+            applyRemoteOngiFlagsFromDraft({
+              ongiFlagsByWeek: ongiBeforePush.data.ongiFlagsByWeek,
+            });
+          }
+        } catch (_ongiBeforePush) {
+          /* ignore */
+        }
         var bundleAssign = prepareLocalScheduleBundleForCloudPush();
         payload.schedule_assignments = bundleAssign;
         pushedAssignJson = JSON.stringify(payload.schedule_assignments);
@@ -18034,9 +18081,48 @@
    * Cells own times/names; ↑↓ row order still lives in draft_schedule.slotOrderByWeek.
    * After hard revert / Refresh, peers must take that order or names look jumbled.
    */
+  function confirmedOngiFlagsFromStorage() {
+    try {
+      var raw = getDraftScheduleConfirmedJson();
+      if (!raw) return {};
+      var obj = JSON.parse(raw);
+      return sanitizeOngiFlagsByWeek(obj && obj.ongiFlagsByWeek);
+    } catch (_ongiConf) {
+      return {};
+    }
+  }
+
+  /** Apply cloud Ongi flags, including explicit off, without waiting for a full schedule replace. */
+  function applyRemoteOngiFlagsFromDraft(dr) {
+    if (!dr || typeof dr !== 'object') return false;
+    var remoteOngi = sanitizeOngiFlagsByWeek(dr.ongiFlagsByWeek);
+    var next = mergeOngiFlagsByWeekMaps(ongiFlagsByWeekStore, remoteOngi, 'remote', {
+      honorTombstones: true,
+      confirmed: confirmedOngiFlagsFromStorage(),
+    });
+    if (JSON.stringify(ongiFlagsByWeekStore) === JSON.stringify(next)) return false;
+    ongiFlagsByWeekStore = next;
+    persistOngiFlagsStore({ skipDirty: true });
+    try {
+      refreshVisibleOngiFlagsInDom();
+    } catch (_ongiDom) {
+      /* ignore */
+    }
+    return true;
+  }
+
   function applyDraftRowOrderMetaFromRemote(dr, opts) {
     opts = opts || {};
     if (!dr || typeof dr !== 'object') return false;
+    try {
+      applyRemoteOngiFlagsFromDraft(dr);
+    } catch (_ongiApply) {
+      /* ignore */
+    }
+    /*
+     * Ongi already updated the badges above. Do not report a schedule-bundle
+     * change — that rebuild pruned rows and flashed names.
+     */
     if (scheduleCellRemoteApplyBlocked() && !opts.force) return false;
     if (hasInteractiveScheduleEditsThisSession() && !opts.force) return false;
     var remoteDraftPayload = draftSchedulePayloadFromRemote(dr);
@@ -18119,7 +18205,10 @@
         );
     var nextOngi = replaceGroupSales
       ? remoteOngiOnly
-      : mergeOngiFlagsByWeekMaps(ongiFlagsByWeekStore, remoteOngiOnly, preferGroup);
+      : mergeOngiFlagsByWeekMaps(ongiFlagsByWeekStore, remoteOngiOnly, preferGroup, {
+          honorTombstones: true,
+          confirmed: confirmedOngiFlagsFromStorage(),
+        });
     var changed =
       JSON.stringify(slotOrderByWeekStore) !== JSON.stringify(nextSlot) ||
       JSON.stringify(groupOrderPotentialByWeekStore) !== JSON.stringify(nextGroup) ||
@@ -30543,6 +30632,22 @@
     if (entry.rowOwner && entry.rowOwner !== 'Unassigned') {
       return [String(entry.rowOwner)];
     }
+    /*
+     * Next week often has an Unassigned key and no person of its own.
+     * Read this week's person so the row header does not flip to Unassigned.
+     */
+    var stubId = shiftId;
+    if (!stubId && globalDayIdx >= 0 && roleIdx >= 0) {
+      stubId = 'shift-' + globalDayIdx + '-' + roleIdx + '-' + trIdx;
+    }
+    var stubParts = stubId ? parseShiftIdParts(stubId) : null;
+    if (stubParts && stubParts.globalDayIdx >= (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7) {
+      var inherited = lookupScheduleAssignment(rs, stubId);
+      var inheritedWorkers = ((inherited && inherited.workers) || []).filter(function (n) {
+        return n && n !== 'Unassigned';
+      });
+      if (inheritedWorkers.length) return inheritedWorkers;
+    }
     return [];
   }
 
@@ -31822,6 +31927,42 @@
       escapeHtml(flag.text) +
       '</div>'
     );
+  }
+
+  function refreshVisibleOngiFlagsInDom() {
+    if (typeof document === 'undefined' || !calendarGrid) return;
+    var nodes = calendarGrid.querySelectorAll('[data-role][data-tr-idx][data-day]');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      var role = el.getAttribute('data-role');
+      var trIdx = Number(el.getAttribute('data-tr-idx'));
+      var dayStr = el.getAttribute('data-day');
+      var html = calendarOngiFlagHtml(role, trIdx, dayStr);
+      var existing = el.querySelector('.calendar-slot-ongi-flag');
+      if (!html) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        var emptyFlags = el.querySelector('.calendar-slot-flags');
+        if (emptyFlags && !emptyFlags.children.length && emptyFlags.parentNode) {
+          emptyFlags.parentNode.removeChild(emptyFlags);
+        }
+        continue;
+      }
+      var holder = document.createElement('div');
+      holder.innerHTML = html;
+      var next = holder.firstChild;
+      if (!next) continue;
+      if (existing && existing.parentNode) {
+        existing.parentNode.replaceChild(next, existing);
+        continue;
+      }
+      var flagsBox = el.querySelector('.calendar-slot-flags');
+      if (!flagsBox) {
+        flagsBox = document.createElement('div');
+        flagsBox.className = 'calendar-slot-flags';
+        el.appendChild(flagsBox);
+      }
+      flagsBox.appendChild(next);
+    }
   }
 
   function calendarOngiFlagHtml(role, trIdx, dayStr) {

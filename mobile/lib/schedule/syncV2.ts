@@ -1065,6 +1065,11 @@ export function projectCellsOntoLocalStores(opts: {
     if (!(start && end) && !named) return;
     const already = staffedAssignmentName(nextAssign[rid][shiftId]);
     const person = named || already;
+    /*
+     * An unnamed future-week cell is not a person clear. Writing Unassigned
+     * here covered this week's name until the next paint put it back.
+     */
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && !person) return;
     const entry: Record<string, unknown> = { workers: ['Unassigned'] };
     if (start && end) {
       if (person) {

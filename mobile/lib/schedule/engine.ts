@@ -1704,9 +1704,23 @@ function applyScheduleAssignmentsMerge(
 ) {
   schedule.forEach((s) => {
     /* Direct store row vs pattern inheritance. Grid seeds Unassigned; never invent roster names. */
-    const directEntry =
+    let directEntry =
       stored[s.id] != null ? normalizeScheduleAssignment(stored[s.id]) : null;
-    const hasDirectAssignment = stored[s.id] != null;
+    let hasDirectAssignment = stored[s.id] != null;
+    const futureParts = parseShiftIdParts(s.id);
+    /*
+     * Next week is a copy of this week until someone assigns that week.
+     * Cloud cells for those days are often unnamed. An Unassigned key must
+     * not cover this week's person — that alternated the row every poll.
+     */
+    if (
+      futureParts &&
+      futureParts.globalDayIdx >= (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7 &&
+      (!directEntry || !scheduleAssignmentHasStaffedWorkers(directEntry))
+    ) {
+      hasDirectAssignment = false;
+      directEntry = null;
+    }
     const entry = directEntry
       ? mergeScheduleAssignmentEntries(
           directEntry,
@@ -2078,8 +2092,19 @@ export function scheduleRowPrimaryPerson(
             ? `shift-${weekIndex * 7 + dayInWeek}-${roleIdx}-${trIdx}`
             : shift.id;
         const stub = normalizeScheduleAssignment(rs[stubId] ?? rs[shift.id]);
-        const stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
-        const owner = stub.rowOwner && stub.rowOwner !== 'Unassigned' ? stub.rowOwner : '';
+        let stubWorkers = (stub.workers || []).filter((n) => n && n !== 'Unassigned');
+        let owner = stub.rowOwner && stub.rowOwner !== 'Unassigned' ? stub.rowOwner : '';
+        if (
+          !stubWorkers.length &&
+          !owner &&
+          weekIndex != null &&
+          weekIndex > SCHEDULE_TEMPLATE_WEEK_INDEX
+        ) {
+          const inherited = lookupScheduleAssignment(rs, stubId);
+          stubWorkers = (inherited?.workers || []).filter((n) => n && n !== 'Unassigned');
+          owner =
+            inherited?.rowOwner && inherited.rowOwner !== 'Unassigned' ? inherited.rowOwner : '';
+        }
         name = stubWorkers.length
           ? canonicalScheduleWorkerNameLite(employees, stubWorkers[0], restaurantId)
           : owner
