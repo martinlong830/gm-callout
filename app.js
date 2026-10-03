@@ -1660,7 +1660,13 @@
     if (draftLayersMemo[memoKey]) return draftLayersMemo[memoKey];
     var saved = draftScheduleByWeekStore[String(wi)];
     var layers = draftLayersFromWeekEntry(saved, rid);
-    if (layers) {
+    /*
+     * An unfilled future week can have an all-DAY-OFF copy in local storage and
+     * in the cloud draft blob. Every device loaded that copy on open, refresh,
+     * and coming back to Schedule. Ignore it and inherit this week until someone
+     * actually assigns people on that future week.
+     */
+    if (layers && !futureWeekStoredDraftShouldInherit(wi, rid, layers)) {
       draftLayersMemo[memoKey] = layers;
       return layers;
     }
@@ -13738,10 +13744,21 @@
     } catch (_rep) {
       console.warn('gm-callout: trusted week replace before paint', _rep);
     }
+    if (weekIndex > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      dropEmptyFutureWeekDraftShells(weekIndex);
+      invalidateDraftLayersMemo(weekIndex);
+    }
     scheduleUiAwaitingInitialCloudHydrate = false;
     var localTimed = countLocalTimedDraftWeek(weekIndex);
-    /* Dense cloud but still no local times — hold blank; do not cement DAY-OFF. */
-    if (cloudTimed >= 4 && localTimed < 4) {
+    /*
+     * Dense unnamed cloud cells (Oct 5–11 backfill) used to freeze the grid here
+     * because the saved draft was all DAY-OFF. Inherit this week and paint it.
+     */
+    if (
+      cloudTimed >= 4 &&
+      localTimed < 4 &&
+      !futureWeekInheritsStaffedTemplate(weekIndex)
+    ) {
       if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
       return false;
     }
@@ -13780,7 +13797,10 @@
       } catch (_rep2) {
         /* ignore */
       }
-      if (countLocalTimedDraftWeek(weekIndex) < 4) {
+      if (
+        countLocalTimedDraftWeek(weekIndex) < 4 &&
+        !futureWeekInheritsStaffedTemplate(weekIndex)
+      ) {
         if (calendarGrid) calendarGrid.setAttribute('aria-busy', 'true');
         return false;
       }
@@ -13863,6 +13883,12 @@
       return false;
     }
     var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    /*
+     * Next week with no people of its own still shows this week's shifts.
+     * Holding for cloud staffing left the all-DAY-OFF shell on screen through
+     * load, refresh, and returning from other pages.
+     */
+    if (futureWeekInheritsStaffedTemplate(wi)) return false;
     if (scheduleUiAwaitingInitialCloudHydrate) return true;
     if (scheduleCellsHydratedOk && scheduleAuthoritativePaintReady) return false;
     if (!scheduleAuthoritativePaintReady && !visibleWeekHasStaffedPeople(wi)) return true;
@@ -13918,6 +13944,13 @@
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex))
         ? Number(opts.weekIndex)
         : scheduleCalendarWeekIndex;
+    if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
+      try {
+        if (dropEmptyFutureWeekDraftShells(wi)) invalidateDraftLayersMemo(wi);
+      } catch (_dropPaint) {
+        /* ignore */
+      }
+    }
     /*
      * Fresh devices briefly had draft times + Unassigned people from blobs before
      * cells hydrated. Hold Loading… until forceCloudPending / staffed apply.
@@ -23030,6 +23063,40 @@
    * should inherit this week until someone actually edits it. Local only — never
    * pushed to cloud.
    */
+  /**
+   * Future week has clock rows saved but nobody assigned. That is the day-off
+   * shell and the unnamed backfill, not a real next-week schedule. Show this
+   * week instead. Does not write cloud.
+   */
+  function futureWeekStoredDraftShouldInherit(weekIndex, restaurantId, layers) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi <= SCHEDULE_TEMPLATE_WEEK_INDEX || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return false;
+    }
+    if (!layers) return false;
+    if (futureWeekHasStaffedAssignments(restaurantId, wi)) return false;
+    return true;
+  }
+
+  /** True when next week should paint this week's staffed shifts. */
+  function futureWeekInheritsStaffedTemplate(weekIndex) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || wi <= SCHEDULE_TEMPLATE_WEEK_INDEX || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
+      return false;
+    }
+    var rid = currentRestaurantId;
+    if (futureWeekHasStaffedAssignments(rid, wi)) return false;
+    if (!localWeekHasTimedDraft(SCHEDULE_TEMPLATE_WEEK_INDEX, rid)) return false;
+    try {
+      return restaurantWeekHasStaffedAssignments(
+        getCurrentRestaurantAssignments(),
+        SCHEDULE_TEMPLATE_WEEK_INDEX
+      );
+    } catch (_inh) {
+      return false;
+    }
+  }
+
   function futureWeekDraftShellIsEmpty(layers) {
     if (!layers || typeof layers !== 'object') return true;
     var roles = ['Bartender', 'Kitchen', 'Server'];
@@ -24747,6 +24814,18 @@
       if (!directKeyPresent) return null;
       return mergeScheduleAssignmentEntries(direct, pattern, true);
     }
+    /*
+     * Unassigned placeholders on an unfilled future week must not hide this
+     * week's people. A real name or row owner on that week still wins.
+     */
+    if (
+      p &&
+      p.globalDayIdx >= tplStart + 7 &&
+      (!direct || !scheduleAssignmentHasStaffedWorkers(direct))
+    ) {
+      directKeyPresent = false;
+      direct = null;
+    }
     return mergeScheduleAssignmentEntries(direct, pattern, directKeyPresent);
   }
 
@@ -25303,6 +25382,15 @@
     SCHEDULE.forEach(function (s) {
       var directEntry = stored[s.id] != null ? normalizeScheduleAssignment(stored[s.id]) : null;
       var hasDirectAssignment = stored[s.id] != null;
+      var futureShiftParts = parseShiftIdParts(s.id);
+      if (
+        futureShiftParts &&
+        futureShiftParts.globalDayIdx >= (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7 &&
+        (!directEntry || !scheduleAssignmentHasStaffedWorkers(directEntry))
+      ) {
+        hasDirectAssignment = false;
+        directEntry = null;
+      }
       var entry = directEntry
         ? mergeScheduleAssignmentEntries(
             directEntry,
