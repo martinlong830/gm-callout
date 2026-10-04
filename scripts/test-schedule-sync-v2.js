@@ -603,6 +603,52 @@ function emptyState() {
   sync.clearLocalDeactivatedSlots();
 })();
 
+// Named person on a forked row beats a higher-rev unnamed shell.
+(function () {
+  sync.clearLocalDeactivatedSlots();
+  var rid = 'rp-named-fork';
+  var named = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  var shell = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  sync.replaceActiveSlots([
+    { restaurant_id: rid, role: 'Bartender', slot_key: named, sort_order: 0, active: true },
+    { restaurant_id: rid, role: 'Bartender', slot_key: shell, sort_order: 0, active: true },
+  ]);
+  var cells = sync.getCellCache();
+  cells[sync.cellKey(rid, '2026-09-28', 'Bartender', named)] = {
+    restaurant_id: rid,
+    day_iso: '2026-09-28',
+    role: 'Bartender',
+    slot_key: named,
+    start_hhmm: '09:00',
+    end_hhmm: '17:00',
+    worker_name: 'KARL SANTIAGO',
+    rev: 2,
+    deleted: false,
+  };
+  cells[sync.cellKey(rid, '2026-09-28', 'Bartender', shell)] = {
+    restaurant_id: rid,
+    day_iso: '2026-09-28',
+    role: 'Bartender',
+    slot_key: shell,
+    start_hhmm: '09:00',
+    end_hhmm: '17:00',
+    worker_name: null,
+    rev: 900,
+    deleted: false,
+  };
+  var patch = sync.projectCellsToAssignmentPatch(
+    { '2026-09-28': 84 },
+    { Kitchen: 0, Bartender: 1, Server: 2 }
+  );
+  var entry = patch[rid] && patch[rid]['shift-84-1-0'];
+  assert(
+    entry && entry.rowOwner === 'KARL SANTIAGO',
+    'named fork beats higher-rev unnamed shell'
+  );
+  delete cells[sync.cellKey(rid, '2026-09-28', 'Bartender', named)];
+  delete cells[sync.cellKey(rid, '2026-09-28', 'Bartender', shell)];
+})();
+
 if (failed) {
   console.error('\n' + failed + ' failed');
   process.exit(1);

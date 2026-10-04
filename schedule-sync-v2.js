@@ -1505,8 +1505,22 @@
       var shiftId = 'shift-' + gdi + '-' + roleIdx + '-' + trIdx;
       var remoteRev = Number(cell.rev) || 0;
       var existing = patch[rid][shiftId];
-      /* Duplicate slots (forked UUIDs, same sort_order) can collide — keep higher rev. */
-      if (existing && Number(existing.rev || 0) > remoteRev) return;
+      /*
+       * Forked UUIDs share a row. A named person beats an unnamed shell even
+       * when the shell has a higher rev — that shell was painting Unassigned
+       * on the phone while the computers still showed the person.
+       */
+      if (existing) {
+        var existingNamed = !!(
+          (existing.rowOwner && existing.rowOwner !== 'Unassigned') ||
+          (existing.workers &&
+            existing.workers[0] &&
+            existing.workers[0] !== 'Unassigned')
+        );
+        var incomingNamed = !!(cell.worker_name && cell.worker_name !== 'Unassigned');
+        if (existingNamed && !incomingNamed) return;
+        if (!(incomingNamed && !existingNamed) && Number(existing.rev || 0) > remoteRev) return;
+      }
       var entry = { workers: ['Unassigned'], rev: remoteRev };
       if (cell.start_hhmm && cell.end_hhmm) {
         if (cell.worker_name && cell.worker_name !== 'Unassigned') {

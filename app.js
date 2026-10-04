@@ -11456,6 +11456,114 @@
     return foundName;
   }
 
+  function assignmentPersonName(entry) {
+    if (!entry) return '';
+    return scheduleAssignmentPrimaryWorker(normalizeScheduleAssignment(entry)) || '';
+  }
+
+  /** Shared cloud assignment blob, aligned to this device's week window. */
+  function alignedCloudAssignmentBundle() {
+    var row = teamStateLastRowCache;
+    if (!row || row.schedule_assignments == null) return null;
+    var raw = row.schedule_assignments;
+    try {
+      if (typeof raw === 'string') raw = JSON.parse(raw);
+    } catch (_parseBundle) {
+      return null;
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    try {
+      var aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(
+        {
+          draft_schedule: row.draft_schedule,
+          schedule_assignments: JSON.parse(JSON.stringify(raw)),
+        },
+        { force: true }
+      );
+      if (
+        aligned &&
+        aligned.schedule_assignments &&
+        typeof aligned.schedule_assignments === 'object'
+      ) {
+        return aligned.schedule_assignments;
+      }
+    } catch (_alignBundle) {
+      /* use the raw blob */
+    }
+    return raw;
+  }
+
+  /**
+   * People on screen come from the shared cloud schedule (what the computers show).
+   * A phone cell cache may project Unassigned onto those rows, or a name the cloud
+   * week does not have. Named cloud cells still win when they agree, or when the
+   * cloud week has no one on that shift (one Eugene day on an otherwise empty row).
+   */
+  function reconcileAssignmentStoreToCloudBundle(store, patch) {
+    if (!store || hasInteractiveScheduleEditsThisSession()) return false;
+    var bundle = alignedCloudAssignmentBundle();
+    if (!bundle) return false;
+    var changed = false;
+    var maxDay = SCHEDULE_VIEW_WEEK_COUNT * 7;
+    restaurantsList.forEach(function (rest) {
+      var rid = rest.id;
+      var brs = bundle[rid];
+      if (!brs || typeof brs !== 'object') return;
+      if (!store[rid]) store[rid] = {};
+      var rs = store[rid];
+      var patchRs = (patch && patch[rid]) || {};
+      var ids = Object.create(null);
+      Object.keys(rs).forEach(function (id) {
+        ids[id] = true;
+      });
+      Object.keys(brs).forEach(function (id) {
+        ids[id] = true;
+      });
+      Object.keys(patchRs).forEach(function (id) {
+        ids[id] = true;
+      });
+      Object.keys(ids).forEach(function (shiftId) {
+        var parts = parseShiftIdParts(shiftId);
+        if (!parts || parts.globalDayIdx < 0 || parts.globalDayIdx >= maxDay) return;
+        var bundlePerson = assignmentPersonName(brs[shiftId]);
+        var patchPerson = assignmentPersonName(patchRs[shiftId]);
+        var bundleHasKey = brs[shiftId] != null;
+        var patchHasKey = patchRs[shiftId] != null;
+        var chosen = '';
+        if (bundlePerson && patchPerson && !workerNamesMatch(bundlePerson, patchPerson)) {
+          chosen = bundlePerson;
+        } else if (patchPerson) {
+          chosen = patchPerson;
+        } else if (bundlePerson) {
+          chosen = bundlePerson;
+        }
+        var cur = rs[shiftId] != null ? normalizeScheduleAssignment(rs[shiftId]) : null;
+        var curPerson = assignmentPersonName(cur);
+        if (!chosen) {
+          /* No cloud opinion for this shift — do not blank some other week. */
+          if (!bundleHasKey && !patchHasKey) return;
+          if (!curPerson) return;
+          if (!cur) {
+            delete rs[shiftId];
+          } else {
+            delete cur.rowOwner;
+            cur.workers = ['Unassigned'];
+            rs[shiftId] = cur;
+          }
+          changed = true;
+          return;
+        }
+        if (curPerson && workerNamesMatch(curPerson, chosen)) return;
+        var next = cur || { workers: [chosen] };
+        next.rowOwner = chosen;
+        next.workers = [chosen];
+        rs[shiftId] = next;
+        changed = true;
+      });
+    });
+    return changed;
+  }
+
   /** Brief window only — not sticky day-off stubs from an old wipe. */
   function scheduleProtectLocalDayOffFromSoftTimedApply() {
     return (
@@ -11615,6 +11723,22 @@
     }
     /* Refresh SoT with broken projection: do nothing (never soft-stamp denser local). */
     if (cloudAuthorityWeek && opts.replaceTrusted && !Object.keys(replaceWeeks).length) {
+      /*
+       * The phone's slot map can project zero named cells. Still paint the shared
+       * cloud people so this device matches the computers.
+       */
+      try {
+        var bundleOnly = loadScheduleAssignmentsStore();
+        if (reconcileAssignmentStoreToCloudBundle(bundleOnly, patch)) {
+          saveScheduleAssignmentsStore(bundleOnly, {
+            skipDirty: true,
+            skipInteractiveMark: true,
+            skipTimecardsNotify: true,
+          });
+        }
+      } catch (_bundleOnly) {
+        /* ignore */
+      }
       return false;
     }
     var rids = Object.keys(patch);
@@ -12060,6 +12184,17 @@
         } catch (_mergeLive) {
           /* ignore */
         }
+      }
+      /*
+       * After cell paint, put the shared cloud people back. An unnamed phone
+       * projection must not leave the week Unassigned when the computers show names.
+       */
+      try {
+        if (reconcileAssignmentStoreToCloudBundle(store, patch)) changed = true;
+      } catch (_bundleReconcile) {
+        /* ignore */
+      }
+      if (changed) {
         saveScheduleAssignmentsStore(store, {
           skipDirty: true,
           skipInteractiveMark: true,
