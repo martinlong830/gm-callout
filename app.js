@@ -11435,6 +11435,27 @@
     return found;
   }
 
+  /** True when this person is on a cloud cell for the week, or the week patch has no names. */
+  function cloudWeekHasPerson(patchCells, weekStart, weekEnd, name) {
+    if (!name) return false;
+    var foundWeek = false;
+    var foundName = false;
+    Object.keys(patchCells || {}).forEach(function (sid) {
+      var p = parseShiftIdParts(sid);
+      if (!p || p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
+      var cell = patchCells[sid];
+      var n =
+        (cell && cell.rowOwner && cell.rowOwner !== 'Unassigned' && cell.rowOwner) ||
+        (cell && cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned' && cell.workers[0]) ||
+        '';
+      if (!n) return;
+      foundWeek = true;
+      if (workerNamesMatch(n, name)) foundName = true;
+    });
+    if (!foundWeek) return true;
+    return foundName;
+  }
+
   /** Brief window only — not sticky day-off stubs from an old wipe. */
   function scheduleProtectLocalDayOffFromSoftTimedApply() {
     return (
@@ -11651,20 +11672,19 @@
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
             if (!patchCells[shiftId]) {
               /*
-               * Keep intentional all-day-off Person stubs (Eugene on a new row) that
-               * cloud has not echoed yet — deleting them snapped assigns to Unassigned.
+               * Keep a cloud person whose cell landed on another row (stale phone
+               * slot map). Drop a local name the cloud week does not have at all
+               * (Yudina on 9th Ave FOH).
                */
               var keepLocal = normalizeScheduleAssignment(rs[shiftId]);
-              if (
-                keepLocal &&
-                ((keepLocal.rowOwner && keepLocal.rowOwner !== 'Unassigned') ||
-                  scheduleAssignmentHasStaffedWorkers(keepLocal)) &&
-                !(
-                  keepLocal.timeLabel &&
-                  String(keepLocal.timeLabel).trim() &&
-                  String(keepLocal.timeLabel).toUpperCase() !== 'DAY-OFF'
-                )
-              ) {
+              var keepPerson =
+                (keepLocal &&
+                  keepLocal.rowOwner &&
+                  keepLocal.rowOwner !== 'Unassigned' &&
+                  keepLocal.rowOwner) ||
+                (keepLocal && scheduleAssignmentPrimaryWorker(keepLocal)) ||
+                '';
+              if (keepPerson && cloudWeekHasPerson(patchCells, weekStart, weekEnd, keepPerson)) {
                 return;
               }
               if (schedulePersonRowProtectActive(rid, wi)) return;
@@ -11928,7 +11948,7 @@
            * Saving Unassigned here blocks the current week's people, so the grid
            * looks wiped. Leave the name off the key so this week's person shows.
            */
-          if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && incomingUnassigned) {
+          if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX && incomingUnassigned && Number(cell.rev) <= 1) {
             var prevNormFuture = prev ? normalizeScheduleAssignment(prev) : null;
             var prevNamedFuture =
               prevNormFuture &&
@@ -11947,7 +11967,7 @@
            */
           var keepShiftedName =
             scheduleSlotRemovalNameHoldUntil > Date.now() && !opts.forceDayOffReplace;
-          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned) {
+          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned && Number(cell.rev) <= 1) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
@@ -17047,8 +17067,18 @@
     if (hasInteractiveScheduleEditsThisSession()) return false;
     if (teamStateForcePushActive || teamStateForcePushIgnoreVersionSticky) return false;
     if (!row.draft_schedule && !row.schedule_assignments) return false;
-    /* A stale read of our own push must not roll the schedule back. */
-    if (shouldRefuseStaleSelfPushEcho(row)) return false;
+    /*
+     * Only ignore cloud in the few seconds after a save from this tab.
+     * A stored push time must not leave the phone on its own copy (Yudina on
+     * 9th Ave, or 8th Ave names missing) after the computers already match cloud.
+     */
+    if (
+      teamStateLastLocalPushAt &&
+      Date.now() - teamStateLastLocalPushAt <= TEAM_STATE_SELF_ECHO_IGNORE_MS + 1500 &&
+      shouldRefuseStaleSelfPushEcho(row)
+    ) {
+      return false;
+    }
     var aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(row, { force: true });
     var changed = false;
     var payload = draftSchedulePayloadFromRemote(aligned.draft_schedule);

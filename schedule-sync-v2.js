@@ -1440,6 +1440,18 @@
     if ((slots[spk] && slots[spk].active === false) || (slots[spkAlt] && slots[spkAlt].active === false)) {
       return null;
     }
+    /*
+     * Cloud sort_order is the row. A stale local slot map (common on a phone)
+     * used to send named cells onto a hidden index. The visible rows were then
+     * deleted and the week painted Unassigned.
+     */
+    var slotRow = slots[spk] || slots[spkAlt];
+    if (slotRow && slotRow.active !== false && slotRow.sort_order != null) {
+      var cloudSort = Number(slotRow.sort_order);
+      if (!isNaN(cloudSort) && cloudSort >= 0 && !isLocallyDeactivatedSort(rid, roleS, cloudSort)) {
+        return cloudSort;
+      }
+    }
     var map = getSlotMap();
     var found = null;
     Object.keys(map).forEach(function (k) {
