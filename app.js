@@ -10459,6 +10459,18 @@
                 (entry && entry.rowOwner && entry.rowOwner !== 'Unassigned'
                   ? entry.rowOwner
                   : null);
+              /*
+               * A stale local row can say Unassigned while the cell still has the
+               * person (rev-1 backfill shells did this on 8th Ave and dropped
+               * people off timecards). Leave that cell alone unless this is an
+               * explicit week assert.
+               */
+              if (!worker && !opts.allowClearWorkers && typeof v2.getCell === 'function') {
+                var keptNamedCell = v2.getCell(rid, dayIso, role, slotKey);
+                if (keptNamedCell && !keptNamedCell.deleted && Number(keptNamedCell.rev) > 1) {
+                  continue;
+                }
+              }
               if (!tr || !tr.start || !tr.end) {
                 if (timedOnly) continue;
                 if (!forceFullWeekStamp && typeof v2.getCell === 'function') {
@@ -10487,9 +10499,7 @@
                     entry && entry.breakPaid != null ? entry.breakPaid : null
                   )
                 );
-                ops.push(
-                  v2.opSetWorker(rid, dayIso, role, slotKey, worker || null, null)
-                );
+                ops.push(v2.opSetWorker(rid, dayIso, role, slotKey, worker || null, null));
               }
             }
           }
@@ -11851,6 +11861,19 @@
           var incomingUnassigned =
             !entry.rowOwner &&
             (!entry.workers || !entry.workers[0] || entry.workers[0] === 'Unassigned');
+          /*
+           * Rev 1 is the original unnamed backfill shell, not a person clear.
+           * Trusted replace used to paint those shells onto this week and the
+           * rows (and timecards) went Unassigned while cloud still had the names.
+           */
+          if (incomingUnassigned && Number(cell.rev) > 0 && Number(cell.rev) <= 1 && prev) {
+            var prevShellName =
+              (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
+              (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
+                ? prev.workers[0]
+                : '');
+            if (prevShellName) return;
+          }
           /*
            * Future-week cells from the old backfill have times and no names.
            * Saving Unassigned here blocks the current week's people, so the grid
@@ -16890,6 +16913,95 @@
     return localJson !== remoteJson;
   }
 
+  function countDraftLayerTimedCells(layer) {
+    if (!layer || typeof layer !== 'object') return 0;
+    var n = 0;
+    ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+      var rows = layer[role];
+      if (!Array.isArray(rows)) return;
+      rows.forEach(function (row) {
+        if (!Array.isArray(row)) return;
+        row.forEach(function (cell) {
+          if (cell && cell[0] && cell[1]) n += 1;
+        });
+      });
+    });
+    return n;
+  }
+
+  /**
+   * A stale local draft must not upload over a fuller cloud week (8th Ave's
+   * rev-1 cache left this browser ready to push an empty next-week draft).
+   */
+  function localDraftWouldDropRemoteShiftTimes(remoteDr) {
+    var remotePayload = draftSchedulePayloadFromRemote(remoteDr);
+    if (!remotePayload || !remotePayload.byWeek) return false;
+    var localWeeks = draftScheduleByWeekStore || {};
+    var remoteWeeks = remotePayload.byWeek;
+    var weekKey;
+    for (weekKey in remoteWeeks) {
+      if (!Object.prototype.hasOwnProperty.call(remoteWeeks, weekKey)) continue;
+      var remoteWeek = remoteWeeks[weekKey];
+      var localWeek = localWeeks[weekKey];
+      var restaurants =
+        remoteWeek && typeof remoteWeek === 'object' ? Object.keys(remoteWeek) : [];
+      var ri;
+      for (ri = 0; ri < restaurants.length; ri += 1) {
+        var rid = restaurants[ri];
+        if (rid !== 'rp-8' && rid !== 'rp-9' && String(rid).indexOf('rp-') !== 0) continue;
+        var remoteN = countDraftLayerTimedCells(remoteWeek[rid]);
+        var localLayer = localWeek && localWeek[rid] ? localWeek[rid] : null;
+        var localN = countDraftLayerTimedCells(localLayer);
+        if (remoteN >= 4 && localN < Math.floor(remoteN * 0.5)) return true;
+        if (Math.abs(localN - remoteN) >= 4) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Fill local draft weeks that are missing most of the cloud shift times. */
+  function adoptRemoteDraftLayersLocalIsMissing(remoteDr) {
+    var remotePayload = draftSchedulePayloadFromRemote(remoteDr);
+    if (!remotePayload || !remotePayload.byWeek) return false;
+    if (!draftScheduleByWeekStore || typeof draftScheduleByWeekStore !== 'object') {
+      draftScheduleByWeekStore = {};
+    }
+    var changed = false;
+    var remoteWeeks = remotePayload.byWeek;
+    Object.keys(remoteWeeks).forEach(function (weekKey) {
+      var remoteWeek = remoteWeeks[weekKey];
+      if (!remoteWeek || typeof remoteWeek !== 'object') return;
+      if (!draftScheduleByWeekStore[weekKey] || typeof draftScheduleByWeekStore[weekKey] !== 'object') {
+        draftScheduleByWeekStore[weekKey] = {};
+      }
+      Object.keys(remoteWeek).forEach(function (rid) {
+        if (String(rid).indexOf('rp-') !== 0) return;
+        var remoteLayer = remoteWeek[rid];
+        var remoteN = countDraftLayerTimedCells(remoteLayer);
+        var localN = countDraftLayerTimedCells(draftScheduleByWeekStore[weekKey][rid]);
+        if (remoteN >= 4 && localN < Math.floor(remoteN * 0.5)) {
+          draftScheduleByWeekStore[weekKey][rid] = JSON.parse(JSON.stringify(remoteLayer));
+          changed = true;
+        }
+      });
+    });
+    if (!changed) return false;
+    try {
+      invalidateDraftLayersMemo();
+    } catch (_memo) {
+      /* ignore */
+    }
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      setDraftScheduleConfirmedJson(
+        JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore))
+      );
+    } catch (_adoptDraft) {
+      /* ignore */
+    }
+    return true;
+  }
+
   function draftScheduleJsonHasLayers(obj) {
     if (!obj || typeof obj !== 'object') return false;
     return ['Bartender', 'Kitchen', 'Server'].some(function (role) {
@@ -17586,6 +17698,45 @@
        */
       var pushScheduleBundle =
         teamStateForcePushActive || scheduleAssignmentsDirty || draftScheduleDirty;
+      /*
+       * Recovered dirty on this browser is not a conscious edit. An empty local
+       * draft (9th Ave next week had 0 timed cells vs 60 in cloud) must not upload.
+       */
+      if (
+        pushScheduleBundle &&
+        !teamStateForcePushActive &&
+        !teamStateForcePushIgnoreVersionSticky &&
+        !hasInteractiveScheduleEditsThisSession()
+      ) {
+        try {
+          var lossyDraftProbe = await sb
+            .from('team_state')
+            .select('draft_schedule')
+            .eq('id', gmCalloutTeamStateRowId())
+            .maybeSingle();
+          if (
+            !lossyDraftProbe.error &&
+            lossyDraftProbe.data &&
+            localDraftWouldDropRemoteShiftTimes(lossyDraftProbe.data.draft_schedule)
+          ) {
+            adoptRemoteDraftLayersLocalIsMissing(lossyDraftProbe.data.draft_schedule);
+            draftScheduleDirty = false;
+            scheduleAssignmentsDirty = false;
+            persistTeamStateDirtyFlags();
+            try {
+              setDraftScheduleConfirmedJson(
+                JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore))
+              );
+              setScheduleAssignmentsConfirmedJson(JSON.stringify(loadScheduleAssignmentsStore()));
+            } catch (_confirmAssign) {
+              /* ignore */
+            }
+            pushScheduleBundle = false;
+          }
+        } catch (_lossyDraft) {
+          pushScheduleBundle = false;
+        }
+      }
       /*
        * Dual-write: still push schedule blobs as a backup transport.
        * Write-only only controls APPLY (ignore remote blobs) so stale blobs cannot
@@ -18356,6 +18507,32 @@
      * Row-order meta still syncs below. Past weeks fill from the cells window fetch.
      */
     var skipBlobSchedule = !!scheduleSyncV2WriteOnly();
+    /*
+     * Write-only skips blob apply, but a recovered dirty flag can still upload.
+     * If this browser is missing most of a cloud week's shift times, take those
+     * times locally and drop the dirty flag. No conscious edit is in this tab.
+     */
+    if (
+      row &&
+      row.draft_schedule &&
+      !hasInteractiveScheduleEditsThisSession() &&
+      !teamStateForcePushActive &&
+      !teamStateForcePushIgnoreVersionSticky &&
+      localDraftWouldDropRemoteShiftTimes(row.draft_schedule)
+    ) {
+      adoptRemoteDraftLayersLocalIsMissing(row.draft_schedule);
+      draftScheduleDirty = false;
+      scheduleAssignmentsDirty = false;
+      persistTeamStateDirtyFlags();
+      try {
+        setDraftScheduleConfirmedJson(
+          JSON.stringify(draftSchedulePayloadFromStore(draftScheduleByWeekStore))
+        );
+        setScheduleAssignmentsConfirmedJson(JSON.stringify(loadScheduleAssignmentsStore()));
+      } catch (_confirmDrift) {
+        /* ignore */
+      }
+    }
 
     /*
      * Dual-write (legacy): apply schedule blobs for fast peer transport, then overlay
@@ -18708,7 +18885,11 @@
     var dr = skipBlobSchedule ? null : row.draft_schedule;
     if (dr && typeof dr === 'object') {
       if (!scheduleBundleLocked && !refuseStaleSchedule) {
-        if (draftScheduleRemoteMergeIsStale(dr) && !forceAccept) {
+        if (
+          draftScheduleRemoteMergeIsStale(dr) &&
+          !forceAccept &&
+          !localDraftWouldDropRemoteShiftTimes(dr)
+        ) {
           if (isMgr) {
             absorbUnchangedRemoteSlotOrderFromDraft(dr);
             absorbUnchangedRemoteGroupOrderFromDraft(dr);
@@ -29225,6 +29406,7 @@
       restaurantId: opts.restaurantId || null,
       weekIndex: opts.weekIndex != null ? opts.weekIndex : null,
       forceFullWeekStamp: opts.forceFullWeekStamp !== false,
+      allowClearWorkers: opts.allowClearWorkers === true,
     });
     return Promise.resolve(flushScheduleV2Outbox()).then(function (firstFlush) {
       var cellFlush = firstFlush;
@@ -29300,6 +29482,7 @@
         var cellPush = await forcePushLocalScheduleCellsToCloud({
           restaurantId: rid,
           weekIndex: wi,
+          allowClearWorkers: true,
         });
         cellsOk = !!(cellPush && cellPush.ok !== false);
         var fromIso = dayIsoForScheduleWeekDay(wi, 0);
