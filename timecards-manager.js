@@ -4249,8 +4249,10 @@
   function employeeClockStatus(emp, locationFilter) {
     var loc = effectiveLocationFilter(locationFilter);
     var open = findLatestOpenEntryForEmployee(emp.id, loc);
-    if (!open) return 'off_clock';
-    if (loc !== 'all' && entryRestaurantId(emp, open) !== loc) {
+    if (!open || openPunchPastAutoClockOut(open.clock_in_at, currentAutoClockOutTime())) {
+      return 'off_clock';
+    }
+    if (loc !== 'all' && clockStatusRestaurantId(emp, open) !== loc) {
       return 'off_clock';
     }
     return isOnBreak(open) ? 'on_break' : 'clocked_in';
@@ -4258,7 +4260,9 @@
 
   function employeeClockStatusAllLocations(emp) {
     var open = findLatestOpenEntryForEmployee(emp.id, 'all');
-    if (!open) return 'off_clock';
+    if (!open || openPunchPastAutoClockOut(open.clock_in_at, currentAutoClockOutTime())) {
+      return 'off_clock';
+    }
     return isOnBreak(open) ? 'on_break' : 'clocked_in';
   }
 
@@ -11876,6 +11880,73 @@
 
   function isEntryOpen(entry) {
     return !!(entry && (entry.clock_out_at == null || entry.clock_out_at === ''));
+  }
+
+  function nyDateParts(date) {
+    var parts = {};
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(date)
+      .forEach(function (p) {
+        if (p.type !== 'literal') parts[p.type] = p.value;
+      });
+    if (parts.hour === '24') parts.hour = '00';
+    return parts;
+  }
+
+  function nyLocalToDate(year, month, day, hour, minute) {
+    var utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+    var shown = nyDateParts(new Date(utcGuess));
+    var shownUtc = Date.UTC(
+      Number(shown.year),
+      Number(shown.month) - 1,
+      Number(shown.day),
+      Number(shown.hour),
+      Number(shown.minute),
+      Number(shown.second || 0)
+    );
+    return new Date(utcGuess - (shownUtc - utcGuess));
+  }
+
+  /** Open punch whose Eastern auto clock-out time has already passed. Matches the phone badge. */
+  function openPunchPastAutoClockOut(clockInIso, autoTime, now) {
+    if (!clockInIso) return false;
+    var clockIn = new Date(clockInIso);
+    now = now || new Date();
+    if (isNaN(clockIn.getTime())) return false;
+    var bits = String(autoTime || '00:00').split(':');
+    var hh = Number(bits[0]);
+    var mm = Number(bits[1]);
+    if (!isFinite(hh) || hh < 0 || hh > 23) hh = 0;
+    if (!isFinite(mm) || mm < 0 || mm > 59) mm = 0;
+    var inP = nyDateParts(clockIn);
+    var nowP = nyDateParts(now);
+    var cursor = Date.UTC(Number(inP.year), Number(inP.month) - 1, Number(inP.day));
+    var end = Date.UTC(Number(nowP.year), Number(nowP.month) - 1, Number(nowP.day));
+    var guard = 0;
+    while (cursor <= end && guard < 40) {
+      guard += 1;
+      var c = new Date(cursor);
+      var candidate = nyLocalToDate(c.getUTCFullYear(), c.getUTCMonth() + 1, c.getUTCDate(), hh, mm);
+      if (candidate.getTime() <= now.getTime() && clockIn.getTime() < candidate.getTime()) return true;
+      cursor += 86400000;
+    }
+    return false;
+  }
+
+  function clockStatusRestaurantId(emp, entry) {
+    if (entry && (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9')) {
+      return entry.clock_restaurant_id;
+    }
+    return entryRestaurantId(emp, entry);
   }
 
   function punchDayIso(entry) {

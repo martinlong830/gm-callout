@@ -520,6 +520,87 @@ export function isEntryOpen(entry: TimeClockEntry | null | undefined): boolean {
   return !!entry && !entry.clock_out_at;
 }
 
+function nyDateParts(date: Date): Record<string, string> {
+  const parts: Record<string, string> = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+    .formatToParts(date)
+    .forEach((p) => {
+      if (p.type !== 'literal') parts[p.type] = p.value;
+    });
+  if (parts.hour === '24') parts.hour = '00';
+  return parts;
+}
+
+/** Eastern wall time as a real instant. Red Poke closes the clock on New York time. */
+function nyLocalToDate(year: number, month: number, day: number, hour: number, minute: number): Date {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const shown = nyDateParts(new Date(utcGuess));
+  const shownUtc = Date.UTC(
+    Number(shown.year),
+    Number(shown.month) - 1,
+    Number(shown.day),
+    Number(shown.hour),
+    Number(shown.minute),
+    Number(shown.second || 0)
+  );
+  return new Date(utcGuess - (shownUtc - utcGuess));
+}
+
+/**
+ * True once the configured auto clock-out time (Eastern) has passed since this punch
+ * started. The database only closes the row the next time someone uses the time clock,
+ * so the badge must drop on both apps at that same moment.
+ */
+export function openPunchPastAutoClockOut(
+  clockInIso: string | null | undefined,
+  autoTime?: string | null,
+  now: Date = new Date()
+): boolean {
+  if (!clockInIso) return false;
+  const clockIn = new Date(clockInIso);
+  if (Number.isNaN(clockIn.getTime())) return false;
+  const bits = String(autoTime || '00:00').split(':');
+  let hh = Number(bits[0]);
+  let mm = Number(bits[1]);
+  if (!Number.isFinite(hh) || hh < 0 || hh > 23) hh = 0;
+  if (!Number.isFinite(mm) || mm < 0 || mm > 59) mm = 0;
+  const inP = nyDateParts(clockIn);
+  const nowP = nyDateParts(now);
+  let cursor = Date.UTC(Number(inP.year), Number(inP.month) - 1, Number(inP.day));
+  const end = Date.UTC(Number(nowP.year), Number(nowP.month) - 1, Number(nowP.day));
+  let guard = 0;
+  while (cursor <= end && guard < 40) {
+    guard += 1;
+    const c = new Date(cursor);
+    const candidate = nyLocalToDate(c.getUTCFullYear(), c.getUTCMonth() + 1, c.getUTCDate(), hh, mm);
+    if (candidate.getTime() <= now.getTime() && clockIn.getTime() < candidate.getTime()) return true;
+    cursor += 86400000;
+  }
+  return false;
+}
+
+/** Store the person actually punched at. The kiosk store wins over a schedule row at the other location. */
+function clockStatusRestaurantId(
+  emp: EmployeeRow,
+  entry: TimeClockEntry,
+  entries: TimeClockEntry[],
+  scheduleCtx: ScheduleContext
+): string {
+  if (entry.clock_restaurant_id === 'rp-8' || entry.clock_restaurant_id === 'rp-9') {
+    return entry.clock_restaurant_id;
+  }
+  return entryRestaurantId(emp, entry, entries, scheduleCtx);
+}
+
 export function isOnBreak(entry: TimeClockEntry | null | undefined): boolean {
   return !!(entry && entry.break_start_at && !entry.break_end_at);
 }
@@ -554,12 +635,13 @@ export function employeeClockStatus(
   emp: EmployeeRow,
   entries: TimeClockEntry[],
   scheduleCtx: ScheduleContext,
-  locationFilter: LocationFilter = 'all'
+  locationFilter: LocationFilter = 'all',
+  autoClockOutTime?: string | null
 ): EmployeeClockStatus {
   const open = findLatestOpenEntryForEmployee(entries, emp.id);
-  if (!open) return 'off_clock';
+  if (!open || openPunchPastAutoClockOut(open.clock_in_at, autoClockOutTime)) return 'off_clock';
   if (locationFilter !== 'all') {
-    const rest = entryRestaurantId(emp, open, entries, scheduleCtx);
+    const rest = clockStatusRestaurantId(emp, open, entries, scheduleCtx);
     if (rest !== locationFilter) return 'off_clock';
   }
   return isOnBreak(open) ? 'on_break' : 'clocked_in';
@@ -1489,7 +1571,8 @@ export function buildRosterRowSync(
   entriesIndex: Record<string, TimeClockEntry[]>,
   entriesByEmpId: Record<string, TimeClockEntry[]>,
   bounds: PayWeekBounds,
-  locationFilter: LocationFilter = 'all'
+  locationFilter: LocationFilter = 'all',
+  autoClockOutTime?: string | null
 ): RosterRow {
   const aggLoc = rosterAggregationLocationFilter(emp, locationFilter);
   const name = employeeDisplayName(emp);
@@ -1564,7 +1647,14 @@ export function buildRosterRowSync(
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
-  const clockStatus = employeeClockStatus(emp, entries, scheduleCtx, aggLoc);
+  /* Badge follows the store on screen, same as the website. Hours may still roll up across stores. */
+  const clockStatus = employeeClockStatus(
+    emp,
+    entries,
+    scheduleCtx,
+    locationFilter,
+    autoClockOutTime
+  );
   const partial = {
     regPay: pay.regPay,
     otPay: pay.otPay,
@@ -1709,6 +1799,11 @@ export function buildAllRosterRows(
   locationFilter: LocationFilter = 'all'
 ): RosterRow[] {
   const scheduleCtx = buildScheduleContext(teamState, { bounds, employees: employeesLite });
+  const settings = teamState?.timeclock_settings;
+  const autoClockOutTime =
+    settings && typeof settings === 'object' && !Array.isArray(settings)
+      ? String((settings as { auto_clock_out_time?: unknown }).auto_clock_out_time || '00:00')
+      : '00:00';
   const entriesIndex = buildEntriesIndex(entries);
   const entriesByEmpId: Record<string, TimeClockEntry[]> = {};
   for (const e of entries) {
@@ -1728,7 +1823,8 @@ export function buildAllRosterRows(
       entriesIndex,
       entriesByEmpId,
       bounds,
-      locationFilter
+      locationFilter,
+      autoClockOutTime
     )
   );
 }
@@ -1801,7 +1897,12 @@ export async function buildRosterRow(
     : 0;
   const additionalCashTip = sumEmployeeWeekAdditionalCashTipsSync(emp.id, bounds, extrasSlice);
   const status = open ? 'Open' : needsReview ? 'Review' : 'OK';
-  const clockStatus = employeeClockStatus(emp, entries, scheduleCtx, 'all');
+  const personSettings = teamState?.timeclock_settings;
+  const personAutoClockOut =
+    personSettings && typeof personSettings === 'object' && !Array.isArray(personSettings)
+      ? String((personSettings as { auto_clock_out_time?: unknown }).auto_clock_out_time || '00:00')
+      : '00:00';
+  const clockStatus = employeeClockStatus(emp, entries, scheduleCtx, 'all', personAutoClockOut);
   const partial = {
     regPay: pay.regPay,
     otPay: pay.otPay,

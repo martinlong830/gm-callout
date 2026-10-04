@@ -72,6 +72,9 @@ export async function loadWeekEntries(
   const weekStartIso = bounds.start.toISOString();
   const weekEndIso = bounds.end.toISOString();
 
+  const openFrom = new Date(bounds.start.getTime());
+  openFrom.setDate(openFrom.getDate() - 14);
+  const openFromIso = openFrom.toISOString();
   const weekQuery = sb
     .from('time_clock_entries')
     .select(fullSel)
@@ -82,6 +85,7 @@ export async function loadWeekEntries(
     .from('time_clock_entries')
     .select(fullSel)
     .is('clock_out_at', null)
+    .gte('clock_in_at', openFromIso)
     .lt('clock_in_at', weekEndIso);
 
   type QueryResult = { error: { message: string } | null; data: unknown[] | null };
@@ -111,6 +115,7 @@ export async function loadWeekEntries(
         .from('time_clock_entries')
         .select(fallbackSel)
         .is('clock_out_at', null)
+        .gte('clock_in_at', openFromIso)
         .lt('clock_in_at', weekEndIso),
     ])) as [QueryResult, QueryResult];
     if (fallback.error) return { ok: false, reason: fallback.error.message };
