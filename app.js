@@ -9811,10 +9811,10 @@
   /**
    * Shrink local draft + assignments to match active cloud slot counts so peer
    * soft poll / Refresh drops deleted rows (cell apply alone never truncates draft length).
-   * Soft polls (softPreserveNamedRows): only drop trailing empty Unassigned shells —
-   * never chop Zeferino/Irineo (etc.) just because activeSlotCount briefly reads low.
-   * Refresh / forceSlots / trusted replace: cloud activeSlotCount is SoT (peer delete).
-   * Edit settle / person-protect already early-return via scheduleAutoRowStructureBlocked.
+   * Only empty trailing Unassigned shells are peeled. Named or timed rows stay
+   * even when activeSlotCount reads low — chopping them dropped Irineo and
+   * painted the next week Unassigned. Edit settle / person-protect already
+   * early-return via scheduleAutoRowStructureBlocked.
    */
   function scheduleRoleRowHasNamedOrTimedContent(rs, roleIdx, weekStart, trIdx, draftRow) {
     var di;
@@ -9867,7 +9867,6 @@
         return false;
       }
     }
-    var softPreserve = !!opts.softPreserveNamedRows;
     collapseInactiveMappedScheduleRows();
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var wiStart =
@@ -9905,44 +9904,36 @@
           var weekStart = wi * 7;
           var keepThrough = want;
           if (layers[role].length > want) {
-            if (softPreserve) {
-              /*
-               * Soft poll: only peel empty trailing Unassigned shells. Named/timed
-               * BOH rows (Zeferino/Irineo) stay until intentional delete / Refresh SoT.
-               */
-              while (layers[role].length > want) {
-                var last = layers[role].length - 1;
-                if (
-                  scheduleRoleRowHasNamedOrTimedContent(
-                    rs,
-                    roleIdx,
-                    weekStart,
-                    last,
-                    layers[role][last]
-                  )
-                ) {
-                  keepThrough = layers[role].length;
-                  break;
-                }
-                for (var dGhost = 0; dGhost < 7; dGhost += 1) {
-                  var ghostSid =
-                    'shift-' + (weekStart + dGhost) + '-' + roleIdx + '-' + last;
-                  if (rs[ghostSid] != null) {
-                    delete rs[ghostSid];
-                    changed = true;
-                  }
-                }
-                layers[role].pop();
-                layerChanged = true;
+            /*
+             * Only peel empty trailing Unassigned shells. A shorter active-slot
+             * count must not chop a named or timed row (that dropped Irineo and
+             * left the next week Unassigned). Conscious row delete still removes
+             * the row itself.
+             */
+            while (layers[role].length > want) {
+              var last = layers[role].length - 1;
+              if (
+                scheduleRoleRowHasNamedOrTimedContent(
+                  rs,
+                  roleIdx,
+                  weekStart,
+                  last,
+                  layers[role][last]
+                )
+              ) {
+                keepThrough = layers[role].length;
+                break;
               }
-            } else {
-              /*
-               * Cloud active slots win on Refresh / forceSlots. Keeping local
-               * staffed/Person rows past `want` left deleted rows on peer devices.
-               */
-              layers[role] = layers[role].slice(0, want);
+              for (var dGhost = 0; dGhost < 7; dGhost += 1) {
+                var ghostSid =
+                  'shift-' + (weekStart + dGhost) + '-' + roleIdx + '-' + last;
+                if (rs[ghostSid] != null) {
+                  delete rs[ghostSid];
+                  changed = true;
+                }
+              }
+              layers[role].pop();
               layerChanged = true;
-              keepThrough = want;
             }
           }
           Object.keys(rs).forEach(function (shiftId) {
@@ -22527,6 +22518,7 @@
    */
   function rebuildSchedule(opts) {
     opts = opts || {};
+    scheduleContinuityNameMemo = null;
     var weekOnly =
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : null;
     var preserveOtherWeeks = !!(opts.preserveOtherWeeks && weekOnly != null);
@@ -27950,6 +27942,23 @@
    * Unassigned line between the people who remain. Drop that row and shift the
    * rows under it up. Local only — the slot is already inactive in the cloud.
    */
+  function scheduleRowIndexHasContentAnyWeek(restaurantId, role, trIdx) {
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return false;
+    var store = loadScheduleAssignmentsStore();
+    var rs = (store && store[restaurantId]) || {};
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      var layers = getDraftScheduleRowsForWeek(wi, restaurantId);
+      var row = layers && layers[role] && layers[role][trIdx];
+      if (
+        scheduleRoleRowHasNamedOrTimedContent(rs, roleIdx, wi * 7, trIdx, row)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function staleMappedSlotDeletes(restaurantId) {
     var v2 = gmScheduleV2();
     if (!v2 || !v2.getSlotMap || !v2.getSlotCache) return [];
@@ -27976,6 +27985,8 @@
       var slotKey = map[key] ? String(map[key]) : '';
       if (!slotKey || isNaN(trIdx) || trIdx < 0 || !sawRole[role]) return;
       if (activeByRole[role] && activeByRole[role][slotKey]) return;
+      /* A stale map key must not delete a row that still has a person or shifts. */
+      if (scheduleRowIndexHasContentAnyWeek(restaurantId, role, trIdx)) return;
       if (!byRole[role]) byRole[role] = [];
       if (byRole[role].indexOf(trIdx) < 0) byRole[role].push(trIdx);
     });
@@ -28084,7 +28095,13 @@
       restaurantsList.forEach(function (rest) {
         var rid = rest && rest.id;
         if (!rid) return;
-        var deletes = staleMappedSlotDeletes(rid).concat(unnamedDayOffHoleDeletes(rid));
+        /*
+         * Inactive mapped slots can leave a blank line. Do not also treat an
+         * unnamed template-week row as a hole and splice that index out of
+         * every week — that deleted a real person on the weeks where the row
+         * still had a name or shifts.
+         */
+        var deletes = staleMappedSlotDeletes(rid);
         var seen = Object.create(null);
         deletes = deletes.filter(function (d) {
           var key = d.role + '|' + d.originalTrIdx;
@@ -31883,6 +31900,172 @@
   }
 
   /**
+   * Timed row with no person this week. Recover the person from the same slot on a
+   * recent week when the shifts still match (Mark/Eugene/Baltazar on Oct 5, Irineo
+   * on the 8:00–2:00 line). Do not copy a name onto a different person's hours.
+   */
+  var scheduleContinuityNameMemo = null;
+
+  function scheduleDraftCellTimed(cell) {
+    return !!(cell && cell[0] && cell[1]);
+  }
+
+  function scheduleAssignmentPersonOnRow(rs, roleIdx, weekStart, trIdx) {
+    if (!rs || roleIdx < 0) return null;
+    var staffed = null;
+    var owner = null;
+    for (var di = 0; di < 7; di += 1) {
+      var ent = normalizeScheduleAssignment(
+        rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx]
+      );
+      if (!ent) continue;
+      var worker = scheduleAssignmentPrimaryWorker(ent);
+      if (worker && worker !== 'Unassigned' && !scheduleNameIsDeactivatedPerson(worker)) {
+        staffed = worker;
+      }
+      if (
+        !owner &&
+        ent.rowOwner &&
+        ent.rowOwner !== 'Unassigned' &&
+        !scheduleNameIsDeactivatedPerson(ent.rowOwner)
+      ) {
+        owner = ent.rowOwner;
+      }
+    }
+    return staffed || owner || null;
+  }
+
+  function scheduleRowTimeScore(curRow, priorRow) {
+    var agree = 0;
+    var conflict = 0;
+    var sameStartConflict = 0;
+    var curTimed = 0;
+    var priorTimed = 0;
+    for (var di = 0; di < 7; di += 1) {
+      var cur = curRow && curRow[di];
+      var prior = priorRow && priorRow[di];
+      var curOn = scheduleDraftCellTimed(cur);
+      var priorOn = scheduleDraftCellTimed(prior);
+      if (curOn) curTimed += 1;
+      if (priorOn) priorTimed += 1;
+      if (!curOn || !priorOn) continue;
+      if (String(cur[0]) === String(prior[0]) && String(cur[1]) === String(prior[1])) {
+        agree += 1;
+      } else {
+        conflict += 1;
+        if (String(cur[0]) === String(prior[0])) sameStartConflict += 1;
+      }
+    }
+    return {
+      agree: agree,
+      conflict: conflict,
+      sameStartConflict: sameStartConflict,
+      curTimed: curTimed,
+      priorTimed: priorTimed,
+    };
+  }
+
+  function scheduleContinuityNamesForRole(role, weekIndex) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    var rid = currentRestaurantId;
+    var key = String(rid || '') + '|' + role + '|' + wi;
+    if (scheduleContinuityNameMemo && scheduleContinuityNameMemo.key === key) {
+      return scheduleContinuityNameMemo.names;
+    }
+    var empty = [];
+    var layers = getDraftScheduleRowsForWeek(wi, rid);
+    var rows = layers && layers[role];
+    if (!rows || !rows.length || isNaN(wi)) {
+      scheduleContinuityNameMemo = { key: key, names: empty };
+      return empty;
+    }
+    var roleIdx = roleIdxForDraftRole(role);
+    var store = loadScheduleAssignmentsStore();
+    var rs = (store && store[rid]) || {};
+    var names = [];
+    var claimed = Object.create(null);
+    var tr;
+    for (tr = 0; tr < rows.length; tr += 1) {
+      var stored = scheduleAssignmentPersonOnRow(rs, roleIdx, wi * 7, tr);
+      names[tr] = stored || null;
+      if (stored) claimed[normalizeWorkerKey(stored)] = tr;
+    }
+    function priorPerson(prevWi, sourceTr, destTr) {
+      var name = scheduleAssignmentPersonOnRow(rs, roleIdx, prevWi * 7, sourceTr);
+      if (!name) return null;
+      var home = workerHomeScheduleRole(name);
+      if (home && home !== role) return null;
+      var claimKey = normalizeWorkerKey(name);
+      if (claimed[claimKey] != null && claimed[claimKey] !== destTr) return null;
+      return name;
+    }
+    function priorRow(prevWi, trIdx) {
+      var prevLayers = getDraftScheduleRowsForWeek(prevWi, rid);
+      return prevLayers && prevLayers[role] && prevLayers[role][trIdx];
+    }
+    for (tr = 0; tr < rows.length; tr += 1) {
+      if (names[tr]) continue;
+      var cur = rows[tr];
+      var curTimed = 0;
+      for (var di0 = 0; di0 < 7; di0 += 1) {
+        if (scheduleDraftCellTimed(cur && cur[di0])) curTimed += 1;
+      }
+      if (!curTimed) continue;
+      var found = null;
+      var prevWi;
+      for (prevWi = wi - 1; prevWi >= 0 && !found; prevWi -= 1) {
+        var sameName = priorPerson(prevWi, tr, tr);
+        var sameRow = priorRow(prevWi, tr);
+        if (!sameName || !sameRow) continue;
+        var exact = scheduleRowTimeScore(cur, sameRow);
+        if (exact.conflict === 0 && exact.agree >= 1 && exact.agree === exact.curTimed) {
+          found = sameName;
+        }
+      }
+      if (!found && wi > 0) {
+        var looseName = priorPerson(wi - 1, tr, tr);
+        var looseRow = priorRow(wi - 1, tr);
+        if (looseName && looseRow) {
+          var loose = scheduleRowTimeScore(cur, looseRow);
+          var half = Math.ceil(loose.curTimed / 2);
+          if (
+            loose.agree >= 1 &&
+            loose.agree >= half &&
+            loose.conflict === loose.sameStartConflict
+          ) {
+            found = looseName;
+          }
+        }
+      }
+      if (!found) {
+        for (prevWi = wi - 1; prevWi >= 0 && !found; prevWi -= 1) {
+          var prevLayersScan = getDraftScheduleRowsForWeek(prevWi, rid);
+          var prevRows = (prevLayersScan && prevLayersScan[role]) || [];
+          for (var other = 0; other < prevRows.length && !found; other += 1) {
+            if (other === tr) continue;
+            var otherName = priorPerson(prevWi, other, tr);
+            if (!otherName) continue;
+            var sig = scheduleRowTimeScore(cur, prevRows[other]);
+            if (
+              sig.conflict === 0 &&
+              sig.agree >= 1 &&
+              sig.agree === sig.curTimed &&
+              sig.agree === sig.priorTimed
+            ) {
+              found = otherName;
+            }
+          }
+        }
+      }
+      if (!found) continue;
+      names[tr] = found;
+      claimed[normalizeWorkerKey(found)] = tr;
+    }
+    scheduleContinuityNameMemo = { key: key, names: names };
+    return names;
+  }
+
+  /**
    * When this week is all day-off, recover the row person from other weeks' same slot
    * (or sticky rowOwner) so Eugene does not vanish to Unassigned unprompted.
    */
@@ -31986,6 +32169,8 @@
       }
     });
     if (bestCount > 0) return best;
+    var continuityNames = scheduleContinuityNamesForRole(role, scheduleCalendarWeekIndex);
+    if (continuityNames && continuityNames[trIdx]) return continuityNames[trIdx];
     /*
      * Intentional all-day-off Person rows store identity on rowOwner with Unassigned
      * workers. Prefer that when this row has no timed draft cells — do not require
@@ -34392,6 +34577,7 @@
   ensureCalendarTheadStickyOffsetOnResize();
 
   function renderCalendar(opts) {
+    scheduleContinuityNameMemo = null;
     opts = opts || {};
     if (scheduleUiAwaitingInitialCloudHydrate && !opts.forceCloudPending) {
       /*
