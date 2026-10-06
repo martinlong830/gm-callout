@@ -1714,23 +1714,23 @@
       return layers;
     }
     /*
-     * Future empty weeks may inherit structure from the rolling "this week" draft.
-     * Past weeks must NOT inherit DEFAULT/template times — that painted a fake
-     * Red Poke pattern (wrong people / extra FOH rows) until cloud scrolled in.
+     * A future week is a saved copy from the moment the new week starts.
+     * Do not read this week's rows live — an edit here was changing next week
+     * until someone edited next week.
      */
     if (wi > SCHEDULE_TEMPLATE_WEEK_INDEX) {
-      var tplSaved = draftScheduleByWeekStore[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
-      layers = draftLayersFromWeekEntry(tplSaved, rid);
-      if (layers) {
-        /*
-         * Clone. Returning this week's rows by reference let a poll null those
-         * cells while the future week was on screen, so the copy became day-off.
-         */
-        layers = cloneDraftSchedule(layers);
-        draftLayersMemo[memoKey] = layers;
-        return layers;
+      try {
+        freezeFutureWeekSnapshotFromCurrent({ deferPersist: true });
+      } catch (_freezeRead) {
+        /* ignore */
       }
-      layers = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+      var frozenSaved = draftScheduleByWeekStore[String(wi)];
+      var frozenLayers = draftLayersFromWeekEntry(frozenSaved, rid);
+      if (frozenLayers && !futureWeekDraftShellIsEmpty(frozenLayers)) {
+        draftLayersMemo[memoKey] = frozenLayers;
+        return frozenLayers;
+      }
+      layers = blankDraftTimesKeepingRows(DEFAULT_DRAFT_SCHEDULE_ROWS);
       draftLayersMemo[memoKey] = layers;
       return layers;
     }
@@ -17354,6 +17354,15 @@
       changed = true;
     }
     if (!changed) return false;
+    var frozeFutureWeek = false;
+    try {
+      frozeFutureWeek = freezeFutureWeekSnapshotFromCurrent({
+        fromCloudBundle: true,
+        deferPersist: true,
+      });
+    } catch (_freezeFuture) {
+      frozeFutureWeek = false;
+    }
     beginTeamStateRemoteApply();
     try {
       if (typeof rebuildSchedule === 'function' && typeof renderCalendar === 'function') {
@@ -17370,6 +17379,17 @@
       scheduleAssignmentsDirty = false;
       persistTeamStateDirtyFlags();
       endTeamStateRemoteApply();
+    }
+    /*
+     * The aligned cloud week just became "this week" and next week was empty.
+     * Save that one copy so every device shows the same frozen next week.
+     */
+    if (frozeFutureWeek) {
+      draftScheduleDirty = true;
+      scheduleAssignmentsDirty = true;
+      persistTeamStateDirtyFlags();
+      scheduleTeamStateDebouncedSync();
+      scheduleTeamStateWriteThroughSoon();
     }
     return true;
   }
@@ -24087,14 +24107,12 @@
    * snapshot already taken.
    */
   /**
-   * Opening next week materialized a blank DAY-OFF copy (cloud only had a partial
-   * unnamed backfill). That copy then survived Refresh. An unfilled future week
-   * should inherit this week until someone actually edits it. Local only — never
-   * pushed to cloud.
+   * An empty future week is not a live view of this week. The snapshot is taken
+   * once, when the new week starts, and then stored as that week's own schedule.
    */
   /**
-   * Only an empty future week borrows this week's rows. A week that already has
-   * its own shift times in the cloud draft is shown as stored.
+   * True only while the future week has no saved shifts yet, so callers skip
+   * treating that empty shell as a real week. It does not paint this week live.
    */
   function futureWeekStoredDraftShouldInherit(weekIndex, restaurantId, layers) {
     var wi = Number(weekIndex);
@@ -24107,24 +24125,9 @@
     return false;
   }
 
-  /** True when next week should paint this week's staffed shifts. */
+  /** Future weeks show their own saved copy, never a live view of this week. */
   function futureWeekInheritsStaffedTemplate(weekIndex) {
-    var wi = Number(weekIndex);
-    if (isNaN(wi) || wi <= SCHEDULE_TEMPLATE_WEEK_INDEX || wi >= SCHEDULE_VIEW_WEEK_COUNT) {
-      return false;
-    }
-    var rid = currentRestaurantId;
-    if (!localWeekHasTimedDraft(SCHEDULE_TEMPLATE_WEEK_INDEX, rid)) return false;
-    var ownLayers = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
-    if (ownLayers && !futureWeekDraftShellIsEmpty(ownLayers)) return false;
-    try {
-      return restaurantWeekHasStaffedAssignments(
-        getCurrentRestaurantAssignments(),
-        SCHEDULE_TEMPLATE_WEEK_INDEX
-      );
-    } catch (_inh) {
-      return false;
-    }
+    return false;
   }
 
   function futureWeekDraftShellIsEmpty(layers) {
@@ -25845,16 +25848,12 @@
       return mergeScheduleAssignmentEntries(direct, pattern, true);
     }
     /*
-     * Unassigned placeholders on an unfilled future week must not hide this
-     * week's people. A real name or row owner on that week still wins.
+     * Next week keeps the people saved on next week. A blank row stays blank.
+     * Filling it from this week made next week change whenever this week did.
      */
-    if (
-      p &&
-      p.globalDayIdx >= tplStart + 7 &&
-      (!direct || !scheduleAssignmentHasStaffedWorkers(direct))
-    ) {
-      directKeyPresent = false;
-      direct = null;
+    if (p && p.globalDayIdx >= tplStart + 7) {
+      if (!directKeyPresent) return { workers: ['Unassigned'] };
+      return mergeScheduleAssignmentEntries(direct, pattern, true);
     }
     return mergeScheduleAssignmentEntries(direct, pattern, directKeyPresent);
   }
@@ -26114,6 +26113,87 @@
       /* ignore */
     }
     return true;
+  }
+
+  /**
+   * When a new week starts, the next week has no saved schedule of its own.
+   * Copy this week once and store it. Later edits to this week stay here.
+   * A next week that already has people or hours is left as it is.
+   */
+  var futureWeekSnapshotLock = false;
+  function freezeFutureWeekSnapshotFromCurrent(opts) {
+    opts = opts || {};
+    if (futureWeekSnapshotLock) return false;
+    if (teamStateRemoteApplyActive() && !opts.fromCloudBundle) return false;
+    var mondayIso = currentScheduleWeekMondayIso();
+    if (!mondayIso) return false;
+    if (
+      !opts.fromCloudBundle &&
+      GM_SUPABASE_DATA &&
+      window.gmSupabase &&
+      !scheduleCellsHydratedOk
+    ) {
+      return false;
+    }
+    var tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
+    var furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
+    if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
+    if (furthest <= tpl) return false;
+    var store = loadScheduleAssignmentsStore();
+    var unfilled = [];
+    restaurantsList.forEach(function (r) {
+      if (restaurantUsesDefaultUnassignedSchedule(r.id)) return;
+      if (restaurantWeekHasStaffedAssignments(store[r.id], furthest)) return;
+      var own = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(furthest)], r.id);
+      if (own && !futureWeekDraftShellIsEmpty(own)) return;
+      var src = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(tpl)], r.id);
+      if (!src || futureWeekDraftShellIsEmpty(src)) return;
+      unfilled.push(r.id);
+    });
+    if (!unfilled.length) return false;
+    futureWeekSnapshotLock = true;
+    try {
+      var tplEntry = draftScheduleByWeekStore[String(tpl)];
+      var dstEntry = draftScheduleByWeekStore[String(furthest)];
+      if (!draftScheduleWeekEntryIsPerRestaurant(tplEntry) && draftScheduleJsonHasLayers(tplEntry)) {
+        draftScheduleByWeekStore[String(furthest)] = cloneDraftSchedule(tplEntry);
+      } else {
+        if (!dstEntry || typeof dstEntry !== 'object' || !draftScheduleWeekEntryIsPerRestaurant(dstEntry)) {
+          dstEntry = {};
+        }
+        unfilled.forEach(function (rid) {
+          var srcLayers = draftLayersFromWeekEntry(tplEntry, rid);
+          if (srcLayers) dstEntry[rid] = cloneDraftSchedule(srcLayers);
+        });
+        draftScheduleByWeekStore[String(furthest)] = dstEntry;
+      }
+      unfilled.forEach(function (rid) {
+        if (!store[rid]) store[rid] = {};
+        copyRestaurantWeekAssignments(store[rid], tpl, furthest);
+      });
+      invalidateDraftLayersMemo(furthest);
+      try {
+        localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      } catch (_freezeLs) {
+        /* ignore */
+      }
+      saveScheduleAssignmentsStore(store, {
+        skipDirty: true,
+        skipInteractiveMark: true,
+        writeThrough: false,
+      });
+      writeScheduleWindowMondayIso(mondayIso);
+      if (!opts.deferPersist && !teamStateRemoteApplyActive()) {
+        draftScheduleDirty = true;
+        scheduleAssignmentsDirty = true;
+        persistTeamStateDirtyFlags();
+        scheduleTeamStateDebouncedSync();
+        scheduleTeamStateWriteThroughSoon();
+      }
+      return true;
+    } finally {
+      futureWeekSnapshotLock = false;
+    }
   }
 
   /**
