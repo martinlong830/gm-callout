@@ -1770,6 +1770,30 @@
       }
     }
     var weekEntry = draftScheduleByWeekStore[weekKey];
+    /*
+     * A cloud apply must not replace a staffed week with a blank one. That
+     * blank was then uploaded and every device lost the shifts.
+     */
+    if (teamStateRemoteApplyActive() && weekEntry) {
+      var prevLayersForSave = draftLayersFromWeekEntry(weekEntry, rid);
+      var prevTimedForSave = 0;
+      var nextTimedForSave = 0;
+      ['Kitchen', 'Bartender', 'Server'].forEach(function (roleName) {
+        var prevRows = prevLayersForSave && prevLayersForSave[roleName];
+        var nextRows = sanitized && sanitized[roleName];
+        (prevRows || []).forEach(function (row) {
+          (row || []).forEach(function (cell) {
+            if (cell && cell[0] && cell[1]) prevTimedForSave += 1;
+          });
+        });
+        (nextRows || []).forEach(function (row) {
+          (row || []).forEach(function (cell) {
+            if (cell && cell[0] && cell[1]) nextTimedForSave += 1;
+          });
+        });
+      });
+      if (prevTimedForSave >= 8 && nextTimedForSave * 2 < prevTimedForSave) return;
+    }
     if (!draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
       var perRest = {};
       restaurantsList.forEach(function (r) {
@@ -9755,6 +9779,23 @@
             want
           );
           if (!draftLong && !assignLong) continue;
+          /*
+           * A slot missing from one fetch is not a row delete. Splicing a row
+           * that still has a person or shift times made employees vanish and
+           * shifted the other store's people onto this grid.
+           */
+          var roleIdxAbs = roleIdxForDraftRole(group.role);
+          var absorbBlocked = indices.some(function (tr) {
+            if (tr < 0 || tr >= rows.length) return false;
+            return scheduleRoleRowHasNamedOrTimedContent(
+              assignStore[group.restaurantId] || {},
+              roleIdxAbs,
+              wi * 7,
+              tr,
+              rows[tr]
+            );
+          });
+          if (absorbBlocked) continue;
           var toDelete = [];
           if (draftLong) {
             indices.forEach(function (tr) {
@@ -11204,10 +11245,13 @@
      * Still refuse broken projections (dense fetch → sparse patch) above.
      */
     if (opts.cloudAuthorityReplace) {
-      if (cloudTimed <= 0) {
-        if (Number.isFinite(fetchTimed) && fetchTimed > 0) return false;
-        return true;
-      }
+      /*
+       * Deleted / day-off-only cells are not a schedule. Replacing a staffed
+       * week with that shell is what cleared 9th Ave a moment after it painted
+       * and then saved the blank copy for everyone.
+       */
+      if (cloudTimed <= 0) return localTimed <= 0;
+      if (localTimed >= 8 && cloudTimed * 2 < localTimed) return false;
       return true;
     }
     /*
@@ -11877,9 +11921,10 @@
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekEnd) return;
             if (!patchCells[shiftId]) {
               /*
-               * Keep a cloud person whose cell landed on another row (stale phone
-               * slot map). Drop a local name the cloud week does not have at all
-               * (Yudina on 9th Ave FOH).
+               * A missing cell is not a person clear. Names usually live on the
+               * assignment blob while cells have a null worker_name, so deleting
+               * every key the patch omitted blanked the week a moment after paint.
+               * Only drop someone who belongs to the other store.
                */
               var keepLocal = normalizeScheduleAssignment(rs[shiftId]);
               var keepPerson =
@@ -11893,6 +11938,7 @@
                 return;
               }
               if (schedulePersonRowProtectActive(rid, wi)) return;
+              if (keepPerson && !scheduleWorkerExclusiveToOtherStore(keepPerson, rid)) return;
               delete rs[shiftId];
               changed = true;
             }
@@ -12043,6 +12089,34 @@
               return;
             }
           }
+          /*
+           * Unnamed day-off shells are not a manager clearing the week. A dense
+           * cloud week may still clear one shift (the ×). A short patch must not.
+           */
+          if (cell.dayOff && !opts.forceDayOffReplace && prevWasTimed) {
+            var namedDayOffCell =
+              (cell.rowOwner && cell.rowOwner !== 'Unassigned') ||
+              (cell.workers && cell.workers[0] && cell.workers[0] !== 'Unassigned');
+            if (!namedDayOffCell) {
+              var ridTimedKeep = 0;
+              var wkKeep0 = wi * 7;
+              var wkKeep1 = wkKeep0 + 7;
+              Object.keys(cells).forEach(function (sidKeep) {
+                var pkKeep = parseShiftIdParts(sidKeep);
+                if (!pkKeep || pkKeep.globalDayIdx < wkKeep0 || pkKeep.globalDayIdx >= wkKeep1) {
+                  return;
+                }
+                if (cellHasTimed(cells[sidKeep])) ridTimedKeep += 1;
+              });
+              var localTimedKeep = countLocalTimedDraftWeek(wi, rid);
+              if (
+                ridTimedKeep < 4 ||
+                (localTimedKeep >= 8 && ridTimedKeep * 2 < localTimedKeep)
+              ) {
+                return;
+              }
+            }
+          }
           var entry = { workers: cell.workers || ['Unassigned'] };
           if (cell.rowOwner) entry.rowOwner = cell.rowOwner;
           if (cell.dayOff) {
@@ -12106,6 +12180,34 @@
               }
             }
           }
+          /*
+           * 8th Ave people must not land on the 9th Ave grid (or the reverse)
+           * because a cell projection reused a row. Keep this store's person.
+           */
+          if (paintName && scheduleWorkerExclusiveToOtherStore(paintName, rid)) {
+            var prevStoreName =
+              (prevLocal &&
+                prevLocal.rowOwner &&
+                prevLocal.rowOwner !== 'Unassigned' &&
+                prevLocal.rowOwner) ||
+              (prevLocal &&
+              prevLocal.workers &&
+              prevLocal.workers[0] &&
+              prevLocal.workers[0] !== 'Unassigned'
+                ? prevLocal.workers[0]
+                : '');
+            if (
+              prevStoreName &&
+              !scheduleWorkerExclusiveToOtherStore(prevStoreName, rid) &&
+              !scheduleNameIsDeactivatedPerson(prevStoreName)
+            ) {
+              entry.rowOwner = prevStoreName;
+              entry.workers = [prevStoreName];
+            } else {
+              delete entry.rowOwner;
+              entry.workers = ['Unassigned'];
+            }
+          }
           if (cell.dayOff) {
             /*
              * Day-off Person identity: Unassigned workers + rowOwner from cloud worker_name.
@@ -12166,21 +12268,22 @@
             return;
           }
           /*
-           * Soft upsert keeps a local name when the cell has no worker_name — any rev.
-           * Restricting to rev<=1 let higher-rev unnamed/misaligned projections blank
-           * Andre Siccion (etc.) to Unassigned until Manual Refresh. Intentional clears
-           * use trusted replace / forceDayOffReplace, not soft upsert.
-           * Right after a peer slot delete, also keep names through keepShiftedName.
+           * A cell with no worker_name is not a person clear — set_times leaves
+           * the name null, and the name lives on the assignment blob. Trusted
+           * replace used to paint Unassigned over the correct grid a moment
+           * after it loaded. forceDayOffReplace may still clear.
            */
-          var keepShiftedName =
-            scheduleSlotRemovalNameHoldUntil > Date.now() && !opts.forceDayOffReplace;
-          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned) {
+          if (prev && incomingUnassigned && !opts.forceDayOffReplace) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
                 ? prev.workers[0]
                 : '');
-            if (prevName && !scheduleNameIsDeactivatedPerson(prevName)) {
+            if (
+              prevName &&
+              !scheduleNameIsDeactivatedPerson(prevName) &&
+              !scheduleWorkerExclusiveToOtherStore(prevName, rid)
+            ) {
               entry.rowOwner = prevName;
               entry.workers = [prevName];
             }
@@ -12372,35 +12475,29 @@
             if (maxRowTr >= 0) n = Math.max(n, maxRowTr + 1);
             if (n <= 0) n = 1;
             /*
-             * Soft/non-authoritative: keep trailing day-off Person rows (rowOwner /
-             * staffed) so an in-flight local add is not chopped before slots echo.
-             * Refresh / cloud SoT: never inflate past cloud activeSlotCount from local
-             * leftovers — that resurrected peer-deleted rows after Refresh.
+             * Never slice a row that still has a person or shift times. A short
+             * active-slot count used to chop the grid a moment after the correct
+             * week painted (6 kitchen rows became 5, or the whole week vanished).
+             * Only a trailing run of empty shells may be peeled. Conscious row
+             * delete still removes the row itself.
              */
-            if (!cloudAuthorityWeek && !opts.replaceTrusted && !opts.force) {
-              var keepOwnerThrough = n;
-              for (var trOwn = n; trOwn < ((layers[role] && layers[role].length) || 0); trOwn += 1) {
-                var hasOwn = false;
-                for (var dOwn = 0; dOwn < 7; dOwn += 1) {
-                  var ownEnt = normalizeScheduleAssignment(
-                    store[rid] &&
-                      store[rid]['shift-' + (weekStart + dOwn) + '-' + roleIdx + '-' + trOwn]
-                  );
-                  if (
-                    (ownEnt && ownEnt.rowOwner && ownEnt.rowOwner !== 'Unassigned') ||
-                    scheduleAssignmentHasStaffedWorkers(ownEnt)
-                  ) {
-                    hasOwn = true;
-                    break;
-                  }
-                }
-                if (hasOwn) keepOwnerThrough = trOwn + 1;
-                else break;
+            var roleLenKeep = (layers[role] && layers[role].length) || 0;
+            var keepThrough = n;
+            for (var trKeep = roleLenKeep - 1; trKeep >= n; trKeep -= 1) {
+              if (
+                scheduleRoleRowHasNamedOrTimedContent(
+                  store[rid],
+                  roleIdx,
+                  weekStart,
+                  trKeep,
+                  layers[role][trKeep]
+                )
+              ) {
+                keepThrough = trKeep + 1;
+                break;
               }
-              n = Math.max(n, keepOwnerThrough);
-            } else if (activeN > 0) {
-              n = Math.min(n, Math.max(activeN, maxRowTr >= 0 ? maxRowTr + 1 : activeN));
             }
+            n = Math.max(n, keepThrough);
             if (!layers[role] || !Array.isArray(layers[role])) layers[role] = [];
             while (layers[role].length < n) {
               layers[role].push([null, null, null, null, null, null, null]);
@@ -12444,6 +12541,15 @@
                   continue;
                 }
                 var prevCell = row[di];
+                /*
+                 * Unnamed day-off cells are not a cleared week. Leave a timed
+                 * local shift in place when the cloud patch is sparse.
+                 */
+                if (!nextCell && prevCell && prevCell[0] && prevCell[1] && !opts.forceDayOffReplace) {
+                  if (ridTimed < 4 || (localRidTimed >= 8 && ridTimed * 2 < localRidTimed)) {
+                    continue;
+                  }
+                }
                 var same =
                   (!nextCell && !prevCell) ||
                   (nextCell &&
@@ -14418,8 +14524,7 @@
         prevSchedule &&
         prevSchedule.length &&
         !opts.allowEmptyPaint &&
-        !opts.weekNav &&
-        !opts.forceInitial
+        !opts.weekNav
       ) {
         SCHEDULE.length = 0;
         for (var psi = 0; psi < prevSchedule.length; psi += 1) {
@@ -14433,7 +14538,6 @@
        */
       if (
         !opts.weekNav &&
-        !opts.forceInitial &&
         !opts.allowEmptyPaint &&
         !opts.forceDegrade &&
         scheduleAuthoritativePaintReady &&
@@ -18103,6 +18207,77 @@
     await teamStatePushPromise;
   }
 
+  function countDraftLayerTimedCells(layers) {
+    var n = 0;
+    if (!layers) return 0;
+    ['Kitchen', 'Bartender', 'Server'].forEach(function (role) {
+      (layers[role] || []).forEach(function (row) {
+        (row || []).forEach(function (cell) {
+          if (cell && cell[0] && cell[1]) n += 1;
+        });
+      });
+    });
+    return n;
+  }
+
+  /**
+   * Before upload, put back any store-week whose cloud copy still has the shifts
+   * this browser just dropped. Stops a blank grid from becoming the shared schedule.
+   */
+  function keepDenserCloudScheduleWeeks(row) {
+    if (!row) return false;
+    var aligned = row;
+    try {
+      aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(row, { force: true });
+    } catch (_alignDense) {
+      aligned = row;
+    }
+    var payload = draftSchedulePayloadFromRemote(aligned && aligned.draft_schedule);
+    var byWeek = payload && payload.byWeek;
+    if (!byWeek) return false;
+    var cloudAssign = aligned && aligned.schedule_assignments;
+    var changed = false;
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      var cloudEntry = byWeek[String(wi)];
+      if (!cloudEntry) continue;
+      restaurantsList.forEach(function (rest) {
+        var rid = rest.id;
+        var cloudLayers = draftLayersFromWeekEntry(cloudEntry, rid);
+        var localLayers = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
+        var cloudTimed = countDraftLayerTimedCells(cloudLayers);
+        var localTimed = countDraftLayerTimedCells(localLayers);
+        if (cloudTimed < 8 || localTimed + 8 >= cloudTimed) return;
+        saveDraftScheduleRowsForWeek(wi, cloudLayers, rid, {
+          skipDirty: true,
+          skipInteractiveMark: true,
+        });
+        if (cloudAssign && cloudAssign[rid]) {
+          var store = loadScheduleAssignmentsStore();
+          if (!store[rid]) store[rid] = {};
+          var start = wi * 7;
+          var end = start + 7;
+          Object.keys(store[rid]).forEach(function (id) {
+            var p = parseShiftIdParts(id);
+            if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+            delete store[rid][id];
+          });
+          Object.keys(cloudAssign[rid]).forEach(function (id) {
+            var pCloud = parseShiftIdParts(id);
+            if (!pCloud || pCloud.globalDayIdx < start || pCloud.globalDayIdx >= end) return;
+            store[rid][id] = cloudAssign[rid][id];
+          });
+          saveScheduleAssignmentsStore(store, {
+            skipDirty: true,
+            skipInteractiveMark: true,
+            skipTimecardsNotify: true,
+          });
+        }
+        changed = true;
+      });
+    }
+    return changed;
+  }
+
   async function pushTeamStateToSupabaseOnce() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     /*
@@ -18186,6 +18361,24 @@
        * roll back cell SoT — it must not silence the push path.
        */
       if (pushScheduleBundle) {
+        /*
+         * A cell sync can blank a week and then this save would publish the blank.
+         * If cloud still has the staffed week, keep that week.
+         */
+        if (!teamStateForcePushActive) {
+          try {
+            var denseBeforePush = await sb
+              .from('team_state')
+              .select('draft_schedule,schedule_assignments')
+              .eq('id', gmCalloutTeamStateRowId())
+              .maybeSingle();
+            if (!denseBeforePush.error && denseBeforePush.data) {
+              keepDenserCloudScheduleWeeks(denseBeforePush.data);
+            }
+          } catch (_denseBeforePush) {
+            /* ignore */
+          }
+        }
         /*
          * A phone can clear an Ongi flag between this computer's edits. Fold that
          * off into the draft before upload so this save does not put the flag back.
@@ -26906,6 +27099,22 @@
     return employeeIsWeekBorrowedToRestaurant(emp, restaurantId);
   }
 
+  /**
+   * Single-home employee of the other store, and not borrowed here this week.
+   * Until the roster and borrow list are loaded, return false so we do not
+   * hide or delete anyone during the first paint.
+   */
+  function scheduleWorkerExclusiveToOtherStore(name, restaurantId) {
+    if (!name || name === 'Unassigned' || !restaurantId) return false;
+    if (!employees.length) return false;
+    var emp = employeeByDisplayName(name);
+    if (!emp) return false;
+    if (employeeMatchesTeamRestaurant(emp, restaurantId)) return false;
+    var tc = window.gmCalloutTimecards;
+    if (!tc || typeof tc.getEmployeeBorrowedRestaurant !== 'function') return false;
+    return !employeeIsWeekBorrowedToRestaurant(emp, restaurantId);
+  }
+
   /** Restaurants the signed-in employee may view (Team `usualRestaurant` / both). */
   function restaurantsVisibleToEmployee(emp) {
     if (!emp) return restaurantsList.slice();
@@ -32067,6 +32276,7 @@
     var tr;
     for (tr = 0; tr < rows.length; tr += 1) {
       var stored = scheduleAssignmentPersonOnRow(rs, roleIdx, wi * 7, tr);
+      if (stored && scheduleWorkerExclusiveToOtherStore(stored, rid)) stored = null;
       names[tr] = stored || null;
       if (stored) claimed[normalizeWorkerKey(stored)] = tr;
     }
@@ -32075,6 +32285,7 @@
       if (!name) return null;
       var home = workerHomeScheduleRole(name);
       if (home && home !== role) return null;
+      if (scheduleWorkerExclusiveToOtherStore(name, rid)) return null;
       var claimKey = normalizeWorkerKey(name);
       if (claimed[claimKey] != null && claimed[claimKey] !== destTr) return null;
       return name;
@@ -32257,9 +32468,19 @@
         bestCount = counts[n];
       }
     });
+    if (bestCount > 0 && scheduleWorkerExclusiveToOtherStore(best, currentRestaurantId)) {
+      best = 'Unassigned';
+      bestCount = -1;
+    }
     if (bestCount > 0) return best;
     var continuityNames = scheduleContinuityNamesForRole(role, scheduleCalendarWeekIndex);
-    if (continuityNames && continuityNames[trIdx]) return continuityNames[trIdx];
+    if (
+      continuityNames &&
+      continuityNames[trIdx] &&
+      !scheduleWorkerExclusiveToOtherStore(continuityNames[trIdx], currentRestaurantId)
+    ) {
+      return continuityNames[trIdx];
+    }
     /*
      * Intentional all-day-off Person rows store identity on rowOwner with Unassigned
      * workers. Prefer that when this row has no timed draft cells — do not require
@@ -32278,15 +32499,19 @@
           }
         }
       }
-      if (!timedSticky) return stickyOwner;
+      if (!timedSticky && !scheduleWorkerExclusiveToOtherStore(stickyOwner, currentRestaurantId)) {
+        return stickyOwner;
+      }
     }
     if (allowStickyOwner) {
       var sticky = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays);
-      if (sticky) return sticky;
+      if (sticky && !scheduleWorkerExclusiveToOtherStore(sticky, currentRestaurantId)) return sticky;
     }
     if (allowOtherWeeks) {
       var fromOther = scheduleRowPersonFromOtherWeeks(role, trIdx);
-      if (fromOther) return fromOther;
+      if (fromOther && !scheduleWorkerExclusiveToOtherStore(fromOther, currentRestaurantId)) {
+        return fromOther;
+      }
     }
     return 'Unassigned';
   }

@@ -1496,6 +1496,16 @@
       ) {
         return;
       }
+      /*
+       * A cell with no clock times and no person is an empty shell. Projecting
+       * it as a day off cleared real shifts after the correct week had painted.
+       */
+      if (
+        (!cell.start_hhmm || !cell.end_hhmm) &&
+        (!cell.worker_name || cell.worker_name === 'Unassigned')
+      ) {
+        return;
+      }
       var rid = String(cell.restaurant_id || '');
       var role = String(cell.role || '');
       var slotKey = String(cell.slot_key || '');
