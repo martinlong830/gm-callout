@@ -11879,6 +11879,12 @@
         return false;
       }
       var store = loadScheduleAssignmentsStore();
+      var storeBeforeApply = null;
+      try {
+        storeBeforeApply = JSON.parse(JSON.stringify(store));
+      } catch (_snapApply) {
+        storeBeforeApply = null;
+      }
       /* Replace only weeks that have real timed cloud cells — never wipe past weeks empty. */
       Object.keys(replaceWeeks).forEach(function (wiStr) {
         dropEmptyFutureWeekDraftShells(Number(wiStr));
@@ -12383,6 +12389,9 @@
         /* ignore */
       }
       if (scrubDeactivatedPeopleFromAssignmentStore(store)) changed = true;
+      if (!opts.forceDayOffReplace && restoreCollapsedWeekNamesFromSnapshot(store, storeBeforeApply)) {
+        changed = true;
+      }
       if (changed) {
         saveScheduleAssignmentsStore(store, {
           skipDirty: true,
@@ -18220,6 +18229,66 @@
     return n;
   }
 
+  /** Named rows in one store-week. Hours with no person do not count. */
+  function countWeekNamedRows(rs, weekIndex) {
+    var start = weekIndex * 7;
+    var end = start + 7;
+    var seen = Object.create(null);
+    var n = 0;
+    Object.keys(rs || {}).forEach(function (id) {
+      var p = parseShiftIdParts(id);
+      if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+      var ent = normalizeScheduleAssignment(rs[id]);
+      var name =
+        (ent && ent.rowOwner && ent.rowOwner !== 'Unassigned' && ent.rowOwner) ||
+        (ent &&
+          ent.workers &&
+          ent.workers[0] &&
+          ent.workers[0] !== 'Unassigned' &&
+          ent.workers[0]) ||
+        '';
+      if (!name) return;
+      var key = p.roleIdx + '\0' + p.trIdx;
+      if (seen[key]) return;
+      seen[key] = true;
+      n += 1;
+    });
+    return n;
+  }
+
+  /**
+   * A cell apply must not turn a named week into Unassigned. Put the previous
+   * people back when most of the names disappeared in one pass.
+   */
+  function restoreCollapsedWeekNamesFromSnapshot(store, before) {
+    if (!store || !before) return false;
+    var changed = false;
+    restaurantsList.forEach(function (rest) {
+      var rid = rest.id;
+      if (!before[rid]) return;
+      if (!store[rid]) store[rid] = {};
+      for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+        var prevN = countWeekNamedRows(before[rid], wi);
+        var nextN = countWeekNamedRows(store[rid], wi);
+        if (prevN < 4 || nextN * 2 >= prevN) continue;
+        var start = wi * 7;
+        var end = start + 7;
+        Object.keys(store[rid]).forEach(function (id) {
+          var p = parseShiftIdParts(id);
+          if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+          delete store[rid][id];
+        });
+        Object.keys(before[rid]).forEach(function (id) {
+          var pBefore = parseShiftIdParts(id);
+          if (!pBefore || pBefore.globalDayIdx < start || pBefore.globalDayIdx >= end) return;
+          store[rid][id] = before[rid][id];
+        });
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
   /**
    * Before upload, put back any store-week whose cloud copy still has the shifts
    * this browser just dropped. Stops a blank grid from becoming the shared schedule.
@@ -18246,11 +18315,18 @@
         var localLayers = draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid);
         var cloudTimed = countDraftLayerTimedCells(cloudLayers);
         var localTimed = countDraftLayerTimedCells(localLayers);
-        if (cloudTimed < 8 || localTimed + 8 >= cloudTimed) return;
-        saveDraftScheduleRowsForWeek(wi, cloudLayers, rid, {
-          skipDirty: true,
-          skipInteractiveMark: true,
-        });
+        var localStoreForNames = loadScheduleAssignmentsStore();
+        var cloudNamed = countWeekNamedRows(cloudAssign && cloudAssign[rid], wi);
+        var localNamed = countWeekNamedRows(localStoreForNames && localStoreForNames[rid], wi);
+        var timesCollapsed = cloudTimed >= 8 && localTimed + 8 < cloudTimed;
+        var namesCollapsed = cloudNamed >= 4 && localNamed * 2 < cloudNamed;
+        if (!timesCollapsed && !namesCollapsed) return;
+        if (cloudLayers && (timesCollapsed || countDraftLayerTimedCells(cloudLayers) > 0)) {
+          saveDraftScheduleRowsForWeek(wi, cloudLayers, rid, {
+            skipDirty: true,
+            skipInteractiveMark: true,
+          });
+        }
         if (cloudAssign && cloudAssign[rid]) {
           var store = loadScheduleAssignmentsStore();
           if (!store[rid]) store[rid] = {};
