@@ -19,6 +19,7 @@ import { getCustomSlotOrderForRole, readSlotOrderByWeek, normalizeMondayIso } fr
 import {
   normalizeEmployeeStaffType,
   employeeHasSingleStorePayroll,
+  employeeHomeOrPrimaryRestaurantId,
   employeeIsDeactivated,
 } from '../employees';
 
@@ -2290,7 +2291,12 @@ export function buildCalendarBody(
   function shouldShowWorker(workerName: string): boolean {
     if (!abbreviate || !abbreviateForManagedStoreId) return true;
     if (!workerName || workerName === 'Unassigned') return false;
-    return employeeHasSingleStorePayroll(liteByName(workerName));
+    const emp = liteByName(workerName);
+    if (!emp) return false;
+    if (employeeHasSingleStorePayroll(emp)) return true;
+    if (employeeHomeOrPrimaryRestaurantId(emp) !== abbreviateForManagedStoreId) return false;
+    const wi = weekIndex != null && !Number.isNaN(Number(weekIndex)) ? Number(weekIndex) : 0;
+    return restaurantWeekHasNamedWorker(restaurantId, wi, workerName);
   }
 
   function cellOngiFlag(role: RoleKey, trIdx: number, dayStr: string): number | undefined {
@@ -3422,7 +3428,14 @@ export function compactAssignmentsAfterDraftSlotDeletes(
           if (!p || p.globalDayIdx !== globalDay || p.roleIdx !== roleIdx) return;
           if (p.trIdx > maxTr) maxTr = p.trIdx;
         });
-        for (let trIdx = maxTr; trIdx > deletedTrIdx; trIdx -= 1) {
+        /*
+         * Delete the removed row first, then shift higher rows down.
+         * Shifting high→low and then deleting wiped whoever just moved into
+         * deletedTrIdx (every person below became Unassigned).
+         */
+        const deletedId = `shift-${globalDay}-${roleIdx}-${deletedTrIdx}`;
+        if (rs[deletedId] !== undefined) delete rs[deletedId];
+        for (let trIdx = deletedTrIdx + 1; trIdx <= maxTr; trIdx += 1) {
           const oldId = `shift-${globalDay}-${roleIdx}-${trIdx}`;
           const newId = `shift-${globalDay}-${roleIdx}-${trIdx - 1}`;
           if (rs[oldId] !== undefined) {
@@ -3430,8 +3443,6 @@ export function compactAssignmentsAfterDraftSlotDeletes(
             delete rs[oldId];
           }
         }
-        const deletedId = `shift-${globalDay}-${roleIdx}-${deletedTrIdx}`;
-        if (rs[deletedId] !== undefined) delete rs[deletedId];
       }
     });
   });

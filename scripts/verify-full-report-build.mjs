@@ -613,6 +613,13 @@ const cpaSheet = build.find((s) => s.name === 'CPA');
 const payslipSheet = build.find((s) => s.name === 'Payslip');
 assertFormulaContains(sheetFormulas(laborSheet.worksheet), 'Payroll!', 'Labor Cost');
 assertFormulaContains(sheetFormulas(cpaSheet.worksheet), 'Payroll!', 'CPA');
+{
+  const titleCell = cpaSheet.worksheet.A1;
+  const title = titleCell && titleCell.v != null ? String(titleCell.v) : '';
+  if (title !== 'Red Poke 9th Ave') {
+    throw new Error('CPA title for RP1 / 9th Ave should be Red Poke 9th Ave, got ' + JSON.stringify(title));
+  }
+}
 if (sandbox.__gmTimecardsTest.netTipAmount(100) !== 95) {
   throw new Error(
     'Delivery tip of 100 should pay 95, got ' + sandbox.__gmTimecardsTest.netTipAmount(100)
@@ -629,14 +636,19 @@ Object.keys(cpaWs).forEach((addr) => {
   if (/Payroll!M\d+/.test(formula)) {
     throw new Error('CPA gross for ' + val + ' still adds SoH: ' + formula);
   }
-  const isDelivery = val.indexOf('SALVATIERRA') >= 0;
-  if (isDelivery && /Payroll!U\d+/.test(formula)) {
-    throw new Error('CPA gross for delivery staff still adds tips: ' + formula);
+  if (/Payroll!U\d+/.test(formula)) {
+    throw new Error('CPA gross should not add delivery tips (Payroll U): ' + formula);
   }
-  if (!isDelivery && formula.indexOf('Payroll!U') < 0) {
-    throw new Error('CPA gross for ' + val + ' should still add coverage-side delivery column: ' + formula);
+  if (/Payroll!O\d+/.test(formula)) {
+    throw new Error('CPA gross should not add coverage (Payroll O): ' + formula);
+  }
+  const tips = cpaWs['I' + rowNum];
+  const tipsFormula = tips && tips.f ? String(tips.f) : '';
+  if (/Payroll!\$?U\d+|Payroll!\$?V\d+/.test(tipsFormula)) {
+    throw new Error('CPA tips should not include delivery / total tips columns: ' + tipsFormula);
   }
 });
+console.log('OK: CPA excludes coverage and delivery tips from gross and tips');
 function excelColNum(letters) {
   let n = 0;
   for (let i = 0; i < letters.length; i += 1) n = n * 26 + (letters.charCodeAt(i) - 64);
@@ -662,9 +674,9 @@ Object.keys(payslipSheet.worksheet).forEach((addr) => {
   const formula = paid && paid.f ? String(paid.f) : '';
   const normalized = formula.charAt(0) === '=' ? formula.slice(1) : formula;
   const parts = normalized.split('+').map((p) => p.trim()).filter(Boolean);
-  if (parts.length !== 2 || /Payroll!\$?[MN]\d/.test(formula) || formula.indexOf('ISNUMBER') < 0) {
+  if (parts.length !== 3 || /Payroll!\$?[MN]\d/.test(formula) || formula.indexOf('ISNUMBER') < 0) {
     throw new Error(
-      'Payslip Total Paid should be wages plus VL/SL only, coercing blanks so Excel does not #VALUE!: ' +
+      'Payslip Total Paid should be wages + VL/SL + coverage, coercing blanks so Excel does not #VALUE!: ' +
         formula
     );
   }
@@ -1275,6 +1287,11 @@ if (ninth.visible.indexOf('EIGHTH ONLY') >= 0) {
 }
 if (eighth.visible.indexOf('MARK ONG') >= 0) {
   throw new Error('8th Ave roster should not include 9th-only employee');
+}
+if (ninth.visible.indexOf('JUAN SALVATIERRA') >= 0) {
+  throw new Error(
+    'working-location 9th-home staff with no schedule/punches this week must not appear on 9th timecards'
+  );
 }
 if (ninth.visible.indexOf('BOTH STORES') < 0) {
   throw new Error('single-store-payroll employee with primary rp-9 should appear on 9th export');
@@ -1937,9 +1954,9 @@ await verifyPayslipPatchedExport();
   if (Math.abs(eighthPay['e-split'].metrics.vlH) > 0.01) {
     throw new Error('working-location VL must not duplicate on 8th, got ' + eighthPay['e-split'].metrics.vlH);
   }
-  if (Math.abs(eighthPay['e-split'].metrics.otherStoreTips || 0) > 0.01) {
-    throw new Error('working-location staff must not get Other Store Tips (already on that store’s payroll)');
-  }
+  /* Working-location staff: local tip points in TIP, sibling share in other-store tips. */
+  assertClose(ninthPay['e-split'].metrics.otherStoreTips, 300, '9th other-store tips = 8th tip share for SPLIT');
+  assertClose(eighthPay['e-split'].metrics.otherStoreTips, 300, '8th other-store tips = 9th tip share for SPLIT');
   if (Math.abs(ninthPay['e-split'].metrics.gross - split9Gross) > 0.01) {
     throw new Error('SPLIT WORKER 9th gross expected ' + split9Gross + ', got ' + ninthPay['e-split'].metrics.gross);
   }
@@ -2009,7 +2026,10 @@ await verifyPayslipPatchedExport();
     throw new Error('9th Payroll must list single-store BOTH STORES as a paycheck row');
   }
   assertClose(ninthSheet.eboth.metrics.otherStoreTips, 400, '9th paycheck tips from 8th tip points');
-  /* Zeferino pattern: paid on 9th, tip points only at 8th. Rounded 8th share belongs in Net delivery tip / other store tip. */
+  assertClose(eighthSheet.eboth.metrics.otherStoreTips, 400, '8th tip-borrow also shows 9th tip share in other-store tips');
+  /* Zeferino pattern: 9th payroll only, worked a day at each store.
+     RP1: TIP = 9th share, other-store = 8th share.
+     RP2: TIP = 8th share, other-store = 9th share. */
   deps.employees.push({
     id: 'e-zef',
     firstName: 'ZEFERINO',
@@ -2022,7 +2042,8 @@ await verifyPayslipPatchedExport();
     weeklyGrid: {},
     meta: { primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9', singleStorePayroll: true },
   });
-  punches.push(punchAt('p-zef', 'e-zef', 2026, 5, 22, 11, 19, 'rp-8'));
+  punches.push(punchAt('p-zef-9', 'e-zef', 2026, 5, 21, 11, 19, 'rp-9'));
+  punches.push(punchAt('p-zef-8', 'e-zef', 2026, 5, 22, 11, 19, 'rp-8'));
   T.setWeekEntriesForTest(punches);
   function payrollNamedCell(loc, person, col) {
     T.setTimecardsLocationFilterForTest(loc);
@@ -2038,24 +2059,50 @@ await verifyPayslipPatchedExport();
     if (!rowNum) throw new Error(loc + ' payroll row missing for ' + person);
     return ws[col + rowNum] || null;
   }
-  const homeRp2 = payrollNamedCell('rp-9', 'ZEFERINO FLORES', 'U');
-  const zefShare = Math.round((1000 * 16) / (64 + 48 + 48 + 16));
-  if (!homeRp2 || Number(homeRp2.v) !== zefShare) {
+  /* Tip pts: 9th = eboth128 + split96 + both8 96 + zef16 = 336; 8th = 64+48+48+16 = 176 */
+  const zefShare9 = Math.round((1000 * 16) / (128 + 96 + 96 + 16));
+  const zefShare8 = Math.round((1000 * 16) / (64 + 48 + 48 + 16));
+  const homeOther = payrollNamedCell('rp-9', 'ZEFERINO FLORES', 'U');
+  if (!homeOther || Number(homeOther.v) !== zefShare8) {
     throw new Error(
-      '9th Net delivery tip / other store tip should be the rounded 8th Ave tip ' +
-        zefShare +
+      '9th other-store tips should be Zeferino 8th Ave tip share ' +
+        zefShare8 +
         ', got ' +
-        (homeRp2 && homeRp2.v)
+        (homeOther && homeOther.v)
     );
   }
   const homeTip = payrollNamedCell('rp-9', 'ZEFERINO FLORES', 'T');
   const homeTipFormula = homeTip && homeTip.f ? String(homeTip.f) : '';
-  if (homeTip && homeTip.v === 400) {
-    throw new Error('9th TIP column should not hold the other-store amount; it belongs in Net delivery tip / other store tip');
+  if (homeTip && Number(homeTip.v) === zefShare8) {
+    throw new Error('9th TIP column should not hold the 8th-store amount; that belongs in other-store tips');
   }
   if (homeTipFormula.indexOf('ROUND(') < 0) {
     throw new Error('9th TIP formula should still round a local share, got ' + homeTipFormula);
   }
+  /* Evaluate tip share via tip-point metrics on rebuilt sheets */
+  const zef9Sheet = payrollSheetPeople('rp-9');
+  if (!zef9Sheet['e-zef'] || zef9Sheet['e-zef'].row.isTipBorrowRow) {
+    throw new Error('9th Payroll must list ZEFERINO as a paycheck row');
+  }
+  assertClose(zef9Sheet['e-zef'].metrics.totalTipPoints, 16, '9th tip points for Zeferino (one day)');
+  assertClose(zef9Sheet['e-zef'].metrics.otherStoreTips, zefShare8, '9th other-store tips = 8th share');
+
+  const zef8Sheet = payrollSheetPeople('rp-8');
+  if (!zef8Sheet['e-zef'] || !zef8Sheet['e-zef'].row.isTipBorrowRow) {
+    throw new Error('8th Payroll must list ZEFERINO as a tip-point borrow row');
+  }
+  assertClose(zef8Sheet['e-zef'].metrics.totalTipPoints, 16, '8th tip points for Zeferino (one day)');
+  assertClose(zef8Sheet['e-zef'].metrics.otherStoreTips, zefShare9, '8th other-store tips = 9th share');
+  const borrowOther = payrollNamedCell('rp-8', 'ZEFERINO FLORES', 'U');
+  if (!borrowOther || Number(borrowOther.v) !== zefShare9) {
+    throw new Error(
+      '8th other-store tips should be Zeferino 9th Ave tip share ' +
+        zefShare9 +
+        ', got ' +
+        (borrowOther && borrowOther.v)
+    );
+  }
+
   const borrowCalc = payrollNamedCell('rp-8', 'BOTH STORES', 'S');
   const borrowTip = payrollNamedCell('rp-8', 'BOTH STORES', 'T');
   const borrowCalcFormula = borrowCalc && borrowCalc.f ? String(borrowCalc.f) : '';
@@ -2197,11 +2244,19 @@ await verifyPayslipPatchedExport();
   if (T.netTipAmount(gross100) !== 95) {
     throw new Error('Net delivery tip 95 must round-trip through storage, got gross ' + gross100);
   }
+  if (T.netTipAmount(100) !== 95) {
+    throw new Error('Delivery tip of 100 gross must pay 95 in grand totals / full report');
+  }
   ['rp-9', 'rp-8'].forEach(function (loc) {
     T.setTimecardsLocationFilterForTest(loc);
     T.invalidateFullReportSheetsCache();
     const sheets = T.buildFullReportSheets({ forceFresh: true });
     const cpa = (sheets.find((s) => s.name === 'CPA') || {}).worksheet || {};
+    const expectedCpaTitle = loc === 'rp-8' ? 'Red Poke 8th Ave' : 'Red Poke 9th Ave';
+    const cpaTitle = cpa.A1 && cpa.A1.v != null ? String(cpa.A1.v) : '';
+    if (cpaTitle !== expectedCpaTitle) {
+      throw new Error(loc + ' CPA title should be ' + expectedCpaTitle + ', got ' + JSON.stringify(cpaTitle));
+    }
     const slip = (sheets.find((s) => s.name === 'Payslip') || {}).worksheet || {};
     Object.keys(cpa).forEach(function (addr) {
       const cell = cpa[addr];
@@ -2224,6 +2279,7 @@ await verifyPayslipPatchedExport();
     });
   });
   T.setTimecardsLocationFilterForTest('rp-9');
+  console.log('OK: CPA store titles are Red Poke 9th Ave / Red Poke 8th Ave');
   console.log('OK: delivery tip net round-trips and SoH stays off CPA and payslip at both stores');
   console.log('OK: punch times 30 min or more off schedule are flagged');
   console.log('OK: full-report payroll hours/pay follow single-store vs working-location punches');

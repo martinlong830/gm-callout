@@ -411,17 +411,17 @@ export default function TimecardsRosterScreen() {
       const emp = employeeById[row.empId];
       if (!emp) return true;
       if (employeeIsDeactivated(emp)) return false;
-      if (
-        rosterRowVisibleAtLocation(
-          emp,
-          locationFilter,
-          getEmployeeBorrowedRestaurantSync(emp.id, weekSlices.extras)
-        )
-      ) {
-        return true;
-      }
-      /* Single-store pay stays on the home store, but hours are edited where they worked. */
-      return employeeHasSingleStorePayroll(emp) && rosterRowHasLocationActivity(row);
+      const hasLocationActivity = rosterRowHasLocationActivity(row);
+      const hasPayrollHomeExtras =
+        (row.vlHours || 0) > 0 ||
+        (row.slHours || 0) > 0 ||
+        (row.additionalCashTip || 0) > 0;
+      return rosterRowVisibleAtLocation(
+        emp,
+        locationFilter,
+        getEmployeeBorrowedRestaurantSync(emp.id, weekSlices.extras),
+        { hasLocationActivity, hasPayrollHomeExtras }
+      );
     });
   }, [
     dataReady,

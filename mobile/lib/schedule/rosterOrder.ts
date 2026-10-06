@@ -229,6 +229,32 @@ export function compareEmployeesByVisualScheduleOrder(
 }
 
 /**
+ * Team page order within a role section:
+ * - single store (`rp-8` / `rp-9`) → that store's main schedule order; leftovers A–Z
+ * - both / unrestricted → alphabetical by display name
+ */
+export function compareEmployeesForTeamPage(
+  a: EmployeeRow,
+  b: EmployeeRow,
+  storeFilter: string | null | undefined,
+  rankByNameKey: Map<string, number> | null | undefined
+): number {
+  if (storeFilter === 'rp-8' || storeFilter === 'rp-9') {
+    if (rankByNameKey && rankByNameKey.size) {
+      const ka = normNameKey(employeeDisplayName(a));
+      const kb = normNameKey(employeeDisplayName(b));
+      const ra = ka ? rankByNameKey.get(ka) : undefined;
+      const rb = kb ? rankByNameKey.get(kb) : undefined;
+      const aOn = ra != null;
+      const bOn = rb != null;
+      if (aOn && bOn && ra !== rb) return (ra as number) - (rb as number);
+      if (aOn !== bOn) return aOn ? -1 : 1;
+    }
+  }
+  return compareEmployeesByDisplayName(a, b);
+}
+
+/**
  * Timecards / full-report sort for a location filter.
  * Single restaurant → that store's slot order (then seniority leftovers).
  * `all` → primary store order, then that store's slot order, then seniority leftovers.

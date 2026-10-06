@@ -20,8 +20,33 @@ import {
 import { leaveSummaryLines } from '../../lib/employeeLeave';
 import { portalListCompanyAccountRoles } from '../../lib/portalAuth';
 import { isAdminRole } from '../../lib/roles';
-import { loadDraftFromTeamState, SCHEDULE_TEMPLATE_WEEK_INDEX } from '../../lib/schedule/engine';
-import { compareEmployeesByDisplayName } from '../../lib/schedule/rosterOrder';
+import {
+  buildAllWeekDayLabels,
+  buildSchedule,
+  buildWeeksFromMonday,
+  defaultRestaurants,
+  employeeScheduleVisualRankMap,
+  getScheduleAnchorMondayDate,
+  getVisibleWeekDays,
+  hydrateScheduleAssignmentsFromTeamState,
+  loadDraftFromTeamState,
+  SCHEDULE_TEMPLATE_WEEK_INDEX,
+  SCHEDULE_VIEW_WEEK_COUNT,
+} from '../../lib/schedule/engine';
+import { compareEmployeesForTeamPage } from '../../lib/schedule/rosterOrder';
+import { readSlotOrderByRestaurantForWeek } from '../../lib/schedule/slotOrder';
+import type { EmployeeLite } from '../../lib/schedule/types';
+
+function toLite(e: EmployeeRow): EmployeeLite {
+  return {
+    firstName: e.firstName,
+    lastName: e.lastName,
+    displayName: e.displayName,
+    staffType: e.staffType as EmployeeLite['staffType'],
+    usualRestaurant: e.usualRestaurant || 'both',
+    meta: e.meta,
+  };
+}
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <RouteErrorFallback error={error} retry={retry} />;
@@ -103,7 +128,12 @@ const TeamMemberCard = memo(function TeamMemberCard({
   );
 });
 
-function buildTeamRows(employees: EmployeeRow[], staffTypeLabel: (code: string) => string): TeamRow[] {
+function buildTeamRows(
+  employees: EmployeeRow[],
+  staffTypeLabel: (code: string) => string,
+  storeFilter: string | null,
+  rankByNameKey: Map<string, number> | null
+): TeamRow[] {
   const byTitle = new Map<string, EmployeeRow[]>();
   for (const e of employees) {
     const title = staffTypeLabel(e.staffType);
@@ -112,7 +142,7 @@ function buildTeamRows(employees: EmployeeRow[], staffTypeLabel: (code: string) 
     byTitle.set(title, list);
   }
   for (const list of byTitle.values()) {
-    list.sort(compareEmployeesByDisplayName);
+    list.sort((a, b) => compareEmployeesForTeamPage(a, b, storeFilter, rankByNameKey));
   }
   const knownOrder = [
     staffTypeLabel('Bartender'),
@@ -145,23 +175,68 @@ export default function ManagerTeam() {
   const [rolesByAuthId, setRolesByAuthId] = useState<Record<string, string>>({});
   const isAdmin = isAdminRole(role);
 
+  const storeFilter = useMemo(
+    () => managerManagedRestaurantId(myEmployee, role),
+    [myEmployee, role]
+  );
+
   const draftRows = useMemo(
     () => loadDraftFromTeamState(teamState?.draft_schedule, SCHEDULE_TEMPLATE_WEEK_INDEX),
     [teamState]
   );
 
+  const scheduleRankMap = useMemo(() => {
+    if (storeFilter !== 'rp-8' && storeFilter !== 'rp-9') return null;
+    try {
+      const restaurants = defaultRestaurants();
+      const hydrated = hydrateScheduleAssignmentsFromTeamState(
+        teamState?.schedule_assignments,
+        restaurants,
+        teamState?.draft_schedule
+      );
+      const draftRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
+      const weekMeta = buildWeeksFromMonday(SCHEDULE_VIEW_WEEK_COUNT, getScheduleAnchorMondayDate());
+      const allWeekDays = buildAllWeekDayLabels(weekMeta);
+      const weekIdx = SCHEDULE_TEMPLATE_WEEK_INDEX;
+      const visibleDays = getVisibleWeekDays(allWeekDays, weekIdx);
+      const lites = employees.map(toLite);
+      const schedule = buildSchedule({
+        allWeekDays,
+        draftScheduleRaw: draftRaw,
+        employees: lites,
+        restaurants,
+        currentRestaurantId: storeFilter,
+        assignmentStore: hydrated.store,
+      });
+      const mondayMeta = weekMeta[weekIdx * 7];
+      const mondayIso = mondayMeta?.iso ? String(mondayMeta.iso).slice(0, 10) : '';
+      return employeeScheduleVisualRankMap(
+        schedule,
+        draftRows,
+        visibleDays,
+        lites,
+        storeFilter,
+        readSlotOrderByRestaurantForWeek(draftRaw, mondayIso),
+        hydrated.store,
+        weekIdx
+      );
+    } catch (err) {
+      console.warn('team schedule rank map', err);
+      return null;
+    }
+  }, [storeFilter, teamState, employees, draftRows]);
+
   const scopedEmployees = useMemo(() => {
-    const scope = managerManagedRestaurantId(myEmployee, role);
     return employees.filter((e) => {
-      if (!employeeVisibleInManagerStoreScope(e, scope)) return false;
+      if (!employeeVisibleInManagerStoreScope(e, storeFilter)) return false;
       if (!showDeactivated && employeeIsDeactivated(e)) return false;
       return true;
     });
-  }, [employees, myEmployee, role, showDeactivated]);
+  }, [employees, storeFilter, showDeactivated]);
 
   const rows = useMemo(
-    () => buildTeamRows(scopedEmployees, staffTypeLabel),
-    [scopedEmployees, staffTypeLabel]
+    () => buildTeamRows(scopedEmployees, staffTypeLabel, storeFilter, scheduleRankMap),
+    [scopedEmployees, staffTypeLabel, storeFilter, scheduleRankMap]
   );
 
   const loadAccountRoles = useCallback(() => {

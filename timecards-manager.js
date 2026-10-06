@@ -569,11 +569,22 @@
   }
 
   function employeeListedOnFullReportPaySheet(emp) {
-    return (
-      employeePaycheckOnCurrentSheet(emp) &&
-      employeeVisibleAtCurrentLocation(emp) &&
-      employeeOnFullReportThisWeek(emp)
-    );
+    if (!emp) return false;
+    if (!employeePaycheckOnCurrentSheet(emp)) return false;
+    if (!employeeOnFullReportThisWeek(emp)) return false;
+    if (employeeVisibleAtCurrentLocation(emp)) return true;
+    /*
+     * Off-schedule payable workers (hours/leave, no main-schedule row) still belong
+     * on their home-store Employee Information / paycheck sheets.
+     */
+    var loc = effectiveLocationFilter();
+    if (loc === 'all') return true;
+    var home = employeePayrollHomeRestaurantId(emp);
+    if (!home) {
+      var usual = employeeHomeRestaurant(emp);
+      if (usual === 'rp-8' || usual === 'rp-9') home = usual;
+    }
+    return home === loc;
   }
 
   /** Published / Updated schedule: cross-store single-payroll staff only if they are on that store's schedule. */
@@ -593,6 +604,14 @@
     return v === true || v === 'true' || v === 1;
   }
 
+  /**
+   * Who appears on the timecards roster for the active store filter.
+   * Single-store payroll: always the primary store (hours from every location roll in);
+   * also the store they are scheduled / punched / borrowed at this week.
+   * Working-location (toggle off): only stores they actually work this week
+   * (schedule, punch, borrow) — or payroll-home when they have VL/SL/cash/missed extras.
+   * Do not list home-store roster members who are idle this week.
+   */
   function employeeVisibleAtCurrentLocation(emp) {
     if (employeeIsDeactivated(emp)) return false;
     if (timecardsLocationFilter === 'all') return true;
@@ -618,10 +637,6 @@
     var workStores = employeeWorkStoresThisWeek(emp);
     if (workStores.length) {
       return workStores.indexOf(timecardsLocationFilter) !== -1;
-    }
-    var home = employeeHomeRestaurant(emp);
-    if (home === 'rp-8' || home === 'rp-9') {
-      return home === timecardsLocationFilter;
     }
     return false;
   }
@@ -655,7 +670,23 @@
   }
 
   function rosterRowVisibleAtLocation(row) {
-    return employeeVisibleAtCurrentLocation(row && row.emp);
+    if (employeeVisibleAtCurrentLocation(row && row.emp)) return true;
+    if (!row || !row.emp) return false;
+    /*
+     * Off-schedule workers with payable hours/leave still belong on their home-store
+     * timecards / paycheck sheets even when they have no schedule row this week.
+     * Idle working-location staff (no schedule, punches, or pay) stay hidden.
+     */
+    if (!rosterRowHasPayableActivity(row)) return false;
+    var loc = effectiveLocationFilter();
+    if (loc === 'all') return true;
+    var home = employeePayrollHomeRestaurantId(row.emp);
+    if (!home) {
+      var usual = employeeHomeRestaurant(row.emp);
+      if (usual === 'rp-8' || usual === 'rp-9') home = usual;
+    }
+    if (home === 'rp-8' || home === 'rp-9') return home === loc;
+    return false;
   }
 
   function restaurantShortLabelForId(restaurantId) {
@@ -697,6 +728,13 @@
 
   function payrollTitleForLocation() {
     return 'RED POKE ' + redPokeStoreNumberForLocation() + ' - PAYROLL';
+  }
+
+  /** CPA sheet top cell: RP1 = 9th Ave, RP2 = 8th Ave. */
+  function cpaTitleForLocation(locationFilter) {
+    return effectiveLocationFilter(locationFilter) === 'rp-8'
+      ? 'Red Poke 8th Ave'
+      : 'Red Poke 9th Ave';
   }
 
   function scheduleSheetTitleForLocation() {
@@ -4000,24 +4038,28 @@
   }
 
   function readShiftDishwasherTipGrossFromForm() {
-    var el = document.getElementById('tcDishwasherTip');
-    if (!el) return 0;
-    var rid = el.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
-    var emp = findEmployeeByIdLocal(el.getAttribute('data-timecard-employee-id'));
-    return grossFromNetTip(normalizeDishwasherTipAmount(el.value), rid, emp);
+    return readShiftDishwasherTipFromForm();
   }
 
   function syncShiftDishwasherTipNetDisplay() {
     var hintEl = document.getElementById('tcDishwasherTipNetHint');
     var tipEl = document.getElementById('tcDishwasherTip');
     if (!hintEl || !tipEl) return;
-    var net = normalizeDishwasherTipAmount(tipEl.value);
+    var rid = tipEl.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
+    var emp = findEmployeeByIdLocal(tipEl.getAttribute('data-timecard-employee-id'));
+    var gross = normalizeDishwasherTipAmount(tipEl.value);
+    var net = netTipAmount(gross, rid, emp);
+    var cut = Math.round((100 - DISHWASHER_TIP_TAKEHOME_PCT) * 100) / 100;
     hintEl.textContent =
-      net > 0
-        ? 'Net after the 5% cut. Grand totals and the full report use ' +
+      gross > 0
+        ? 'Net after the ' +
+          String(cut) +
+          '% cut: ' +
+          formatPayAmount(net) +
+          '. Grand totals and the full report use ' +
           formatPayAmount(net) +
           '.'
-        : 'Enter the delivery tip after the 5% cut. Grand totals and the full report use this net amount.';
+        : 'Enter the delivery tip for this day. Pay totals deduct ' + String(cut) + '%.';
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -5852,17 +5894,16 @@
   }
 
   /**
-   * Single-store paycheck (the primary store) includes the other store's tip-pool
-   * share for hours worked there. The other store's Payroll tab still lists them
-   * at $0 wages so that pool's tip-point split is visible and adds up.
-   * Working-location staff are paid tips on each store's own sheet, so this stays 0.
+   * Sibling-store tip-pool share for hours worked there.
+   * Every full report (RP1 and RP2) shows local tip points in TIP and the other
+   * store's share in the other-store tips column — whether or not the employee
+   * is single-store payroll. Tip points themselves stay store-local via
+   * tipPaidMinsAtLocation / payrollTotalTipPointsFormula.
    */
   function otherStoreTipAmountForEmployee(emp) {
-    if (!emp || !employeeHasSingleStorePayroll(emp)) return 0;
+    if (!emp) return 0;
     var loc = effectiveLocationFilter();
     if (loc !== 'rp-8' && loc !== 'rp-9') return 0;
-    var home = employeePayrollHomeRestaurantId(emp);
-    if (!home || home !== loc) return 0;
     var otherLoc = siblingTimecardsLocationId(loc);
     if (tipPaidMinsAtLocation(emp, otherLoc) <= 0) return 0;
     var dist = getOtherStoreTipDistribution();
@@ -6893,7 +6934,6 @@
 
   var CPA_COLS = 15;
   var CPA_COL_WIDTHS = [4, 14, 14, 14, 18, 21, 10, 16, 12, 16, 12, 12, 12, 20, 12];
-  var CPA_TITLE = '600 BAKERY CAFÉ CORP';
   var CPA_NOTES_MERGE_HEADER = 'NOTES | ADJUSTMENTS HOURLY - PTO - SL';
   var CPA_HEADER_ROW_HPT = 20;
   var CPA_HEAD_LABELS = [
@@ -7113,11 +7153,9 @@
 
   function cpaTipsForRow(row) {
     if (!row) return null;
+    /* Tip-pool share only. Delivery tips stay on Payroll / Payslip, not CPA. */
     var pooled = payrollTipAmountForRosterRow(row);
-    var otherStore = otherStoreTipAmountForEmployee(row.emp);
-    var delivery = row.dishwasherTipsPay || 0;
-    var total = (pooled || 0) + otherStore + delivery;
-    return total > 0 ? total : null;
+    return pooled != null && pooled > 0 ? pooled : null;
   }
 
   function buildCpaEmployeeRow(row, index) {
@@ -7129,8 +7167,12 @@
     var totalH = regH + otH + (row.vlHours || 0) + (row.slHours || 0) + missedH;
     var tips = cpaTipsForRow(row);
     var missedPay = row.missingPay != null ? row.missingPay : 0;
+    /* CPA gross excludes coverage and delivery tips (those stay on Payroll / Payslip). */
     var gross =
-      (row.grandTotalPay != null ? row.grandTotalPay : 0) + (missedPay || 0);
+      (row.grandTotalPay != null ? row.grandTotalPay : 0) +
+      (missedPay || 0) -
+      (row.additionalCashTip || 0) -
+      (row.dishwasherTipsPay || 0);
     return [
       index + 1,
       String(names.first || '').toUpperCase(),
@@ -7160,10 +7202,9 @@
     var vlSlTotalH = (row.vlHours || 0) + (row.slHours || 0);
     var missedPay = row.missingPay != null ? row.missingPay : 0;
     var payrollHours = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_H);
-    var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_TIPS);
+    /* Tip-pool share only — not TOTAL TIPS (that column includes delivery tips). */
+    var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TIP);
     var payrollGross = payrollSheetNumberExpr(row.emp, PAYROLL_COL_GROSS);
-    var payrollDelivery = payrollSheetNumberExpr(row.emp, PAYROLL_COL_DELIVERY);
-    var payrollCoverage = payrollSheetNumberExpr(row.emp, PAYROLL_COL_COVERAGE);
 
     xlSet(ws, r, 0, index + 1, S.cellCenter);
     xlSet(ws, r, 1, String(names.first || '').toUpperCase(), S.cell);
@@ -7212,18 +7253,10 @@
     }
     xlSetMoney(ws, r, CPA_COL_MISSED_PAY, missedPay > 0 ? missedPay : null, S.cellRight);
     if (payrollGross) {
-      /* Wages plus coverage. SoH (Payroll TOTAL SOH / GROSS WITH SOH) stays off this total
-         at every store. Delivery tips stay in TIPS and stay off gross for delivery staff. */
-      var grossFormula = '=' + payrollGross + '+' + (payrollCoverage || '0');
-      /* Delivery tips and other-store tips stay in the tip column, not in wages. */
-      if (!isDeliveryDishwasherStaff(row.emp) && otherStoreTipAmountForEmployee(row.emp) <= 0.004) {
-        grossFormula += '+' + (payrollDelivery || '0');
-      }
-      xlSetFormula(ws, r, CPA_COL_GROSS, grossFormula, S.cellRight, PAYROLL_MONEY_Z);
+      /* Wages only. Coverage and delivery tips stay on Payroll / Payslip, not CPA.
+         SoH stays off this total. */
+      xlSetFormula(ws, r, CPA_COL_GROSS, '=' + payrollGross, S.cellRight, PAYROLL_MONEY_Z);
     } else {
-      var extraPay = isDeliveryDishwasherStaff(row.emp)
-        ? row.additionalCashTip || 0
-        : (row.dishwasherTipsPay || 0) + (row.additionalCashTip || 0);
       var fallbackGross =
         '=' +
         payrollExcelNumber(r, 4) +
@@ -7241,7 +7274,6 @@
         payrollExcelNumber(r, 3) +
         '+' +
         payrollExcelNumber(r, CPA_COL_MISSED_PAY);
-      if (extraPay > 0.005) fallbackGross += '+' + String(xlPayAmount(extraPay));
       xlSetFormula(ws, r, CPA_COL_GROSS, fallbackGross, S.cellRight, PAYROLL_MONEY_Z);
     }
     xlSet(ws, r, CPA_COL_NOTES, cpaVlSlNotesDisplay(row.vlHours, row.slHours), S.cell);
@@ -7257,7 +7289,7 @@
     var colWidths = cpaResolvedColWidths(rows);
     var r = 0;
 
-    xlSet(ws, r, 0, CPA_TITLE, S.title);
+    xlSet(ws, r, 0, cpaTitleForLocation(), S.title);
     xlMerge(merges, r, 0, r, CPA_COLS - 1);
     r += 1;
 
@@ -7436,13 +7468,16 @@
 
   function payrollTotalTipPointsFormula(r, m) {
     var tipPt = payrollExcelNumber(r, PAYROLL_COL_TIP_PT);
-    var sheetHours =
-      payrollExcelNumber(r, PAYROLL_COL_REG_H) + '+' + payrollExcelNumber(r, PAYROLL_COL_OT_H);
-    var tipHours = m && m.emp && !m.isOngi ? (m.totalTipPoints || 0) / (m.tipPt || 0) : 0;
-    if (m && m.tipPt > 0.0001 && Math.abs(tipHours - ((m.regH || 0) + (m.otH || 0))) > 0.02) {
-      return '=' + tipPt + '*' + payrollHoursNum(tipHours);
+    /* Always use this store's tip hours (not sheet REG+OT). Single-store paychecks
+       aggregate both stores' wages onto one row; tip points must stay local. */
+    if (!m || m.isOngi || !(m.tipPt > 0.0001)) {
+      return '=' + 'IF(' + tipPt + '=0,"",0)';
     }
-    return '=' + 'IF(' + tipPt + '=0,"",(' + sheetHours + ')*' + tipPt + ')';
+    var tipHours = (m.totalTipPoints || 0) / m.tipPt;
+    if (!(tipHours > 0.0001)) {
+      return '=' + 'IF(' + tipPt + '=0,"",0)';
+    }
+    return '=' + tipPt + '*' + payrollHoursNum(tipHours);
   }
 
   function writePayrollSectionTotal(ws, r, sumFirst, sumLast, S, layout) {
@@ -7876,7 +7911,7 @@
   var PAY_STUB_AMOUNT_Z = '#,##0.00';
   var PAY_STUB_MIN_SHIFT_ROWS = 6;
   /** Fixed outer-frame height per stub (reference PAYSLIP rows 4–24). */
-  var PAY_STUB_BLOCK_ROWS = 21;
+  var PAY_STUB_BLOCK_ROWS = 22;
   var PAY_STUB_REPORT_COLS = 6;
   var PAY_STUB_ROW_HPT = 18.75;
   var PAY_STUB_PAIR_GAP_ROWS = 4;
@@ -8209,6 +8244,7 @@
     var shiftLastRow = startRow + 9;
     var vlSlRow;
     var sohRow;
+    var coverageRow;
     var dishwasherTipsRow;
     var payTotalPayRow;
     var workTotRow;
@@ -8372,6 +8408,30 @@
     if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
     r += 1;
 
+    coverageRow = r;
+    xlSet(ws, r, DC(0), 'Coverage', S.summaryLabel);
+    xlSet(ws, r, DC(2), '-', S.summaryValue);
+    if (payrollRow != null) {
+      xlSetFormula(
+        ws,
+        r,
+        DC(3),
+        '=' + payStubPayrollRef(payrollRow, PAYROLL_COL_COVERAGE),
+        S.summaryValue,
+        PAY_STUB_AMOUNT_Z
+      );
+    } else {
+      payStubSetAmount(
+        ws,
+        r,
+        DC(3),
+        rosterRow.additionalCashTip > 0 ? rosterRow.additionalCashTip : null,
+        S.summaryValue
+      );
+    }
+    if (rowHeights) rowHeights[r] = { hpt: PAY_STUB_ROW_HPT };
+    r += 1;
+
     if (isDeliveryDishwasherStaff(emp)) {
       dishwasherTipsRow = r;
       xlSet(ws, r, DC(0), 'Net dishwasher tips', S.summaryLabel);
@@ -8513,9 +8573,10 @@
       xlSetFormula(ws, totalHoursRow, DC(2), '=' + workTotCell, S.summaryBoldUnderline);
     }
 
-    /* Total Paid is wages plus VL/SL only. The SoH line above is not part of this sum.
+    /* Total Paid is wages + VL/SL + coverage. SoH stays off this sum.
        VL/SL pay is "" when there is no leave, and payroll "-" is text — raw + is #VALUE!. */
     var vlSlPayCell = payStubAbsRef(vlSlRow, DC(3));
+    var coveragePayCell = payStubAbsRef(coverageRow, DC(3));
     var totalPaidFormula =
       '=IF(ISNUMBER(' +
       vlSlPayCell +
@@ -8525,6 +8586,10 @@
       totalPayCell +
       '),' +
       totalPayCell +
+      ',0)+IF(ISNUMBER(' +
+      coveragePayCell +
+      '),' +
+      coveragePayCell +
       ',0)';
     xlSetFormula(ws, headerPaidRow, DC(10), totalPaidFormula, S.moneyUnderline, PAY_STUB_AMOUNT_Z);
 
@@ -12991,7 +13056,7 @@
             if (val > 0 && !dayHasBackingShiftForDishwasherTips(emp.id, iso)) {
               alert(DISHWASHER_TIP_REQUIRES_SHIFT_MSG);
               inp.value = String(
-                getEmployeeDayDishwasherTipNet(emp, iso, undefined, rid) || '0'
+                getEmployeeDayDishwasherTip(emp, iso, undefined, rid) || '0'
               );
               syncShiftDishwasherTipNetDisplay();
               return;
@@ -12999,7 +13064,7 @@
             setEmployeeDayDishwasherTip(
               emp.id,
               iso,
-              grossFromNetTip(val, rid, emp),
+              val,
               undefined,
               rid
             );
@@ -13611,15 +13676,23 @@
       (isDeliveryDishwasherStaff(emp)
         ? (function () {
             var tipRest = dishwasherTipRestaurantForShiftRow(shiftRow, emp);
-            var netTip = getEmployeeDayDishwasherTipNet(emp, shiftRow.iso, undefined, tipRest);
+            var grossTip = getEmployeeDayDishwasherTip(emp, shiftRow.iso, undefined, tipRest);
+            if (grossTip <= 0) {
+              grossTip = getEmployeeDayDishwasherTip(emp, shiftRow.iso);
+            }
+            var tipCut = Math.round((100 - DISHWASHER_TIP_TAKEHOME_PCT) * 100) / 100;
             var tipHint =
-              netTip > 0
-                ? 'Net after the 5% cut. Grand totals and the full report use ' +
-                  formatPayAmount(netTip) +
+              grossTip > 0
+                ? 'Net after the ' +
+                  String(tipCut) +
+                  '% cut: ' +
+                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
+                  '. Grand totals and the full report use ' +
+                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
                   '.'
-                : 'Enter the delivery tip after the 5% cut. Grand totals and the full report use this net amount.';
+                : 'Enter the delivery tip for this day. Pay totals deduct ' + String(tipCut) + '%.';
             return (
-              '<div><dt>Net delivery tip</dt><dd>' +
+              '<div><dt>Delivery tip</dt><dd>' +
               '<input type="number" class="timecards-extra-input timecards-extra-input--money" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
               d().escapeHtml(shiftRow.iso) +
               '" data-timecard-restaurant-id="' +
@@ -13627,7 +13700,7 @@
               '" data-timecard-employee-id="' +
               d().escapeHtml(emp.id) +
               '" min="0" step="0.01" inputmode="decimal" value="' +
-              d().escapeHtml(String(netTip || 0)) +
+              d().escapeHtml(String(grossTip || 0)) +
               '" />' +
               '<p class="calendar-hint timecards-tip-takehome-hint" id="tcDishwasherTipNetHint">' +
               d().escapeHtml(tipHint) +

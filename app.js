@@ -1747,7 +1747,7 @@
     return layers;
   }
 
-  function saveDraftScheduleRowsForWeek(weekIndex, nextRows, restaurantId) {
+  function saveDraftScheduleRowsForWeek(weekIndex, nextRows, restaurantId, opts) {
     var wi = resolveDraftWeekIndex(weekIndex);
     var rid = resolveDraftRestaurantId(restaurantId);
     var weekKey = String(wi);
@@ -1788,6 +1788,7 @@
     }
     try {
       localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+      if (opts && opts.skipDirty) return;
       if (GM_SUPABASE_DATA && window.gmSupabase && !teamStateRemoteApplyActive()) {
         markScheduleInteractiveEdit();
         /*
@@ -1860,7 +1861,12 @@
         var ent = normalizeScheduleAssignment(
           rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + last]
         );
-        if (ent && ent.rowOwner && ent.rowOwner !== 'Unassigned') {
+        if (
+          ent &&
+          ent.rowOwner &&
+          ent.rowOwner !== 'Unassigned' &&
+          !scheduleNameIsDeactivatedPerson(ent.rowOwner)
+        ) {
           keep = true;
           break;
         }
@@ -8949,11 +8955,14 @@
         allowCloudSlotTrim = true;
       }
       var trimmed = false;
+      var softPreserveNamedRows =
+        softOnly && !forceCloudSoT && !opts.forceSlots && !opts.replaceTrusted;
       if (allowCloudSlotTrim) {
         try {
           trimmed = !!reconcileLocalScheduleToActiveSlots({
             weekIndex: targetWi,
             ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+            softPreserveNamedRows: softPreserveNamedRows,
           });
         } catch (_trim) {
           trimmed = false;
@@ -8993,6 +9002,7 @@
               !!reconcileLocalScheduleToActiveSlots({
                 weekIndex: targetWi,
                 ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+                softPreserveNamedRows: softPreserveNamedRows,
               }) || trimmed;
           } catch (_trim0) {
             /* ignore */
@@ -9090,6 +9100,7 @@
             reconcileLocalScheduleToActiveSlots({
               weekIndex: targetWi,
               ignoreEditSettleForCloudShrink: forceCloudSoT || !!opts.forceSlots,
+              softPreserveNamedRows: softPreserveNamedRows,
             })
           ) {
             trimmed = true;
@@ -9109,12 +9120,15 @@
             trimmed = true;
           }
           /*
-           * If slot cache already knows a shorter active count, shrink even when this
-           * tick skipped fetchSlots — otherwise draft length drifts until Refresh.
+           * Soft poll: only peel empty trailing Unassigned shells past cloud count.
+           * Never chop named BOH rows (Zeferino/Irineo) when activeSlotCount dips.
            */
           if (
             !schedulePersonRowProtectActive(currentRestaurantId, targetWi) &&
-            reconcileLocalScheduleToActiveSlots({ weekIndex: targetWi })
+            reconcileLocalScheduleToActiveSlots({
+              weekIndex: targetWi,
+              softPreserveNamedRows: true,
+            })
           ) {
             trimmed = true;
           }
@@ -9797,10 +9811,37 @@
   /**
    * Shrink local draft + assignments to match active cloud slot counts so peer
    * soft poll / Refresh drops deleted rows (cell apply alone never truncates draft length).
-   * When this runs, cloud slots are SoT — do not keep local staffed/Person rows past
-   * activeSlotCount (that blocked peer delete convergence). Edit settle / person-protect
-   * already early-return via scheduleAutoRowStructureBlocked.
+   * Soft polls (softPreserveNamedRows): only drop trailing empty Unassigned shells —
+   * never chop Zeferino/Irineo (etc.) just because activeSlotCount briefly reads low.
+   * Refresh / forceSlots / trusted replace: cloud activeSlotCount is SoT (peer delete).
+   * Edit settle / person-protect already early-return via scheduleAutoRowStructureBlocked.
    */
+  function scheduleRoleRowHasNamedOrTimedContent(rs, roleIdx, weekStart, trIdx, draftRow) {
+    var di;
+    if (draftRow) {
+      for (di = 0; di < 7; di += 1) {
+        var cell = draftRow[di];
+        if (cell && cell[0] && cell[1]) return true;
+      }
+    }
+    for (di = 0; di < 7; di += 1) {
+      var ent = normalizeScheduleAssignment(
+        rs['shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx]
+      );
+      if (!ent) continue;
+      if (ent.rowOwner && ent.rowOwner !== 'Unassigned') return true;
+      if (scheduleAssignmentHasStaffedWorkers(ent)) return true;
+      if (
+        ent.timeLabel &&
+        String(ent.timeLabel).trim() &&
+        String(ent.timeLabel).toUpperCase() !== 'DAY-OFF'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function reconcileLocalScheduleToActiveSlots(opts) {
     opts = opts || {};
     var v2 = gmScheduleV2();
@@ -9826,6 +9867,8 @@
         return false;
       }
     }
+    var softPreserve = !!opts.softPreserveNamedRows;
+    collapseInactiveMappedScheduleRows();
     var roles = ['Bartender', 'Kitchen', 'Server'];
     var wiStart =
       opts.weekIndex != null && !isNaN(Number(opts.weekIndex)) ? Number(opts.weekIndex) : 0;
@@ -9860,21 +9903,53 @@
           var roleIdx = roleIdxForDraftRole(role);
           if (roleIdx < 0) return;
           var weekStart = wi * 7;
+          var keepThrough = want;
           if (layers[role].length > want) {
-            /*
-             * Cloud active slots win. Keeping local staffed/Person rows past `want`
-             * left deleted rows on peer devices after Refresh.
-             * Intentional all-day-off Person rows that still exist in cloud are counted
-             * in activeSlotCount; in-flight local adds are gated by person-protect above.
-             */
-            layers[role] = layers[role].slice(0, want);
-            layerChanged = true;
+            if (softPreserve) {
+              /*
+               * Soft poll: only peel empty trailing Unassigned shells. Named/timed
+               * BOH rows (Zeferino/Irineo) stay until intentional delete / Refresh SoT.
+               */
+              while (layers[role].length > want) {
+                var last = layers[role].length - 1;
+                if (
+                  scheduleRoleRowHasNamedOrTimedContent(
+                    rs,
+                    roleIdx,
+                    weekStart,
+                    last,
+                    layers[role][last]
+                  )
+                ) {
+                  keepThrough = layers[role].length;
+                  break;
+                }
+                for (var dGhost = 0; dGhost < 7; dGhost += 1) {
+                  var ghostSid =
+                    'shift-' + (weekStart + dGhost) + '-' + roleIdx + '-' + last;
+                  if (rs[ghostSid] != null) {
+                    delete rs[ghostSid];
+                    changed = true;
+                  }
+                }
+                layers[role].pop();
+                layerChanged = true;
+              }
+            } else {
+              /*
+               * Cloud active slots win on Refresh / forceSlots. Keeping local
+               * staffed/Person rows past `want` left deleted rows on peer devices.
+               */
+              layers[role] = layers[role].slice(0, want);
+              layerChanged = true;
+              keepThrough = want;
+            }
           }
           Object.keys(rs).forEach(function (shiftId) {
             var p = parseShiftIdParts(shiftId);
             if (!p || p.roleIdx !== roleIdx) return;
             if (p.globalDayIdx < weekStart || p.globalDayIdx >= weekStart + 7) return;
-            if (p.trIdx < want) return;
+            if (p.trIdx < keepThrough) return;
             delete rs[shiftId];
             changed = true;
           });
@@ -11537,12 +11612,27 @@
         } else if (bundlePerson) {
           chosen = bundlePerson;
         }
+        if (chosen && scheduleNameIsDeactivatedPerson(chosen)) chosen = '';
         var cur = rs[shiftId] != null ? normalizeScheduleAssignment(rs[shiftId]) : null;
         var curPerson = assignmentPersonName(cur);
         if (!chosen) {
           /* No cloud opinion for this shift — do not blank some other week. */
           if (!bundleHasKey && !patchHasKey) return;
           if (!curPerson) return;
+          /*
+           * Slot-map miss: computers still have this person on the week, just not
+           * on this shiftId. Blanking here made Andre Siccion (etc.) flicker to
+           * Unassigned until Refresh realigned the map.
+           */
+          var blankWi = Math.floor(parts.globalDayIdx / 7);
+          var blankStart = blankWi * 7;
+          var blankEnd = blankStart + 7;
+          if (
+            cloudWeekHasPerson(brs, blankStart, blankEnd, curPerson) ||
+            cloudWeekHasPerson(patchRs, blankStart, blankEnd, curPerson)
+          ) {
+            return;
+          }
           if (!cur) {
             delete rs[shiftId];
           } else {
@@ -12085,19 +12175,21 @@
             return;
           }
           /*
-           * Soft upsert keeps a local name when the cell has no worker_name.
-           * Right after a peer slot delete, trusted replace would wipe the names we
-           * just shifted (callouts still clear names: they set forceDayOffReplace).
+           * Soft upsert keeps a local name when the cell has no worker_name — any rev.
+           * Restricting to rev<=1 let higher-rev unnamed/misaligned projections blank
+           * Andre Siccion (etc.) to Unassigned until Manual Refresh. Intentional clears
+           * use trusted replace / forceDayOffReplace, not soft upsert.
+           * Right after a peer slot delete, also keep names through keepShiftedName.
            */
           var keepShiftedName =
             scheduleSlotRemovalNameHoldUntil > Date.now() && !opts.forceDayOffReplace;
-          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned && Number(cell.rev) <= 1) {
+          if ((upsertTimedOnly || keepShiftedName) && prev && incomingUnassigned) {
             var prevName =
               (prev.rowOwner && prev.rowOwner !== 'Unassigned' && prev.rowOwner) ||
               (prev.workers && prev.workers[0] && prev.workers[0] !== 'Unassigned'
                 ? prev.workers[0]
                 : '');
-            if (prevName) {
+            if (prevName && !scheduleNameIsDeactivatedPerson(prevName)) {
               entry.rowOwner = prevName;
               entry.workers = [prevName];
             }
@@ -12117,6 +12209,8 @@
               (entry.workers && entry.workers[0] && entry.workers[0] !== 'Unassigned'
                 ? entry.workers[0]
                 : '');
+            if (localPerson && scheduleNameIsDeactivatedPerson(localPerson)) localPerson = '';
+            if (cloudPerson && scheduleNameIsDeactivatedPerson(cloudPerson)) cloudPerson = '';
             if (
               localPerson &&
               cloudPerson &&
@@ -12194,6 +12288,7 @@
       } catch (_bundleReconcile) {
         /* ignore */
       }
+      if (scrubDeactivatedPeopleFromAssignmentStore(store)) changed = true;
       if (changed) {
         saveScheduleAssignmentsStore(store, {
           skipDirty: true,
@@ -13329,13 +13424,28 @@
   }
 
   /**
-   * Soft poll / peer merge must not paint over in-flight local work:
-   * normal edits, × day-off / shift delete, hard revert, template apply.
-   * Manual Refresh and forceDayOffReplace peers still pass opts.force.
-   *
-   * Do NOT freeze forever on "edited this session" after settle — that left one
-   * shiflow browser stuck on Eugene day-offs while cloud + other devices were correct.
+   * True only while this tab is still saving a conscious edit.
+   * A leftover outbox from an earlier visit must not count — that froze the phone
+   * on its local copy until sign-out cleared it.
    */
+  function scheduleEditStillInProgress() {
+    if (scheduleV2FlushPromise || teamStatePushInFlight) return true;
+    if (Date.now() < scheduleHardRevertGuardUntil) return true;
+    if (scheduleLocalAuthorityActive()) return true;
+    if (scheduleDayOffPushGuardActive()) return true;
+    if (schedulePersonRowProtectActive(currentRestaurantId, scheduleCalendarWeekIndex)) {
+      return true;
+    }
+    if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
+    if (
+      scheduleInteractiveEditAt &&
+      Date.now() - scheduleInteractiveEditAt < Math.max(SCHEDULE_TIMED_EDIT_SETTLE_MS, 60000)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   function scheduleSoftPollApplyFrozen() {
     if (teamStateForcePushActive) return true;
     if (Date.now() < scheduleHardRevertGuardUntil) return true;
@@ -13349,7 +13459,7 @@
     if (scheduleProtectLocalTimedFromSoftDayOff()) return true;
     try {
       var pending = schedulePendingOutboxCellKeys();
-      if (pending) {
+      if (pending && scheduleEditStillInProgress()) {
         var pKeys = Object.keys(pending);
         for (var pi = 0; pi < pKeys.length; pi += 1) {
           /* Structure-only pending must not freeze the whole soft poll forever. */
@@ -21093,6 +21203,271 @@
     }
   }
 
+  function employeeNameIsThisPerson(name, emp) {
+    if (!name || name === 'Unassigned' || !emp) return false;
+    var display = employeeDisplayName(emp);
+    if (workerNamesMatch(name, display)) return true;
+    var aliases = emp.meta && emp.meta.scheduleAliases;
+    if (!Array.isArray(aliases)) return false;
+    return aliases.some(function (alias) {
+      return alias && workerNamesMatch(name, alias);
+    });
+  }
+
+  function scheduleRowNamesAt(rid, role, trIdx) {
+    var names = [];
+    function add(name) {
+      if (!name || name === 'Unassigned') return;
+      var key = normNameKey(name);
+      if (!key) return;
+      if (names.some(function (n) { return normNameKey(n) === key; })) return;
+      names.push(name);
+    }
+    var store = loadScheduleAssignmentsStore();
+    var rs = (store && store[rid]) || {};
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return names;
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      for (var di = 0; di < 7; di += 1) {
+        var sid = 'shift-' + (wi * 7 + di) + '-' + roleIdx + '-' + trIdx;
+        var ent = rs[sid] != null ? normalizeScheduleAssignment(rs[sid]) : null;
+        if (!ent) continue;
+        add(ent.rowOwner);
+        (ent.workers || []).forEach(add);
+      }
+    }
+    return names;
+  }
+
+  function maxScheduleTrIdx(rid, role) {
+    var max = -1;
+    var roleIdx = roleIdxForDraftRole(role);
+    if (roleIdx < 0) return max;
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      var layers = getDraftScheduleRowsForWeek(wi, rid);
+      var n = layers && Array.isArray(layers[role]) ? layers[role].length : 0;
+      if (n - 1 > max) max = n - 1;
+    }
+    var store = loadScheduleAssignmentsStore();
+    var rs = (store && store[rid]) || {};
+    Object.keys(rs).forEach(function (sid) {
+      var p = parseShiftIdParts(sid);
+      if (!p || p.roleIdx !== roleIdx) return;
+      if (p.trIdx > max) max = p.trIdx;
+    });
+    return max;
+  }
+
+  /** Drop schedule rows that belong only to this person. Shared rows are cleared later. */
+  function removeScheduleRowsOwnedByEmployee(emp) {
+    if (!emp) return;
+    (restaurantsList || []).forEach(function (rest) {
+      var rid = rest && rest.id;
+      if (!rid) return;
+      var deletes = [];
+      ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+        var maxTr = maxScheduleTrIdx(rid, role);
+        for (var tr = maxTr; tr >= 0; tr -= 1) {
+          var names = scheduleRowNamesAt(rid, role, tr);
+          if (!names.length) continue;
+          var onlyTheirs = names.every(function (n) {
+            return employeeNameIsThisPerson(n, emp);
+          });
+          if (!onlyTheirs) continue;
+          var layers = getDraftScheduleRowsForWeek(scheduleCalendarWeekIndex, rid);
+          var len = layers && Array.isArray(layers[role]) ? layers[role].length : 0;
+          if (len <= 1 && tr === 0) continue;
+          deletes.push({ role: role, originalTrIdx: tr });
+        }
+      });
+      if (!deletes.length) return;
+      var wi = scheduleCalendarWeekIndex;
+      var rows = cloneDraftSchedule(getDraftScheduleRowsForWeek(wi, rid));
+      var byRole = {};
+      deletes.forEach(function (d) {
+        if (!byRole[d.role]) byRole[d.role] = [];
+        byRole[d.role].push(d.originalTrIdx);
+      });
+      Object.keys(byRole).forEach(function (role) {
+        if (!Array.isArray(rows[role])) return;
+        byRole[role]
+          .slice()
+          .sort(function (a, b) { return b - a; })
+          .forEach(function (tr) {
+            if (rows[role].length <= 1) return;
+            if (tr < 0 || tr >= rows[role].length) return;
+            rows[role].splice(tr, 1);
+          });
+      });
+      persistDraftScheduleRows(rows, wi, rid, null, deletes);
+    });
+  }
+
+  async function deleteTimeClockEntriesForEmployee(empId) {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !empId || !isUuidCloudId(empId)) return;
+    var sb = window.gmSupabase;
+    for (var guard = 0; guard < 50; guard += 1) {
+      var res = await sb.from('time_clock_entries').select('id').eq('employee_id', empId).limit(200);
+      if (res.error || !res.data || !res.data.length) break;
+      var ids = res.data.map(function (row) { return row.id; }).filter(Boolean);
+      if (!ids.length) break;
+      var del = await sb.from('time_clock_entries').delete().in('id', ids);
+      if (del.error) {
+        console.warn('gm-callout: punch delete on deactivate', del.error);
+        break;
+      }
+      if (res.data.length < 200) break;
+    }
+  }
+
+  async function purgeDeactivatedEmployeeCloudSchedule(emp) {
+    var v2 = gmScheduleV2();
+    if (!GM_SUPABASE_DATA || !window.gmSupabase || !emp || !v2 || !scheduleSyncV2Enabled()) return;
+    var cid = gmCalloutCompanyId();
+    if (!cid) return;
+    var sb = window.gmSupabase;
+    var display = employeeDisplayName(emp);
+    var first = String(emp.firstName || '').trim();
+    var last = String(emp.lastName || '').trim();
+    var cells = [];
+    if (isUuidCloudId(emp.id)) {
+      var byId = await sb
+        .from('schedule_cells')
+        .select('restaurant_id,role,slot_key,day_iso,worker_name,worker_id')
+        .eq('company_id', cid)
+        .eq('deleted', false)
+        .eq('worker_id', emp.id)
+        .limit(2000);
+      if (byId.data) cells = cells.concat(byId.data);
+    }
+    if (first && last) {
+      var byName = await sb
+        .from('schedule_cells')
+        .select('restaurant_id,role,slot_key,day_iso,worker_name,worker_id')
+        .eq('company_id', cid)
+        .eq('deleted', false)
+        .ilike('worker_name', '%' + first + '%' + last + '%')
+        .limit(2000);
+      if (byName.data) cells = cells.concat(byName.data);
+    }
+    var mine = [];
+    var seenCell = Object.create(null);
+    cells.forEach(function (c) {
+      if (!c || !c.slot_key) return;
+      var named = employeeNameIsThisPerson(c.worker_name, emp) || String(c.worker_id || '') === String(emp.id);
+      if (!named) return;
+      var ck = String(c.restaurant_id) + '|' + c.role + '|' + c.slot_key + '|' + c.day_iso;
+      if (seenCell[ck]) return;
+      seenCell[ck] = true;
+      mine.push(c);
+    });
+    if (!mine.length) return;
+    var slotKeys = [];
+    mine.forEach(function (c) {
+      var sk = String(c.restaurant_id) + '|' + c.role + '|' + c.slot_key;
+      if (slotKeys.indexOf(sk) < 0) slotKeys.push(sk);
+    });
+    var ops = [];
+    for (var si = 0; si < slotKeys.length; si += 1) {
+      var parts = slotKeys[si].split('|');
+      var rid = parts[0];
+      var role = parts[1];
+      var slotKey = parts.slice(2).join('|');
+      var sib = await sb
+        .from('schedule_cells')
+        .select('day_iso,worker_name,worker_id')
+        .eq('company_id', cid)
+        .eq('restaurant_id', rid)
+        .eq('role', role)
+        .eq('slot_key', slotKey)
+        .eq('deleted', false)
+        .limit(500);
+      var rows = (sib && sib.data) || [];
+      var shared = rows.some(function (row) {
+        var owner = row && row.worker_name;
+        if (!owner || owner === 'Unassigned') return false;
+        if (employeeNameIsThisPerson(owner, emp)) return false;
+        if (row.worker_id && String(row.worker_id) === String(emp.id)) return false;
+        return true;
+      });
+      if (!shared && v2.opDeactivateSlot) {
+        ops.push(v2.opDeactivateSlot(rid, role, slotKey));
+        if (v2.opReorderSlots) {
+          var activeSlots = await sb
+            .from('schedule_slots')
+            .select('slot_key,sort_order')
+            .eq('company_id', cid)
+            .eq('restaurant_id', rid)
+            .eq('role', role)
+            .eq('active', true)
+            .order('sort_order', { ascending: true });
+          var remain = ((activeSlots && activeSlots.data) || [])
+            .map(function (s) { return s && s.slot_key ? String(s.slot_key) : ''; })
+            .filter(function (sk) { return sk && sk !== String(slotKey); });
+          if (remain.length) ops.push(v2.opReorderSlots(rid, role, remain));
+        }
+        continue;
+      }
+      rows.forEach(function (row) {
+        var owner = row && row.worker_name;
+        var isMine =
+          (row.worker_id && String(row.worker_id) === String(emp.id)) ||
+          employeeNameIsThisPerson(owner, emp);
+        if (!isMine || !row.day_iso) return;
+        var dayIso = String(row.day_iso).slice(0, 10);
+        if (v2.opSetWorker) ops.push(v2.opSetWorker(rid, dayIso, role, slotKey, null, null));
+        if (v2.opSetDayOff) ops.push(v2.opSetDayOff(rid, dayIso, role, slotKey, null));
+      });
+    }
+    if (!ops.length) return;
+    markScheduleInteractiveEdit();
+    enqueueScheduleV2Ops(ops, { conscious: true });
+    await flushScheduleV2Outbox();
+    void broadcastScheduleCellsChanged({
+      forceSlots: true,
+      forceDayOffReplace: true,
+      weekIndex: scheduleCalendarWeekIndex,
+      restaurantId: currentRestaurantId,
+    });
+  }
+
+  /**
+   * Deactivate keeps the Team profile. Schedule rows, punches, and tip/leave extras go.
+   */
+  async function purgeDeactivatedEmployeeData(emp) {
+    if (!emp) return;
+    var display = employeeDisplayName(emp);
+    try {
+      removeScheduleRowsOwnedByEmployee(emp);
+    } catch (err) {
+      console.warn('gm-callout: deactivate schedule rows', err);
+    }
+    try {
+      clearWorkerFromResolvedSchedule(display);
+    } catch (errClear) {
+      console.warn('gm-callout: deactivate clear worker', errClear);
+    }
+    await purgeDeactivatedEmployeeCloudSchedule(emp);
+    await deleteTimeClockEntriesForEmployee(emp.id);
+    scrubEmployeeFromTimecardLocalStores(emp.id);
+    await scrubEmployeeTipExtrasOnTeamState(emp.id);
+    await removeStaffRequestsForDeletedEmployee(display, emp.id);
+    if (
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.onEmployeeDeleted === 'function'
+    ) {
+      window.gmCalloutTimecards.onEmployeeDeleted(emp.id);
+    }
+    try {
+      collapseInactiveMappedScheduleRows();
+    } catch (errHole) {
+      console.warn('gm-callout: deactivate row compact', errHole);
+    }
+    notifyTimecardsEmployeesChanged();
+    flushTeamStateSyncNow();
+    flushTipPayrollPushToSupabase();
+  }
+
   /**
    * Delete an employee from roster + related schedule / tip / request refs.
    * Time clock punches cascade from the employees row on Supabase.
@@ -22134,10 +22509,14 @@
     if (emp) return employeeDisplayName(emp);
     /* Hardcoded Red Poke sheet defaults — never inject into other companies. */
     if (!gmCalloutIsRedPokeCompany()) return null;
-    if (role === 'Bartender') return TEAM_ROSTER_BARTENDER[trIdx] || null;
-    if (role === 'Kitchen') return TEAM_ROSTER_KITCHEN[trIdx] || null;
-    if (role === 'Server') return TEAM_ROSTER_SERVER[trIdx] || null;
-    return null;
+    var sheetName = null;
+    if (role === 'Bartender') sheetName = TEAM_ROSTER_BARTENDER[trIdx] || null;
+    else if (role === 'Kitchen') sheetName = TEAM_ROSTER_KITCHEN[trIdx] || null;
+    else if (role === 'Server') sheetName = TEAM_ROSTER_SERVER[trIdx] || null;
+    if (!sheetName) return null;
+    var sheetEmp = employeeByDisplayName(sheetName);
+    if (sheetEmp && employeeIsDeactivated(sheetEmp)) return null;
+    return sheetName;
   }
 
   /**
@@ -23676,7 +24055,17 @@
             if (!p || p.globalDayIdx !== globalDay || p.roleIdx !== roleIdx) return;
             if (p.trIdx > maxTr) maxTr = p.trIdx;
           });
-          for (var trIdx = maxTr; trIdx > deletedTrIdx; trIdx -= 1) {
+          /*
+           * Delete the removed row first, then shift higher rows down.
+           * The old high→low shift + delete wiped whoever had just moved into
+           * deletedTrIdx (every person below became Unassigned).
+           */
+          var deletedId = 'shift-' + globalDay + '-' + roleIdx + '-' + deletedTrIdx;
+          if (rs[deletedId] !== undefined) {
+            delete rs[deletedId];
+            changed = true;
+          }
+          for (var trIdx = deletedTrIdx + 1; trIdx <= maxTr; trIdx += 1) {
             var oldId = 'shift-' + globalDay + '-' + roleIdx + '-' + trIdx;
             var newId = 'shift-' + globalDay + '-' + roleIdx + '-' + (trIdx - 1);
             if (rs[oldId] !== undefined) {
@@ -23684,11 +24073,6 @@
               delete rs[oldId];
               changed = true;
             }
-          }
-          var deletedId = 'shift-' + globalDay + '-' + roleIdx + '-' + deletedTrIdx;
-          if (rs[deletedId] !== undefined) {
-            delete rs[deletedId];
-            changed = true;
           }
         }
       });
@@ -23851,7 +24235,7 @@
     return draftScheduleJsonHasLayers(saved);
   }
 
-  function shiftOtherDraftWeeksForSlotDeletes(restaurantId, deletes, skipWeekIndex) {
+  function shiftOtherDraftWeeksForSlotDeletes(restaurantId, deletes, skipWeekIndex, opts) {
     if (!deletes || !deletes.length) return;
     var rid = resolveDraftRestaurantId(restaurantId);
     var byRole = {};
@@ -23885,7 +24269,7 @@
             toDelete.push({ role: role, originalTrIdx: tr });
           });
         });
-        if (toDelete.length) saveDraftScheduleRowsForWeek(wi, layers, rid);
+        if (toDelete.length) saveDraftScheduleRowsForWeek(wi, layers, rid, opts);
       }
       if (!toDelete.length) {
         var assignStore = loadScheduleAssignmentsStore();
@@ -23899,7 +24283,7 @@
         });
       }
       if (!toDelete.length) continue;
-      compactAssignmentsAfterDraftSlotDeletes(wi, rid, toDelete);
+      compactAssignmentsAfterDraftSlotDeletes(wi, rid, toDelete, opts);
       var weekMon = mondayIsoForScheduleWeekIndex(wi);
       var byDelRole = {};
       toDelete.forEach(function (d) {
@@ -23922,7 +24306,7 @@
         indices.forEach(function (deletedTrIdx) {
           remapped = remapSlotOrderAfterDelete(remapped, deletedTrIdx);
         });
-        setCustomSlotOrderForRole(rid, role, remapped, weekMon);
+        setCustomSlotOrderForRole(rid, role, remapped, weekMon, opts);
       });
     }
   }
@@ -27167,17 +27551,32 @@
 
   /**
    * Other-store view (manager looking at a store they do not manage):
-   * show only Team “single-store payroll” people. Ignore home/primary/borrow
-   * legacy rules. Own-store view is unfiltered (returns true).
+   * show (1) Team “single-store payroll” people (either store), and
+   * (2) people whose home/primary is the managed store who are staffed on the
+   * viewing store this week. Own-store view is unfiltered (returns true).
+   * opts.staffedAtViewing — optional precomputed name-key set for the viewing store week.
    */
   function managerSeesWorkerOnOtherStoreSchedule(
     workerName,
     managedStoreId,
-    viewingStoreId
+    viewingStoreId,
+    opts
   ) {
     if (!workerName || workerName === 'Unassigned') return false;
     if (!managedStoreId || !viewingStoreId || managedStoreId === viewingStoreId) return true;
-    return employeeHasSingleStorePayroll(employeeByDisplayName(workerName));
+    var emp = employeeByDisplayName(workerName);
+    if (!emp) return false;
+    if (employeeHasSingleStorePayroll(emp)) return true;
+    if (employeeHomeOrPrimaryRestaurantId(emp) !== managedStoreId) return false;
+    var staffed =
+      opts && opts.staffedAtViewing && typeof opts.staffedAtViewing === 'object'
+        ? opts.staffedAtViewing
+        : workerKeySetScheduledAtRestaurantWeek(
+            viewingStoreId,
+            opts && opts.weekIndex != null ? opts.weekIndex : scheduleCalendarWeekIndex
+          );
+    var key = normalizeWorkerKey(workerName);
+    return !!(key && staffed[key]);
   }
 
   function managerUsesAbbreviatedOtherStoreSchedule() {
@@ -27461,9 +27860,268 @@
       });
   }
 
+  function assignmentEntryHasActiveWorker(entry) {
+    var workers = entry && Array.isArray(entry.workers) ? entry.workers : [];
+    for (var i = 0; i < workers.length; i += 1) {
+      var name = workers[i];
+      if (name && name !== 'Unassigned' && !scheduleNameIsDeactivatedPerson(name)) return true;
+    }
+    return false;
+  }
+
+  function clearDraftCellQuiet(weekIndex, restaurantId, role, trIdx, dayIdx) {
+    var weekEntry = draftScheduleByWeekStore[String(weekIndex)];
+    if (!weekEntry || typeof weekEntry !== 'object') return false;
+    var layers = draftScheduleWeekEntryIsPerRestaurant(weekEntry)
+      ? weekEntry[restaurantId]
+      : draftScheduleJsonHasLayers(weekEntry)
+        ? weekEntry
+        : null;
+    if (!layers || !layers[role] || !layers[role][trIdx]) return false;
+    var cell = layers[role][trIdx][dayIdx];
+    if (!cell || !cell[0] || !cell[1]) return false;
+    layers[role][trIdx][dayIdx] = null;
+    invalidateDraftLayersMemo(weekIndex, restaurantId);
+    try {
+      localStorage.setItem(DRAFT_SCHEDULE_BY_WEEK_KEY, JSON.stringify(draftScheduleByWeekStore));
+    } catch (eQuietDraft) {
+      /* ignore */
+    }
+    return true;
+  }
+
+  /** Drop a deactivated person's saved row identity. Does not push schedule cells. */
+  function scrubDeactivatedPeopleFromAssignmentStore(store) {
+    if (!employees || !employees.length || !store) return false;
+    var changed = false;
+    Object.keys(store).forEach(function (rid) {
+      var rs = store[rid];
+      if (!rs || typeof rs !== 'object') return;
+      Object.keys(rs).forEach(function (sid) {
+        var ent = rs[sid];
+        if (!ent || typeof ent !== 'object') return;
+        var hit = false;
+        if (ent.rowOwner && scheduleNameIsDeactivatedPerson(ent.rowOwner)) {
+          delete ent.rowOwner;
+          hit = true;
+        }
+        if (Array.isArray(ent.workers)) {
+          var kept = ent.workers.filter(function (w) {
+            return !scheduleNameIsDeactivatedPerson(w);
+          });
+          if (kept.length !== ent.workers.length) {
+            ent.workers = kept.length ? kept : ['Unassigned'];
+            hit = true;
+          }
+        }
+        if (!hit) return;
+        changed = true;
+        if (assignmentEntryHasActiveWorker(ent)) return;
+        var parts = parseShiftIdParts(sid);
+        if (!parts) return;
+        var roleDef = ROLE_DEFS[parts.roleIdx];
+        if (!roleDef) return;
+        clearDraftCellQuiet(
+          Math.floor(parts.globalDayIdx / 7),
+          rid,
+          roleDef.role,
+          parts.trIdx,
+          parts.globalDayIdx % 7
+        );
+      });
+    });
+    return changed;
+  }
+
+  function scrubDeactivatedPeopleFromLocalSchedule() {
+    var store = loadScheduleAssignmentsStore();
+    if (!scrubDeactivatedPeopleFromAssignmentStore(store)) return;
+    saveScheduleAssignmentsStore(store, {
+      skipDirty: true,
+      skipInteractiveMark: true,
+      skipTimecardsNotify: true,
+    });
+  }
+
+  var collapseInactiveScheduleRowsBusy = false;
+
+  /**
+   * A deactivated slot can stay in the local row map and leave an all-day-off
+   * Unassigned line between the people who remain. Drop that row and shift the
+   * rows under it up. Local only — the slot is already inactive in the cloud.
+   */
+  function staleMappedSlotDeletes(restaurantId) {
+    var v2 = gmScheduleV2();
+    if (!v2 || !v2.getSlotMap || !v2.getSlotCache) return [];
+    var map = v2.getSlotMap() || {};
+    var slots = v2.getSlotCache() || {};
+    var sawRole = Object.create(null);
+    var activeByRole = Object.create(null);
+    Object.keys(slots).forEach(function (pk) {
+      var row = slots[pk];
+      if (!row || String(row.restaurant_id) !== String(restaurantId)) return;
+      var role = String(row.role || '');
+      if (!role) return;
+      sawRole[role] = true;
+      if (row.active === false || !row.slot_key) return;
+      if (!activeByRole[role]) activeByRole[role] = Object.create(null);
+      activeByRole[role][String(row.slot_key)] = true;
+    });
+    var byRole = Object.create(null);
+    Object.keys(map).forEach(function (key) {
+      var parts = String(key).split('|');
+      if (parts.length < 3 || parts[0] !== String(restaurantId)) return;
+      var role = parts[1];
+      var trIdx = Number(parts[2]);
+      var slotKey = map[key] ? String(map[key]) : '';
+      if (!slotKey || isNaN(trIdx) || trIdx < 0 || !sawRole[role]) return;
+      if (activeByRole[role] && activeByRole[role][slotKey]) return;
+      if (!byRole[role]) byRole[role] = [];
+      if (byRole[role].indexOf(trIdx) < 0) byRole[role].push(trIdx);
+    });
+    var deletes = [];
+    Object.keys(byRole).forEach(function (role) {
+      byRole[role]
+        .slice()
+        .sort(function (a, b) { return b - a; })
+        .forEach(function (trIdx) {
+          deletes.push({ role: role, originalTrIdx: trIdx });
+        });
+    });
+    return deletes;
+  }
+
+  function remapStoredSlotOrdersAfterDeletes(restaurantId, deletes) {
+    var byRole = Object.create(null);
+    (deletes || []).forEach(function (d) {
+      if (!d || !d.role || d.originalTrIdx == null) return;
+      if (!byRole[d.role]) byRole[d.role] = [];
+      if (byRole[d.role].indexOf(d.originalTrIdx) < 0) byRole[d.role].push(d.originalTrIdx);
+    });
+    var quiet = { skipDirty: true, skipInteractiveMark: true };
+    Object.keys(slotOrderByWeekStore || {}).forEach(function (mon) {
+      var byRest = slotOrderByWeekStore[mon] && slotOrderByWeekStore[mon][restaurantId];
+      if (!byRest) return;
+      Object.keys(byRole).forEach(function (role) {
+        var existing = byRest[role];
+        if (!existing || !existing.length) return;
+        var remapped = existing.slice();
+        byRole[role]
+          .slice()
+          .sort(function (a, b) { return b - a; })
+          .forEach(function (trIdx) {
+            remapped = remapSlotOrderAfterDelete(remapped, trIdx);
+          });
+        setCustomSlotOrderForRole(restaurantId, role, remapped, mon, quiet);
+      });
+    });
+  }
+
+  function unnamedDayOffHoleDeletes(restaurantId) {
+    var wi = SCHEDULE_TEMPLATE_WEEK_INDEX;
+    var layers = getDraftScheduleRowsForWeek(wi, restaurantId);
+    var store = loadScheduleAssignmentsStore();
+    var rs = (store && store[restaurantId]) || {};
+    var weekStart = wi * 7;
+    var deletes = [];
+    ['Bartender', 'Kitchen', 'Server'].forEach(function (role) {
+      var rows = layers && layers[role];
+      if (!rows || rows.length < 2) return;
+      var roleIdx = roleIdxForDraftRole(role);
+      if (roleIdx < 0) return;
+      for (var tr = 0; tr < rows.length - 1; tr += 1) {
+        var row = rows[tr];
+        var timed = false;
+        for (var di = 0; di < 7; di += 1) {
+          var cell = row && row[di];
+          if (cell && cell[0] && cell[1]) {
+            timed = true;
+            break;
+          }
+        }
+        if (timed) continue;
+        var named = false;
+        for (var d2 = 0; d2 < 7; d2 += 1) {
+          var ent = normalizeScheduleAssignment(
+            rs['shift-' + (weekStart + d2) + '-' + roleIdx + '-' + tr]
+          );
+          if (!ent) continue;
+          if (
+            ent.rowOwner &&
+            ent.rowOwner !== 'Unassigned' &&
+            !scheduleNameIsDeactivatedPerson(ent.rowOwner)
+          ) {
+            named = true;
+            break;
+          }
+          var workers = ent.workers || [];
+          for (var w = 0; w < workers.length; w += 1) {
+            if (
+              workers[w] &&
+              workers[w] !== 'Unassigned' &&
+              !scheduleNameIsDeactivatedPerson(workers[w])
+            ) {
+              named = true;
+              break;
+            }
+          }
+          if (named) break;
+        }
+        if (named) continue;
+        deletes.push({ role: role, originalTrIdx: tr });
+      }
+    });
+    return deletes;
+  }
+
+  function collapseInactiveMappedScheduleRows() {
+    if (collapseInactiveScheduleRowsBusy) return false;
+    var v2 = gmScheduleV2();
+    if (!v2 || !v2.remapSlotMapAfterDelete || !restaurantsList || !restaurantsList.length) return false;
+    collapseInactiveScheduleRowsBusy = true;
+    var any = false;
+    try {
+      restaurantsList.forEach(function (rest) {
+        var rid = rest && rest.id;
+        if (!rid) return;
+        var deletes = staleMappedSlotDeletes(rid).concat(unnamedDayOffHoleDeletes(rid));
+        var seen = Object.create(null);
+        deletes = deletes.filter(function (d) {
+          var key = d.role + '|' + d.originalTrIdx;
+          if (seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
+        if (!deletes.length) return;
+        any = true;
+        var quiet = { skipDirty: true, skipInteractiveMark: true, skipTimecardsNotify: true };
+        shiftOtherDraftWeeksForSlotDeletes(rid, deletes, -1, quiet);
+        var byRole = Object.create(null);
+        deletes.forEach(function (d) {
+          if (!byRole[d.role]) byRole[d.role] = [];
+          byRole[d.role].push(d.originalTrIdx);
+        });
+        Object.keys(byRole).forEach(function (role) {
+          byRole[role]
+            .slice()
+            .sort(function (a, b) { return b - a; })
+            .forEach(function (trIdx) {
+              v2.remapSlotMapAfterDelete(rid, role, trIdx);
+            });
+        });
+        remapStoredSlotOrdersAfterDeletes(rid, deletes);
+      });
+    } finally {
+      collapseInactiveScheduleRowsBusy = false;
+    }
+    return any;
+  }
+
   function rebuildEmployeeDerivedData(opts) {
     try { invalidateSchedulePersonOptionsCache(); } catch (_ic) {}
     opts = opts || {};
+    scrubDeactivatedPeopleFromLocalSchedule();
+    collapseInactiveMappedScheduleRows();
     /* Remote schedule apply: skip pool/eligible rebuilds — roster did not change. */
     if (!opts.scheduleOnly) {
       refreshPools();
@@ -27572,6 +28230,7 @@
       .filter(function (e) {
         var st = normalizeEmployeeStaffType(e.staffType) || e.staffType;
         if (st !== role) return false;
+        if (employeeIsDeactivated(e)) return false;
         return employeeMatchesScheduleRestaurant(e, rid);
       })
       .sort(sortEmployeesInGroup)[trIdx] || null;
@@ -28223,6 +28882,50 @@
   }
 
   var visibilityRosterRefreshAt = 0;
+  var resumePeerSyncTimer = null;
+
+  /**
+   * Unsent schedule ops are an intentional edit that has not landed yet.
+   * Keep them and push them. Do not treat them as idle.
+   */
+  function scheduleHasUnsentScheduleOps() {
+    try {
+      var pending = schedulePendingOutboxCellKeys();
+      return !!(pending && Object.keys(pending).length);
+    } catch (_unsent) {
+      return false;
+    }
+  }
+
+  function queueResumePeerSync() {
+    if (resumePeerSyncTimer) clearTimeout(resumePeerSyncTimer);
+    resumePeerSyncTimer = setTimeout(function () {
+      resumePeerSyncTimer = null;
+      void runResumePeerSync();
+    }, 200);
+  }
+
+  function runResumePeerSync() {
+    if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (!document.documentElement.classList.contains('authed')) return;
+    /*
+     * An edit that is still saving must upload. Do not drop that outbox and do not
+     * full-replace the grid — a forced replace on every wake repainted weeks when
+     * nobody had edited.
+     * Idle devices only soft-pull. That applies a peer change when cloud differs
+     * and leaves the page alone when it does not.
+     */
+    if (scheduleEditStillInProgress() || scheduleHasUnsentScheduleOps()) {
+      void flushScheduleV2Outbox().then(function () {
+        void flushTeamStateSyncNow();
+        queueTeamStateRemoteRefresh(null, { fast: true });
+      });
+      return;
+    }
+    queueTeamStateRemoteRefresh(null, { fast: true });
+    if (scheduleSyncV2WriteOnly()) queueVisibleScheduleCellsPull();
+  }
 
   function syncRealtimeSubscriptionsForVisibility() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
@@ -28241,23 +28944,17 @@
     if (gmCalloutSessionIsManager) setupEmployeesRealtimeSubscription();
     setupSelfProfileRoleWatch();
     syncTimeClockEntriesRealtimeForScreen();
-    /* Push local edits first, then pull — never refresh into a dirty browser and risk rollback. */
+    /* Idle return takes cloud. An edit still saving is flushed instead of overwritten. */
     flushTipPayrollPushToSupabase();
-    void Promise.resolve(flushTeamStateSyncNow()).then(function () {
-      void flushScheduleV2Outbox();
-      queueTeamStateRemoteRefresh(null, { forceFetch: true, fast: true });
-      void hydrateScheduleSyncV2FromCloud();
-      // Punches live in time_clock_entries (not team_state). Refetch when Timecards is open so
-      // another manager's edits are not masked by this tab's in-memory weekEntries cache.
-      if (
-        gmCalloutSessionIsManager &&
-        timecardsScreenActive() &&
-        window.gmCalloutTimecards &&
-        typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
-      ) {
-        void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
-      }
-    });
+    queueResumePeerSync();
+    if (
+      gmCalloutSessionIsManager &&
+      timecardsScreenActive() &&
+      window.gmCalloutTimecards &&
+      typeof window.gmCalloutTimecards.applyRemoteTimeClockEntries === 'function'
+    ) {
+      void window.gmCalloutTimecards.applyRemoteTimeClockEntries();
+    }
     var now = Date.now();
     if (!visibilityRosterRefreshAt || now - visibilityRosterRefreshAt > 60000) {
       visibilityRosterRefreshAt = now;
@@ -31124,11 +31821,15 @@
     }
     if (!entry) return [];
     var workers = (entry.workers || []).filter(function (n) {
-      return n && n !== 'Unassigned';
+      return n && n !== 'Unassigned' && !scheduleNameIsDeactivatedPerson(n);
     });
     if (workers.length) return workers;
     /* All-day-off rows store Person on rowOwner with Unassigned workers. */
-    if (entry.rowOwner && entry.rowOwner !== 'Unassigned') {
+    if (
+      entry.rowOwner &&
+      entry.rowOwner !== 'Unassigned' &&
+      !scheduleNameIsDeactivatedPerson(entry.rowOwner)
+    ) {
       return [String(entry.rowOwner)];
     }
     /*
@@ -31143,7 +31844,7 @@
     if (stubParts && stubParts.globalDayIdx >= (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7) {
       var inherited = lookupScheduleAssignment(rs, stubId);
       var inheritedWorkers = ((inherited && inherited.workers) || []).filter(function (n) {
-        return n && n !== 'Unassigned';
+        return n && n !== 'Unassigned' && !scheduleNameIsDeactivatedPerson(n);
       });
       if (inheritedWorkers.length) return inheritedWorkers;
     }
@@ -31151,6 +31852,12 @@
   }
 
   /** Sticky row owner from day-off / Unassigned stubs (does not count as staffed). */
+  function scheduleNameIsDeactivatedPerson(name) {
+    if (!name || name === 'Unassigned') return false;
+    var emp = employeeByDisplayName(name);
+    return !!(emp && employeeIsDeactivated(emp));
+  }
+
   function scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays) {
     if (!rs || roleIdx < 0) return null;
     var days = visibleDays || getVisibleWeekDays();
@@ -31168,7 +31875,7 @@
         var norm = normalizeScheduleAssignment(raw);
         owner = norm.rowOwner ? String(norm.rowOwner).trim() : '';
       }
-      if (owner && owner !== 'Unassigned') {
+      if (owner && owner !== 'Unassigned' && !scheduleNameIsDeactivatedPerson(owner)) {
         return canonicalScheduleWorkerName(owner, currentRestaurantId) || owner;
       }
     }
@@ -31194,10 +31901,15 @@
         if (!raw) continue;
         var entry = normalizeScheduleAssignment(raw);
         var staffed = scheduleAssignmentPrimaryWorker(entry);
-        if (staffed) {
+        if (staffed && !scheduleNameIsDeactivatedPerson(staffed)) {
           return canonicalScheduleWorkerName(staffed, currentRestaurantId) || staffed;
         }
-        if (!ownerFallback && entry.rowOwner && entry.rowOwner !== 'Unassigned') {
+        if (
+          !ownerFallback &&
+          entry.rowOwner &&
+          entry.rowOwner !== 'Unassigned' &&
+          !scheduleNameIsDeactivatedPerson(entry.rowOwner)
+        ) {
           ownerFallback =
             canonicalScheduleWorkerName(entry.rowOwner, currentRestaurantId) || entry.rowOwner;
         }
@@ -31232,7 +31944,16 @@
           return n && n !== 'Unassigned';
         });
         if (workers.length) {
-          name = canonicalScheduleWorkerName(workers[0], currentRestaurantId);
+          var activeWorker = null;
+          for (var wiName = 0; wiName < workers.length; wiName += 1) {
+            if (!scheduleNameIsDeactivatedPerson(workers[wiName])) {
+              activeWorker = workers[wiName];
+              break;
+            }
+          }
+          name = activeWorker
+            ? canonicalScheduleWorkerName(activeWorker, currentRestaurantId)
+            : 'Unassigned';
         } else {
           var fromStore = scheduleRowStubWorkers(rs, roleIdx, trIdx, dayStr, dayInWeek, shift.id);
           name = fromStore.length
@@ -31271,7 +31992,7 @@
      * allowStickyOwner (that flag stayed off to avoid Irineo on trailing ghosts).
      */
     var stickyOwner = scheduleRowOwnerFromStore(rs, roleIdx, trIdx, visibleDays || getVisibleWeekDays());
-    if (stickyOwner) {
+    if (stickyOwner && !scheduleNameIsDeactivatedPerson(stickyOwner)) {
       var layersSticky = getDraftScheduleRowsForWeek(scheduleCalendarWeekIndex, currentRestaurantId);
       var rowSticky = layersSticky && layersSticky[role] && layersSticky[role][trIdx];
       var timedSticky = false;
@@ -32797,6 +33518,13 @@
       opts.abbreviateOtherStore || managerUsesAbbreviatedOtherStoreSchedule()
     );
     var managedScopeForAbbrev = abbreviateOtherStore ? currentManagerStoreScope() : null;
+    var otherStoreStaffedKeys =
+      abbreviateOtherStore && managedScopeForAbbrev
+        ? workerKeySetScheduledAtRestaurantWeek(
+            currentRestaurantId,
+            scheduleCalendarWeekIndex
+          )
+        : null;
     /* Never borrow Person labels from other weeks / sticky day-off owners —
        that put Irineo (etc.) on trailing empty BOH/FOH rows. */
     var rowPersonOpts = { allowOtherWeeks: false, allowStickyOwner: false };
@@ -32823,7 +33551,8 @@
             return managerSeesWorkerOnOtherStoreSchedule(
               rowPerson,
               managedScopeForAbbrev,
-              currentRestaurantId
+              currentRestaurantId,
+              { staffedAtViewing: otherStoreStaffedKeys }
             );
           } catch (_abbrRow) {
             return false;
@@ -34528,6 +35257,67 @@
     return na.localeCompare(nb, undefined, { sensitivity: 'base' });
   }
 
+  /**
+   * Main-schedule Person-column order for a store (current calendar week).
+   * Used when Team restaurant filter is a single store.
+   */
+  var teamPageScheduleRankCache = { key: '', map: null };
+
+  function invalidateTeamPageScheduleRankCache() {
+    teamPageScheduleRankCache = { key: '', map: null };
+  }
+
+  function teamPageScheduleNameRankMap(storeId) {
+    var wi = scheduleCalendarWeekIndex;
+    var key = String(wi) + '|' + String(storeId || '');
+    if (teamPageScheduleRankCache.key === key && teamPageScheduleRankCache.map) {
+      return teamPageScheduleRankCache.map;
+    }
+    var map = Object.create(null);
+    var rank = 0;
+    if (storeId && typeof buildScheduleCalendarExportModel === 'function') {
+      try {
+        var model = buildScheduleCalendarExportModel(wi, storeId);
+        (model && model.sections ? model.sections : []).forEach(function (section) {
+          (section.rows || []).forEach(function (row) {
+            var raw = String((row && row.personName) || '').trim();
+            var nk = raw ? normNameKey(raw) : '';
+            if (nk && nk !== normNameKey('Unassigned') && map[nk] == null) {
+              map[nk] = rank;
+            }
+            rank += 1;
+          });
+        });
+      } catch (_teamRank) {
+        map = Object.create(null);
+      }
+    }
+    teamPageScheduleRankCache = { key: key, map: map };
+    return map;
+  }
+
+  /**
+   * Team list order within a role:
+   * - single store filter → that store's main schedule order (unscheduled leftovers A–Z)
+   * - All → alphabetical by display name
+   */
+  function compareEmployeesForTeamPage(a, b) {
+    if (employeeRestaurantFilter === 'rp-8' || employeeRestaurantFilter === 'rp-9') {
+      var map = teamPageScheduleNameRankMap(employeeRestaurantFilter);
+      if (map && Object.keys(map).length) {
+        var ka = normNameKey(employeeDisplayName(a));
+        var kb = normNameKey(employeeDisplayName(b));
+        var ra = ka ? map[ka] : null;
+        var rb = kb ? map[kb] : null;
+        var aOn = ra != null;
+        var bOn = rb != null;
+        if (aOn && bOn && ra !== rb) return ra - rb;
+        if (aOn !== bOn) return aOn ? -1 : 1;
+      }
+    }
+    return compareEmployeesByDisplayName(a, b);
+  }
+
   function parseEmployeeHiringDateMs(emp) {
     var raw =
       emp && emp.meta && emp.meta.hiringDate != null ? String(emp.meta.hiringDate).trim() : '';
@@ -34640,7 +35430,7 @@
         ? gmT('team.reactivateHint') ||
           'Shows this person on Team, timecards, and new schedule assignments again.'
         : gmT('team.deactivateHint') ||
-          'Hides this person from timecards, payroll, messages, and new assignments. They stay on Team only when Show deactivated is on. Existing schedule tiles stay until you change them. This is not deletion.';
+          'Removes their schedule rows, timecard punches, and tip/leave extras. They stay on Team only when Show deactivated is on. Reactivating does not bring those rows back.';
     }
   }
 
@@ -36003,6 +36793,8 @@
     if (!employeeListEl) return;
     syncGenerateAllPinsButton();
     syncEmployeeFilterControls();
+    /* Rebuild schedule rank when the list is redrawn (filter / schedule edits). */
+    invalidateTeamPageScheduleRankCache();
     if (!employees.length) {
       employeeListEl.innerHTML =
         '<p class="calendar-hint">' + escapeHtml(gmT('team.noEmployees')) + '</p>';
@@ -36149,7 +36941,7 @@
           .filter(function (e) {
             return e.staffType === typeKey;
           })
-          .sort(compareEmployeesByDisplayName)
+          .sort(compareEmployeesForTeamPage)
       );
     });
     /* Soft fix: missing/invalid staff_type used to disappear from Team grouping. */
@@ -36164,7 +36956,7 @@
               e.staffType !== 'Server'
             );
           })
-          .sort(compareEmployeesByDisplayName)
+          .sort(compareEmployeesForTeamPage)
       );
     }
     var keptPhotos = Object.create(null);
@@ -40518,7 +41310,7 @@
           gmT('team.deactivateConfirm', { name: label }) ||
             'Deactivate "' +
               label +
-              '"?\n\nThey will be hidden from timecards and the rest of the app. Turn on Show deactivated on Team to reactivate them. Existing schedule tiles stay until you change them.'
+              '"?\n\nThis deletes their schedule rows, timecard punches, and tip/leave extras. They stay on Team only when Show deactivated is on. Reactivating does not bring those rows back.'
         );
         if (!ok) return;
       }
@@ -40526,16 +41318,21 @@
       deactivateEmployeeBtn.disabled = true;
       rebuildEmployeeDerivedData();
       notifyTimecardsEmployeesChanged();
-      void Promise.resolve(saveEmployees({ singleEmployee: emp })).then(function () {
-        deactivateEmployeeBtn.disabled = false;
-        syncEmployeeDeactivateButton(emp);
-        renderEmployeeList();
-        if (nextOff) {
-          editingEmployeeId = null;
-          showScreen(5);
-          screenTitle.textContent = gmT('nav.team') || 'Team';
-        }
-      });
+      void Promise.resolve(saveEmployees({ singleEmployee: emp }))
+        .then(function () {
+          if (!nextOff) return null;
+          return purgeDeactivatedEmployeeData(emp);
+        })
+        .then(function () {
+          deactivateEmployeeBtn.disabled = false;
+          syncEmployeeDeactivateButton(emp);
+          renderEmployeeList();
+          if (nextOff) {
+            editingEmployeeId = null;
+            showScreen(5);
+            screenTitle.textContent = gmT('nav.team') || 'Team';
+          }
+        });
     });
   }
 
@@ -43550,6 +44347,10 @@
         persistTeamStateDirtyFlags();
         persistSchedulePushGuard();
         flushTipPayrollPushToSupabase();
+        /* Push an edit that is still unsent. Do not replay an empty/idle outbox. */
+        if (scheduleEditStillInProgress() || scheduleHasUnsentScheduleOps()) {
+          void flushScheduleV2Outbox();
+        }
         void flushTeamStateSyncNow();
         /* Snapshot tokens before the tab sleeps so a later refresh blip can recover. */
         void (async function () {
@@ -43585,21 +44386,7 @@
         }
         if (currentScreen === 1) {
           if (scheduleSyncV2WriteOnly()) {
-            if (scheduleDocumentNeedsCloudSoT || scheduleUiAwaitingInitialCloudHydrate) {
-              void pollVisibleScheduleCellsFromCloud({
-                rebuild: false,
-                force: true,
-                forceSlots: true,
-                replaceTrusted: true,
-                cloudAuthorityReplace: true,
-                noSoftFallback: true,
-                replaceWeekIndex: scheduleCalendarWeekIndex,
-                allowStaleWeekApply: true,
-              });
-            } else {
-              /* Pull cloud cells — do not rebuild from stale local cache first. */
-              queueVisibleScheduleCellsPull();
-            }
+            queueResumePeerSync();
           } else {
             rebuildSchedule();
             renderCalendar();
@@ -43608,33 +44395,24 @@
         }
       }
     });
-    /* Laptop ↔ phone same login: pulling focus should fetch peer edits immediately. */
+    /* Laptop ↔ phone same login: returning to this tab takes cloud unless an edit is still saving. */
     window.addEventListener('focus', function () {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       if (!document.documentElement.classList.contains('authed')) return;
-      queueTeamStateRemoteRefresh(null, { forceFetch: true, fast: true });
-      if (currentScreen === 1) {
-        if (scheduleDocumentNeedsCloudSoT || scheduleUiAwaitingInitialCloudHydrate) {
-          void pollVisibleScheduleCellsFromCloud({
-            rebuild: false,
-            force: true,
-            forceSlots: true,
-            replaceTrusted: true,
-            cloudAuthorityReplace: true,
-            noSoftFallback: true,
-            replaceWeekIndex: scheduleCalendarWeekIndex,
-            allowStaleWeekApply: true,
-          });
-        } else {
-          queueVisibleScheduleCellsPull();
-        }
-      }
+      queueResumePeerSync();
+    });
+    window.addEventListener('pageshow', function () {
+      if (!document.documentElement.classList.contains('authed')) return;
+      queueResumePeerSync();
     });
     window.addEventListener('pagehide', function () {
       if (window.gmCalloutViewCaptureEnabled) gmCalloutCaptureViewScroll();
       persistTeamStateDirtyFlags();
       persistSchedulePushGuard();
       flushTipPayrollPushToSupabase();
+      if (scheduleEditStillInProgress() || scheduleHasUnsentScheduleOps()) {
+        void flushScheduleV2Outbox();
+      }
       void flushSlotOrderMetaPushNow();
       void flushTeamStateSyncNow();
     });

@@ -30,6 +30,7 @@ import {
   setEmployeeClockPin,
 } from '../lib/employeeSave';
 import { deleteEmployeeCompletely } from '../lib/employeeDelete';
+import { purgeDeactivatedEmployeeData } from '../lib/deactivateEmployeePurge';
 import { namesDiffer, propagateEmployeeRename } from '../lib/employeeRename';
 import {
   defaultDeliveryTipRetentionForEmployee,
@@ -458,11 +459,19 @@ export function EmployeeEditorSheet({ employee, visible, isCreate, draftRows, on
     const updated = { ...src, meta };
     setBusy(true);
     const res = await saveEmployeeRow(supabase, updated);
-    setBusy(false);
     if (!res.ok) {
+      setBusy(false);
       Alert.alert(t('team.deactivate'), res.message);
       return;
     }
+    if (deactivated) {
+      try {
+        await purgeDeactivatedEmployeeData(supabase, updated);
+      } catch (err) {
+        console.warn('purgeDeactivatedEmployeeData', err);
+      }
+    }
+    setBusy(false);
     setProfileEmployee(updated);
     onSaved();
     if (deactivated) onClose();

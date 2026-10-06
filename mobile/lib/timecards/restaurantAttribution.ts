@@ -52,28 +52,36 @@ export function employeeHomeRestaurant(emp: EmployeeRow): string {
 }
 
 /**
- * Roster / store-filter membership (mirrors web full-report inclusion).
- * Store-only: usualRestaurant === R. Multi-store (usual === 'both'): primaryLocationId === R.
- * Missing primary on multi-store: exclude from single-store filters (avoid double-count).
- * UI is per-store only (rp-8 | rp-9); filter 'all' (if used) keeps show-everyone behavior.
+ * Who appears on the timecards roster for the active store filter.
+ * Mirrors web `employeeVisibleAtCurrentLocation`:
+ * - Single-store payroll: always primary store; also any store with schedule/punch/borrow activity.
+ * - Working-location (toggle off): only stores with schedule/punch/borrow activity this week,
+ *   or payroll-home when they have VL/SL/cash extras — never idle home-roster members.
  */
 export function rosterRowVisibleAtLocation(
   emp: EmployeeRow,
   locationFilter: LocationFilter,
-  borrowedTo?: 'rp-8' | 'rp-9' | null
+  borrowedTo?: 'rp-8' | 'rp-9' | null,
+  opts?: {
+    hasLocationActivity?: boolean;
+    hasPayrollHomeExtras?: boolean;
+  }
 ): boolean {
   if (locationFilter === 'all') return true;
   if (!emp) return false;
+  const hasActivity = !!opts?.hasLocationActivity;
+  const hasExtras = !!opts?.hasPayrollHomeExtras;
   if (employeeHasSingleStorePayroll(emp)) {
     const payrollHome = employeePayrollHomeRestaurantId(emp);
-    return !payrollHome || payrollHome === locationFilter;
+    if (payrollHome && payrollHome === locationFilter) return true;
+    if (hasActivity) return true;
+    if (borrowedTo && borrowedTo === locationFilter) return true;
+    return false;
   }
-  const home = employeeHomeRestaurant(emp);
-  if (home === locationFilter) return true;
-  if (home === 'both') {
-    return employeePrimaryLocationId(emp) === locationFilter;
-  }
+  if (hasActivity) return true;
   if (borrowedTo && borrowedTo === locationFilter) return true;
+  const extrasHome = employeePayrollHomeRestaurantId(emp);
+  if (extrasHome === locationFilter && hasExtras) return true;
   return false;
 }
 

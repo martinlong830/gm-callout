@@ -595,10 +595,11 @@ const EN: Dict = {
   'team.deactivate': 'Deactivate employee',
   'team.reactivate': 'Reactivate employee',
   'team.deactivateHint':
-    'Hides this person from timecards, payroll, messages, and new assignments. They stay on Team only when Show deactivated is on. Existing schedule tiles stay until you change them. This is not deletion.',
-  'team.reactivateHint': 'Shows this person on Team, timecards, and new schedule assignments again.',
+    'Removes their schedule rows, timecard punches, and tip/leave extras. They stay on Team only when Show deactivated is on. Reactivating does not bring those rows back.',
+  'team.reactivateHint':
+    'Shows this person on Team and on new schedule assignments again. Deleted schedule and timecard rows are not restored.',
   'team.deactivateConfirm':
-    'Deactivate "{name}"? They will be hidden from timecards and the rest of the app. Turn on Show deactivated on Team to reactivate them. Existing schedule tiles stay until you change them.',
+    'Deactivate "{name}"? This deletes their schedule rows, timecard punches, and tip/leave extras. They stay on Team only when Show deactivated is on. Reactivating does not bring those rows back.',
 
   'requests.searchEmployee': 'Search employee name',
   'requests.employeeCallout': 'Employee call-out',
@@ -760,6 +761,7 @@ const EN: Dict = {
   'timecards.punches': 'punches',
   'timecards.break': 'Break',
   'timecards.netDeliveryTip': 'Net delivery tip',
+  'timecards.deliveryTip': 'Delivery tip',
   'timecards.pay': 'Pay',
   'timecards.payHr': 'Pay/hr',
   'timecards.removeShiftDay': 'Remove shift day',
@@ -1491,10 +1493,11 @@ const ES: Dict = {
   'team.deactivate': 'Desactivar empleado',
   'team.reactivate': 'Reactivar empleado',
   'team.deactivateHint':
-    'Oculta a esta persona de las tarjetas de tiempo, la nómina, los mensajes y las asignaciones nuevas. Solo aparece en Equipo si activas Mostrar desactivados. Los turnos ya puestos en el horario se quedan hasta que los cambies. Esto no es una eliminación.',
-  'team.reactivateHint': 'Vuelve a mostrar a esta persona en el equipo, las tarjetas de tiempo y las asignaciones nuevas.',
+    'Quita sus filas del horario, sus checadas y los extras de propina y permisos. Solo aparece en Equipo si activas Mostrar desactivados. Reactivar no devuelve esas filas.',
+  'team.reactivateHint':
+    'Vuelve a mostrar a esta persona en el equipo y en asignaciones nuevas. Las filas de horario y checadas eliminadas no se restauran.',
   'team.deactivateConfirm':
-    '¿Desactivar a "{name}"? Quedará oculta en las tarjetas de tiempo y en el resto de la app. Activa Mostrar desactivados en Equipo para reactivarla. Los turnos ya puestos en el horario se quedan hasta que los cambies.',
+    '¿Desactivar a "{name}"? Esto elimina sus filas del horario, sus checadas y los extras de propina y permisos. Solo aparece en Equipo si activas Mostrar desactivados. Reactivar no devuelve esas filas.',
 
   'requests.searchEmployee': 'Buscar nombre de empleado',
   'requests.employeeCallout': 'Falta de empleado',
@@ -1658,6 +1661,7 @@ const ES: Dict = {
   'timecards.punches': 'checadas',
   'timecards.break': 'Descanso',
   'timecards.netDeliveryTip': 'Propina neta de delivery',
+  'timecards.deliveryTip': 'Propina de delivery',
   'timecards.pay': 'Pago',
   'timecards.payHr': 'Pago/hr',
   'timecards.removeShiftDay': 'Eliminar día del turno',
