@@ -1792,7 +1792,7 @@
           });
         });
       });
-      if (prevTimedForSave >= 8 && nextTimedForSave * 2 < prevTimedForSave) return;
+      if (prevTimedForSave >= 6 && nextTimedForSave + 4 < prevTimedForSave) return;
     }
     if (!draftScheduleWeekEntryIsPerRestaurant(weekEntry)) {
       var perRest = {};
@@ -17446,6 +17446,58 @@
     var aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(row, { force: true });
     var changed = false;
     var payload = draftSchedulePayloadFromRemote(aligned.draft_schedule);
+    /*
+     * Cloud is the shared schedule for a normal edit. A week that just lost
+     * several people or a block of shifts is a bad sync, not an edit — keep
+     * the fuller copy already on this browser.
+     */
+    if (payload && payload.byWeek && aligned && aligned.schedule_assignments) {
+      var localDraftBeforeTake = draftScheduleByWeekStore;
+      var localAssignBeforeTake = loadScheduleAssignmentsStore();
+      aligned.schedule_assignments = JSON.parse(JSON.stringify(aligned.schedule_assignments));
+      for (var wiKeep = 0; wiKeep < SCHEDULE_VIEW_WEEK_COUNT; wiKeep += 1) {
+        restaurantsList.forEach(function (restKeep) {
+          var ridKeep = restKeep.id;
+          var localLayersKeep = draftLayersFromWeekEntry(
+            localDraftBeforeTake && localDraftBeforeTake[String(wiKeep)],
+            ridKeep
+          );
+          var remoteLayersKeep = draftLayersFromWeekEntry(payload.byWeek[String(wiKeep)], ridKeep);
+          var localRsKeep = localAssignBeforeTake && localAssignBeforeTake[ridKeep];
+          var remoteRsKeep = aligned.schedule_assignments[ridKeep];
+          if (
+            !remoteWeekMateriallyThinner(
+              localLayersKeep,
+              remoteLayersKeep,
+              localRsKeep,
+              remoteRsKeep,
+              wiKeep
+            )
+          ) {
+            return;
+          }
+          if (!payload.byWeek[String(wiKeep)] || typeof payload.byWeek[String(wiKeep)] !== 'object') {
+            payload.byWeek[String(wiKeep)] = {};
+          }
+          if (localLayersKeep) {
+            payload.byWeek[String(wiKeep)][ridKeep] = JSON.parse(JSON.stringify(localLayersKeep));
+          }
+          if (!aligned.schedule_assignments[ridKeep]) aligned.schedule_assignments[ridKeep] = {};
+          var startKeep = wiKeep * 7;
+          var endKeep = startKeep + 7;
+          Object.keys(aligned.schedule_assignments[ridKeep]).forEach(function (idKeep) {
+            var pKeep = parseShiftIdParts(idKeep);
+            if (!pKeep || pKeep.globalDayIdx < startKeep || pKeep.globalDayIdx >= endKeep) return;
+            delete aligned.schedule_assignments[ridKeep][idKeep];
+          });
+          Object.keys(localRsKeep || {}).forEach(function (idLocal) {
+            var pLocal = parseShiftIdParts(idLocal);
+            if (!pLocal || pLocal.globalDayIdx < startKeep || pLocal.globalDayIdx >= endKeep) return;
+            aligned.schedule_assignments[ridKeep][idLocal] = localRsKeep[idLocal];
+          });
+        });
+      }
+    }
     if (payload && payload.byWeek && Object.keys(payload.byWeek).length) {
       draftScheduleByWeekStore = JSON.parse(JSON.stringify(payload.byWeek));
       try {
@@ -18277,6 +18329,21 @@
   }
 
   /**
+   * A sync that drops several people or a block of shifts is not an edit.
+   * One person or a few hours can still change. local* is the copy we already
+   * trust; remote* is the incoming copy.
+   */
+  function remoteWeekMateriallyThinner(localLayers, remoteLayers, localRs, remoteRs, weekIndex) {
+    var localTimed = countDraftLayerTimedCells(localLayers);
+    var remoteTimed = countDraftLayerTimedCells(remoteLayers);
+    var localNamed = countWeekNamedRows(localRs, weekIndex);
+    var remoteNamed = countWeekNamedRows(remoteRs, weekIndex);
+    if (localNamed >= 3 && remoteNamed + 2 < localNamed) return true;
+    if (localTimed >= 6 && remoteTimed + 4 < localTimed) return true;
+    return false;
+  }
+
+  /**
    * A cell apply must not turn a named week into Unassigned. Put the previous
    * people back when most of the names disappeared in one pass.
    */
@@ -18355,6 +18422,37 @@
     }
     var changed = false;
     var store = loadScheduleAssignmentsStore();
+    var consciousRows = Object.create(null);
+    try {
+      if (v2 && typeof v2.getOutbox === 'function') {
+        (v2.getOutbox() || []).forEach(function (op) {
+          if (!op || !op.payload) return;
+          var opType = op.op_type;
+          if (
+            opType !== 'set_worker' &&
+            opType !== 'clear_worker' &&
+            opType !== 'deactivate_slot'
+          ) {
+            return;
+          }
+          var payloadOp = op.payload;
+          var opRid = payloadOp.restaurant_id;
+          var opRole = payloadOp.role;
+          if (!opRid || !opRole) return;
+          var opTr = null;
+          if (payloadOp.slot_key && typeof v2.trIdxForSlotKey === 'function') {
+            opTr = v2.trIdxForSlotKey(opRid, opRole, payloadOp.slot_key);
+          }
+          if ((opTr == null || isNaN(Number(opTr))) && payloadOp.sort_order != null) {
+            opTr = Number(payloadOp.sort_order);
+          }
+          if (opTr == null || isNaN(Number(opTr))) return;
+          consciousRows[opRid + '|' + opRole + '|' + opTr] = true;
+        });
+      }
+    } catch (_consciousRows) {
+      consciousRows = Object.create(null);
+    }
     for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
       var cloudEntry = byWeek[String(wi)];
       if (!cloudEntry) continue;
@@ -18371,6 +18469,7 @@
           Object.keys(cloudNamed).forEach(function (trKey) {
             var trIdx = Number(trKey);
             if (localNamed[trIdx]) return;
+            if (consciousRows[rid + '|' + role + '|' + trIdx]) return;
             if (
               v2 &&
               typeof v2.isLocallyDeactivatedSort === 'function' &&
@@ -18451,8 +18550,11 @@
         var localStoreForNames = loadScheduleAssignmentsStore();
         var cloudNamed = countWeekNamedRows(cloudAssign && cloudAssign[rid], wi);
         var localNamed = countWeekNamedRows(localStoreForNames && localStoreForNames[rid], wi);
-        var timesCollapsed = cloudTimed >= 8 && localTimed + 8 < cloudTimed;
-        var namesCollapsed = cloudNamed >= 4 && localNamed * 2 < cloudNamed;
+        var timesCollapsed =
+          !scheduleDayOffPushGuardActive() &&
+          cloudTimed >= 6 &&
+          localTimed + 4 < cloudTimed;
+        var namesCollapsed = cloudNamed >= 3 && localNamed + 2 < cloudNamed;
         if (!timesCollapsed && !namesCollapsed) return;
         if (cloudLayers && (timesCollapsed || countDraftLayerTimedCells(cloudLayers) > 0)) {
           saveDraftScheduleRowsForWeek(wi, cloudLayers, rid, {
@@ -23512,6 +23614,43 @@
 
   function saveScheduleAssignmentsStore(store, opts) {
     opts = opts || {};
+    /*
+     * Applying a peer week must not drop several people at once. A real edit
+     * changes one row and still saves. The fuller names stay on this browser.
+     */
+    if (teamStateRemoteApplyActive() && scheduleAssignmentsMemCache && store) {
+      for (var wiGuard = 0; wiGuard < SCHEDULE_VIEW_WEEK_COUNT; wiGuard += 1) {
+        restaurantsList.forEach(function (restGuard) {
+          var ridGuard = restGuard.id;
+          var prevRs = scheduleAssignmentsMemCache[ridGuard];
+          var nextRs = store[ridGuard];
+          if (
+            !remoteWeekMateriallyThinner(
+              null,
+              null,
+              prevRs,
+              nextRs,
+              wiGuard
+            )
+          ) {
+            return;
+          }
+          if (!store[ridGuard]) store[ridGuard] = {};
+          var startGuard = wiGuard * 7;
+          var endGuard = startGuard + 7;
+          Object.keys(store[ridGuard]).forEach(function (idGuard) {
+            var pGuard = parseShiftIdParts(idGuard);
+            if (!pGuard || pGuard.globalDayIdx < startGuard || pGuard.globalDayIdx >= endGuard) return;
+            delete store[ridGuard][idGuard];
+          });
+          Object.keys(prevRs || {}).forEach(function (idPrev) {
+            var pPrev = parseShiftIdParts(idPrev);
+            if (!pPrev || pPrev.globalDayIdx < startGuard || pPrev.globalDayIdx >= endGuard) return;
+            store[ridGuard][idPrev] = prevRs[idPrev];
+          });
+        });
+      }
+    }
     scheduleAssignmentsMemCache = store || assignmentStoreShell();
     var nextJson = '';
     try {
