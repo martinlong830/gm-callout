@@ -32057,6 +32057,15 @@
           }
         }
       }
+      /*
+       * Same row as last week, and no other row claimed that person. Times may
+       * have been edited. Clearing the name here is what left Delivery and
+       * 8th Ave Unassigned without anyone changing the person.
+       */
+      if (!found && wi > 0) {
+        var carried = priorPerson(wi - 1, tr, tr);
+        if (carried) found = carried;
+      }
       if (!found) continue;
       names[tr] = found;
       claimed[normalizeWorkerKey(found)] = tr;

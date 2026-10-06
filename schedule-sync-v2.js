@@ -1486,6 +1486,16 @@
     Object.keys(cache).forEach(function (ck) {
       var cell = cache[ck];
       if (!cell || cell.deleted) return;
+      /*
+       * Rev 1 with no person is the original unnamed backfill, not a schedule.
+       * Projecting it replaced 8th Ave with duplicate rows and cleared Delivery.
+       */
+      if (
+        Number(cell.rev) === 1 &&
+        (!cell.worker_name || cell.worker_name === 'Unassigned')
+      ) {
+        return;
+      }
       var rid = String(cell.restaurant_id || '');
       var role = String(cell.role || '');
       var slotKey = String(cell.slot_key || '');
