@@ -9001,6 +9001,55 @@
       );
       markScheduleVisibleWeekFetch(targetWi, cloudTimedVisible);
       /*
+       * This store's cells are gone and its local week is blank. The shared draft
+       * still has Oct 5–11. Put that week on screen and do not upload it.
+       */
+      var storeCloudTimed = countTimedCellsInFetchRows(
+        fetchRows,
+        currentRestaurantId,
+        visFromIso,
+        visToIso
+      );
+      var storeLocalTimed = countLocalTimedDraftWeek(targetWi, currentRestaurantId);
+      if (
+        storeLocalTimed < 4 &&
+        storeCloudTimed < 4 &&
+        !opts._draftRefill &&
+        !hasInteractiveScheduleEditsThisSession() &&
+        !teamStateForcePushActive &&
+        !teamStateForcePushIgnoreVersionSticky &&
+        !scheduleDayOffPushGuardActive()
+      ) {
+        var refilledStoreWeek = false;
+        try {
+          refilledStoreWeek = await refillGuttedVisibleStoreWeekFromCloudDraft(targetWi);
+        } catch (_refillStoreWeek) {
+          refilledStoreWeek = false;
+        }
+        if (gen !== scheduleCellsPollGeneration) return false;
+        if (refilledStoreWeek && countLocalTimedDraftWeek(targetWi, currentRestaurantId) >= 4) {
+          if (currentScreen === 1 && !opts.skipPaint) {
+            scheduleUiAwaitingInitialCloudHydrate = false;
+            try {
+              rebuildSchedule();
+            } catch (_rebuildRefill) {
+              /* ignore */
+            }
+            paintVisibleScheduleWeekFast({
+              weekIndex: targetWi,
+              forcePaint: true,
+              fast: false,
+              forceInitial: true,
+              allowEmptyPaint: false,
+              confirmedEmpty: false,
+            });
+            if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
+            scheduleDeferredScheduleChrome(targetWi);
+          }
+          return true;
+        }
+      }
+      /*
        * Dense fetch + empty local: always load slots before project. Skipping slots
        * left trIdxForSlotKey null → empty patch → DAY-OFF shell forever.
        */
@@ -9293,9 +9342,9 @@
           fast: true,
           forceInitial: forceCloudSoT,
           forceCloudPending: forceCloudSoT,
-          /* Only allow empty message when cloud confirmed zero timed cells. */
-          allowEmptyPaint: cloudTimedVisible <= 0,
-          confirmedEmpty: cloudTimedVisible <= 0,
+          /* Only allow empty message when this store's shared draft is empty too. */
+          allowEmptyPaint: scheduleMayPaintConfirmedEmpty(targetWi),
+          confirmedEmpty: scheduleMayPaintConfirmedEmpty(targetWi),
         });
         if (SCHEDULE && SCHEDULE.length) markScheduleAuthoritativePaintReady();
         scheduleDeferredScheduleChrome(targetWi);
@@ -11214,7 +11263,36 @@
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return true;
     if (!scheduleVisibleWeekFetchDone) return false;
     if (scheduleLastFetchedWeekIndex !== wi) return false;
-    return scheduleLastFetchedWeekTimedCount === 0;
+    if (scheduleLastFetchedWeekTimedCount !== 0) return false;
+    /*
+     * Deleted cells are not an empty week. The shared draft still has Oct 5–11
+     * shifts; painting "No shifts" hid Bernabe, Yudina, and everyone else.
+     * Judge the store on screen — 8th Ave hours must not hide a blank 9th Ave.
+     */
+    if (countLocalTimedDraftWeek(wi, currentRestaurantId) >= 4) return false;
+    try {
+      var cachedDraft = teamStateLastRowCache && teamStateLastRowCache.draft_schedule;
+      var cachedPayload = cachedDraft ? draftSchedulePayloadFromRemote(cachedDraft) : null;
+      var cachedEntry = cachedPayload && cachedPayload.byWeek && cachedPayload.byWeek[String(wi)];
+      if (
+        cachedEntry &&
+        countDraftLayerTimedCells(draftLayersFromWeekEntry(cachedEntry, currentRestaurantId)) >= 4
+      ) {
+        return false;
+      }
+    } catch (_cachedEmpty) {
+      /* ignore */
+    }
+    var refillKey = String(wi) + ':' + String(currentRestaurantId || '');
+    if (!scheduleDraftRefillSettled[refillKey]) return false;
+    return true;
+  }
+
+  /** "No shifts" only for the store on screen, after the shared draft was checked. */
+  function scheduleMayPaintConfirmedEmpty(weekIndex) {
+    var wi = weekIndex != null ? Number(weekIndex) : scheduleCalendarWeekIndex;
+    if (countLocalTimedDraftWeek(wi, currentRestaurantId) >= 4) return false;
+    return scheduleCloudConfirmedWeekEmpty(wi);
   }
 
   /**
@@ -13144,6 +13222,24 @@
           /* ignore */
         }
       }
+      /*
+       * This store's cells for the open week are deleted. Fill from the shared
+       * draft before the empty cell replace cements "No shifts".
+       */
+      if (
+        cloudTimedThisStore < 4 &&
+        countLocalTimedDraftWeek(wi, currentRestaurantId) < 4 &&
+        !hasInteractiveScheduleEditsThisSession() &&
+        !teamStateForcePushActive &&
+        !teamStateForcePushIgnoreVersionSticky &&
+        !scheduleDayOffPushGuardActive()
+      ) {
+        try {
+          await refillGuttedVisibleStoreWeekFromCloudDraft(wi);
+        } catch (_hydRefill) {
+          /* ignore */
+        }
+      }
       if (authority || scheduleVisibleWeekNeedsTrustedCloudReplace(wi, timedForPaint)) {
         applyScheduleCellsCacheToLocalStore({
           rebuild: false,
@@ -13350,6 +13446,10 @@
   /** Last visible-week cell fetch: week index + timed row count (-1 = unknown). */
   var scheduleLastFetchedWeekIndex = -1;
   var scheduleLastFetchedWeekTimedCount = -1;
+  /** week:restaurant → last time we asked cloud for a blank store-week. */
+  var scheduleDraftRefillAt = Object.create(null);
+  /** Set after that ask finishes so "No shifts" is not painted first. */
+  var scheduleDraftRefillSettled = Object.create(null);
   /**
    * True only after the first authoritative visible-week cell apply (or cloud unavailable).
    * Until then the calendar stays blank — never paint the all-day-off / wrong-order shell.
@@ -14306,8 +14406,8 @@
       fast: true,
       forceInitial: true,
       forceCloudPending: true,
-      allowEmptyPaint: cloudTimed <= 0,
-      confirmedEmpty: cloudTimed <= 0,
+      allowEmptyPaint: scheduleMayPaintConfirmedEmpty(weekIndex),
+      confirmedEmpty: scheduleMayPaintConfirmedEmpty(weekIndex),
     });
     /* If still empty but cloud had times, soft upsert again then paint. */
     if ((!SCHEDULE || !SCHEDULE.length) && cloudTimed >= 4) {
@@ -18589,6 +18689,94 @@
     return changed;
   }
 
+  /**
+   * Cells for this store-week were deleted, so the grid painted "No shifts".
+   * The shared draft still has the week (Bernabe, Yudina, and the rest).
+   * Copy only a store that is actually blank. Do not upload.
+   */
+  async function refillGuttedVisibleStoreWeekFromCloudDraft(weekIndex) {
+    var wi = Number(weekIndex);
+    var rid = currentRestaurantId;
+    var key = String(wi) + ':' + String(rid || '');
+    var now = Date.now();
+    if (scheduleDraftRefillAt[key] && now - scheduleDraftRefillAt[key] < 20000) {
+      scheduleDraftRefillSettled[key] = true;
+      return false;
+    }
+    scheduleDraftRefillAt[key] = now;
+    function settle(ok) {
+      scheduleDraftRefillSettled[key] = true;
+      return !!ok;
+    }
+    if (isNaN(wi) || !rid || !window.gmSupabase) return settle(false);
+    if (countLocalTimedDraftWeek(wi, rid) >= 4) return settle(true);
+    var sessRes = null;
+    try {
+      sessRes = await window.gmSupabase.auth.getSession();
+    } catch (_sess) {
+      sessRes = null;
+    }
+    if (!sessRes || !sessRes.data || !sessRes.data.session) return settle(false);
+    var res = null;
+    try {
+      res = await window.gmSupabase
+        .from('team_state')
+        .select('draft_schedule,schedule_assignments,updated_at')
+        .eq('id', gmCalloutTeamStateRowId())
+        .maybeSingle();
+    } catch (_draftFetch) {
+      return settle(false);
+    }
+    if (!res || res.error || !res.data || !res.data.draft_schedule) return settle(false);
+    try {
+      teamStateLastRowCache = res.data;
+    } catch (_cacheDraft) {
+      /* ignore */
+    }
+    var aligned = res.data;
+    try {
+      aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(res.data, { force: true });
+    } catch (_alignRefill) {
+      aligned = res.data;
+    }
+    var payload = draftSchedulePayloadFromRemote(aligned && aligned.draft_schedule);
+    var entry = payload && payload.byWeek && payload.byWeek[String(wi)];
+    var cloudLayers = draftLayersFromWeekEntry(entry, rid);
+    if (countDraftLayerTimedCells(cloudLayers) < 6) return settle(false);
+    saveDraftScheduleRowsForWeek(wi, cloudLayers, rid, {
+      skipDirty: true,
+      skipInteractiveMark: true,
+    });
+    var cloudAssign = aligned && aligned.schedule_assignments;
+    if (cloudAssign && cloudAssign[rid]) {
+      var store = loadScheduleAssignmentsStore();
+      if (!store[rid]) store[rid] = {};
+      var start = wi * 7;
+      var end = start + 7;
+      Object.keys(store[rid]).forEach(function (id) {
+        var p = parseShiftIdParts(id);
+        if (!p || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+        delete store[rid][id];
+      });
+      Object.keys(cloudAssign[rid]).forEach(function (idCloud) {
+        var pCloud = parseShiftIdParts(idCloud);
+        if (!pCloud || pCloud.globalDayIdx < start || pCloud.globalDayIdx >= end) return;
+        store[rid][idCloud] = cloudAssign[rid][idCloud];
+      });
+      saveScheduleAssignmentsStore(store, {
+        skipDirty: true,
+        skipInteractiveMark: true,
+        skipTimecardsNotify: true,
+      });
+    }
+    try {
+      invalidateDraftLayersMemo(wi);
+    } catch (_memoRefill) {
+      /* ignore */
+    }
+    return settle(countLocalTimedDraftWeek(wi, rid) >= 4);
+  }
+
   async function pushTeamStateToSupabaseOnce() {
     if (!GM_SUPABASE_DATA || !window.gmSupabase) return;
     /*
@@ -19468,8 +19656,8 @@
       tookCloudScheduleBundle = takeCloudScheduleBundleAsLocal(row);
     }
     /*
-     * Mid-edit must not keep a week that already dropped one person who is still
-     * on the cloud copy. Put that row back without replacing the rest of the grid.
+     * Mid-edit must not keep a blank week when cloud still has the shifts.
+     * Put the staffed cloud week back. A one-person edit does not trip this.
      */
     if (
       !tookCloudScheduleBundle &&
@@ -19478,7 +19666,7 @@
       row.schedule_assignments &&
       !teamStateForcePushActive
     ) {
-      if (adoptCloudNamedRowsLocalIsMissing(row)) {
+      if (keepDenserCloudScheduleWeeks(row)) {
         try {
           if (typeof rebuildSchedule === 'function' && typeof renderCalendar === 'function') {
             rebuildSchedule();
