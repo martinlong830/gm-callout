@@ -17398,6 +17398,21 @@
         var p = parseShiftIdParts(id);
         if (!p || p.roleIdx !== roleIdx || p.trIdx < n) return;
         if (p.globalDayIdx < start || p.globalDayIdx >= end) return;
+        /*
+         * A shorter draft must not delete a person who is still on that row.
+         * That is how one added slot (Yudina) vanished while the rest of the week stayed.
+         */
+        if (
+          scheduleRoleRowHasNamedOrTimedContent(
+            rs,
+            roleIdx,
+            start,
+            p.trIdx,
+            null
+          )
+        ) {
+          return;
+        }
         delete rs[id];
         changed = true;
       });
@@ -17537,7 +17552,12 @@
         var remoteN = countDraftLayerTimedCells(remoteLayer);
         var localN = countDraftLayerTimedCells(draftScheduleByWeekStore[weekKey][rid]);
         var thin = remoteN >= 4 && localN < Math.floor(remoteN * 0.5);
-        var futureDrift = futureWeek && remoteN >= 4 && Math.abs(localN - remoteN) >= 4;
+        /*
+         * Only take a future week from cloud when cloud has the hours this
+         * browser is missing. A shorter cloud week must not replace a fuller
+         * local week and then delete the extra people.
+         */
+        var futureDrift = futureWeek && remoteN >= 4 && remoteN >= localN + 4;
         if (!thin && !futureDrift) return;
         var copy = JSON.parse(JSON.stringify(remoteLayer));
         draftScheduleByWeekStore[weekKey][rid] = copy;
@@ -18289,12 +18309,125 @@
     return changed;
   }
 
+  function assignmentRowIsNamed(ent) {
+    ent = normalizeScheduleAssignment(ent);
+    if (!ent) return false;
+    if (ent.rowOwner && ent.rowOwner !== 'Unassigned') return true;
+    if (ent.workers && ent.workers[0] && ent.workers[0] !== 'Unassigned') return true;
+    return false;
+  }
+
+  function weekRoleNamedTrIdx(rs, weekIndex, roleIdx) {
+    var start = weekIndex * 7;
+    var end = start + 7;
+    var set = Object.create(null);
+    Object.keys(rs || {}).forEach(function (id) {
+      var p = parseShiftIdParts(id);
+      if (!p || p.roleIdx !== roleIdx || p.globalDayIdx < start || p.globalDayIdx >= end) return;
+      if (!assignmentRowIsNamed(rs[id])) return;
+      set[p.trIdx] = true;
+    });
+    return set;
+  }
+
+  /**
+   * Copy people who are still on the cloud week but missing on this browser.
+   * Losing one named row used to pass the "half the week" check and then upload,
+   * which deleted that slot for everyone. A row this tab just deleted stays gone.
+   */
+  function adoptCloudNamedRowsLocalIsMissing(row) {
+    if (!row) return false;
+    var aligned = row;
+    try {
+      aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(row, { force: true });
+    } catch (_alignNamed) {
+      aligned = row;
+    }
+    var payload = draftSchedulePayloadFromRemote(aligned && aligned.draft_schedule);
+    var byWeek = payload && payload.byWeek;
+    var cloudAssign = aligned && aligned.schedule_assignments;
+    if (!byWeek || !cloudAssign) return false;
+    var v2 = null;
+    try {
+      v2 = gmScheduleV2();
+    } catch (_v2Named) {
+      v2 = null;
+    }
+    var changed = false;
+    var store = loadScheduleAssignmentsStore();
+    for (var wi = 0; wi < SCHEDULE_VIEW_WEEK_COUNT; wi += 1) {
+      var cloudEntry = byWeek[String(wi)];
+      if (!cloudEntry) continue;
+      restaurantsList.forEach(function (rest) {
+        var rid = rest.id;
+        var cloudLayers = draftLayersFromWeekEntry(cloudEntry, rid);
+        var localLayers = null;
+        var localPatched = false;
+        ['Kitchen', 'Bartender', 'Server'].forEach(function (role) {
+          var roleIdx = roleIdxForDraftRole(role);
+          if (roleIdx < 0) return;
+          var cloudNamed = weekRoleNamedTrIdx(cloudAssign[rid], wi, roleIdx);
+          var localNamed = weekRoleNamedTrIdx(store[rid], wi, roleIdx);
+          Object.keys(cloudNamed).forEach(function (trKey) {
+            var trIdx = Number(trKey);
+            if (localNamed[trIdx]) return;
+            if (
+              v2 &&
+              typeof v2.isLocallyDeactivatedSort === 'function' &&
+              v2.isLocallyDeactivatedSort(rid, role, trIdx)
+            ) {
+              return;
+            }
+            if (!store[rid]) store[rid] = {};
+            var start = wi * 7;
+            for (var di = 0; di < 7; di += 1) {
+              var id = 'shift-' + (start + di) + '-' + roleIdx + '-' + trIdx;
+              if (cloudAssign[rid] && cloudAssign[rid][id]) {
+                store[rid][id] = JSON.parse(JSON.stringify(cloudAssign[rid][id]));
+                changed = true;
+              }
+            }
+            var cloudRow = cloudLayers && cloudLayers[role] && cloudLayers[role][trIdx];
+            if (!cloudRow) return;
+            if (!localLayers) {
+              localLayers = cloneDraftSchedule(
+                draftLayersFromWeekEntry(draftScheduleByWeekStore[String(wi)], rid) || {}
+              );
+            }
+            if (!localLayers[role] || !Array.isArray(localLayers[role])) localLayers[role] = [];
+            while (localLayers[role].length <= trIdx) {
+              localLayers[role].push([null, null, null, null, null, null, null]);
+            }
+            localLayers[role][trIdx] = JSON.parse(JSON.stringify(cloudRow));
+            localPatched = true;
+            changed = true;
+          });
+        });
+        if (localPatched && localLayers) {
+          saveDraftScheduleRowsForWeek(wi, localLayers, rid, {
+            skipDirty: true,
+            skipInteractiveMark: true,
+          });
+        }
+      });
+    }
+    if (changed) {
+      saveScheduleAssignmentsStore(store, {
+        skipDirty: true,
+        skipInteractiveMark: true,
+        skipTimecardsNotify: true,
+      });
+    }
+    return changed;
+  }
+
   /**
    * Before upload, put back any store-week whose cloud copy still has the shifts
    * this browser just dropped. Stops a blank grid from becoming the shared schedule.
    */
   function keepDenserCloudScheduleWeeks(row) {
     if (!row) return false;
+    adoptCloudNamedRowsLocalIsMissing(row);
     var aligned = row;
     try {
       aligned = alignRemoteTeamStateScheduleBundleToLocalWindow(row, { force: true });
@@ -19231,6 +19364,31 @@
       !scheduleDayOffPushGuardActive()
     ) {
       tookCloudScheduleBundle = takeCloudScheduleBundleAsLocal(row);
+    }
+    /*
+     * Mid-edit must not keep a week that already dropped one person who is still
+     * on the cloud copy. Put that row back without replacing the rest of the grid.
+     */
+    if (
+      !tookCloudScheduleBundle &&
+      row &&
+      row.draft_schedule &&
+      row.schedule_assignments &&
+      !teamStateForcePushActive
+    ) {
+      if (adoptCloudNamedRowsLocalIsMissing(row)) {
+        try {
+          if (typeof rebuildSchedule === 'function' && typeof renderCalendar === 'function') {
+            rebuildSchedule();
+            renderCalendar({ force: true });
+            if (typeof scheduleBody !== 'undefined' && scheduleBody && typeof renderSchedule === 'function') {
+              renderSchedule();
+            }
+          }
+        } catch (_adoptPaint) {
+          /* ignore */
+        }
+      }
     }
 
     /*
