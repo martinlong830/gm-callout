@@ -9324,21 +9324,34 @@
           })
         );
       }
+      var adoptedNamedRow = false;
+      if (
+        !hasInteractiveScheduleEditsThisSession() &&
+        !teamStateForcePushActive &&
+        !scheduleDayOffPushGuardActive()
+      ) {
+        try {
+          adoptedNamedRow = await ensureVisibleWeekHasCloudNamedRows(targetWi);
+        } catch (_adoptNamedPoll) {
+          adoptedNamedRow = false;
+        }
+        if (gen !== scheduleCellsPollGeneration) return false;
+      }
       /*
        * Paint only when local schedule actually changed. Painting every soft poll
        * (timed>=4) remounted Person selects and made Eugene flicker Unassigned.
        * Manual Refresh skips this paint so it can re-apply ↑↓ order first, then
        * remount the grid once (a fast paint left stale Person selects until reload).
        */
-      if (applied || trimmed || droppedFutureShell) {
+      if (applied || trimmed || droppedFutureShell || adoptedNamedRow) {
         if (timecardsScreenActive()) notifyTimecardsScheduleChanged();
       }
-      if ((applied || trimmed || droppedFutureShell) && currentScreen === 1 && !opts.skipPaint) {
+      if ((applied || trimmed || droppedFutureShell || adoptedNamedRow) && currentScreen === 1 && !opts.skipPaint) {
         scheduleUiAwaitingInitialCloudHydrate = false;
         paintVisibleScheduleWeekFast({
           weekIndex: targetWi,
           /* Soft: fingerprint skip; hard Refresh/peer still force. */
-          forcePaint: forceCloudSoT,
+          forcePaint: forceCloudSoT || adoptedNamedRow,
           fast: true,
           forceInitial: forceCloudSoT,
           forceCloudPending: forceCloudSoT,
@@ -13278,6 +13291,13 @@
         /* Cells still paint; a late order repaints once. */
       }
       if (currentScreen === 1) {
+        try {
+          if (await ensureVisibleWeekHasCloudNamedRows(wi)) {
+            rebuildSchedule();
+          }
+        } catch (_adoptNamedHyd) {
+          /* ignore */
+        }
         ensureVisibleWeekPaintedFromCells(wi, timedForPaint);
         startScheduleCellsPoll();
       } else {
@@ -13450,6 +13470,8 @@
   var scheduleDraftRefillAt = Object.create(null);
   /** Set after that ask finishes so "No shifts" is not painted first. */
   var scheduleDraftRefillSettled = Object.create(null);
+  /** team_state.updated_at last compared when copying a missing person onto this browser. */
+  var scheduleNamedRowAdoptUpdatedAt = '';
   /**
    * True only after the first authoritative visible-week cell apply (or cloud unavailable).
    * Until then the calendar stays blank — never paint the all-day-off / wrong-order shell.
@@ -18621,6 +18643,67 @@
   }
 
   /**
+   * Cloud still has a person this browser never stored (Yudina is the 6th 9th Ave
+   * bar row). Cells for that week are deleted, so the slot list alone does not
+   * paint her. Copy the missing row from the shared draft. Do not upload.
+   */
+  async function ensureVisibleWeekHasCloudNamedRows(weekIndex) {
+    var wi = Number(weekIndex);
+    if (isNaN(wi) || !window.gmSupabase) return false;
+    if (hasInteractiveScheduleEditsThisSession()) return false;
+    if (teamStateForcePushActive || teamStateForcePushIgnoreVersionSticky) return false;
+    if (scheduleDayOffPushGuardActive()) return false;
+    var sessRes = null;
+    try {
+      sessRes = await window.gmSupabase.auth.getSession();
+    } catch (_sessNamed) {
+      sessRes = null;
+    }
+    if (!sessRes || !sessRes.data || !sessRes.data.session) return false;
+    var probe = null;
+    try {
+      probe = await window.gmSupabase
+        .from('team_state')
+        .select('updated_at')
+        .eq('id', gmCalloutTeamStateRowId())
+        .maybeSingle();
+    } catch (_probeNamed) {
+      return false;
+    }
+    if (!probe || probe.error || !probe.data) return false;
+    var at = String(probe.data.updated_at || '');
+    if (
+      at &&
+      at === scheduleNamedRowAdoptUpdatedAt &&
+      teamStateLastRowCache &&
+      teamStateLastRowCache.draft_schedule &&
+      teamStateLastRowCache.schedule_assignments
+    ) {
+      return false;
+    }
+    var res = null;
+    try {
+      res = await window.gmSupabase
+        .from('team_state')
+        .select('draft_schedule,schedule_assignments,updated_at')
+        .eq('id', gmCalloutTeamStateRowId())
+        .maybeSingle();
+    } catch (_fetchNamed) {
+      return false;
+    }
+    if (!res || res.error || !res.data || !res.data.draft_schedule || !res.data.schedule_assignments) {
+      return false;
+    }
+    try {
+      teamStateLastRowCache = res.data;
+    } catch (_cacheNamed) {
+      /* ignore */
+    }
+    scheduleNamedRowAdoptUpdatedAt = String(res.data.updated_at || at);
+    return !!adoptCloudNamedRowsLocalIsMissing(res.data);
+  }
+
+  /**
    * Before upload, put back any store-week whose cloud copy still has the shifts
    * this browser just dropped. Stops a blank grid from becoming the shared schedule.
    */
@@ -21336,10 +21419,45 @@
   }
 
   /** Single source of truth: assignment store (with template inherit). No hash invent on live. */
+  /**
+   * Next week often keeps the clock times and drops the break line. Use this
+   * week's label when the hours are the same and next week did not save its own.
+   */
+  function futureSlotTimesMatchTemplateBreak(shiftId, start, end, role, dayStr) {
+    if (!start || !end) return false;
+    var p = parseShiftIdParts(shiftId);
+    if (!p || p.globalDayIdx < (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7) return false;
+    var roleName = role || (ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role);
+    var dayKey = weekdayKeyFromScheduleDay(dayStr) || WEEKDAY_KEYS[p.globalDayIdx % 7];
+    if (!roleName || !dayKey) return false;
+    var tpl = null;
+    try {
+      tpl = draftTimeSlotFor(roleName, dayKey, p.trIdx, SCHEDULE_TEMPLATE_WEEK_INDEX);
+    } catch (_tplBreak) {
+      tpl = null;
+    }
+    if (!tpl || !tpl.start || !tpl.end) return false;
+    return (
+      normalizeHHMM(tpl.start) === normalizeHHMM(start) &&
+      normalizeHHMM(tpl.end) === normalizeHHMM(end)
+    );
+  }
+
   function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr, opts) {
     opts = opts || {};
     var entry = lookupScheduleAssignment(stored, shiftId);
     if (entry && entry.break) return entry.break;
+    var pattern = lookupScheduleAssignmentPattern(stored, shiftId);
+    if (
+      pattern &&
+      pattern.break &&
+      futureSlotTimesMatchTemplateBreak(shiftId, start, end, role, dayStr)
+    ) {
+      var directWorker = scheduleAssignmentPrimaryWorker(entry);
+      if (!directWorker || scheduleAssignmentWorkersAlignedForBreakInherit(entry, pattern)) {
+        return pattern.break;
+      }
+    }
     if (opts.allowPlaceholder) return redPokeBreakAnnotation(start, end, role, dayStr);
     return '';
   }
