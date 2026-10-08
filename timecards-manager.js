@@ -5894,16 +5894,17 @@
   }
 
   /**
-   * Sibling-store tip-pool share for hours worked there.
-   * Every full report (RP1 and RP2) shows local tip points in TIP and the other
-   * store's share in the other-store tips column — whether or not the employee
-   * is single-store payroll. Tip points themselves stay store-local via
-   * tipPaidMinsAtLocation / payrollTotalTipPointsFormula.
+   * Other-store tip-pool share, only on the primary-store paycheck.
+   * Single-store payroll on: that paycheck includes the sibling store's share.
+   * Single-store payroll off: each store's report keeps only that store's tips.
+   * Tip points themselves stay store-local via tipPaidMinsAtLocation.
    */
   function otherStoreTipAmountForEmployee(emp) {
-    if (!emp) return 0;
+    if (!emp || !employeeHasSingleStorePayroll(emp)) return 0;
     var loc = effectiveLocationFilter();
     if (loc !== 'rp-8' && loc !== 'rp-9') return 0;
+    var home = employeePayrollHomeRestaurantId(emp);
+    if (home !== loc) return 0;
     var otherLoc = siblingTimecardsLocationId(loc);
     if (tipPaidMinsAtLocation(emp, otherLoc) <= 0) return 0;
     var dist = getOtherStoreTipDistribution();
@@ -13016,6 +13017,23 @@
     });
   }
 
+  function scrollTimecardScreenToTop(screenId) {
+    function apply() {
+      var el = document.getElementById(screenId);
+      if (el) el.scrollTop = 0;
+      var main = document.querySelector('.main');
+      if (main) main.scrollTop = 0;
+      try {
+        window.scrollTo(0, 0);
+      } catch (_scroll) {
+        /* ignore */
+      }
+    }
+    apply();
+    setTimeout(apply, 0);
+    setTimeout(apply, 60);
+  }
+
   function openEmployee(empId) {
     var emp = d().employees.find(function (e) {
       return e.id === empId;
@@ -13029,6 +13047,7 @@
     hydrateWeekEntriesFromCache(payWeekBounds());
     renderEmployeeShifts(emp);
     d().showScreen(11);
+    scrollTimecardScreenToTop('screen-timecards-employee');
     // Soft-refresh from Supabase — keep cached punches painted until the fetch returns.
     loadWeekEntries({ force: true }).then(function (loadRes) {
       if (!loadRes || !loadRes.ok) return;
@@ -13036,7 +13055,10 @@
       var still = d().employees.find(function (e) {
         return e.id === empId;
       });
-      if (still) renderEmployeeShifts(still);
+      if (still) {
+        renderEmployeeShifts(still);
+        scrollTimecardScreenToTop('screen-timecards-employee');
+      }
     });
   }
 
@@ -13420,6 +13442,7 @@
     );
     renderShiftDetail(emp, shiftRow);
     d().showScreen(12);
+    scrollTimecardScreenToTop('screen-timecards-shift');
   }
 
   function loadPunchIntoForm(entry, shiftRow, schedBreak) {

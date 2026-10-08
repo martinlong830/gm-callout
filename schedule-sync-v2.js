@@ -375,7 +375,11 @@
     var free = activeSlotKeysForRole(restaurantId, role).filter(function (sk) {
       return !used[sk];
     });
-    if (free.length) {
+    /*
+     * Do not attach a spare slot from another row. add_slot would then move
+     * that person on every week. A new row mints its own key (noRebind).
+     */
+    if (free.length && !opts.noRebind) {
       map[k] = free[0];
       setSlotMap(map);
       return free[0];

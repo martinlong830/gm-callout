@@ -36,37 +36,6 @@ function pushScheduleAlias(emp: EmployeeRow, oldName: string): void {
   }
 }
 
-function renameWorkersInAssignments(
-  store: Record<string, unknown>,
-  oldName: string,
-  newName: string
-): boolean {
-  let changed = false;
-  Object.keys(store || {}).forEach((rid) => {
-    const rs = store[rid];
-    if (!rs || typeof rs !== 'object') return;
-    Object.keys(rs as Record<string, unknown>).forEach((shiftId) => {
-      const entry = (rs as Record<string, unknown>)[shiftId] as {
-        workers?: string[];
-      } | null;
-      if (!entry || !Array.isArray(entry.workers)) return;
-      let updated = false;
-      const next = entry.workers.map((w) => {
-        if (w && w !== 'Unassigned' && workerNamesMatch(w, oldName)) {
-          updated = true;
-          return newName;
-        }
-        return w;
-      });
-      if (updated) {
-        entry.workers = next.length ? next : ['Unassigned'];
-        changed = true;
-      }
-    });
-  });
-  return changed;
-}
-
 function renameInCalloutHistory(history: unknown, oldName: string, newName: string): boolean {
   if (!Array.isArray(history)) return false;
   let changed = false;
@@ -126,20 +95,12 @@ export async function propagateEmployeeRename(
     const teamStateId = await readStoredTeamStateId();
     const ts = await fetchTeamStateColumns(sb, {
       role: 'manager',
-      fields: ['schedule_assignments', 'callout_history'],
+      fields: ['callout_history'],
       teamStateId,
     });
     if (ts) {
       const patch: Record<string, unknown> = { id: teamStateId };
       const fields: string[] = [];
-      const assignments = ts.schedule_assignments;
-      if (assignments && typeof assignments === 'object') {
-        const clone = JSON.parse(JSON.stringify(assignments)) as Record<string, unknown>;
-        if (renameWorkersInAssignments(clone, oldName, newName)) {
-          patch.schedule_assignments = clone;
-          fields.push('schedule_assignments');
-        }
-      }
       const history = ts.callout_history;
       if (Array.isArray(history)) {
         const cloneH = JSON.parse(JSON.stringify(history));

@@ -27,31 +27,6 @@ function workerNamesMatch(a: string, b: string): boolean {
   return wl === tl;
 }
 
-function clearWorkersInAssignments(store: Record<string, unknown>, name: string): boolean {
-  let changed = false;
-  Object.keys(store || {}).forEach((rid) => {
-    const rs = store[rid];
-    if (!rs || typeof rs !== 'object') return;
-    Object.keys(rs as Record<string, unknown>).forEach((shiftId) => {
-      const entry = (rs as Record<string, unknown>)[shiftId] as { workers?: string[] } | null;
-      if (!entry || !Array.isArray(entry.workers)) return;
-      let updated = false;
-      const next = entry.workers.map((w) => {
-        if (w && w !== 'Unassigned' && workerNamesMatch(w, name)) {
-          updated = true;
-          return 'Unassigned';
-        }
-        return w;
-      });
-      if (updated) {
-        entry.workers = next.length ? next : ['Unassigned'];
-        changed = true;
-      }
-    });
-  });
-  return changed;
-}
-
 function scrubEmpIdFromNestedWeekMap(
   all: Record<string, unknown>,
   empId: string
@@ -93,36 +68,10 @@ async function scrubLocalTimecardStores(empId: string): Promise<void> {
 }
 
 async function clearScheduleAssignmentsForName(
-  sb: SupabaseClient,
-  displayName: string
+  _sb: SupabaseClient,
+  _displayName: string
 ): Promise<void> {
-  try {
-    const teamStateId = await readStoredTeamStateId();
-    const ts = await fetchTeamStateColumns(sb, {
-      role: 'manager',
-      fields: ['schedule_assignments', 'timecard_dishwasher_tips', 'timecard_week_extras'],
-      teamStateId,
-    });
-    if (!ts) return;
-    const patch: Record<string, unknown> = { id: teamStateId };
-    const fields: string[] = [];
-    const assignments = ts.schedule_assignments;
-    if (assignments && typeof assignments === 'object') {
-      const clone = JSON.parse(JSON.stringify(assignments)) as Record<string, unknown>;
-      if (clearWorkersInAssignments(clone, displayName)) {
-        patch.schedule_assignments = clone;
-        fields.push('schedule_assignments');
-      }
-    }
-    // Tip / extras keyed by employee id are scrubbed after we know emp.id (caller).
-    if (fields.length) {
-      const up = await sb.from('team_state').upsert(patch, { onConflict: 'id' });
-      if (up.error) console.warn('deleteEmployee schedule clear', up.error);
-      else await broadcastTeamStateChanged(sb, teamStateId, fields);
-    }
-  } catch (err) {
-    console.warn('deleteEmployee schedule clear', err);
-  }
+  /* Grid names live on shift records. Deleting someone must not rewrite the spare name list. */
 }
 
 async function scrubRemoteTipExtras(sb: SupabaseClient, empId: string): Promise<void> {

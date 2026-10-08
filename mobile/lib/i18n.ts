@@ -293,6 +293,8 @@ const EN: Dict = {
     'Restored this store’s schedule for {range} from history.',
   'schedule.hardRevertBadRevision':
     'This history entry has no schedule data. Nothing was changed.',
+  'schedule.hardRevertCellsLag':
+    'Schedule restored here, but cloud cells may be incomplete — keep this screen open and try again.',
   'schedule.templates': 'Templates',
   'schedule.normalTemplate': 'Normal template',
   'schedule.masterTemplate': 'Master Template',
@@ -1191,6 +1193,8 @@ const ES: Dict = {
     'Horario de este local restaurado para {range} desde el historial.',
   'schedule.hardRevertBadRevision':
     'Esta entrada del historial no tiene datos de horario. No se cambió nada.',
+  'schedule.hardRevertCellsLag':
+    'El horario se restauró aquí, pero puede que la nube esté incompleta. Deja esta pantalla abierta e inténtalo de nuevo.',
   'schedule.templates': 'Plantillas',
   'schedule.normalTemplate': 'Plantilla normal',
   'schedule.masterTemplate': 'Plantilla maestra',

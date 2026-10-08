@@ -57,7 +57,6 @@ import {
   type ScheduleRevisionRow,
 } from '../../lib/schedule/scheduleRevisions';
 import { broadcastTeamStateChanged } from '../../lib/teamStateSync';
-import { fetchTeamStateUpdatedAt } from '../../lib/teamStateColumns';
 import { supabase } from '../../lib/supabase';
 import type {
   AssignmentStore,
@@ -144,7 +143,6 @@ import { enqueueRestaurantWeekCellOps } from '../../lib/schedule/weekCellOps';
 import {
   enqueueOps,
   ensureBoundSlotKey,
-  ensureSlotKey,
   fetchSlots,
   flushOutbox,
   flushOutboxFully,
@@ -160,7 +158,6 @@ import {
   pullCloudCellsVisibleThenFull,
   consumeDocumentCloudSoT,
   visibleWeekProjectionKey,
-  mergeBlobNamesIntoUnassigned,
   writeOnlyCells,
   type ScheduleOp,
 } from '../../lib/schedule/syncV2';
@@ -560,14 +557,7 @@ export default function ManagerScheduleScreen() {
       }
       lastCellProjectionKeyRef.current = cellKey;
       lastMergedBlobRef.current = blob ?? null;
-      /*
-       * Cells often omit worker_name. Fill those slots from the schedule blob
-       * without writing the projection back into team state — that clone was
-       * restarting this pull and freezing the other tabs.
-       */
-      if (blob && typeof blob === 'object') {
-        assign = mergeBlobNamesIntoUnassigned(assign, blob as AssignmentStore) || assign;
-      }
+      /* Shift records name the row. The spare name list must not paint over them. */
       const paintKey = visibleWeekProjectionKey(assign, projected.draft, weekIndex);
       cloudCellsAppliedRef.current = true;
       if (paintKey && paintKey === lastPaintKeyRef.current) return;
@@ -795,17 +785,15 @@ export default function ManagerScheduleScreen() {
           });
           const payload = schedulePublishedPayload(map);
           const teamStateId = await readStoredTeamStateId();
-          /* Always write the live schedule bundle with publish — not only schedule_published.
-             Otherwise Notify Again can leave cloud on an older assignments/draft while
-             admins open the notification and see a reverted schedule. */
-          const assignPayload = JSON.parse(JSON.stringify(assignmentStoreRef.current || {}));
+          /* Publish flags the week. Hours stay on the shift records, so this does not
+             upload the spare name list or spare week. */
           const draftPayload = JSON.parse(
             JSON.stringify(draftScheduleRawRef.current ?? draftScheduleRaw ?? {})
-          );
+          ) as Record<string, unknown>;
+          delete draftPayload.byWeek;
           const up = await supabase.from('team_state').upsert(
             {
               id: teamStateId,
-              schedule_assignments: assignPayload,
               draft_schedule: draftPayload,
               schedule_published: payload,
             },
@@ -818,7 +806,7 @@ export default function ManagerScheduleScreen() {
           await broadcastTeamStateChanged(
             supabase,
             teamStateId,
-            ['schedule_assignments', 'draft_schedule', 'schedule_published'],
+            ['draft_schedule', 'schedule_published'],
             session?.user?.id
           );
           /* Snapshot publish in revision history (matches web). */
@@ -1191,52 +1179,23 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
          * Store-scoped: only pull/merge the full remote blob when cloud is newer than our
          * cache — otherwise every keystroke-save paid for a full schedule download.
          */
-        const managedScope = managerManagedRestaurantId(myEmployee, role);
         const stateAt = teamState?.updated_at != null ? String(teamState.updated_at) : '';
         const rememberedAt = lastPushedUpdatedAtRef.current || '';
         const knownAt = (stateAt > rememberedAt ? stateAt : rememberedAt) || null;
-        if (managedScope === 'rp-8' || managedScope === 'rp-9') {
-          try {
-            const remoteAt = await fetchTeamStateUpdatedAt(supabase, teamStateId);
-            if (remoteAt && knownAt && remoteAt > knownAt) {
-              const remoteRes = await supabase
-                .from('team_state')
-                .select('schedule_assignments, updated_at')
-                .eq('id', teamStateId)
-                .maybeSingle();
-              const remoteAssign = remoteRes.data?.schedule_assignments;
-              if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
-                const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
-                const localRs = toSave[managedScope];
-                if (localRs && Object.keys(localRs).length >= 20) {
-                  merged[managedScope] = localRs;
-                  toSave = merged;
-                }
-              }
-            }
-          } catch (mergeErr) {
-            console.warn('schedule remote merge before save', mergeErr);
-          }
-        }
         const draftToSave =
           draftSchedule !== undefined ? draftSchedule : pendingDraftRef.current;
-        const cellsOnly = opts?.forceBlobPush ? false : await writeOnlyCells();
-        const assignCount = assignmentShiftCount(toSave);
         const payload: Record<string, unknown> = {
           id: teamStateId,
         };
         const fields: string[] = [];
         /*
-         * Cell ops update the office computer. The saved schedule is sent too
-         * so other phones match, but only when it still has the real grid.
-         * An empty shell must never replace the live schedule.
+         * Hours and names live on the shift records. This save only patches
+         * group order, sales, and Ongi, and it drops any leftover spare week.
          */
-        if ((!cellsOnly || assignCount >= 200) && assignCount >= 200) {
-          payload.schedule_assignments = toSave;
-          fields.push('schedule_assignments');
-        }
-        if (draftToSave !== undefined) {
-          payload.draft_schedule = draftToSave;
+        if (draftToSave !== undefined && draftToSave && typeof draftToSave === 'object') {
+          const meta = JSON.parse(JSON.stringify(draftToSave)) as Record<string, unknown>;
+          delete meta.byWeek;
+          payload.draft_schedule = meta;
           fields.push('draft_schedule');
         }
         if (!fields.length) {
@@ -1264,24 +1223,6 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
               .select('schedule_assignments, draft_schedule, updated_at')
               .eq('id', teamStateId)
               .maybeSingle();
-            const remoteAssign = remoteRes.data?.schedule_assignments;
-              if (remoteAssign && typeof remoteAssign === 'object' && !Array.isArray(remoteAssign)) {
-                const merged = JSON.parse(JSON.stringify(remoteAssign)) as AssignmentStore;
-                const localCount = assignmentShiftCount(toSave);
-                if (localCount >= 200) {
-                  if (managedScope === 'rp-8' || managedScope === 'rp-9') {
-                    const localRs = toSave[managedScope];
-                    if (localRs && Object.keys(localRs).length) merged[managedScope] = localRs;
-                  } else {
-                    Object.keys(toSave).forEach((rid) => {
-                      const localRs = toSave[rid];
-                      if (localRs && Object.keys(localRs).length) merged[rid] = localRs;
-                    });
-                  }
-                  toSave = merged;
-                  payload.schedule_assignments = toSave;
-                }
-              }
             if (
               draftToSave === undefined &&
               remoteRes.data?.draft_schedule != null &&
@@ -1289,7 +1230,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             ) {
               /* keep remote draft when we were not pushing draft */
             } else if (draftToSave !== undefined) {
-              payload.draft_schedule = mergeDraftScheduleSlotOrderFromRemote(
+              const mergedDraft = mergeDraftScheduleSlotOrderFromRemote(
                 draftToSave,
                 remoteRes.data?.draft_schedule,
                 {
@@ -1298,6 +1239,11 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                   preferWhenBoth: slotOrderDirtyRef.current ? 'local' : 'remote',
                 }
               );
+              if (mergedDraft && typeof mergedDraft === 'object') {
+                const meta = JSON.parse(JSON.stringify(mergedDraft)) as Record<string, unknown>;
+                delete meta.byWeek;
+                payload.draft_schedule = meta;
+              }
             }
           } catch (conflictMergeErr) {
             console.warn('schedule conflict merge', conflictMergeErr);
@@ -1358,8 +1304,7 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             slotOrderDirtyRef.current = false;
             slotOrderPushedAtRef.current = Date.now();
             setAssignmentStore(assignmentShell(restaurantsRef.current));
-            const savedDraft =
-              payload.draft_schedule !== undefined ? payload.draft_schedule : draftToSave;
+            const savedDraft = draftToSave !== undefined ? draftToSave : payload.draft_schedule;
             applyLocalScheduleAssignments(toSave, savedDraft, {
               markDirty: false,
               pushedUpdatedAt,
@@ -1652,14 +1597,8 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
             const roleKey = rolesLoop[roleIdx].role as RoleKey;
             const n = slotCountForRole(draft, roleKey);
             for (let trIdx = 0; trIdx < n; trIdx += 1) {
-              const slotKey = await ensureSlotKey(
-                currentRestaurantId,
-                roleKey,
-                trIdx,
-                knownSlots
-              );
-              if (!slotKey) continue;
-              ops.push(opAddSlot(currentRestaurantId, roleKey, slotKey, trIdx));
+              const keysAtRow = slotKeysAtSort(knownSlots, currentRestaurantId, roleKey, trIdx);
+              if (!keysAtRow.length) continue;
               for (let di = 0; di < 7; di += 1) {
                 const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
                 if (!dayIso) continue;
@@ -1675,28 +1614,44 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 const worker =
                   (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
                   (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
-                if (!tr?.start || !tr?.end) {
-                  ops.push(
-                    opSetDayOff(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
-                  );
-                } else {
-                  ops.push(
-                    opSetTimes(
-                      currentRestaurantId,
-                      dayIso,
-                      roleKey,
-                      slotKey,
-                      tr.start,
-                      tr.end,
-                      entry.break || null
-                    )
-                  );
-                  ops.push(
-                    opSetWorker(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
-                  );
-                }
+                keysAtRow.forEach((slotKey) => {
+                  if (!tr?.start || !tr?.end) {
+                    ops.push(
+                      opSetDayOff(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                    );
+                  } else {
+                    ops.push(
+                      opSetTimes(
+                        currentRestaurantId,
+                        dayIso,
+                        roleKey,
+                        slotKey,
+                        tr.start,
+                        tr.end,
+                        entry.break || null
+                      )
+                    );
+                    ops.push(
+                      opSetWorker(currentRestaurantId, dayIso, roleKey, slotKey, worker || null)
+                    );
+                  }
+                });
               }
             }
+            knownSlots.forEach((slot) => {
+              if (!slot || slot.active === false || !slot.slot_key) return;
+              if (String(slot.restaurant_id || '') !== String(currentRestaurantId)) return;
+              if (String(slot.role || '') !== String(roleKey)) return;
+              const sortOrder = Number(slot.sort_order);
+              if (Number.isNaN(sortOrder) || sortOrder < n) return;
+              for (let di = 0; di < 7; di += 1) {
+                const dayIso = weekMeta[weekIndex * 7 + di]?.iso;
+                if (!dayIso) continue;
+                ops.push(
+                  opSetDayOff(currentRestaurantId, dayIso, roleKey, String(slot.slot_key), null)
+                );
+              }
+            });
           }
           for (let i = 0; i < ops.length; i += 40) {
             await enqueueOps(ops.slice(i, i + 40));
@@ -1886,9 +1841,14 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                     );
                   }
                 }
-                if (revLayers) {
-                  nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, revLayers);
+                if (!revLayers) {
+                  Alert.alert(
+                    t('schedule.historyFailed'),
+                    t('schedule.hardRevertBadRevision')
+                  );
+                  return;
                 }
+                nextDraft = patchDraftScheduleForWeek(nextDraft, wi, rid, revLayers);
                 /* Seed Unassigned, then overlay revision week keys. */
                 (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((roleKey, roleIndex) => {
                   const draft = loadDraftFromTeamState(nextDraft, wi, rid, {
@@ -1978,8 +1938,9 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                 pendingStoreRef.current = nextAssign;
                 pendingDraftRef.current = nextDraft;
                 localEditPendingRef.current = true;
-                /* Force blob push even in write-only, and upsert ISO cells (never delete). */
-                await persistCloud(nextAssign, nextDraft, { forceBlobPush: true });
+                /* Row order and sales only. Hours are written as shift records below. */
+                await persistCloud(nextAssign, nextDraft);
+                let cellsOk = false;
                 try {
                   const rolesLoop = ROLE_DEFS;
                   const ops: ScheduleOp[] = [];
@@ -2002,9 +1963,8 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                     const roleKey = rolesLoop[roleIdx].role as RoleKey;
                     const n = slotCountForRole(draft, roleKey);
                     for (let trIdx = 0; trIdx < n; trIdx += 1) {
-                      const slotKey = await ensureSlotKey(rid, roleKey, trIdx, knownSlotsHr);
-                      if (!slotKey) continue;
-                      ops.push(opAddSlot(rid, roleKey, slotKey, trIdx));
+                      const keysAtRow = slotKeysAtSort(knownSlotsHr, rid, roleKey, trIdx);
+                      if (!keysAtRow.length) continue;
                       for (let di = 0; di < 7; di += 1) {
                         const dayIso = weekMeta[wi * 7 + di]?.iso;
                         if (!dayIso) continue;
@@ -2020,31 +1980,54 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
                         const worker =
                           (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
                           (rawOwner && rawOwner !== 'Unassigned' ? rawOwner : null);
-                        if (!tr?.start || !tr?.end) {
-                          ops.push(opSetDayOff(rid, dayIso, roleKey, slotKey, worker || null));
-                        } else {
-                          ops.push(
-                            opSetTimes(
-                              rid,
-                              dayIso,
-                              roleKey,
-                              slotKey,
-                              tr.start,
-                              tr.end,
-                              entry.break || null
-                            )
-                          );
-                          ops.push(opSetWorker(rid, dayIso, roleKey, slotKey, worker || null));
-                        }
+                        keysAtRow.forEach((slotKey) => {
+                          if (!tr?.start || !tr?.end) {
+                            ops.push(opSetDayOff(rid, dayIso, roleKey, slotKey, worker || null));
+                          } else {
+                            ops.push(
+                              opSetTimes(
+                                rid,
+                                dayIso,
+                                roleKey,
+                                slotKey,
+                                tr.start,
+                                tr.end,
+                                entry.break || null
+                              )
+                            );
+                            ops.push(opSetWorker(rid, dayIso, roleKey, slotKey, worker || null));
+                          }
+                        });
                       }
                     }
+                    knownSlotsHr.forEach((slot) => {
+                      if (!slot || slot.active === false || !slot.slot_key) return;
+                      if (String(slot.restaurant_id || '') !== String(rid)) return;
+                      if (String(slot.role || '') !== String(roleKey)) return;
+                      const sortOrder = Number(slot.sort_order);
+                      if (Number.isNaN(sortOrder) || sortOrder < n) return;
+                      for (let di = 0; di < 7; di += 1) {
+                        const dayIso = weekMeta[wi * 7 + di]?.iso;
+                        if (!dayIso) continue;
+                        ops.push(opSetDayOff(rid, dayIso, roleKey, String(slot.slot_key), null));
+                      }
+                    });
                   }
                   for (let i = 0; i < ops.length; i += 40) {
                     await enqueueOps(ops.slice(i, i + 40));
                   }
-                  await flushOutboxFully(sb);
+                  const flushed = await flushOutboxFully(sb);
+                  cellsOk = !!flushed.ok;
                 } catch (cellErr) {
                   console.warn('hard revert cell ops', cellErr);
+                  cellsOk = false;
+                }
+                if (!cellsOk) {
+                  Alert.alert(
+                    t('schedule.hardRevertDone'),
+                    t('schedule.hardRevertCellsLag')
+                  );
+                  return;
                 }
                 await insertScheduleRevision(sb, {
                   teamStateId,

@@ -1,4 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { upsertLeaveBalanceEntry } from '../employeeLeave';
+import { saveEmployeeRow } from '../employeeSave';
 import type { EmployeeRow } from '../employees';
 import { setEmployeeDayDishwasherTip } from './dishwasherTips';
 import { deleteTimeClockEntries, loadWeekEntries } from './entriesApi';
@@ -35,6 +37,15 @@ export async function removeShiftDay(
     }
   }
   await setEmployeeDayLeave(emp.id, shiftRow.iso, 0, 0, bounds);
+  const vac = upsertLeaveBalanceEntry(emp, 'vacation', shiftRow.iso, 0);
+  const sick = upsertLeaveBalanceEntry(emp, 'sick', shiftRow.iso, 0);
+  if (vac.changed || sick.changed) {
+    try {
+      await saveEmployeeRow(supabase, emp);
+    } catch {
+      /* week-extras already cleared; Team refreshes when the roster save lands */
+    }
+  }
   await setEmployeeDayAdditionalCashTip(emp.id, shiftRow.iso, 0, bounds);
   await setEmployeeDayMissingHours(emp.id, shiftRow.iso, 0, bounds);
   if (options?.clearDishwasherTip) {

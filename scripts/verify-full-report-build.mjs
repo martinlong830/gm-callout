@@ -1954,9 +1954,9 @@ await verifyPayslipPatchedExport();
   if (Math.abs(eighthPay['e-split'].metrics.vlH) > 0.01) {
     throw new Error('working-location VL must not duplicate on 8th, got ' + eighthPay['e-split'].metrics.vlH);
   }
-  /* Working-location staff: local tip points in TIP, sibling share in other-store tips. */
-  assertClose(ninthPay['e-split'].metrics.otherStoreTips, 300, '9th other-store tips = 8th tip share for SPLIT');
-  assertClose(eighthPay['e-split'].metrics.otherStoreTips, 300, '8th other-store tips = 9th tip share for SPLIT');
+  /* Working-location staff: each store's report has only that store's tip share. */
+  assertClose(ninthPay['e-split'].metrics.otherStoreTips, 0, '9th report must not include 8th tips for SPLIT');
+  assertClose(eighthPay['e-split'].metrics.otherStoreTips, 0, '8th report must not include 9th tips for SPLIT');
   if (Math.abs(ninthPay['e-split'].metrics.gross - split9Gross) > 0.01) {
     throw new Error('SPLIT WORKER 9th gross expected ' + split9Gross + ', got ' + ninthPay['e-split'].metrics.gross);
   }
@@ -2026,10 +2026,10 @@ await verifyPayslipPatchedExport();
     throw new Error('9th Payroll must list single-store BOTH STORES as a paycheck row');
   }
   assertClose(ninthSheet.eboth.metrics.otherStoreTips, 400, '9th paycheck tips from 8th tip points');
-  assertClose(eighthSheet.eboth.metrics.otherStoreTips, 400, '8th tip-borrow also shows 9th tip share in other-store tips');
-  /* Zeferino pattern: 9th payroll only, worked a day at each store.
+  assertClose(eighthSheet.eboth.metrics.otherStoreTips, 0, '8th tip-borrow must not also pay 9th tips');
+  /* Zeferino pattern: wages and the other store's tips stay on the home paycheck.
      RP1: TIP = 9th share, other-store = 8th share.
-     RP2: TIP = 8th share, other-store = 9th share. */
+     RP2: TIP = 8th share only, no 9th tips. */
   deps.employees.push({
     id: 'e-zef',
     firstName: 'ZEFERINO',
@@ -2092,14 +2092,11 @@ await verifyPayslipPatchedExport();
     throw new Error('8th Payroll must list ZEFERINO as a tip-point borrow row');
   }
   assertClose(zef8Sheet['e-zef'].metrics.totalTipPoints, 16, '8th tip points for Zeferino (one day)');
-  assertClose(zef8Sheet['e-zef'].metrics.otherStoreTips, zefShare9, '8th other-store tips = 9th share');
+  assertClose(zef8Sheet['e-zef'].metrics.otherStoreTips, 0, '8th tip-borrow must not include 9th tips');
   const borrowOther = payrollNamedCell('rp-8', 'ZEFERINO FLORES', 'U');
-  if (!borrowOther || Number(borrowOther.v) !== zefShare9) {
+  if (borrowOther && Number(borrowOther.v) > 0.5) {
     throw new Error(
-      '8th other-store tips should be Zeferino 9th Ave tip share ' +
-        zefShare9 +
-        ', got ' +
-        (borrowOther && borrowOther.v)
+      '8th tip-borrow row must not include 9th Ave tips, got ' + (borrowOther && borrowOther.v)
     );
   }
 

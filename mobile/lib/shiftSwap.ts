@@ -270,6 +270,7 @@ export async function applyApprovedSwapToSchedule(
         : undefined;
 
   let draftChanged = false;
+  let mintedCoverRow = false;
   let destSid = shift.shiftId;
 
   const moveOntoCoverTr = (targetTr: number) => {
@@ -285,7 +286,11 @@ export async function applyApprovedSwapToSchedule(
       timeLabel,
       hours,
     };
-    rs[shift.shiftId] = { workers: ['Unassigned'] };
+    const offererName = String(offer.employeeName || '').trim();
+    rs[shift.shiftId] =
+      offererName && offererName !== 'Unassigned'
+        ? { workers: ['Unassigned'], rowOwner: offererName }
+        : { workers: ['Unassigned'] };
     draftChanged = true;
   };
 
@@ -327,6 +332,7 @@ export async function applyApprovedSwapToSchedule(
     draftRows = withRow;
     const newTrIdx = (draftRows[coverRole] || []).length - 1;
     moveOntoCoverTr(newTrIdx);
+    mintedCoverRow = true;
     draftRaw = patchDraftScheduleForWeek(draftRaw, wi, rid, draftRows);
     const weekMeta = buildWeeksFromMonday(
       SCHEDULE_VIEW_WEEK_COUNT,
@@ -344,21 +350,7 @@ export async function applyApprovedSwapToSchedule(
   }
 
   const teamStateId = await readStoredTeamStateId();
-  const payload: Record<string, unknown> = {
-    id: teamStateId,
-    schedule_assignments: nextStore,
-  };
-  if (draftRaw != null && draftChanged) {
-    payload.draft_schedule = draftRaw;
-  }
-  const up = await sb
-    .from('team_state')
-    .upsert(payload, { onConflict: 'id' })
-    .select('id, updated_at')
-    .single();
-  if (up.error) return { ok: false, message: up.error.message };
-
-  const updatedAt = up.data?.updated_at != null ? String(up.data.updated_at) : undefined;
+  let updatedAt: string | undefined;
   const draftForHash = draftChanged
     ? draftRaw
     : opts?.draftScheduleRaw != null
@@ -366,13 +358,22 @@ export async function applyApprovedSwapToSchedule(
       : {};
   const scheduleHash = hashScheduleBundle(nextStore, draftForHash);
 
-  try {
-    const cols = draftChanged
-      ? (['schedule_assignments', 'draft_schedule'] as const)
-      : (['schedule_assignments'] as const);
-    await broadcastTeamStateChanged(sb, teamStateId, [...cols]);
-  } catch {
-    /* non-blocking */
+  if (draftRaw != null && draftChanged) {
+    const meta = JSON.parse(JSON.stringify(draftRaw)) as Record<string, unknown>;
+    delete meta.byWeek;
+    const up = await sb
+      .from('team_state')
+      .update({ draft_schedule: meta })
+      .eq('id', teamStateId)
+      .select('id, updated_at')
+      .maybeSingle();
+    if (up.error) return { ok: false, message: up.error.message };
+    updatedAt = up.data?.updated_at != null ? String(up.data.updated_at) : undefined;
+    try {
+      await broadcastTeamStateChanged(sb, teamStateId, ['draft_schedule']);
+    } catch {
+      /* non-blocking */
+    }
   }
 
   const { enqueueCellOpsForShiftTargets } = await import('./schedule/weekCellOps');
@@ -384,6 +385,7 @@ export async function applyApprovedSwapToSchedule(
       { restaurantId: rid, shiftId: shift.shiftId },
       { restaurantId: rid, shiftId: destSid },
     ],
+    mintMissing: mintedCoverRow,
   });
 
   return {

@@ -21,6 +21,7 @@ import {
   opSetDayOff,
   opSetTimes,
   opSetWorker,
+  slotKeysAtSort,
   type ScheduleOp,
 } from './syncV2';
 
@@ -109,6 +110,8 @@ export async function enqueueCellOpsForShiftTargets(opts: {
   assignmentStore: AssignmentStore;
   draftRaw: unknown;
   targets: { restaurantId: string; shiftId: string }[];
+  /** Only a newly added cover row may create a slot. Existing rows are never moved. */
+  mintMissing?: boolean;
 }): Promise<void> {
   const companyId = (await readStoredCompanyId()) || '';
   if (!companyId) {
@@ -127,7 +130,6 @@ export async function enqueueCellOpsForShiftTargets(opts: {
     active?: boolean;
   }[];
   const ops: ScheduleOp[] = [];
-  const seenSlots = new Set<string>();
   for (const t of opts.targets || []) {
     if (!t?.restaurantId || !t.shiftId) continue;
     const p = parseShiftIdParts(t.shiftId);
@@ -136,13 +138,18 @@ export async function enqueueCellOpsForShiftTargets(opts: {
     if (!roleKey) continue;
     const dayIso = weekMeta[p.globalDayIdx]?.iso;
     if (!dayIso) continue;
-    const slotKey = await ensureSlotKey(t.restaurantId, roleKey, p.trIdx, knownSlots);
-    if (!slotKey) continue;
-    const slotSig = `${t.restaurantId}|${roleKey}|${slotKey}`;
-    if (!seenSlots.has(slotSig)) {
-      seenSlots.add(slotSig);
-      ops.push(opAddSlot(t.restaurantId, roleKey, slotKey, p.trIdx));
+    let keysAtRow = slotKeysAtSort(knownSlots, t.restaurantId, roleKey, p.trIdx);
+    if (!keysAtRow.length && opts.mintMissing) {
+      const created = await ensureSlotKey(t.restaurantId, roleKey, p.trIdx, knownSlots, {
+        allowMint: true,
+        noRebind: true,
+      });
+      if (created) {
+        keysAtRow = [created];
+        ops.push(opAddSlot(t.restaurantId, roleKey, created, p.trIdx));
+      }
     }
+    if (!keysAtRow.length) continue;
     const wi = Math.floor(p.globalDayIdx / 7);
     const di = p.globalDayIdx % 7;
     const draft = loadDraftFromTeamState(opts.draftRaw, wi, t.restaurantId, {
@@ -154,14 +161,16 @@ export async function enqueueCellOpsForShiftTargets(opts: {
     const worker =
       (entry.workers || []).find((w) => w && w !== 'Unassigned') ||
       (entry.rowOwner && entry.rowOwner !== 'Unassigned' ? entry.rowOwner : null);
-    if (!tr?.start || !tr?.end) {
-      ops.push(opSetDayOff(t.restaurantId, dayIso, roleKey, slotKey, worker));
-    } else {
-      ops.push(
-        opSetTimes(t.restaurantId, dayIso, roleKey, slotKey, tr.start, tr.end, entry.break || null)
-      );
-      ops.push(opSetWorker(t.restaurantId, dayIso, roleKey, slotKey, worker));
-    }
+    keysAtRow.forEach((slotKey) => {
+      if (!tr?.start || !tr?.end) {
+        ops.push(opSetDayOff(t.restaurantId, dayIso, roleKey, slotKey, worker));
+      } else {
+        ops.push(
+          opSetTimes(t.restaurantId, dayIso, roleKey, slotKey, tr.start, tr.end, entry.break || null)
+        );
+        ops.push(opSetWorker(t.restaurantId, dayIso, roleKey, slotKey, worker));
+      }
+    });
   }
   if (!ops.length) return;
   await enqueueOps(ops);

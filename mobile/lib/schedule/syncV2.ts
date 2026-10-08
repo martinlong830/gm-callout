@@ -603,7 +603,7 @@ export async function ensureSlotKey(
     sort_order?: number;
     active?: boolean;
   }[],
-  opts?: { allowMint?: boolean }
+  opts?: { allowMint?: boolean; noRebind?: boolean }
 ): Promise<string | null> {
   const allowMint = !!(opts && opts.allowMint);
   const map = await readJson<Record<string, string>>(SLOT_MAP_KEY, {});
@@ -632,7 +632,7 @@ export async function ensureSlotKey(
   if (mapped && (!activeKeys.size || activeKeys.has(mapped))) return mapped;
   const used = new Set(Object.keys(map).map((key) => String(map[key] || '')));
   const unused = active.find((s) => s.slot_key && !used.has(String(s.slot_key)));
-  if (unused?.slot_key) {
+  if (unused?.slot_key && !opts?.noRebind) {
     map[k] = String(unused.slot_key);
     await writeJson(SLOT_MAP_KEY, map);
     return map[k];

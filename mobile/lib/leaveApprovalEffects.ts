@@ -1,5 +1,4 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { readStoredTeamStateId } from './companySession';
 import {
   appendLeaveBalanceEntries,
   LEAVE_HOURS_PER_DAY,
@@ -23,9 +22,9 @@ import {
 import type { AssignmentStore, DraftGrid, EmployeeLite, RoleKey } from './schedule/types';
 import { reassignShiftWorkerInStore } from './shiftSwap';
 import type { OfferedShiftRef, StaffRequestUi } from './staffRequests';
-import { broadcastTeamStateChanged } from './teamStateSync';
 import { scheduledPaidMinutes } from './timecards/engine';
-import { clearDayLeaveOverridesInRange, parseTimeoffRequest } from './timecards/weekExtras';
+import { payWeekBoundsFromMonday } from './timecards/payWeek';
+import { clearDayLeaveOverridesInRange, parseTimeoffRequest, setEmployeeDayLeave } from './timecards/weekExtras';
 import { enqueueCellOpsForShiftTargets } from './schedule/weekCellOps';
 
 const LEAVE_DEFAULT_DAY_HOURS = LEAVE_HOURS_PER_DAY;
@@ -78,33 +77,12 @@ export async function persistAssignmentStore(
   | { ok: true; store: AssignmentStore; draftSchedule?: unknown; updatedAt?: string }
   | { ok: false; message: string }
 > {
-  const teamStateId = await readStoredTeamStateId();
-  const payload: Record<string, unknown> = {
-    id: teamStateId,
-    schedule_assignments: store,
-  };
-  if (draftSchedule !== undefined) payload.draft_schedule = draftSchedule;
-  const up = await sb
-    .from('team_state')
-    .upsert(payload, { onConflict: 'id' })
-    .select('id, updated_at')
-    .single();
-  if (up.error) return { ok: false, message: up.error.message };
-  try {
-    const cols =
-      draftSchedule !== undefined
-        ? (['schedule_assignments', 'draft_schedule'] as const)
-        : (['schedule_assignments'] as const);
-    await broadcastTeamStateChanged(sb, teamStateId, [...cols]);
-  } catch {
-    /* non-blocking */
-  }
-  return {
-    ok: true,
-    store,
-    draftSchedule,
-    updatedAt: up.data?.updated_at != null ? String(up.data.updated_at) : undefined,
-  };
+  /*
+   * Hours and names are the shift records. Do not write the spare week or the
+   * spare name list — that copy was putting deleted rows back on other devices.
+   */
+  void sb;
+  return { ok: true, store, draftSchedule };
 }
 
 export function unassignShiftsInStore(
@@ -321,6 +299,18 @@ export async function applyTimeoffApprovalEffects(
 
   try {
     await clearDayLeaveOverridesInRange(emp.id, range.start, range.end);
+    for (const entry of leaveEntries) {
+      const iso = String(entry.date || '').slice(0, 10);
+      if (!iso) continue;
+      const monday = new Date(`${iso}T12:00:00`);
+      const dow = monday.getDay();
+      monday.setDate(monday.getDate() + (dow === 0 ? -6 : 1 - dow));
+      monday.setHours(0, 0, 0, 0);
+      const hours = Math.max(0, Number(entry.hours) || 0);
+      const vl = range.leaveType === 'sick' ? 0 : hours;
+      const sl = range.leaveType === 'sick' ? hours : 0;
+      await setEmployeeDayLeave(emp.id, iso, vl, sl, payWeekBoundsFromMonday(monday));
+    }
   } catch {
     /* non-blocking — leaveBalance still drives display */
   }
@@ -344,18 +334,20 @@ export async function applyCalloutApprovalEffects(
 > {
   const offered = resolveOfferedShiftRef(request);
   let nextStore = params.assignmentStore || {};
+  let draftRaw = params.draftScheduleRaw;
   let cleared = false;
   let targets: { restaurantId: string; shiftId: string }[] = [];
+  const workerName = emp ? employeeDisplayName(emp) : request.employeeName;
 
   if (offered) {
-    nextStore = clearOfferedShiftFromStore(nextStore, offered);
-    cleared = true;
     targets = [{ restaurantId: offered.restaurantId, shiftId: offered.shiftId }];
+    draftRaw = nullDraftCellsForTargets(draftRaw, targets);
+    nextStore = stampDayOffOwners(nextStore, targets, workerName);
+    cleared = true;
   } else if (emp || request.employeeName) {
-    /* Legacy callouts without offeredShift: clear that worker's shifts on the iso day if known. */
+    /* Legacy callouts without offeredShift: day off that worker on the iso day. */
     const iso = String(request.offeredShift?.iso || '').slice(0, 10);
     if (iso) {
-      const workerName = emp ? employeeDisplayName(emp) : request.employeeName;
       const result = clearWorkerScheduleOnDateRange({
         employees: params.employees,
         workerName,
@@ -363,22 +355,24 @@ export async function applyCalloutApprovalEffects(
         endIso: iso,
         assignmentStore: nextStore,
         draftRows: params.draftRows,
-        draftScheduleRaw: params.draftScheduleRaw,
+        draftScheduleRaw: draftRaw,
+        asDayOff: true,
       });
       nextStore = result.store;
+      draftRaw = result.draftRaw;
       targets = result.targets;
       cleared = result.clearedShiftIds.length > 0;
     }
   }
 
   if (cleared) {
-    const persisted = await persistAssignmentStore(sb, nextStore);
+    const persisted = await persistAssignmentStore(sb, nextStore, draftRaw);
     if (!persisted.ok) return persisted;
     if (targets.length) {
       await enqueueCellOpsForShiftTargets({
         sb,
         assignmentStore: persisted.store,
-        draftRaw: params.draftScheduleRaw,
+        draftRaw,
         targets,
       });
     }
