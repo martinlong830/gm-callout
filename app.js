@@ -6893,7 +6893,9 @@
   }
 
   var SINGLE_STORE_PAYROLL_PENDING_KEY = 'gm-callout-single-store-payroll-pending-v1';
-  var SINGLE_STORE_PAYROLL_PENDING_MS = 10 * 60 * 1000;
+  /* Keep an unsaved Off/On until cloud echoes it. A short window let a roster refresh
+     put Irineo back on the name default and the 9th Ave report paid 8th Ave tips again. */
+  var SINGLE_STORE_PAYROLL_PENDING_MS = 7 * 24 * 60 * 60 * 1000;
   var employeeSingleStorePayrollPendingById = null;
   var employeeSingleStorePayrollRetryAt = Object.create(null);
 

@@ -7154,9 +7154,31 @@
 
   function cpaTipsForRow(row) {
     if (!row) return null;
-    /* Tip-pool share only. Delivery tips stay on Payroll / Payslip, not CPA. */
+    /* This store's tip-pool share, plus the other store's share when single-store payroll
+       is on. Dishwasher / delivery tips stay on Payroll / Payslip, not CPA. */
     var pooled = payrollTipAmountForRosterRow(row);
-    return pooled != null && pooled > 0 ? pooled : null;
+    var other = row.emp ? otherStoreTipAmountForEmployee(row.emp) : 0;
+    var total = (pooled || 0) + (other || 0);
+    return total > 0 ? total : null;
+  }
+
+  /**
+   * CPA Tips follows Payroll: this store's TIP column, plus NET DELIVERY / OTHER STORE
+   * when that cell is the other store's tip-pool share. Dishwasher tips in that same
+   * column are subtracted so CPA does not pay delivery tips.
+   */
+  function cpaPayrollTipsFormula(row) {
+    if (!row || !row.emp) return null;
+    var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TIP);
+    if (!payrollTips) return null;
+    var expr = payrollTips;
+    var payrollDelivery = payrollSheetNumberExpr(row.emp, PAYROLL_COL_DELIVERY);
+    if (payrollDelivery) {
+      expr += '+' + payrollDelivery;
+      var dish = row.dishwasherTipsPay || 0;
+      if (dish > 0.004) expr += '-' + String(Math.round(dish * 100) / 100);
+    }
+    return '=' + expr;
   }
 
   function buildCpaEmployeeRow(row, index) {
@@ -7203,8 +7225,7 @@
     var vlSlTotalH = (row.vlHours || 0) + (row.slHours || 0);
     var missedPay = row.missingPay != null ? row.missingPay : 0;
     var payrollHours = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TOTAL_H);
-    /* Tip-pool share only — not TOTAL TIPS (that column includes delivery tips). */
-    var payrollTips = payrollSheetNumberExpr(row.emp, PAYROLL_COL_TIP);
+    var payrollTipsFormula = cpaPayrollTipsFormula(row);
     var payrollGross = payrollSheetNumberExpr(row.emp, PAYROLL_COL_GROSS);
 
     xlSet(ws, r, 0, index + 1, S.cellCenter);
@@ -7228,8 +7249,8 @@
       if (missedH > 0.005) totalHFormula += '+' + payrollHoursNum(missedH);
       xlSetFormula(ws, r, 7, totalHFormula, S.cellRight, XL_HOURS_Z);
     }
-    if (payrollTips) {
-      xlSetFormula(ws, r, 8, '=' + payrollTips, S.cellRight, PAYROLL_MONEY_Z);
+    if (payrollTipsFormula) {
+      xlSetFormula(ws, r, 8, payrollTipsFormula, S.cellRight, PAYROLL_MONEY_Z);
     } else {
       xlSetMoney(ws, r, 8, cpaTipsForRow(row), S.cellRight);
     }

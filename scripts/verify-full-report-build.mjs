@@ -2276,6 +2276,123 @@ await verifyPayslipPatchedExport();
     });
   });
   T.setTimecardsLocationFilterForTest('rp-9');
+
+  /* Irineo pattern: name defaults to single-store on, but an explicit Off must keep
+     each store's tips on that store's workbook. On rolls both stores' hours and both
+     tip shares onto the home Payroll sheet and the linked CPA / Payslip formulas. */
+  deps.employees.push({
+    id: 'e-irineo-off',
+    firstName: 'IRINEO',
+    lastName: 'OFFPAY',
+    staffType: 'Kitchen',
+    phone: '',
+    usualRestaurant: 'both',
+    hourlyRate: 17,
+    tipPoint: 2,
+    weeklyGrid: {},
+    meta: { primaryLocationId: 'rp-9', primaryRestaurantId: 'rp-9', singleStorePayroll: false },
+  });
+  T.setWeekEntriesForTest([
+    punchAt('p-iri-9', 'e-irineo-off', 2026, 5, 18, 11, 19, 'rp-9'),
+    punchAt('p-iri-8', 'e-irineo-off', 2026, 5, 22, 11, 19, 'rp-8'),
+  ]);
+  localStorage.setItem(
+    'gm-timecard-week-tip-pool-v1',
+    JSON.stringify({
+      '2026-05-18_2026-05-24|rp-8': {
+        cashTip: 1000,
+        squareTips: 0,
+        squarePickup: 0,
+        doordash: 0,
+        uber: 0,
+        manual: true,
+      },
+      '2026-05-18_2026-05-24|rp-9': {
+        cashTip: 800,
+        squareTips: 0,
+        squarePickup: 0,
+        doordash: 0,
+        uber: 0,
+        manual: true,
+      },
+    })
+  );
+  T.invalidateWeekExtrasSliceCache();
+  function irineoSheet(loc) {
+    return payrollSheetPeople(loc)['e-irineo-off'];
+  }
+  const iri9off = irineoSheet('rp-9');
+  const iri8off = irineoSheet('rp-8');
+  if (!iri9off || iri9off.row.isTipBorrowRow) {
+    throw new Error('toggle off: 9th Payroll must pay IRINEO at 9th Ave');
+  }
+  if (!iri8off || iri8off.row.isTipBorrowRow) {
+    throw new Error('toggle off: 8th Payroll must pay IRINEO at 8th Ave');
+  }
+  assertClose(iri9off.metrics.regH, 8, 'toggle off: 9th hours are 9th Ave only');
+  assertClose(iri8off.metrics.regH, 8, 'toggle off: 8th hours are 8th Ave only');
+  assertClose(iri9off.metrics.totalTipPoints, 16, 'toggle off: 9th tip points exclude 8th hours');
+  assertClose(iri8off.metrics.totalTipPoints, 16, 'toggle off: 8th tip points are the 8th day');
+  assertClose(iri9off.metrics.otherStoreTips, 0, 'toggle off: 9th report must not pay 8th Ave tips');
+  assertClose(iri8off.metrics.otherStoreTips, 0, 'toggle off: 8th report must not pay 9th Ave tips');
+  const iri9offOther = payrollNamedCell('rp-9', 'IRINEO OFFPAY', 'U');
+  if (iri9offOther && Number(iri9offOther.v) > 0.5) {
+    throw new Error('toggle off: 9th other-store tip cell must be empty, got ' + iri9offOther.v);
+  }
+  function cpaTipsFormulaFor(loc, person) {
+    T.setTimecardsLocationFilterForTest(loc);
+    const sheets = T.buildFullReportSheets({ forceFresh: true });
+    const cpa = (sheets.find((s) => s.name === 'CPA') || {}).worksheet || {};
+    const pay = (sheets.find((s) => s.name === 'Payslip') || {}).worksheet || {};
+    let rowNum = null;
+    Object.keys(cpa).forEach(function (addr) {
+      const val = cpa[addr] && cpa[addr].v != null ? String(cpa[addr].v).toUpperCase() : '';
+      if (val !== person.split(' ')[0]) return;
+      const m = addr.match(/^B(\d+)$/);
+      if (m) rowNum = m[1];
+    });
+    if (!rowNum) throw new Error(loc + ' CPA row missing for ' + person);
+    const tipFormula = cpa['I' + rowNum] && cpa['I' + rowNum].f ? String(cpa['I' + rowNum].f) : '';
+    let payslipTip = '';
+    Object.keys(pay).forEach(function (addr) {
+      const cell = pay[addr];
+      if (!cell || !cell.f || cell.f.indexOf('Payroll!') < 0) return;
+      if (cell.f.indexOf('$V$') >= 0) payslipTip = String(cell.f);
+    });
+    return { tipFormula: tipFormula, payslipTip: payslipTip };
+  }
+  const offLinks = cpaTipsFormulaFor('rp-9', 'IRINEO OFFPAY');
+  if (offLinks.tipFormula.indexOf('$U$') < 0) {
+    throw new Error('CPA tips must stay linked to the payroll other-store column, got ' + offLinks.tipFormula);
+  }
+  const irineo = deps.employees.find((e) => e.id === 'e-irineo-off');
+  irineo.meta.singleStorePayroll = true;
+  const iri9on = irineoSheet('rp-9');
+  const iri8on = irineoSheet('rp-8');
+  if (!iri9on || iri9on.row.isTipBorrowRow) {
+    throw new Error('toggle on: 9th Payroll must be the paycheck');
+  }
+  if (!iri8on || !iri8on.row.isTipBorrowRow) {
+    throw new Error('toggle on: 8th Payroll must be a tip-point row without a second paycheck');
+  }
+  assertClose(iri9on.metrics.regH, 16, 'toggle on: 9th paycheck includes 8th and 9th hours');
+  assertClose(iri9on.metrics.totalTipPoints, 16, 'toggle on: 9th tip points stay on 9th hours');
+  assertClose(iri9on.metrics.otherStoreTips, 1000, 'toggle on: 9th paycheck includes the 8th Ave tip share');
+  assertClose(iri8on.metrics.regH, 0, 'toggle on: 8th row does not pay wages');
+  assertClose(iri8on.metrics.totalTipPoints, 16, 'toggle on: 8th tip points still split that pool');
+  assertClose(iri8on.metrics.otherStoreTips, 0, 'toggle on: 8th row must not also pay 9th tips');
+  const onLinks = cpaTipsFormulaFor('rp-9', 'IRINEO OFFPAY');
+  if (onLinks.tipFormula.indexOf('$U$') < 0) {
+    throw new Error('toggle on: CPA tips must include the payroll other-store column, got ' + onLinks.tipFormula);
+  }
+  if (!onLinks.payslipTip || onLinks.payslipTip.indexOf('$V$') < 0) {
+    throw new Error('toggle on: Payslip tip must follow payroll total tips, got ' + onLinks.payslipTip);
+  }
+  const onOther = payrollNamedCell('rp-9', 'IRINEO OFFPAY', 'U');
+  if (!onOther || Number(onOther.v) !== 1000) {
+    throw new Error('toggle on: 9th other-store tip cell should be 1000, got ' + (onOther && onOther.v));
+  }
+
   console.log('OK: CPA store titles are Red Poke 9th Ave / Red Poke 8th Ave');
   console.log('OK: delivery tip net round-trips and SoH stays off CPA and payslip at both stores');
   console.log('OK: punch times 30 min or more off schedule are flagged');
