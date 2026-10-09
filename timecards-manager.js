@@ -2197,8 +2197,15 @@
     return tipTakehomePctForRestaurant(restaurantId) / 100;
   }
 
-  /** Dishwasher / delivery tips pay 95% of the amount entered. */
-  var DISHWASHER_TIP_TAKEHOME_PCT = 95;
+  /** Take-home percent that actually pays: person override, else the store setting (8th Ave 80, 9th Ave 95). */
+  function tipTakehomePctApplied(restaurantId, emp) {
+    var pct = tipTakehomePctForDishwasher(emp, restaurantId);
+    if (pct == null || !Number.isFinite(Number(pct))) return 95;
+    pct = Number(pct);
+    if (pct < 0) return 0;
+    if (pct > 100) return 100;
+    return pct;
+  }
 
   /** Net tip from gross using integer cents (round half up) — avoids float penny drift. */
   function netTipAmount(gross, restaurantId, emp) {
@@ -2206,7 +2213,7 @@
     if (g <= 0) return 0;
     var grossCents = Math.round(g * 100);
     if (grossCents <= 0) return 0;
-    var pctHundredths = DISHWASHER_TIP_TAKEHOME_PCT * 100;
+    var pctHundredths = Math.round(tipTakehomePctApplied(restaurantId, emp) * 100);
     if (pctHundredths <= 0) return 0;
     var netCents = Math.floor((grossCents * pctHundredths + 5000) / 10000);
     return netCents / 100;
@@ -2219,7 +2226,7 @@
   function grossFromNetTip(net, restaurantId, emp) {
     var n = normalizeDishwasherTipAmount(net);
     if (n <= 0) return 0;
-    var pctHundredths = DISHWASHER_TIP_TAKEHOME_PCT * 100;
+    var pctHundredths = Math.round(tipTakehomePctApplied(restaurantId, emp) * 100);
     if (pctHundredths <= 0) return n;
     var netCents = Math.round(n * 100);
     var grossCents = Math.round((netCents * 10000) / pctHundredths);
@@ -4049,7 +4056,7 @@
     var emp = findEmployeeByIdLocal(tipEl.getAttribute('data-timecard-employee-id'));
     var gross = normalizeDishwasherTipAmount(tipEl.value);
     var net = netTipAmount(gross, rid, emp);
-    var cut = Math.round((100 - DISHWASHER_TIP_TAKEHOME_PCT) * 100) / 100;
+    var cut = Math.round((100 - tipTakehomePctApplied(rid, emp)) * 100) / 100;
     hintEl.textContent =
       gross > 0
         ? 'Net after the ' +
@@ -13724,7 +13731,7 @@
             if (grossTip <= 0) {
               grossTip = getEmployeeDayDishwasherTip(emp, shiftRow.iso);
             }
-            var tipCut = Math.round((100 - DISHWASHER_TIP_TAKEHOME_PCT) * 100) / 100;
+            var tipCut = Math.round((100 - tipTakehomePctApplied(tipRest, emp)) * 100) / 100;
             var tipHint =
               grossTip > 0
                 ? 'Net after the ' +
@@ -14882,6 +14889,7 @@
       employeeVisibleAtCurrentLocation: employeeVisibleAtCurrentLocation,
       clockVarianceAgainstExpected: clockVarianceAgainstExpected,
       grossFromNetTip: grossFromNetTip,
+      invalidateDishwasherTipsSliceCache: invalidateDishwasherTipsSliceCache,
       employeePrimaryLocationId: employeePrimaryLocationId,
       employeeOnMainScheduleThisWeek: employeeOnMainScheduleThisWeek,
       employeeOnFullReportThisWeek: employeeOnFullReportThisWeek,

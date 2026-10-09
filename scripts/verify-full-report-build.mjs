@@ -625,6 +625,12 @@ if (sandbox.__gmTimecardsTest.netTipAmount(100) !== 95) {
     'Delivery tip of 100 should pay 95, got ' + sandbox.__gmTimecardsTest.netTipAmount(100)
   );
 }
+if (sandbox.__gmTimecardsTest.netTipAmount(100, 'rp-8') !== 80) {
+  throw new Error(
+    '8th Ave delivery tip of 100 should pay 80, got ' +
+      sandbox.__gmTimecardsTest.netTipAmount(100, 'rp-8')
+  );
+}
 const cpaWs = cpaSheet.worksheet;
 Object.keys(cpaWs).forEach((addr) => {
   const val = cpaWs[addr] && cpaWs[addr].v != null ? String(cpaWs[addr].v) : '';
@@ -2244,6 +2250,16 @@ await verifyPayslipPatchedExport();
   if (T.netTipAmount(100) !== 95) {
     throw new Error('Delivery tip of 100 gross must pay 95 in grand totals / full report');
   }
+  if (T.netTipAmount(100, 'rp-9') !== 95) {
+    throw new Error('9th Ave delivery tip of 100 must pay 95, got ' + T.netTipAmount(100, 'rp-9'));
+  }
+  const gross80 = T.grossFromNetTip(80, 'rp-8');
+  if (T.netTipAmount(gross80, 'rp-8') !== 80) {
+    throw new Error('8th Ave net delivery tip 80 must round-trip, got gross ' + gross80);
+  }
+  if (T.netTipAmount(100, 'rp-8') !== 80) {
+    throw new Error('8th Ave delivery tip of 100 must pay 80 in the full report, got ' + T.netTipAmount(100, 'rp-8'));
+  }
   ['rp-9', 'rp-8'].forEach(function (loc) {
     T.setTimecardsLocationFilterForTest(loc);
     T.invalidateFullReportSheetsCache();
@@ -2391,6 +2407,41 @@ await verifyPayslipPatchedExport();
   const onOther = payrollNamedCell('rp-9', 'IRINEO OFFPAY', 'U');
   if (!onOther || Number(onOther.v) !== 1000) {
     throw new Error('toggle on: 9th other-store tip cell should be 1000, got ' + (onOther && onOther.v));
+  }
+
+  deps.employees.push({
+    id: 'e-del8',
+    firstName: 'DELIVERY',
+    lastName: 'EIGHTH',
+    staffType: 'Server',
+    phone: '',
+    usualRestaurant: 'rp-8',
+    hourlyRate: 16,
+    tipPoint: 1,
+    weeklyGrid: {},
+    meta: { primaryLocationId: 'rp-8', primaryRestaurantId: 'rp-8', singleStorePayroll: false },
+  });
+  T.setWeekEntriesForTest([punchAt('p-del8', 'e-del8', 2026, 5, 18, 11, 19, 'rp-8')]);
+  localStorage.setItem(
+    'gm-timecard-dishwasher-tips-v1',
+    JSON.stringify({
+      '2026-05-18_2026-05-24': {
+        'rp-8|e-del8|2026-05-18': 100,
+      },
+    })
+  );
+  T.invalidateDishwasherTipsSliceCache();
+  const del8 = payrollSheetPeople('rp-8')['e-del8'];
+  if (!del8) throw new Error('8th Payroll must list DELIVERY EIGHTH');
+  assertClose(del8.metrics.dishwasherTipsPay, 80, '8th delivery tip of 100 pays 80 on the paycheck');
+  const delCell = payrollNamedCell('rp-8', 'DELIVERY EIGHTH', 'U');
+  if (!delCell || Number(delCell.v) !== 80) {
+    throw new Error('8th Payroll other-store/delivery cell should be 80, got ' + (delCell && delCell.v));
+  }
+  const delTotal = payrollNamedCell('rp-8', 'DELIVERY EIGHTH', 'V');
+  const delTotalFormula = delTotal && delTotal.f ? String(delTotal.f) : '';
+  if (delTotalFormula.indexOf('U') < 0) {
+    throw new Error('8th TOTAL TIPS must include the net delivery tip, got ' + delTotalFormula);
   }
 
   console.log('OK: CPA store titles are Red Poke 9th Ave / Red Poke 8th Ave');
