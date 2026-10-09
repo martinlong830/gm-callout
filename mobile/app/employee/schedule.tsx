@@ -41,6 +41,7 @@ import {
   SCHEDULE_TEMPLATE_WEEK_INDEX,
   SCHEDULE_VIEW_WEEK_COUNT,
   scheduleRowPrimaryPerson,
+  applyPublishedSnapshotsToScheduleRead,
   ingestPublishedSnapshotsFromRaw,
   seedDefaultPublishedWeeks,
   type CalendarBodyRow,
@@ -373,12 +374,36 @@ export default function EmployeeScheduleScreen() {
   );
   const assignmentStore = hydrated.store;
   const draftScheduleRaw = hydrated.draftSchedule ?? teamState?.draft_schedule;
+  const publishedRead = useMemo(() => {
+    try {
+      return applyPublishedSnapshotsToScheduleRead({
+        draftRaw: draftScheduleRaw,
+        assignmentStore,
+        restaurants: allRestaurants,
+        weekMeta,
+        schedulePublishedRaw: teamState?.schedule_published,
+        onlyWeekIndex: weekIndex,
+      });
+    } catch (err) {
+      console.warn('published snapshot read', err);
+      return { draftRaw: draftScheduleRaw, assignmentStore };
+    }
+  }, [
+    draftScheduleRaw,
+    assignmentStore,
+    allRestaurants,
+    weekMeta,
+    teamState?.schedule_published,
+    weekIndex,
+  ]);
+  const viewDraftRaw = publishedRead.draftRaw;
+  const viewAssign = publishedRead.assignmentStore;
   const draftRows = useMemo(
     () =>
-      loadDraftFromTeamState(draftScheduleRaw, weekIndex, currentRestaurantId, {
-        assignmentStore,
+      loadDraftFromTeamState(viewDraftRaw, weekIndex, currentRestaurantId, {
+        assignmentStore: viewAssign,
       }),
-    [assignmentStore, draftScheduleRaw, weekIndex, currentRestaurantId]
+    [viewAssign, viewDraftRaw, weekIndex, currentRestaurantId]
   );
 
   useEffect(() => {
@@ -399,28 +424,28 @@ export default function EmployeeScheduleScreen() {
     try {
       return buildSchedule({
         allWeekDays,
-        draftScheduleRaw,
+        draftScheduleRaw: viewDraftRaw,
         employees: lites,
         restaurants: allRestaurants,
         currentRestaurantId,
-        assignmentStore,
+        assignmentStore: viewAssign,
         weekIndex,
       });
     } catch (err) {
       console.warn('buildSchedule', err);
       return [] as ScheduleRow[];
     }
-  }, [allWeekDays, draftScheduleRaw, lites, allRestaurants, currentRestaurantId, assignmentStore, weekIndex]);
+  }, [allWeekDays, viewDraftRaw, lites, allRestaurants, currentRestaurantId, viewAssign, weekIndex]);
 
   const otherStoreDayLabels = useMemo(() => {
     try {
       return buildOtherStoreDayLabelMap({
         visibleDays,
         weekIndex,
-        draftScheduleRaw,
+        draftScheduleRaw: viewDraftRaw,
         draftRows,
         restaurants: allRestaurants,
-        assignmentStore,
+        assignmentStore: viewAssign,
         currentRestaurantId,
       });
     } catch (err) {
@@ -430,10 +455,10 @@ export default function EmployeeScheduleScreen() {
   }, [
     visibleDays,
     weekIndex,
-    draftScheduleRaw,
+    viewDraftRaw,
     draftRows,
     allRestaurants,
-    assignmentStore,
+    viewAssign,
     currentRestaurantId,
   ]);
 
@@ -468,7 +493,7 @@ export default function EmployeeScheduleScreen() {
 
   const ongiFlagByCell = useMemo(() => {
     const out = new Map<string, number>();
-    const map = readOngiFlagsByWeek(draftScheduleRaw);
+    const map = readOngiFlagsByWeek(viewDraftRaw);
     const mon = selectedWeekMonday;
     const rid = currentRestaurantId;
     const rest = mon && rid ? map[mon]?.[rid] || {} : {};
@@ -483,7 +508,7 @@ export default function EmployeeScheduleScreen() {
       if (dayStr) out.set(`${parts[0]}|${parts[1]}|${dayStr}`, store);
     });
     return out;
-  }, [draftScheduleRaw, selectedWeekMonday, currentRestaurantId, weekMeta]);
+  }, [viewDraftRaw, selectedWeekMonday, currentRestaurantId, weekMeta]);
 
   const calendarBody = useMemo(() => {
     try {
@@ -494,10 +519,10 @@ export default function EmployeeScheduleScreen() {
         lites,
         currentRestaurantId,
         readSlotOrderByRestaurantForWeek(
-          draftScheduleRaw,
+          viewDraftRaw,
           weekMeta[weekIndex * 7]?.iso || ''
         ),
-        assignmentStore,
+        viewAssign,
         weekIndex,
         otherStoreDayLabels,
         null,
@@ -514,10 +539,10 @@ export default function EmployeeScheduleScreen() {
     draftRows,
     lites,
     currentRestaurantId,
-    draftScheduleRaw,
+    viewDraftRaw,
     weekMeta,
     weekIndex,
-    assignmentStore,
+    viewAssign,
     otherStoreDayLabels,
     leaveFlagByPersonDay,
     ongiFlagByCell,
@@ -639,7 +664,7 @@ export default function EmployeeScheduleScreen() {
                     visibleDays={visibleDays}
                     employees={lites}
                     restaurantId={currentRestaurantId}
-                    assignmentStore={assignmentStore}
+                    assignmentStore={viewAssign}
                     weekIndex={weekIndex}
                     unassignedLabel={t('common.unassigned')}
                     dayOffLabel={t('schedule.dayOffLabel')}

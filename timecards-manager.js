@@ -4048,6 +4048,31 @@
     return readShiftDishwasherTipFromForm();
   }
 
+  function formatTakehomePctLabel(pct) {
+    var n = Math.round(Number(pct) * 100) / 100;
+    if (!Number.isFinite(n)) return '';
+    if (Math.abs(n - Math.round(n)) < 0.001) return String(Math.round(n));
+    return String(n);
+  }
+
+  /** Hint under the shift delivery-tip field. Shows the take-home % from Timecards settings. */
+  function deliveryTipTakehomeHint(gross, restaurantId, emp) {
+    var applied = tipTakehomePctApplied(restaurantId, emp);
+    var storePct = tipTakehomePctForRestaurant(restaurantId);
+    var fromSettings = Math.abs(applied - storePct) < 0.051;
+    var pct = formatTakehomePctLabel(applied);
+    if (gross > 0) {
+      var net = formatPayAmount(netTipAmount(gross, restaurantId, emp));
+      return tcT(
+        fromSettings ? 'timecards.deliveryTakehomeWithNet' : 'timecards.deliveryTakehomeWithNetPerson',
+        { pct: pct, net: net }
+      );
+    }
+    return tcT(fromSettings ? 'timecards.deliveryTakehomeEmpty' : 'timecards.deliveryTakehomeEmptyPerson', {
+      pct: pct,
+    });
+  }
+
   function syncShiftDishwasherTipNetDisplay() {
     var hintEl = document.getElementById('tcDishwasherTipNetHint');
     var tipEl = document.getElementById('tcDishwasherTip');
@@ -4055,18 +4080,7 @@
     var rid = tipEl.getAttribute('data-timecard-restaurant-id') || RP2_DELIVERY_TIP_LOCATION;
     var emp = findEmployeeByIdLocal(tipEl.getAttribute('data-timecard-employee-id'));
     var gross = normalizeDishwasherTipAmount(tipEl.value);
-    var net = netTipAmount(gross, rid, emp);
-    var cut = Math.round((100 - tipTakehomePctApplied(rid, emp)) * 100) / 100;
-    hintEl.textContent =
-      gross > 0
-        ? 'Net after the ' +
-          String(cut) +
-          '% cut: ' +
-          formatPayAmount(net) +
-          '. Grand totals and the full report use ' +
-          formatPayAmount(net) +
-          '.'
-        : 'Enter the delivery tip for this day. Pay totals deduct ' + String(cut) + '%.';
+    hintEl.textContent = deliveryTipTakehomeHint(gross, rid, emp);
   }
 
   function readShiftAdditionalCashTipFromForm() {
@@ -13731,17 +13745,7 @@
             if (grossTip <= 0) {
               grossTip = getEmployeeDayDishwasherTip(emp, shiftRow.iso);
             }
-            var tipCut = Math.round((100 - tipTakehomePctApplied(tipRest, emp)) * 100) / 100;
-            var tipHint =
-              grossTip > 0
-                ? 'Net after the ' +
-                  String(tipCut) +
-                  '% cut: ' +
-                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
-                  '. Grand totals and the full report use ' +
-                  formatPayAmount(netTipAmount(grossTip, tipRest, emp)) +
-                  '.'
-                : 'Enter the delivery tip for this day. Pay totals deduct ' + String(tipCut) + '%.';
+            var tipHint = deliveryTipTakehomeHint(grossTip, tipRest, emp);
             return (
               '<div><dt>Delivery tip</dt><dd>' +
               '<input type="number" class="timecards-extra-input timecards-extra-input--money" id="tcDishwasherTip" data-timecard-extra="dishwasherTip" data-timecard-day-iso="' +
@@ -14797,6 +14801,7 @@
       if (rid && map[rid] != null) el.value = String(map[rid]);
     }
     refreshRosterForTipTakehome();
+    syncShiftDishwasherTipNetDisplay();
   }
 
   function refreshForLocaleChange(screenId) {

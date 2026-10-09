@@ -21,8 +21,10 @@ import {
   getEmployeeDayDishwasherTipSync,
   isDeliveryDishwasherStaff,
   loadDishwasherTipsSlice,
+  netTipAmount,
   setEmployeeDayDishwasherTip,
   tipTakehomePctForDishwasherEmployee,
+  tipTakehomePctForRestaurant,
 } from '../../../../lib/timecards/dishwasherTips';
 import {
   buildShiftsForEmployeeInWeek,
@@ -245,6 +247,30 @@ export default function TimecardsShiftScreen() {
     Awaited<ReturnType<typeof loadWeekExtrasSlice>>
   >({});
   const showDishwasherTip = emp ? isDeliveryDishwasherStaff(emp) : false;
+  const deliveryTakehomeHint = useMemo(() => {
+    if (!showDishwasherTip || !emp || !shiftRow) return '';
+    const tipRest = dishwasherTipRestaurantForShiftRow(shiftRow);
+    const applied = tipTakehomePctForDishwasherEmployee(
+      emp,
+      tipRest,
+      tipTakehomePctForRestaurant(tipRest)
+    );
+    const storePct = tipTakehomePctForRestaurant(tipRest);
+    const fromSettings = Math.abs(applied - storePct) < 0.051;
+    const pct =
+      Math.abs(applied - Math.round(applied)) < 0.001
+        ? String(Math.round(applied))
+        : String(Math.round(applied * 100) / 100);
+    const gross = Math.max(0, parseFloat(dishwasherTipText) || 0);
+    if (gross > 0) {
+      const net = formatPayAmount(netTipAmount(gross, tipRest, applied));
+      return t(fromSettings ? 'timecards.deliveryTakehomeWithNet' : 'timecards.deliveryTakehomeWithNetPerson', {
+        pct,
+        net,
+      });
+    }
+    return t(fromSettings ? 'timecards.deliveryTakehomeEmpty' : 'timecards.deliveryTakehomeEmptyPerson', { pct });
+  }, [showDishwasherTip, emp, shiftRow, dishwasherTipText, t]);
 
   const loadDayLeave = useCallback(async () => {
     if (!emp || !iso) return;
@@ -899,18 +925,7 @@ export default function TimecardsShiftScreen() {
       {showDishwasherTip ? (
         <>
           <Text style={styles.sectionTitle}>{t('timecards.deliveryTip')}</Text>
-          <Text style={styles.hint}>
-            Enter the tip for this day. Grand totals and the full report deduct{' '}
-            {Math.round(
-              (100 -
-                tipTakehomePctForDishwasherEmployee(
-                  emp,
-                  dishwasherTipRestaurantForShiftRow(shiftRow)
-                )) *
-                100
-            ) / 100}
-            %.
-          </Text>
+          <Text style={styles.hint}>{deliveryTakehomeHint}</Text>
           <Text style={styles.fieldLabel}>{t('timecards.deliveryTip')} ($)</Text>
           <TextInput
             style={styles.input}

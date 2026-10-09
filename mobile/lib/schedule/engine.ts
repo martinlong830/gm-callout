@@ -30,13 +30,13 @@ function employeeRoleKey(emp: EmployeeLite): RoleKey | null {
 /** Matches web portal `SCHEDULE_PAST_WEEK_COUNT` / anchor week grid. */
 export const SCHEDULE_PAST_WEEK_COUNT = 12;
 /** Weeks after the current block (not counting the current week). */
-export const SCHEDULE_FUTURE_WEEK_COUNT = 1;
+export const SCHEDULE_FUTURE_WEEK_COUNT = 4;
 export const SCHEDULE_VIEW_WEEK_COUNT =
   SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
 /** Index in `WEEK_META` for this calendar week; also the replication template week. */
 export const SCHEDULE_TEMPLATE_WEEK_INDEX = SCHEDULE_PAST_WEEK_COUNT;
-/** Employee portal shows current pay week + the next future week. */
-export const EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT = 2;
+/** This week plus the rolling future weeks (same horizon as the schedule editor). */
+export const EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT = 1 + SCHEDULE_FUTURE_WEEK_COUNT;
 export const WEEKDAY_KEYS: WeekdayKey[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const SCHEDULE_GRID_ROLE_ORDER: RoleKey[] = ['Bartender', 'Kitchen', 'Server'];
 
@@ -487,7 +487,7 @@ export function loadDraftFromTeamState(
   raw: unknown,
   weekIndex?: number,
   restaurantId?: string,
-  opts?: { inheritUnfilledFuture?: boolean; assignmentStore?: AssignmentStore }
+  _opts?: { inheritUnfilledFuture?: boolean; assignmentStore?: AssignmentStore }
 ): DraftGrid {
   const base = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
   if (!raw || typeof raw !== 'object') return base;
@@ -499,27 +499,18 @@ export function loadDraftFromTeamState(
         ? String(weekIndex)
         : String(SCHEDULE_TEMPLATE_WEEK_INDEX);
     const weekNum = Number(wi);
-    const inheritFuture = opts?.inheritUnfilledFuture !== false;
     const weekLayers = byWeek[wi];
     const layers = draftLayersFromWeekEntry(weekLayers, restaurantId);
     /*
-     * An unfilled future week (no shift times) shows this week. Display only —
-     * cell writers pass inheritUnfilledFuture: false so they do not upload it.
-     * Past weeks must NOT inherit.
+     * A future week shows only the shifts saved on that week. A new week is
+     * blank until someone fills it or applies a template. Weeks that already
+     * have clock times stay as they are.
      */
-    const unstaffedFuture =
-      !!opts?.assignmentStore &&
-      !futureWeekHasStaffedPeople(opts.assignmentStore, restaurantId, weekNum);
-    const ignoreOwn =
-      inheritFuture &&
-      weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX &&
-      (!layers || draftGridHasNoClockTimes(layers) || unstaffedFuture);
-    if (layers && !ignoreOwn) return layers;
-    if (weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX && inheritFuture) {
-      const tplLayers = byWeek[String(SCHEDULE_TEMPLATE_WEEK_INDEX)];
-      const tplDraft = draftLayersFromWeekEntry(tplLayers, restaurantId);
-      if (tplDraft) return cloneDraftSchedule(tplDraft);
+    if (weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX && weekNum < SCHEDULE_VIEW_WEEK_COUNT) {
+      if (layers && !draftGridHasNoClockTimes(layers)) return layers;
+      return blankDraftTimesKeepingRows(layers || base);
     }
+    if (layers) return layers;
     return base;
   }
   (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((role) => {
@@ -606,6 +597,16 @@ function draftGridHasNoClockTimes(grid: DraftGrid): boolean {
     const rows = grid[role] || [];
     return rows.every((row) => !draftRowHasClockTimes(row));
   });
+}
+
+/** Keep the row count; wipe every day so a new week does not show another week's hours. */
+function blankDraftTimesKeepingRows(layers: DraftGrid): DraftGrid {
+  const out = cloneDraftSchedule(DEFAULT_DRAFT_SCHEDULE_ROWS);
+  (['Bartender', 'Kitchen', 'Server'] as RoleKey[]).forEach((role) => {
+    const rows = layers[role] && layers[role].length ? layers[role] : out[role];
+    out[role] = rows.map(() => [null, null, null, null, null, null, null]);
+  });
+  return out;
 }
 
 function futureWeekHasStaffedPeople(
@@ -880,9 +881,12 @@ export function lookupScheduleAssignment(
     if (stored[shiftId] == null) return null;
     return mergeScheduleAssignmentEntries(direct, pattern);
   }
-  /* Unassigned keys on a future week must not hide this week's people. */
-  if (p && p.globalDayIdx >= tplStart + 7 && !scheduleAssignmentHasStaffedWorkers(direct)) {
-    return pattern;
+  /* A future week keeps its own people. A blank row stays blank. */
+  if (p && p.globalDayIdx >= tplStart + 7) {
+    if (!direct || !scheduleAssignmentHasStaffedWorkers(direct)) {
+      return { workers: ['Unassigned'] };
+    }
+    return mergeScheduleAssignmentEntries(direct, pattern);
   }
   return mergeScheduleAssignmentEntries(direct, pattern);
 }
@@ -1376,70 +1380,19 @@ function copyDraftWeekIndexInPayload(
 }
 
 /**
- * Seed W+2 from current week when empty. Leaves W+1 intact; never overwrites staffed W+2.
- * Match web: once-per-Monday seed meta so cleared (Unassigned) W+2 is not re-copied on every hydrate.
+ * New future weeks stay blank. Do not copy the current week forward.
+ * Weeks that already have people or hours are left untouched.
  */
 function seedFurthestFutureWeekIfEmpty(
-  store: AssignmentStore,
-  restaurants: Restaurant[],
-  restaurantIds: string[],
+  _store: AssignmentStore,
+  _restaurants: Restaurant[],
+  _restaurantIds: string[],
   draftRaw: unknown,
-  mondayIso: string
+  _mondayIso: string
 ): { seeded: boolean; draftSchedule: unknown } {
-  const tpl = SCHEDULE_TEMPLATE_WEEK_INDEX;
-  let furthest = tpl + SCHEDULE_FUTURE_WEEK_COUNT;
-  if (furthest >= SCHEDULE_VIEW_WEEK_COUNT) furthest = SCHEDULE_VIEW_WEEK_COUNT - 1;
-  if (furthest <= tpl) {
-    return { seeded: false, draftSchedule: draftRaw };
-  }
-  const seedMeta = readFurthestSeedMeta(draftRaw);
-  if (seedMeta && seedMeta.mondayIso === mondayIso && seedMeta.seeded) {
-    return { seeded: false, draftSchedule: draftRaw };
-  }
-
-  let any = false;
-  let anyTouchedFurthest = false;
-  restaurantIds.forEach((rid) => {
-    if (restaurantUsesDefaultUnassignedSchedule(restaurants, rid)) return;
-    if (!store[rid]) store[rid] = {};
-    /* Staffed OR explicit Unassigned/direct rows — do not re-copy (web uses seed meta for this). */
-    if (
-      restaurantWeekHasStaffedAssignments(store[rid], furthest) ||
-      restaurantWeekHasDirectAssignments(store[rid], furthest)
-    ) {
-      anyTouchedFurthest = true;
-      return;
-    }
-    if (copyRestaurantWeekAssignments(store[rid], tpl, furthest)) any = true;
-  });
-
-  let draft = draftRaw;
-  const primaryRid = restaurantIds[0];
-  if (
-    any ||
-    (primaryRid && !restaurantWeekHasDirectAssignments(store[primaryRid] || {}, furthest))
-  ) {
-    const anchor = getScheduleAnchorMondayDate();
-    const fromMon = new Date(
-      anchor.getFullYear(),
-      anchor.getMonth(),
-      anchor.getDate() + tpl * 7
-    );
-    const toMon = new Date(
-      anchor.getFullYear(),
-      anchor.getMonth(),
-      anchor.getDate() + furthest * 7
-    );
-    const fmt = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    draft = copyDraftWeekIndexInPayload(draft, tpl, furthest, fmt(fromMon), fmt(toMon));
-  }
-
-  if (any || anyTouchedFurthest || !seedMeta || seedMeta.mondayIso !== mondayIso) {
-    draft = writeFurthestSeedMetaOnDraft(draft, { mondayIso, seeded: true });
-  }
-  return { seeded: any, draftSchedule: draft };
+  return { seeded: false, draftSchedule: draftRaw };
 }
+
 
 export function currentScheduleWeekMondayIso(): string {
   const mon = getThisMondayDate();
@@ -2672,6 +2625,138 @@ export function buildAllLocationsWorkerShiftRows(
   );
 }
 
+/** Flat web snapshots and nested mobile snapshots both become `{ restaurantId: shiftMap }`. */
+function snapshotAssignmentsAsStore(raw: unknown, restaurantId: string): AssignmentStore {
+  if (!raw || typeof raw !== 'object') return {};
+  const a = raw as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.some((k) => k.startsWith('shift-'))) {
+    return { [restaurantId]: JSON.parse(JSON.stringify(a)) as AssignmentStore[string] };
+  }
+  return JSON.parse(JSON.stringify(a)) as AssignmentStore;
+}
+
+/** One published week's role grid, including a frozen full-draft `byWeek` payload. */
+function draftGridFromPublishedSnapshot(
+  snap: PublishedWeekSnapshot,
+  restaurantId: string
+): DraftGrid | null {
+  const raw = snap.draft;
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  if (p.byWeek && typeof p.byWeek === 'object') {
+    const from = snap.weekIndexAtPublish;
+    if (from == null || Number.isNaN(Number(from))) return null;
+    const entry = (p.byWeek as Record<string, unknown>)[String(from)];
+    const layers = draftLayersFromWeekEntry(entry, restaurantId);
+    if (!layers || draftGridHasNoClockTimes(layers)) return null;
+    return layers;
+  }
+  if (!draftScheduleJsonHasLayers(raw)) return null;
+  const layers = loadDraftFromTeamState(raw);
+  if (draftGridHasNoClockTimes(layers)) return null;
+  return layers;
+}
+
+function putPublishedWeekLayers(
+  draftRaw: Record<string, unknown>,
+  weekIndex: number,
+  restaurantId: string,
+  layers: DraftGrid
+): void {
+  if (!draftRaw.byWeek || typeof draftRaw.byWeek !== 'object') draftRaw.byWeek = {};
+  const byWeek = draftRaw.byWeek as Record<string, unknown>;
+  const key = String(weekIndex);
+  const cur = byWeek[key];
+  if (draftScheduleWeekEntryIsPerRestaurant(cur)) {
+    const next = { ...(cur as Record<string, unknown>) };
+    next[restaurantId] = layers;
+    byWeek[key] = next;
+    return;
+  }
+  if (draftScheduleJsonHasLayers(cur)) {
+    const converted: Record<string, unknown> = {};
+    for (const r of defaultRestaurants()) {
+      converted[r.id] = JSON.parse(JSON.stringify(cur));
+    }
+    converted[restaurantId] = layers;
+    byWeek[key] = converted;
+    return;
+  }
+  byWeek[key] = { [restaurantId]: layers };
+}
+
+function overlayPublishedWeekAssignments(
+  store: AssignmentStore,
+  restaurantId: string,
+  weekIndex: number,
+  snap: PublishedWeekSnapshot
+): void {
+  const viewed = assignmentsForPublishedSnapshotView(
+    {
+      ...snap,
+      assignments: snapshotAssignmentsAsStore(snap.assignments, restaurantId),
+    },
+    weekIndex
+  );
+  if (!store[restaurantId]) store[restaurantId] = {};
+  const start = weekIndex * 7;
+  const end = start + 7;
+  for (const id of Object.keys(store[restaurantId])) {
+    const m = /^shift-(\d+)-/.exec(id);
+    if (!m) continue;
+    const g = Number(m[1]);
+    if (g >= start && g < end) delete store[restaurantId][id];
+  }
+  const src = viewed[restaurantId] || {};
+  for (const id of Object.keys(src)) {
+    store[restaurantId][id] = src[id];
+  }
+}
+
+/**
+ * Upcoming/today shifts use the published snapshot for each store-week.
+ * The returned draft and assignments are a copy; the live schedule is unchanged.
+ */
+export function applyPublishedSnapshotsToScheduleRead(opts: {
+  draftRaw: unknown;
+  assignmentStore: AssignmentStore;
+  restaurants: Restaurant[];
+  weekMeta: WeekMeta[];
+  schedulePublishedRaw?: unknown;
+  /** When set, only that week index is replaced. */
+  onlyWeekIndex?: number;
+}): { draftRaw: unknown; assignmentStore: AssignmentStore } {
+  if (opts.schedulePublishedRaw != null) ingestPublishedSnapshotsFromRaw(opts.schedulePublishedRaw);
+  const published = normalizeSchedulePublishedMap(opts.schedulePublishedRaw);
+  seedDefaultPublishedWeeks(published, opts.weekMeta);
+  const draft = JSON.parse(
+    JSON.stringify(
+      opts.draftRaw && typeof opts.draftRaw === 'object' ? opts.draftRaw : { v: 2, byWeek: {} }
+    )
+  ) as Record<string, unknown>;
+  const assign = JSON.parse(JSON.stringify(opts.assignmentStore || {})) as AssignmentStore;
+  const fromWi =
+    opts.onlyWeekIndex != null ? opts.onlyWeekIndex : SCHEDULE_TEMPLATE_WEEK_INDEX;
+  const toWi =
+    opts.onlyWeekIndex != null
+      ? opts.onlyWeekIndex
+      : SCHEDULE_TEMPLATE_WEEK_INDEX + SCHEDULE_FUTURE_WEEK_COUNT;
+  for (const restaurant of opts.restaurants) {
+    for (let wi = fromWi; wi <= toWi; wi += 1) {
+      const mon = String(opts.weekMeta[wi * 7]?.iso || '').slice(0, 10);
+      if (!mon || !isScheduleWeekPublished(published, mon)) continue;
+      const snap = getPublishedWeekSnapshot(restaurant.id, mon);
+      if (!snap) continue;
+      const layers = draftGridFromPublishedSnapshot(snap, restaurant.id);
+      if (!layers) continue;
+      putPublishedWeekLayers(draft, wi, restaurant.id, layers);
+      overlayPublishedWeekAssignments(assign, restaurant.id, wi, snap);
+    }
+  }
+  return { draftRaw: draft, assignmentStore: assign };
+}
+
 /** Today vs future shifts for the employee portal (mirrors web `getWorkerScheduleBuckets`). */
 export function getWorkerScheduleBuckets(params: {
   workerName: string;
@@ -2712,13 +2797,20 @@ export function getWorkerScheduleBuckets(params: {
     weekMeta[(SCHEDULE_TEMPLATE_WEEK_INDEX + EMPLOYEE_SCHEDULE_VISIBLE_WEEK_COUNT) * 7 - 1];
   const windowStartIso = windowStartMeta?.iso ?? '';
   const windowEndIso = windowEndMeta?.iso ?? '';
+  const publishedRead = applyPublishedSnapshotsToScheduleRead({
+    draftRaw: draftScheduleRaw,
+    assignmentStore,
+    restaurants,
+    weekMeta,
+    schedulePublishedRaw,
+  });
   const all = buildAllLocationsWorkerShiftRows(weekMeta, {
     allWeekDays,
-    draftScheduleRaw,
+    draftScheduleRaw: publishedRead.draftRaw,
     draftRows,
     employees,
     restaurants,
-    assignmentStore,
+    assignmentStore: publishedRead.assignmentStore,
     workerName,
   });
   const workerEmp = employeeByDisplayNameLite(employees, workerName);
@@ -2850,10 +2942,7 @@ function sanitizePublishedWeekSnapshot(raw: unknown): PublishedWeekSnapshot | nu
   const rec = raw as Record<string, unknown>;
   const mon = String(rec.weekMondayIso || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(mon)) return null;
-  const assignments =
-    rec.assignments && typeof rec.assignments === 'object'
-      ? (JSON.parse(JSON.stringify(rec.assignments)) as AssignmentStore)
-      : {};
+  const assignments = snapshotAssignmentsAsStore(rec.assignments, String(rec.restaurantId || 'rp-9'));
   const by = rec.publishedBy && typeof rec.publishedBy === 'object'
     ? (rec.publishedBy as Record<string, unknown>)
     : {};

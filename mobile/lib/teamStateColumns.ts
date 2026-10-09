@@ -81,12 +81,9 @@ export async function fetchTeamStateUpdatedAt(
 
 const MISSING_COLS_KEY = 'gm-callout-team-state-missing-cols-v1';
 
-/** Seed columns known missing until production migrations are applied.
- * Do NOT seed company_holidays — that column exists and a stale flag
- * stripped it from polls so Home never showed newly entered holidays. */
-const seededMissing: Record<string, true> = {
-  timecard_tip_takehome_pct: true,
-};
+/** Do not seed timecard_tip_takehome_pct. A stale missing flag stopped
+ * Delivery take-home % from loading on other devices. */
+const seededMissing: Record<string, true> = {};
 
 function loadMissingColumns(): Record<string, true> {
   const out: Record<string, true> = { ...seededMissing };
@@ -117,9 +114,10 @@ function persistMissingColumns() {
   }
 }
 
-if (missingColumns.company_holidays) {
+if (missingColumns.company_holidays || missingColumns.timecard_tip_takehome_pct) {
   const next = { ...missingColumns };
   delete next.company_holidays;
+  delete next.timecard_tip_takehome_pct;
   missingColumns = next;
   persistMissingColumns();
 }

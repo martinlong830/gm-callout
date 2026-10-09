@@ -489,11 +489,15 @@ window.GM_I18N_EN = {
   'schedule.reviewHistory': 'Change history',
   'schedule.reviewNoHistory': 'No suggestions yet.',
   'schedule.reviewNote': 'Note (optional)',
-  'schedule.reviewApproveSuggestion': 'Approve suggestion',
+  'schedule.reviewApproveSuggestion': 'Accept edit',
   'schedule.reviewSuggestChange': 'Suggest change',
   'schedule.reviewComposeReadOnly':
     'Confirm send below to submit this frozen copy to an admin.',
   'schedule.reviewBulkApprove': 'Approve all open changes',
+  'schedule.reviewAcceptAll': 'Accept all changes',
+  'schedule.reviewPublish': 'Publish',
+  'schedule.reviewPublishUnresolved':
+    'This schedule still has unresolved changes. Publish it anyway?',
   'schedule.reviewSendToManager': 'Send back to manager',
   'schedule.reviewSendToAdmin': 'Send back to admin',
   'schedule.reviewConfirmSend': 'Confirm send to admin',
@@ -670,6 +674,14 @@ window.GM_I18N_EN = {
   'timecards.vlHrs': 'VL (hrs)',
   'timecards.slHrs': 'SL (hrs)',
   'timecards.netDeliveryTip': 'Net delivery tip',
+  'timecards.deliveryTakehomeWithNet':
+    'Delivery take-home {pct}% (Timecards settings): {net}. Grand totals and the full report use {net}.',
+  'timecards.deliveryTakehomeEmpty':
+    'Enter the delivery tip for this day. Delivery take-home is {pct}% (Timecards settings).',
+  'timecards.deliveryTakehomeWithNetPerson':
+    'Delivery take-home {pct}% for this person: {net}. Grand totals and the full report use {net}.',
+  'timecards.deliveryTakehomeEmptyPerson':
+    'Enter the delivery tip for this day. Delivery take-home is {pct}% for this person.',
   'timecards.coverage': 'Coverage',
   'timecards.pay': 'Pay',
   'timecards.thisWeekRange': 'This week ({range})',

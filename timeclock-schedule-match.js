@@ -5,7 +5,7 @@
   'use strict';
 
   var SCHEDULE_PAST_WEEK_COUNT = 12;
-  var SCHEDULE_FUTURE_WEEK_COUNT = 1;
+  var SCHEDULE_FUTURE_WEEK_COUNT = 4;
   var SCHEDULE_VIEW_WEEK_COUNT = SCHEDULE_PAST_WEEK_COUNT + 1 + SCHEDULE_FUTURE_WEEK_COUNT;
   var WEEKDAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

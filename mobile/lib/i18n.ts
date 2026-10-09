@@ -764,6 +764,14 @@ const EN: Dict = {
   'timecards.break': 'Break',
   'timecards.netDeliveryTip': 'Net delivery tip',
   'timecards.deliveryTip': 'Delivery tip',
+  'timecards.deliveryTakehomeWithNet':
+    'Delivery take-home {pct}% (Timecards settings): {net}. Grand totals and the full report use {net}.',
+  'timecards.deliveryTakehomeEmpty':
+    'Enter the delivery tip for this day. Delivery take-home is {pct}% (Timecards settings).',
+  'timecards.deliveryTakehomeWithNetPerson':
+    'Delivery take-home {pct}% for this person: {net}. Grand totals and the full report use {net}.',
+  'timecards.deliveryTakehomeEmptyPerson':
+    'Enter the delivery tip for this day. Delivery take-home is {pct}% for this person.',
   'timecards.pay': 'Pay',
   'timecards.payHr': 'Pay/hr',
   'timecards.removeShiftDay': 'Remove shift day',
@@ -1666,6 +1674,14 @@ const ES: Dict = {
   'timecards.break': 'Descanso',
   'timecards.netDeliveryTip': 'Propina neta de delivery',
   'timecards.deliveryTip': 'Propina de delivery',
+  'timecards.deliveryTakehomeWithNet':
+    'Take-home de delivery {pct}% (ajustes de tarjetas de tiempo): {net}. Los totales y el reporte completo usan {net}.',
+  'timecards.deliveryTakehomeEmpty':
+    'Ingresa la propina de delivery de este día. El take-home de delivery es {pct}% (ajustes de tarjetas de tiempo).',
+  'timecards.deliveryTakehomeWithNetPerson':
+    'Take-home de delivery {pct}% para esta persona: {net}. Los totales y el reporte completo usan {net}.',
+  'timecards.deliveryTakehomeEmptyPerson':
+    'Ingresa la propina de delivery de este día. El take-home de delivery es {pct}% para esta persona.',
   'timecards.pay': 'Pago',
   'timecards.payHr': 'Pago/hr',
   'timecards.removeShiftDay': 'Eliminar día del turno',

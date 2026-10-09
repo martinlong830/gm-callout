@@ -360,14 +360,41 @@ export function deliveryTipRetentionFactorForEmployee(emp: EmployeeRow | null | 
   return defaultDeliveryTipRetentionForEmployee(emp);
 }
 
-/** Dishwasher / delivery tips pay 95% of the amount entered on web and mobile. */
+/** Fallback only. Pay uses the Timecards Delivery take-home % for the store. */
 export const DISHWASHER_TIP_TAKEHOME_PCT = 95;
 
+/**
+ * Percent (e.g. 80) actually paid. A custom person rate wins. Otherwise the
+ * Timecards settings value passed in as storePctFallback.
+ */
 export function tipTakehomePctForDishwasherEmployee(
-  _emp?: EmployeeRow | null,
-  _restaurantId?: string | null,
-  _storePctFallback?: number
+  emp?: {
+    staffType?: string;
+    usualRestaurant?: string;
+    firstName?: string;
+    lastName?: string;
+    displayName?: string;
+    deliveryTipRetention?: number | null;
+    meta?: Record<string, unknown> | null;
+  } | null,
+  restaurantId?: string | null,
+  storePctFallback?: number
 ): number {
+  const explicit = normalizeDeliveryTipRetention(
+    emp && emp.deliveryTipRetention != null
+      ? emp.deliveryTipRetention
+      : emp && emp.meta && emp.meta.deliveryTipRetention != null
+        ? emp.meta.deliveryTipRetention
+        : null
+  );
+  const def = emp ? defaultDeliveryTipRetentionForEmployee(emp) : null;
+  if (explicit != null && (def == null || Math.abs(explicit - def) > 0.00005)) {
+    return Math.round(explicit * 10000) / 100;
+  }
+  if (storePctFallback != null && Number.isFinite(storePctFallback)) {
+    return storePctFallback;
+  }
+  if (restaurantId === 'rp-8') return 80;
   return DISHWASHER_TIP_TAKEHOME_PCT;
 }
 

@@ -2253,16 +2253,6 @@ function scheduleStoreForEdit(blob: unknown, local: AssignmentStore): Assignment
     };
     copyWeek(blob, false, start, end);
     copyWeek(assignmentStore, true, start, end);
-    /*
-     * Next week inherits this week's people. The slice used to drop this week's
-     * keys, so a poll that wrote Unassigned had nothing to fall back to and the
-     * row flipped between the name and Unassigned.
-     */
-    if (weekIndex > SCHEDULE_TEMPLATE_WEEK_INDEX) {
-      const tplStart = SCHEDULE_TEMPLATE_WEEK_INDEX * 7;
-      copyWeek(blob, false, tplStart, tplStart + 7);
-      copyWeek(assignmentStore, true, tplStart, tplStart + 7);
-    }
     return out;
   }, [assignmentStore, teamState?.schedule_assignments, weekIndex]);
 

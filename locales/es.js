@@ -489,11 +489,15 @@ window.GM_I18N_ES = {
   'schedule.reviewHistory': 'Historial de cambios',
   'schedule.reviewNoHistory': 'Aún no hay sugerencias.',
   'schedule.reviewNote': 'Nota (opcional)',
-  'schedule.reviewApproveSuggestion': 'Aprobar sugerencia',
+  'schedule.reviewApproveSuggestion': 'Aceptar cambio',
   'schedule.reviewSuggestChange': 'Sugerir cambio',
   'schedule.reviewComposeReadOnly':
     'Confirma el envío abajo para mandar esta copia fija a un administrador.',
   'schedule.reviewBulkApprove': 'Aprobar todos los cambios abiertos',
+  'schedule.reviewAcceptAll': 'Aceptar todos los cambios',
+  'schedule.reviewPublish': 'Publicar',
+  'schedule.reviewPublishUnresolved':
+    'Este horario todavía tiene cambios sin resolver. ¿Publicarlo de todos modos?',
   'schedule.reviewSendToManager': 'Devolver al gerente',
   'schedule.reviewSendToAdmin': 'Devolver al administrador',
   'schedule.reviewConfirmSend': 'Confirmar envío al administrador',
@@ -674,6 +678,14 @@ window.GM_I18N_ES = {
   'timecards.vlHrs': 'VL (hrs)',
   'timecards.slHrs': 'LE (hrs)',
   'timecards.netDeliveryTip': 'Propina neta de delivery',
+  'timecards.deliveryTakehomeWithNet':
+    'Take-home de delivery {pct}% (ajustes de tarjetas de tiempo): {net}. Los totales y el reporte completo usan {net}.',
+  'timecards.deliveryTakehomeEmpty':
+    'Ingresa la propina de delivery de este día. El take-home de delivery es {pct}% (ajustes de tarjetas de tiempo).',
+  'timecards.deliveryTakehomeWithNetPerson':
+    'Take-home de delivery {pct}% para esta persona: {net}. Los totales y el reporte completo usan {net}.',
+  'timecards.deliveryTakehomeEmptyPerson':
+    'Ingresa la propina de delivery de este día. El take-home de delivery es {pct}% para esta persona.',
   'timecards.coverage': 'Cobertura',
   'timecards.pay': 'Pago',
   'timecards.thisWeekRange': 'Esta semana ({range})',
