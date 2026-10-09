@@ -508,7 +508,7 @@ export function loadDraftFromTeamState(
      */
     if (weekNum > SCHEDULE_TEMPLATE_WEEK_INDEX && weekNum < SCHEDULE_VIEW_WEEK_COUNT) {
       if (layers && !draftGridHasNoClockTimes(layers)) return layers;
-      return blankDraftTimesKeepingRows(layers || base);
+      return { Bartender: [], Kitchen: [], Server: [] };
     }
     if (layers) return layers;
     return base;
@@ -523,8 +523,12 @@ export function loadDraftFromTeamState(
 
 function getDraftRowsForRole(draftRows: DraftGrid, role: RoleKey): Array<Array<[string, string] | null>> {
   const r = draftRows[role];
-  if (!r || !r.length) return (DEFAULT_DRAFT_SCHEDULE_ROWS[role] || []) as Array<Array<[string, string] | null>>;
-  return r as Array<Array<[string, string] | null>>;
+  if (r && r.length) return r as Array<Array<[string, string] | null>>;
+  /*
+   * Saved weeks already expand a missing role to the template inside
+   * loadDraftFromTeamState. An explicit empty list is a new week: no shifts.
+   */
+  return [];
 }
 
 export function draftTimeSlotFor(
@@ -2294,7 +2298,20 @@ export function buildCalendarBody(
       );
       return shouldShowWorker(rowPerson);
     });
-    if (!visibleSlotOrder.length) return;
+    if (!visibleSlotOrder.length) {
+      if (!slotOrder.length) {
+        if (rd.role === 'Bartender') {
+          bodyRows.push({ kind: 'section', title: 'FRONT OF THE HOUSE', variant: 'foh' });
+        }
+        if (rd.role === 'Server') {
+          bodyRows.push({ kind: 'section', title: 'DELIVERY/DISHWASHER', variant: 'delivery' });
+        }
+        if (rd.role === 'Kitchen') {
+          bodyRows.push({ kind: 'section', title: 'BACK OF THE HOUSE', variant: 'boh' });
+        }
+      }
+      return;
+    }
 
     if (rd.role === 'Bartender') {
       bodyRows.push({ kind: 'section', title: 'FRONT OF THE HOUSE', variant: 'foh' });

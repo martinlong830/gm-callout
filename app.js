@@ -1801,7 +1801,8 @@
         draftLayersMemo[memoKey] = frozenLayers;
         return frozenLayers;
       }
-      layers = blankDraftTimesKeepingRows(DEFAULT_DRAFT_SCHEDULE_ROWS);
+      /* New week: section headers only, until someone adds a shift. */
+      layers = { Bartender: [], Kitchen: [], Server: [] };
       draftLayersMemo[memoKey] = layers;
       return layers;
     }
@@ -1903,7 +1904,11 @@
   function getDraftRowsForRole(role, weekIndex, restaurantId) {
     var rows = getDraftScheduleRowsForWeek(weekIndex, restaurantId);
     var r = rows[role];
-    if (!r || !r.length) return DEFAULT_DRAFT_SCHEDULE_ROWS[role] || [];
+    if (!r || !r.length) {
+      /* A new future week stays empty. Do not fill it with the built-in template hours. */
+      if (resolveDraftWeekIndex(weekIndex) > SCHEDULE_TEMPLATE_WEEK_INDEX) return [];
+      return DEFAULT_DRAFT_SCHEDULE_ROWS[role] || [];
+    }
     return r;
   }
 
@@ -35420,32 +35425,11 @@
         targetEl.setAttribute('aria-busy', 'true');
         return;
       }
+      /*
+       * Confirmed empty week: keep painting so FOH / BOH / Delivery headers show.
+       * Shift rows are added only when this week actually has slots.
+       */
       targetEl.removeAttribute('aria-busy');
-      var emptyHint =
-        '<p class="calendar-hint">' + escapeHtml(gmT('schedule.noShifts')) + '</p>';
-      var prevMatrix = targetEl.querySelector('table.calendar-matrix');
-      if (prevMatrix) {
-        var hintWrap = document.createElement('div');
-        hintWrap.innerHTML = emptyHint;
-        var hintEl = hintWrap.firstElementChild;
-        if (hintEl) prevMatrix.replaceWith(hintEl);
-      } else {
-        var preservedBelowEmpty = null;
-        if (targetEl === calendarGrid) {
-          preservedBelowEmpty = document.getElementById('scheduleBelowCalendar');
-          if (preservedBelowEmpty && preservedBelowEmpty.parentNode === targetEl) {
-            preservedBelowEmpty.parentNode.removeChild(preservedBelowEmpty);
-          }
-        }
-        targetEl.innerHTML = emptyHint;
-        if (preservedBelowEmpty && targetEl === calendarGrid) {
-          targetEl.appendChild(preservedBelowEmpty);
-        }
-      }
-      if (!readOnly && !opts.skipMainCalendarSideEffects && !calendarScheduleUiBlocksRender()) {
-        flushDeferredCalendarRemoteRefresh();
-      }
-      return;
     }
     targetEl.removeAttribute('aria-busy');
 
@@ -35659,7 +35643,14 @@
           }
         });
       }
-      if (!visibleSlotOrder.length) return;
+      if (!visibleSlotOrder.length) {
+        if (!slotOrder.length) {
+          if (rd.role === 'Bartender') pushSectionRow('Bartender', 'calendar-section-foh');
+          if (rd.role === 'Server') pushSectionRow('Server', 'calendar-section-delivery');
+          if (rd.role === 'Kitchen') pushSectionRow('Kitchen', 'calendar-section-boh');
+        }
+        return;
+      }
 
       if (rd.role === 'Bartender') pushSectionRow('Bartender', 'calendar-section-foh');
       if (rd.role === 'Server') pushSectionRow('Server', 'calendar-section-delivery');
