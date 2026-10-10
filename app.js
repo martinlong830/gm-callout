@@ -22388,7 +22388,13 @@
     if (!roleName || !dayKey) return false;
     var tpl = null;
     try {
-      tpl = draftTimeSlotFor(roleName, dayKey, p.trIdx, SCHEDULE_TEMPLATE_WEEK_INDEX);
+      tpl = draftTimeSlotFor(
+        roleName,
+        dayKey,
+        p.trIdx,
+        SCHEDULE_TEMPLATE_WEEK_INDEX,
+        currentRestaurantId
+      );
     } catch (_tplBreak) {
       tpl = null;
     }
@@ -22399,10 +22405,102 @@
     );
   }
 
+  /**
+   * Later weeks keep the hours and often drop the break line. Use the break
+   * saved on an earlier week of the same shift when the hours still match.
+   * A different person on those hours does not pick up someone else's break.
+   */
+  function savedBreakFromEarlierMatchingShift(stored, shiftId, start, end, role, dayStr) {
+    var p = parseShiftIdParts(shiftId);
+    if (!p || !start || !end || !stored) return '';
+    var thisWeek = Math.floor(p.globalDayIdx / 7);
+    if (!(thisWeek > SCHEDULE_TEMPLATE_WEEK_INDEX)) return '';
+    var rid = currentRestaurantId;
+    var roleName = role || (ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role) || '';
+    var dayInWeek = p.globalDayIdx % 7;
+    var dayKey = weekdayKeyFromScheduleDay(dayStr) || WEEKDAY_KEYS[dayInWeek];
+    if (!roleName || !dayKey) return '';
+    var rawDirect = stored[shiftId];
+    if (rawDirect && rawDirect.breakExplicit && !rawDirect.break) return '';
+    var directWorker = scheduleAssignmentPrimaryWorker(
+      rawDirect != null ? normalizeScheduleAssignment(rawDirect) : null
+    );
+    var continuityName = '';
+    try {
+      var continuityNames = scheduleContinuityNamesForRole(roleName, thisWeek);
+      continuityName = (continuityNames && continuityNames[p.trIdx]) || '';
+    } catch (_contBreak) {
+      continuityName = '';
+    }
+    var person = directWorker || continuityName || '';
+    function breakIfHoursMatch(src, srcWeek, srcTr, requirePerson) {
+      if (!src || !src.break) return '';
+      var slot = null;
+      try {
+        slot = draftTimeSlotFor(roleName, dayKey, srcTr, srcWeek, rid);
+      } catch (_slotBreak) {
+        slot = null;
+      }
+      if (!slot || !slot.start || !slot.end) return '';
+      if (
+        normalizeHHMM(slot.start) !== normalizeHHMM(start) ||
+        normalizeHHMM(slot.end) !== normalizeHHMM(end)
+      ) {
+        return '';
+      }
+      var srcWorker = scheduleAssignmentPrimaryWorker(src);
+      if (requirePerson) {
+        if (!person || !srcWorker || !workerNamesMatch(person, srcWorker)) return '';
+      } else if (directWorker && srcWorker && !workerNamesMatch(directWorker, srcWorker)) {
+        return '';
+      } else if (directWorker && !srcWorker) {
+        return '';
+      }
+      return src.break;
+    }
+    var wi;
+    for (wi = thisWeek - 1; wi >= 0; wi -= 1) {
+      var sameId = 'shift-' + (wi * 7 + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
+      if (stored[sameId] == null) continue;
+      var sameBreak = breakIfHoursMatch(
+        normalizeScheduleAssignment(stored[sameId]),
+        wi,
+        p.trIdx,
+        false
+      );
+      if (sameBreak) return sameBreak;
+    }
+    if (!person) return '';
+    for (wi = thisWeek - 1; wi >= 0; wi -= 1) {
+      var prevLayers = null;
+      try {
+        prevLayers = getDraftScheduleRowsForWeek(wi, rid);
+      } catch (_prevLayers) {
+        prevLayers = null;
+      }
+      var prevRows = (prevLayers && prevLayers[roleName]) || [];
+      for (var tr = 0; tr < prevRows.length; tr += 1) {
+        if (tr === p.trIdx) continue;
+        var otherId = 'shift-' + (wi * 7 + dayInWeek) + '-' + p.roleIdx + '-' + tr;
+        if (stored[otherId] == null) continue;
+        var otherBreak = breakIfHoursMatch(
+          normalizeScheduleAssignment(stored[otherId]),
+          wi,
+          tr,
+          true
+        );
+        if (otherBreak) return otherBreak;
+      }
+    }
+    return '';
+  }
+
   function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr, opts) {
     opts = opts || {};
     var entry = lookupScheduleAssignment(stored, shiftId);
     if (entry && entry.break) return entry.break;
+    var earlierBreak = savedBreakFromEarlierMatchingShift(stored, shiftId, start, end, role, dayStr);
+    if (earlierBreak) return earlierBreak;
     var pattern = lookupScheduleAssignmentPattern(stored, shiftId);
     if (
       pattern &&
