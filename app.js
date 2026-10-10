@@ -22374,144 +22374,11 @@
     return opts[seed % opts.length];
   }
 
-  /** Single source of truth: assignment store (with template inherit). No hash invent on live. */
-  /**
-   * Next week often keeps the clock times and drops the break line. Use this
-   * week's label when the hours are the same and next week did not save its own.
-   */
-  function futureSlotTimesMatchTemplateBreak(shiftId, start, end, role, dayStr) {
-    if (!start || !end) return false;
-    var p = parseShiftIdParts(shiftId);
-    if (!p || p.globalDayIdx < (SCHEDULE_TEMPLATE_WEEK_INDEX + 1) * 7) return false;
-    var roleName = role || (ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role);
-    var dayKey = weekdayKeyFromScheduleDay(dayStr) || WEEKDAY_KEYS[p.globalDayIdx % 7];
-    if (!roleName || !dayKey) return false;
-    var tpl = null;
-    try {
-      tpl = draftTimeSlotFor(
-        roleName,
-        dayKey,
-        p.trIdx,
-        SCHEDULE_TEMPLATE_WEEK_INDEX,
-        currentRestaurantId
-      );
-    } catch (_tplBreak) {
-      tpl = null;
-    }
-    if (!tpl || !tpl.start || !tpl.end) return false;
-    return (
-      normalizeHHMM(tpl.start) === normalizeHHMM(start) &&
-      normalizeHHMM(tpl.end) === normalizeHHMM(end)
-    );
-  }
-
-  /**
-   * Later weeks keep the hours and often drop the break line. Use the break
-   * saved on an earlier week of the same shift when the hours still match.
-   * A different person on those hours does not pick up someone else's break.
-   */
-  function savedBreakFromEarlierMatchingShift(stored, shiftId, start, end, role, dayStr) {
-    var p = parseShiftIdParts(shiftId);
-    if (!p || !start || !end || !stored) return '';
-    var thisWeek = Math.floor(p.globalDayIdx / 7);
-    if (!(thisWeek > SCHEDULE_TEMPLATE_WEEK_INDEX)) return '';
-    var rid = currentRestaurantId;
-    var roleName = role || (ROLE_DEFS[p.roleIdx] && ROLE_DEFS[p.roleIdx].role) || '';
-    var dayInWeek = p.globalDayIdx % 7;
-    var dayKey = weekdayKeyFromScheduleDay(dayStr) || WEEKDAY_KEYS[dayInWeek];
-    if (!roleName || !dayKey) return '';
-    var rawDirect = stored[shiftId];
-    if (rawDirect && rawDirect.breakExplicit && !rawDirect.break) return '';
-    var directWorker = scheduleAssignmentPrimaryWorker(
-      rawDirect != null ? normalizeScheduleAssignment(rawDirect) : null
-    );
-    var continuityName = '';
-    try {
-      var continuityNames = scheduleContinuityNamesForRole(roleName, thisWeek);
-      continuityName = (continuityNames && continuityNames[p.trIdx]) || '';
-    } catch (_contBreak) {
-      continuityName = '';
-    }
-    var person = directWorker || continuityName || '';
-    function breakIfHoursMatch(src, srcWeek, srcTr, requirePerson) {
-      if (!src || !src.break) return '';
-      var slot = null;
-      try {
-        slot = draftTimeSlotFor(roleName, dayKey, srcTr, srcWeek, rid);
-      } catch (_slotBreak) {
-        slot = null;
-      }
-      if (!slot || !slot.start || !slot.end) return '';
-      if (
-        normalizeHHMM(slot.start) !== normalizeHHMM(start) ||
-        normalizeHHMM(slot.end) !== normalizeHHMM(end)
-      ) {
-        return '';
-      }
-      var srcWorker = scheduleAssignmentPrimaryWorker(src);
-      if (requirePerson) {
-        if (!person || !srcWorker || !workerNamesMatch(person, srcWorker)) return '';
-      } else if (directWorker && srcWorker && !workerNamesMatch(directWorker, srcWorker)) {
-        return '';
-      } else if (directWorker && !srcWorker) {
-        return '';
-      }
-      return src.break;
-    }
-    var wi;
-    for (wi = thisWeek - 1; wi >= 0; wi -= 1) {
-      var sameId = 'shift-' + (wi * 7 + dayInWeek) + '-' + p.roleIdx + '-' + p.trIdx;
-      if (stored[sameId] == null) continue;
-      var sameBreak = breakIfHoursMatch(
-        normalizeScheduleAssignment(stored[sameId]),
-        wi,
-        p.trIdx,
-        false
-      );
-      if (sameBreak) return sameBreak;
-    }
-    if (!person) return '';
-    for (wi = thisWeek - 1; wi >= 0; wi -= 1) {
-      var prevLayers = null;
-      try {
-        prevLayers = getDraftScheduleRowsForWeek(wi, rid);
-      } catch (_prevLayers) {
-        prevLayers = null;
-      }
-      var prevRows = (prevLayers && prevLayers[roleName]) || [];
-      for (var tr = 0; tr < prevRows.length; tr += 1) {
-        if (tr === p.trIdx) continue;
-        var otherId = 'shift-' + (wi * 7 + dayInWeek) + '-' + p.roleIdx + '-' + tr;
-        if (stored[otherId] == null) continue;
-        var otherBreak = breakIfHoursMatch(
-          normalizeScheduleAssignment(stored[otherId]),
-          wi,
-          tr,
-          true
-        );
-        if (otherBreak) return otherBreak;
-      }
-    }
-    return '';
-  }
-
+  /** Break line saved on this shift. A template apply writes that line; nothing else copies one in. */
   function resolveScheduleBreakAnnotation(stored, shiftId, start, end, role, dayStr, opts) {
     opts = opts || {};
     var entry = lookupScheduleAssignment(stored, shiftId);
     if (entry && entry.break) return entry.break;
-    var earlierBreak = savedBreakFromEarlierMatchingShift(stored, shiftId, start, end, role, dayStr);
-    if (earlierBreak) return earlierBreak;
-    var pattern = lookupScheduleAssignmentPattern(stored, shiftId);
-    if (
-      pattern &&
-      pattern.break &&
-      futureSlotTimesMatchTemplateBreak(shiftId, start, end, role, dayStr)
-    ) {
-      var directWorker = scheduleAssignmentPrimaryWorker(entry);
-      if (!directWorker || scheduleAssignmentWorkersAlignedForBreakInherit(entry, pattern)) {
-        return pattern.break;
-      }
-    }
     if (opts.allowPlaceholder) return redPokeBreakAnnotation(start, end, role, dayStr);
     return '';
   }
@@ -22649,14 +22516,19 @@
   }
 
   function renderDraftBreakFieldHtml(breakText, off) {
-    var parsed = parseBreakAnnotation(off ? '' : breakText);
+    var chosen = !off && String(breakText || '').trim();
+    var parsed = chosen ? parseBreakAnnotation(breakText) : { time: '', type: '', raw: '' };
     var timeOpts = breakTimeOptionsForParsed(parsed)
       .map(function (t) {
         var sel = parsed.type !== 'NO BREAK' && parsed.time === t ? ' selected' : '';
         return '<option value="' + escapeHtml(t) + '"' + sel + '>' + escapeHtml(t) + '</option>';
       })
       .join('');
-    var typeOpts = BREAK_ANNOTATION_TYPE_PRESETS.map(function (t) {
+    var typeOpts =
+      '<option value=""' +
+      (chosen ? '' : ' selected') +
+      '>—</option>' +
+      BREAK_ANNOTATION_TYPE_PRESETS.map(function (t) {
       var sel = parsed.type === t ? ' selected' : '';
       return (
         '<option value="' +
@@ -22668,7 +22540,7 @@
         '</option>'
       );
     }).join('');
-    var hideDraftBreakClock = parsed.type === 'NO BREAK';
+    var hideDraftBreakClock = !chosen || parsed.type === 'NO BREAK';
     return (
       '<div class="draft-cell-break' +
       (hideDraftBreakClock ? ' draft-cell-break--no-time' : '') +
@@ -22697,7 +22569,7 @@
     if (dayOff && dayOff.checked) return null;
     var typeSel = td.querySelector('.draft-break-type');
     var timeSel = td.querySelector('.draft-break-time');
-    if (!typeSel) return formatBreakAnnotation('3:00PM', 'BREAK TIME');
+    if (!typeSel || !String(typeSel.value || '').trim()) return null;
     return formatBreakAnnotation(timeSel && timeSel.value, typeSel.value);
   }
 
@@ -22706,7 +22578,7 @@
     var typeSel = td.querySelector('.draft-break-type');
     var timeSel = td.querySelector('.draft-break-time');
     if (!typeSel || !timeSel) return;
-    var hideTime = typeSel.value === 'NO BREAK';
+    var hideTime = !typeSel.value || typeSel.value === 'NO BREAK';
     timeSel.disabled = hideTime;
     var wrap = timeSel.closest('.draft-cell-break');
     if (wrap) wrap.classList.toggle('draft-cell-break--no-time', hideTime);
@@ -25907,21 +25779,10 @@
           if (!cell) continue;
           var brk = bRows[trIdx] && bRows[trIdx][di];
           var shiftId = 'shift-' + (weekStart + di) + '-' + roleIdx + '-' + trIdx;
-          var nextBreak =
-            brk != null
-              ? brk
-              : resolveScheduleBreakAnnotation(
-                  rs,
-                  shiftId,
-                  cell[0],
-                  cell[1],
-                  role,
-                  WEEKDAY_KEYS[di] || 'Mon'
-                );
-          if (!nextBreak) return;
+          if (brk == null || brk === '') continue;
           var entry = normalizeScheduleAssignment(rs[shiftId] || { workers: ['Unassigned'] });
-          if (entry.break !== nextBreak) {
-            entry.break = nextBreak;
+          if (entry.break !== brk) {
+            entry.break = brk;
             rs[shiftId] = entry;
             changed = true;
           }
@@ -26498,7 +26359,8 @@
       if (scheduleAssignmentHasStaffedWorkers(entry)) {
         entry.rowOwner = scheduleAssignmentPrimaryWorker(entry);
       }
-      entry.break = breakText || formatBreakAnnotation('3:00PM', 'BREAK TIME');
+      if (breakText) entry.break = breakText;
+      else delete entry.break;
       entry.timeLabel = redPokeShiftTimeLabel(s, e);
       entry.hours = redPokeShiftHoursDecimal(s, e);
       rs[shiftId] = entry;
@@ -27824,7 +27686,7 @@
      */
     if (p && p.globalDayIdx >= tplStart + 7) {
       if (!directKeyPresent) return { workers: ['Unassigned'] };
-      return mergeScheduleAssignmentEntries(direct, pattern, true);
+      return direct;
     }
     return mergeScheduleAssignmentEntries(direct, pattern, directKeyPresent);
   }
@@ -28238,10 +28100,8 @@
     if (shiftRow.breakPaid === true || shiftRow.breakPaid === false) {
       entry.breakPaid = !!shiftRow.breakPaid;
     }
-    if (!entry.break && rs[shiftRow.id] == null) {
+    if (rs[shiftRow.id] == null) {
       var pattern = lookupScheduleAssignmentPattern(rs, shiftRow.id);
-      var inheritedBreak = resolveInheritedScheduleBreak(entry, pattern, entry.workers);
-      if (inheritedBreak) entry.break = inheritedBreak;
       if (
         (entry.hours == null || entry.hours === '') &&
         pattern &&
@@ -40299,7 +40159,7 @@
     if (shiftDetailTimesWrap) shiftDetailTimesWrap.hidden = off;
     if (shiftDetailBreakWrap) shiftDetailBreakWrap.hidden = off;
     if (!off && shiftDetailBreakType && shiftDetailBreakWrap) {
-      var hideTime = shiftDetailBreakType.value === 'NO BREAK';
+      var hideTime = !shiftDetailBreakType.value || shiftDetailBreakType.value === 'NO BREAK';
       if (shiftDetailBreakTime) shiftDetailBreakTime.disabled = hideTime;
       shiftDetailBreakWrap.classList.toggle('shift-detail-break--no-time', hideTime);
     }
@@ -40382,7 +40242,7 @@
     var isDayOff = !!opts.isDayOff;
     var start = opts.start || '10:00';
     var end = opts.end || '18:00';
-    var breakText = opts.breakText || formatBreakAnnotation('3:00PM', 'BREAK TIME');
+    var breakText = opts.breakText || '';
     if (shiftDetailDayOff) shiftDetailDayOff.checked = isDayOff;
     if (shiftDetailOngiWrap) {
       var hideOngi = !!scheduleTemplateScratchActive;
@@ -40407,8 +40267,16 @@
     }
     if (shiftDetailStart) shiftDetailStart.value = isDayOff ? '' : start;
     if (shiftDetailEnd) shiftDetailEnd.value = isDayOff ? '' : end;
-    var parsed = parseBreakAnnotation(isDayOff ? '' : breakText);
-    if (shiftDetailBreakType) shiftDetailBreakType.value = parsed.type;
+    if (shiftDetailBreakType && !shiftDetailBreakType.querySelector('option[value=""]')) {
+      var unsetOpt = document.createElement('option');
+      unsetOpt.value = '';
+      unsetOpt.textContent = '—';
+      shiftDetailBreakType.insertBefore(unsetOpt, shiftDetailBreakType.firstChild);
+    }
+    var parsed = String(breakText || '').trim()
+      ? parseBreakAnnotation(breakText)
+      : { time: '', type: '', raw: '' };
+    if (shiftDetailBreakType) shiftDetailBreakType.value = isDayOff ? 'BREAK TIME' : parsed.type || '';
     populateShiftDetailBreakTimeOptions(parsed);
     syncShiftDetailEditorVisibility();
     if (shiftDetailSlotTarget) {
@@ -40714,17 +40582,18 @@
     var isDayOff = !!(shiftDetailDayOff && shiftDetailDayOff.checked);
     var start = shiftDetailStart && shiftDetailStart.value;
     var end = shiftDetailEnd && shiftDetailEnd.value;
-    var breakType = (shiftDetailBreakType && shiftDetailBreakType.value) || 'BREAK TIME';
-    var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '3:00PM';
+    var breakType = (shiftDetailBreakType && shiftDetailBreakType.value) || '';
+    var breakTimeRaw = (shiftDetailBreakTime && shiftDetailBreakTime.value) || '';
     var breakTimeNorm = normalizeBreakAnnotationTime(breakTimeRaw) || '';
     if (
       breakType === 'BREAK TIME' &&
+      breakTimeNorm &&
       SHIFT_DETAIL_BREAK_TIME_PRESETS.indexOf(breakTimeNorm) < 0
     ) {
       breakTimeRaw = '3:00PM';
     }
-    var breakTime = normalizeBreakAnnotationTime(breakTimeRaw) || '3:00PM';
-    var breakText = formatBreakAnnotation(breakTime, breakType);
+    var breakTime = normalizeBreakAnnotationTime(breakTimeRaw) || '';
+    var breakText = breakType ? formatBreakAnnotation(breakTime || '3:00PM', breakType) : '';
     if (!isDayOff) {
       var s = normalizeHHMM(start);
       var e = normalizeHHMM(end);
